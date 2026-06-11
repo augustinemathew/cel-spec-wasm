@@ -79,6 +79,8 @@ cc_library(
         "@cel-cpp//compiler:compiler_factory",
         "@cel-cpp//compiler:optional",
         "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//extensions:math_ext",
+        "@cel-cpp//extensions:math_ext_decls",
         "@cel-cpp//extensions:strings",
         "@cel-cpp//extensions/protobuf:enum_adapter",
         "@cel-cpp//extensions/protobuf:runtime_adapter",

@@ -24,6 +24,8 @@
 #include "compiler/compiler_factory.h"
 #include "compiler/optional.h"
 #include "compiler/standard_library.h"
+#include "extensions/math_ext.h"
+#include "extensions/math_ext_decls.h"
 #include "extensions/protobuf/enum_adapter.h"
 #include "extensions/protobuf/runtime_adapter.h"
 #include "extensions/strings.h"
@@ -74,6 +76,27 @@ cel::AttributePattern ParseAttributePattern(absl::string_view dotted) {
 // are intentionally omitted — they change performance, not semantics.
 // `enable_unknowns` turns on attribute-unknown processing for the
 // partial-eval entry point.
+// Register the runtime-side extensions the oracle evaluates, each
+// paired with its checker library in `AddCompilerLibraries`:
+//   - optional types (`optional.of` / `.hasValue()` / `?field:`),
+//   - strings (`split` / `indexOf` / `substring` / `replace` / …),
+//   - math (`math.abs` / `math.bitAnd` / `math.sqrt` / …).
+// Without these the oracle's runtime rejects extension calls our
+// pipeline evaluates — a harness asymmetry, not a real divergence.
+absl::Status RegisterRuntimeExtensions(cel::RuntimeBuilder& builder,
+                                       const cel::RuntimeOptions& opts) {
+  if (auto s = cel::extensions::EnableOptionalTypes(builder); !s.ok()) {
+    return s;
+  }
+  if (auto s = cel::extensions::RegisterStringsFunctions(
+          builder.function_registry(), opts);
+      !s.ok()) {
+    return s;
+  }
+  return cel::extensions::RegisterMathExtensionFunctions(
+      builder.function_registry(), opts);
+}
+
 absl::StatusOr<std::unique_ptr<const cel::Runtime>> BuildRuntime(
     const google::protobuf::DescriptorPool* pool, absl::string_view container,
     bool enable_unknowns) {
@@ -103,24 +126,7 @@ absl::StatusOr<std::unique_ptr<const cel::Runtime>> BuildRuntime(
       !s.ok()) {
     return s;
   }
-  // Optional-type support (`optional.of` / `optional.ofNonZeroValue` /
-  // `.hasValue()` / `Msg{?field: ...}`), mirroring the conformance
-  // service's runtime configuration.  Paired with the
-  // `OptionalCompilerLibrary` registration in `CompileSource`.
-  if (auto s = cel::extensions::EnableOptionalTypes(*builder); !s.ok()) {
-    return s;
-  }
-  // Strings extension runtime functions (`split` / `indexOf` /
-  // `substring` / `replace` / `format` / …), mirroring our
-  // compiler which registers the same extension.  Without this the
-  // oracle's runtime would reject `s.split(...)` that our pipeline
-  // evaluates — a harness asymmetry, not a real divergence.  Paired
-  // with the `StringsCompilerLibrary` registration in CompileSource.
-  if (auto s = cel::extensions::RegisterStringsFunctions(
-          builder->function_registry(), opts);
-      !s.ok()) {
-    return s;
-  }
+  if (auto s = RegisterRuntimeExtensions(*builder, opts); !s.ok()) return s;
   auto& registry = builder->type_registry();
   for (const google::protobuf::EnumDescriptor* enum_desc : {
            ::cel::expr::conformance::proto2::GlobalEnum_descriptor(),
@@ -160,7 +166,11 @@ absl::Status AddCompilerLibraries(cel::CompilerBuilder& builder) {
   if (auto s = builder.AddLibrary(cel::OptionalCompilerLibrary()); !s.ok()) {
     return s;
   }
-  return builder.AddLibrary(cel::extensions::StringsCompilerLibrary());
+  if (auto s = builder.AddLibrary(cel::extensions::StringsCompilerLibrary());
+      !s.ok()) {
+    return s;
+  }
+  return builder.AddLibrary(cel::extensions::MathCompilerLibrary());
 }
 
 // name as an unbound activation variable).

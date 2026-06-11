@@ -189,6 +189,25 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — math_ext (28 overloads, COVERAGE.md block ✅)
+
+- Added the whole `math.*` family (`RegisterMathExt`): abs / sign /
+  ceil / floor / round / trunc / sqrt / isFinite / isInf / isNaN /
+  bitAnd / bitOr / bitXor / bitNot / bitShiftLeft / bitShiftRight,
+  over int / uint / double. The M30.A boundary leaves make these
+  bug-rich (abs(INT64_MIN) overflows, bit shifts past 63 error,
+  sqrt of a negative is NaN, round/trunc on 2^53).
+- **Oracle extended** (like strings): `MathCompilerLibrary` +
+  `RegisterMathExtensionFunctions` in `testdata/cel_cpp_oracle.cc`,
+  else it would reject `math.abs(...)` we accept. Runtime-extension
+  registration factored into a `RegisterRuntimeExtensions` helper.
+  Oracle's own test still green.
+- L1/L2/L3 green (grammar_test 22 tests); mining at d4 = **0
+  divergences** on all four numeric/bool targets (int 179/0/21
+  both_errored, uint 64/0/16, double 78/0/2, bool 61/0/19) —
+  math_ext matches cel-cpp, including every overflow / range-error
+  path (both_errored = agreement). First big ⬜ block checked off.
+
 ### 2026-06-11 — function inventory + fallible string forms
 
 - **Coverage checklist created** ([`COVERAGE.md`](COVERAGE.md)): all

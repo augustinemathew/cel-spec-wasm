@@ -39,7 +39,7 @@ note) · ⬜ none generated yet.
 | Aggregates (list/map literals, nested) | — | ✅ |
 | String functions | ~27 | 🟡 see breakdown |
 | Type conversions | ~30 | 🟡 only `double(int\|uint)` |
-| **math_ext** | 28 | ⬜ |
+| **math_ext** | 28 | ✅ |
 | **net_ext** | 20 | ⬜ |
 | **timestamp accessors** | 23 | ⬜ |
 | **duration accessors** | 7 | ⬜ |
@@ -125,13 +125,13 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
       (the `int('5')` / `timestamp('…')` family — fallible, parse errors)
 - [ ] `bytes_to_bytes` `bool_to_bool` `string_to_string` (identity)
 
-## math_ext — ⬜ (no productions)
+## math_ext — ✅ (`grammar_scalars.cc`: RegisterMathExt; oracle gained MathCompilerLibrary + RegisterMathExtensionFunctions)
 
-- [ ] `math_abs_{int,uint,double}` `math_sign_{int,uint,double}`
-- [ ] `math_ceil_double` `math_floor_double` `math_round_double`
+- [x] `math_abs_{int,uint,double}` `math_sign_{int,uint,double}`
+- [x] `math_ceil_double` `math_floor_double` `math_round_double`
       `math_trunc_double` `math_sqrt_{int,uint,double}`
-- [ ] `math_isFinite_double` `math_isInf_double` `math_isNaN_double`
-- [ ] `math_bitAnd_{int_int,uint_uint}` `math_bitOr_*` `math_bitXor_*`
+- [x] `math_isFinite_double` `math_isInf_double` `math_isNaN_double`
+- [x] `math_bitAnd_{int_int,uint_uint}` `math_bitOr_*` `math_bitXor_*`
       `math_bitNot_*` `math_bitShiftLeft_*` `math_bitShiftRight_*`
 
 ## net_ext — ⬜ (no productions; needs `net.IP` / `net.CIDR` opaque-type leaves)

@@ -223,6 +223,50 @@ void RegisterStringFunctions(GrammarBuilder& b) {
             CelType::String(), CelType::Int(), CelType::Int());
 }
 
+// math extension (`math.*`).  Namespace-qualified functions; the
+// boundary numeric leaves (M30.A) make these bug-rich: abs(INT64_MIN)
+// overflows, bit shifts past 63 error, sqrt of a negative is NaN
+// (a value), round/trunc on the 2^53 boundary.  Grouped by return
+// type.  Fallible members (abs-int overflow, bitShift range) are
+// safe to admit — error-ness is a compared dimension.
+void RegisterMathExt(GrammarBuilder& b) {
+  const CelType i = CelType::Int();
+  const CelType u = CelType::Uint();
+  const CelType d = CelType::Double();
+  // → Int (from int args).
+  b.Unary(i, "math_abs_int", "math.abs(%0)", i);
+  b.Unary(i, "math_sign_int", "math.sign(%0)", i);
+  b.Binary(i, "math_bitand_int", "math.bitAnd(%0, %1)", i, i);
+  b.Binary(i, "math_bitor_int", "math.bitOr(%0, %1)", i, i);
+  b.Binary(i, "math_bitxor_int", "math.bitXor(%0, %1)", i, i);
+  b.Unary(i, "math_bitnot_int", "math.bitNot(%0)", i);
+  b.Binary(i, "math_bitshl_int", "math.bitShiftLeft(%0, %1)", i, i);
+  b.Binary(i, "math_bitshr_int", "math.bitShiftRight(%0, %1)", i, i);
+  // → Uint.
+  b.Unary(u, "math_abs_uint", "math.abs(%0)", u);
+  b.Unary(u, "math_sign_uint", "math.sign(%0)", u);
+  b.Binary(u, "math_bitand_uint", "math.bitAnd(%0, %1)", u, u);
+  b.Binary(u, "math_bitor_uint", "math.bitOr(%0, %1)", u, u);
+  b.Binary(u, "math_bitxor_uint", "math.bitXor(%0, %1)", u, u);
+  b.Unary(u, "math_bitnot_uint", "math.bitNot(%0)", u);
+  b.Binary(u, "math_bitshl_uint", "math.bitShiftLeft(%0, %1)", u, i);
+  b.Binary(u, "math_bitshr_uint", "math.bitShiftRight(%0, %1)", u, i);
+  // → Double.
+  b.Unary(d, "math_abs_double", "math.abs(%0)", d);
+  b.Unary(d, "math_sign_double", "math.sign(%0)", d);
+  b.Unary(d, "math_ceil_double", "math.ceil(%0)", d);
+  b.Unary(d, "math_floor_double", "math.floor(%0)", d);
+  b.Unary(d, "math_round_double", "math.round(%0)", d);
+  b.Unary(d, "math_trunc_double", "math.trunc(%0)", d);
+  b.Unary(d, "math_sqrt_int", "math.sqrt(%0)", i);
+  b.Unary(d, "math_sqrt_uint", "math.sqrt(%0)", u);
+  b.Unary(d, "math_sqrt_double", "math.sqrt(%0)", d);
+  // → Bool.
+  b.Unary(CelType::Bool(), "math_is_finite", "math.isFinite(%0)", d);
+  b.Unary(CelType::Bool(), "math_is_inf", "math.isInf(%0)", d);
+  b.Unary(CelType::Bool(), "math_is_nan", "math.isNaN(%0)", d);
+}
+
 // Comparison + logical (both yield Bool) — every CEL-spec overload.
 void RegisterBoolProducers(GrammarBuilder& b) {
   for (const CelType& numeric :
@@ -300,6 +344,7 @@ void RegisterScalarProductions(GrammarBuilder& b) {
   RegisterArithmetic(b);
   RegisterFallibleArithmetic(b);
   RegisterStringFunctions(b);
+  RegisterMathExt(b);
   RegisterBoolProducers(b);
   RegisterMixedTotalOps(b);
 }
