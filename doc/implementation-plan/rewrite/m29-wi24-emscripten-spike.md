@@ -1,13 +1,55 @@
-# M29 WI-2.4 — emscripten `compiler.wasm` feasibility spike
+# M29 WI-2.4 — `compiler.wasm` feasibility spike
 
-Status: spike complete — 2026-06-11. **Verdict: CONDITIONAL GO, but
-NOT for v1.** The codegen+optimize half (Binaryen) is proven feasible
-under emscripten today; the parse+check half (cel-cpp + protobuf +
-ANTLR4) is a multi-day toolchain port that is NOT on the v1 critical
-path. v1 ships the demo on the **N-API native backend (WI-2.2/2.3)**
-plus a thin local compile endpoint (WI-4.1); the emscripten backend is
-a follow-up that upgrades the demo to "no server" once the parse/check
-port lands.
+> ## ⚡ UPDATE 2026-06-11 — the port is DONE (via wasi-sdk, not emscripten)
+>
+> The "multi-day port" estimate below was **wrong by an order of
+> magnitude** — but only because it assumed an *out-of-tree emscripten*
+> toolchain. The repo's **existing wasi-sdk bazel toolchain** already
+> cross-compiles the entire compiler. The actual work was **~1 hour**:
+>
+> 1. The whole frontend — cel-cpp parser + checker + **protobuf** +
+>    ANTLR4 + RE2 + absl — cross-compiles to wasm32-wasi with just
+>    `--cxxopt=-frtti --cxxopt=-fexceptions` (the toolchain disables both
+>    by default for the tiny C runtime). `//compiler/frontend:parse_and_check`
+>    → 823 actions, 0 errors.
+> 2. **Binaryen** (the foreign_cc CMake dep) needed four macOS-host flags
+>    scrubbed from `wasm_clang.sh` (`-arch`, `-Wl,-search_paths_first`,
+>    `-Wl,-headerpad_max_install_names`, `-mmacosx-version-min=`) — CMake
+>    leaks them from Apple-host detection; `wasm-ld` rejects them.
+> 3. `//bindings/c:cel_capi` (the full compiler + C ABI) → **builds clean
+>    under wasm32-wasi**, and `//bindings/c:compiler_wasm` produces a
+>    **35.7 MB `compiler.wasm`** (a valid WebAssembly module).
+>
+> So WI-2.4 is **GO, in-tree, hermetic** — no emscripten, no out-of-tree
+> toolchain. The new pieces: a `wasm_cpp_cc_binary` transition macro
+> (platform + exceptions/RTTI, scoped so the runtime keeps its minimal
+> flags), `compiler_main.cc` (a WASI CLI over the C ABI), and the
+> `wasm_clang.sh` Apple-flag scrub.
+>
+> **Remaining to a working browser backend (wiring + optimization, no
+> research risk):** (a) make the wasm *callable* — the toolchain links a
+> reactor (no `_start`), so either export the C ABI functions + marshal
+> from JS, or split the toolchain's `-nostartfiles -Wl,--no-entry` into a
+> disable-able feature for a command-model `_start`; plus a `wasi:
+> thread-spawn` stub (never called for single-threaded compile) and
+> confirm the `env.__cxa_*` exception path. (b) the `compileWasm()` TS
+> backend over `node:wasi` / a browser WASI shim, behind the existing
+> `CompileBackend`. (c) **shrink it** — 35 MB is heavy for a browser
+> download; `-O`/strip/LTO + the demo lazy-loading it.
+>
+> The emscripten investigation below is preserved as history; the
+> wasi-sdk path supersedes it.
+
+---
+
+Status: spike complete — 2026-06-11. **Original verdict: CONDITIONAL GO,
+but NOT for v1** (superseded by the update above). The codegen+optimize
+half (Binaryen) is proven feasible under emscripten today; the
+parse+check half (cel-cpp + protobuf + ANTLR4) is a multi-day toolchain
+port that is NOT on the v1 critical path. v1 ships the demo on the
+**N-API native backend (WI-2.2/2.3)** plus a thin local compile endpoint
+(WI-4.1); the emscripten backend is a follow-up that upgrades the demo to
+"no server" once the parse/check port lands.
 
 This doc is the go/no-go required by WI-2.4's done-when. It records what
 was proven, the exact remaining blocker, an effort estimate to clear it,

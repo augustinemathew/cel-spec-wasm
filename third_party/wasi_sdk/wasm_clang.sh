@@ -29,16 +29,42 @@ done
 # is expected (wasmtime then rejects it at AddComponent).  No wasm
 # target ever wants the host linker override, so drop it here.
 #
+# Also strip Apple's `-arch <cpu>` flag.  A foreign_cc CMake dep
+# (Binaryen) built for wasm32-wasi still picks up the macOS host's
+# `-arch arm64` from CMake's default Apple toolchain detection, and
+# clang rejects it for a wasm target (`unsupported option '-arch' for
+# target 'wasm32-wasi-threads'`).  No wasm target ever wants it.  Unlike
+# `-fuse-ld=`, `-arch` takes its value as the FOLLOWING argv token, so we
+# track a one-shot skip.  (foreign_cc invokes the compiler via argv, not
+# a bazel params file; the `=`-joined form is dropped too for safety.)
+#
 # Bazel passes link args via a params file (`@bazel-out/.../*.params`,
-# one arg per line), not argv — so the strip must also look inside any
-# `@<file>` arg.  When a params file contains a `-fuse-ld=` line, we
-# write a filtered copy to $TMPDIR and substitute the reference; clean
-# params files pass through untouched (a single `grep -q` per file is
-# the only extra cost on that path).
+# one arg per line), not argv — so the `-fuse-ld=` strip must also look
+# inside any `@<file>` arg.  When a params file contains a `-fuse-ld=`
+# line, we write a filtered copy to $TMPDIR and substitute the reference;
+# clean params files pass through untouched (a single `grep -q` per file
+# is the only extra cost on that path).
 args=()
+skip_next=0
 for arg in "$@"; do
+  if [ "$skip_next" = 1 ]; then
+    skip_next=0
+    continue
+  fi
   case "$arg" in
     -fuse-ld=*) ;;
+    -arch) skip_next=1 ;;
+    -arch=*) ;;
+    # Apple `ld`-only linker flags CMake injects on a macOS host (same
+    # host-detection leak as `-arch`); `wasm-ld` rejects them.  CMake's
+    # Darwin platform passes them to the compiler driver in `-Wl,` form
+    # (`CMAKE_*_LINK_FLAGS`), which clang then forwards bare to wasm-ld;
+    # drop both forms.
+    -Wl,-search_paths_first | -search_paths_first) ;;
+    -Wl,-headerpad_max_install_names | -headerpad_max_install_names) ;;
+    # macOS deployment-target flag CMake adds from the host SDK; unused
+    # for a wasm target and fatal under -Werror=unused-command-line-argument.
+    -mmacosx-version-min=*) ;;
     @*)
       params_file="${arg#@}"
       if [ -f "$params_file" ] && \

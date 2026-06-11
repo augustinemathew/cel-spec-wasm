@@ -1,4 +1,5 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+load("//third_party/wasi_sdk:wasm_cc_binary.bzl", "wasm_cpp_cc_binary")
 
 # The C ABI seam over the C++ `celwasm::Compiler`.  An `extern "C"`
 # surface the language bindings (an N-API native addon, an
@@ -35,4 +36,26 @@ cc_test(
         ":cel_capi",
         "@com_google_googletest//:gtest_main",
     ],
+)
+
+# compiler.wasm — the CEL compiler cross-compiled to wasm32-wasi so a
+# browser (or any WASI host) can compile CEL → Program with no native
+# toolchain.  `compiler_main.cc` is a WASI CLI over the C ABI (source +
+# var decls in via argv, Program bytes out via stdout), and
+# `wasm_cpp_cc_binary` builds it under the wasm toolchain with C++
+# exceptions/RTTI enabled for the cel-cpp + Binaryen deps.  `manual` so
+# `//...` (host config) never tries to build the wasm binary directly.
+cc_binary(
+    name = "compiler_wasm.bin",
+    srcs = ["compiler_main.cc"],
+    tags = ["manual"],
+    visibility = ["//:internal"],
+    deps = [":cel_capi"],
+)
+
+wasm_cpp_cc_binary(
+    name = "compiler_wasm",
+    binary = ":compiler_wasm.bin",
+    tags = ["manual"],
+    visibility = ["//:internal"],
 )
