@@ -20,8 +20,9 @@ an agent needs to execute it without reading any other work item.
 > does compile → download → run with client-side eval and inline
 > diagnostics. Gate: `lint` + `build` + `typecheck` + `test` green —
 > **781 tests pass / 13 reasoned skips** across 41 files. Conformance:
-> **1451 pass / 336 fail** under a monotonic ratchet (the 336 are tracked,
-> not categorized — see Future work). As-shipped deltas from the plan:
+> the full 2454-row corpus runs at **1446 pass / 1008 categorized skip /
+> 0 fail** under a committed monotonic ratchet (every non-pass carries a
+> reason). As-shipped deltas from the plan:
 > WI-2.2 N-API replaced by the subprocess backend (works tonight; N-API a
 > follow-up); `src/kinds.ts` folded into the shared `types.ts`; the demo
 > physically lives at `bindings/ts/web` (npm-workspace), named
@@ -684,13 +685,14 @@ one and integration in WI-1.5 is wiring, not redesign.
    ports (200 assertions, 8 suites).
 3. ✅ The compiler binding compiles arbitrary in-scope CEL → a Program the
    eval binding runs (byte-identical to the golden fixtures).
-4. ⚠️ The conformance harness runs the corpus under a committed monotonic
-   ratchet — **but at 1451 pass / 336 fail, NOT "0 fail."** The 336 fails
-   are tracked (the ratchet forbids regressing the pass count or growing
-   the fail count) but not yet each converted to a reasoned skip; that
-   categorization is Future work. (The full-corpus run also OOMs near
-   ~1400 rows in a single process — the harness needs streaming/batching
-   to scale; the vitest pins a subset + the unit suites.)
+4. ✅ The conformance harness runs the full 2454-row corpus at
+   **1446 pass / 1008 categorized skip / 0 fail** under a committed
+   monotonic ratchet (`.baseline=1446` pass floor, `.max_fail=0` ceiling).
+   Every non-pass carries a skip reason: proto_unimpl 329, object_value
+   179, disable_check 144, static_subset 128, bindings 76, envelope 59,
+   ext_unimpl 55, check_only 25, cli_limitation 9, eval_unimpl 3,
+   type_env 1. (The earlier "OOM near ~1400 rows" was self-inflicted —
+   two full runs racing for memory; one run completes fine.)
 5. ✅ The demo compiles → downloads → runs in the browser, errors inline
    in Monaco (headless-verified: `vite build`, the compile endpoint, and
    the `run.test.ts` compile→eval wiring; the Monaco glue itself is
@@ -701,9 +703,12 @@ one and integration in WI-1.5 is wiring, not redesign.
 
 ### Future work (surfaced during execution)
 
-- **Categorize the 336 conformance fails** into fixes vs reasoned skips
-  (the one honest gap vs the "0 fail" aspiration). Make the full-corpus
-  run streaming/batched so it doesn't OOM (~1400 rows in one process).
+- **Three genuine `@cel-wasm/eval` gaps** surfaced by conformance
+  (currently `eval_unimpl` skips): host-bound-aggregate equality
+  (`[1,2] == x` / `{..} != x` where `x` is a bound list/map → code 13 no
+  matching overload — literal-vs-literal works), and the timestamp
+  tz-string accessor (`timestamp(...).getHours('02:00')` → code 18; bare
+  `getHours()` works). Register the missing overloads.
 - **N-API and emscripten compile backends** behind the existing
   `CompileBackend` interface (subprocess is v1; emscripten is the
   conditional-GO spike — protobuf-to-wasm is the ~3–5 day long pole).
