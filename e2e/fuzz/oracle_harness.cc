@@ -1,6 +1,7 @@
 #include "e2e/fuzz/oracle_harness.h"
 
 #include <cstdint>
+#include <initializer_list>
 #include <random>
 #include <string>
 #include <utility>
@@ -55,6 +56,25 @@ cel::expr::Value MakeOracleBytes(absl::string_view x) {
   v.set_bytes_value(std::string(x));
   return v;
 }
+cel::expr::Value MakeOracleIntList(std::initializer_list<int64_t> xs) {
+  cel::expr::Value v;
+  auto* list = v.mutable_list_value();
+  for (int64_t x : xs) {
+    list->add_values()->set_int64_value(x);
+  }
+  return v;
+}
+cel::expr::Value MakeOracleStringIntMap(
+    std::initializer_list<std::pair<absl::string_view, int64_t>> kvs) {
+  cel::expr::Value v;
+  auto* map = v.mutable_map_value();
+  for (const auto& [k, x] : kvs) {
+    auto* entry = map->add_entries();
+    entry->mutable_key()->set_string_value(std::string(k));
+    entry->mutable_value()->set_int64_value(x);
+  }
+  return v;
+}
 
 // Process-wide engine — instantiating one per iteration would
 // dominate the per-eval cost.
@@ -94,15 +114,23 @@ Activation MakeBoundActivation() {
 
 const std::vector<BoundActivation>& SliceBBoundActivation() {
   static const auto* kBound = new std::vector<BoundActivation>{
-      {"i_a", CelType::Int(),    Value::Int(7),       MakeOracleInt(7)},
-      {"i_b", CelType::Int(),    Value::Int(11),      MakeOracleInt(11)},
-      {"u_a", CelType::Uint(),   Value::Uint(5),      MakeOracleUint(5)},
+      {"i_a", CelType::Int(), Value::Int(7), MakeOracleInt(7)},
+      {"i_b", CelType::Int(), Value::Int(11), MakeOracleInt(11)},
+      {"u_a", CelType::Uint(), Value::Uint(5), MakeOracleUint(5)},
       {"d_a", CelType::Double(), Value::Double(3.14), MakeOracleDouble(3.14)},
-      {"b_a", CelType::Bool(),   Value::Bool(true),   MakeOracleBool(true)},
+      {"b_a", CelType::Bool(), Value::Bool(true), MakeOracleBool(true)},
       {"s_a", CelType::String(), Value::String("hello"),
-                                 MakeOracleString("hello")},
-      {"y_a", CelType::Bytes(),  Value::Bytes("hi"),
-                                 MakeOracleBytes("hi")},
+       MakeOracleString("hello")},
+      {"y_a", CelType::Bytes(), Value::Bytes("hi"), MakeOracleBytes("hi")},
+      // Bound aggregates (m27 vocabulary table) — these reach the
+      // host-origin list/map paths that literal aggregates never do.
+      {"xs", CelType::List(CelType::Int()),
+       Value::List({Value::Int(1), Value::Int(2), Value::Int(3)}),
+       MakeOracleIntList({1, 2, 3})},
+      {"ms", CelType::Map(CelType::String(), CelType::Int()),
+       Value::Map({{Value::String("a"), Value::Int(2)},
+                   {Value::String("b"), Value::Int(3)}}),
+       MakeOracleStringIntMap({{"a", 2}, {"b", 3}})},
   };
   return *kBound;
 }
@@ -136,19 +164,19 @@ GenAndEvalStatus GenAndEvalSliceC(const CelType& target, uint64_t seed,
 
   if (out.source.size() > kMaxSourceBytes) {
     if (error_out != nullptr) {
-      *error_out = absl::StrCat("source too large (",
-                                out.source.size(), " > ",
+      *error_out = absl::StrCat("source too large (", out.source.size(), " > ",
                                 kMaxSourceBytes, ")");
     }
     return GenAndEvalStatus::kSourceTooLarge;
   }
 
   auto ours = OurEval(out.source);
-  auto oracle = testdata::PartialEvalWithCelCpp(
-      out.source, /*container=*/"", /*vars=*/MakeOracleVars(),
-      /*unknown_patterns=*/{});
+  auto oracle = testdata::PartialEvalWithCelCpp(out.source, /*container=*/"",
+                                                /*vars=*/MakeOracleVars(),
+                                                /*unknown_patterns=*/{});
 
   if (!ours.ok()) {
+    out.our_status = ours.status();
     if (error_out != nullptr) *error_out = ours.status().ToString();
     return GenAndEvalStatus::kOurPipelineRejected;
   }
@@ -158,7 +186,10 @@ GenAndEvalStatus GenAndEvalSliceC(const CelType& target, uint64_t seed,
   }
   if (oracle->is_error) {
     if (error_out != nullptr) *error_out = oracle->error_message;
-    return GenAndEvalStatus::kOracleErrorValue;
+    out.ours = *std::move(ours);
+    return out.ours.kind() == Value::Kind::kError
+               ? GenAndEvalStatus::kBothErrored
+               : GenAndEvalStatus::kOracleErrorOnly;
   }
   out.ours = *std::move(ours);
   out.oracle = oracle->value;

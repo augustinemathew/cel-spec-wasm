@@ -75,7 +75,12 @@ if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
     # shellcheck disable=SC2086
     bazel build --config=lint $PROJ 2>/dev/null || true
   fi
+  # `--skip_incompatible_explicit_targets`: the manual_cc union can
+  # name platform-incompatible targets (e.g. the wasm32-only
+  # demo_component_core.bin) that the host config cannot analyze;
+  # skip them instead of hard-failing the whole aquery.
   bazel aquery --output=jsonproto \
+    --skip_incompatible_explicit_targets \
     "mnemonic(\"CppCompile\", ${aquery_pattern})" \
     > /tmp/celwasm_aquery.json
   python3 scripts/_aquery_to_compdb.py /tmp/celwasm_aquery.json \

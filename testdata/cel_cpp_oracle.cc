@@ -82,6 +82,15 @@ absl::StatusOr<std::unique_ptr<const cel::Runtime>> BuildRuntime(
   opts.enable_timestamp_duration_overflow_errors = true;
   opts.enable_heterogeneous_equality = true;
   opts.enable_empty_wrapper_null_unboxing = true;
+  // cel-cpp's default comprehension budget (10k iterations per eval)
+  // is a DoS guard, not spec semantics — PBT-generated nested
+  // comprehensions over 10-element ranges legitimately exceed it
+  // (first hit: e2e/fuzz bool seed=683 depth=6, ~11k iterations).
+  // Raise it so the oracle answers the value question on those
+  // shapes; the conformance corpus never comes near either limit.
+  // (cel-wasm itself has no equivalent eval budget — an m29
+  // hardening question.)
+  opts.comprehension_max_iterations = 10'000'000;
   if (enable_unknowns) {
     opts.unknown_processing = cel::UnknownProcessingOptions::kAttributeOnly;
   }

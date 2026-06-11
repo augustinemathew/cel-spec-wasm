@@ -220,8 +220,9 @@ TEST(SliceBGrammarTest, BuildsAndPassesL1Validation) {
   EXPECT_THAT(g.Validate(), IsOk());
   // Every supported scalar target must have at least one
   // production registered.
-  for (CelType t : {CelType::Bool(), CelType::Int(), CelType::Uint(),
-                    CelType::Double(), CelType::String(), CelType::Bytes()}) {
+  for (const CelType& t :
+       {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
+        CelType::String(), CelType::Bytes()}) {
     EXPECT_TRUE(g.HasType(t)) << "Slice B is missing target " << TypeKey(t);
     EXPECT_FALSE(g.Rules(t).empty()) << TypeKey(t);
   }
@@ -266,10 +267,11 @@ TEST(SliceBGrammarTest, EveryActivationBindingHasIdentLeaf) {
 
 namespace l2 {
 
-// Map a Slice B target `CelType` to the `Repr` the cel-cpp
-// checker would stamp on a root expression of that type.  Used
-// for the post-check root-type comparison.  Includes only the
-// scalar targets in the Slice B grammar.
+// Map a target `CelType` to the `Repr` the cel-cpp checker
+// would stamp on a root expression of that type.  Used for the
+// post-check root-type comparison.  Covers every kind a grammar
+// target can be today (scalars + list/map — the annotator stamps
+// an aggregate root with the aggregate's own kind).
 Repr ExpectedRoot(const CelType& t) {
   switch (t.kind()) {
     case CelType::Kind::kBool:
@@ -284,9 +286,13 @@ Repr ExpectedRoot(const CelType& t) {
       return Repr::kString;
     case CelType::Kind::kBytes:
       return Repr::kBytes;
+    case CelType::Kind::kList:
+      return Repr::kList;
+    case CelType::Kind::kMap:
+      return Repr::kMap;
     default:
-      // Slice B never uses these; if a future catalog adds one,
-      // expand this switch alongside it.
+      // No grammar registers these kinds yet; if a future catalog
+      // adds one, expand this switch alongside it.
       return Repr::kUnknown;
   }
 }
@@ -305,7 +311,7 @@ Synthesised Synthesise(const Production& p) {
     const std::string slot_name = absl::StrCat("__pbt_v", i);
     out.source =
         absl::StrReplaceAll(out.source, {{absl::StrCat("%", i), slot_name}});
-    out.slot_vars.push_back({slot_name, p.arg_types[i]});
+    out.slot_vars.emplace_back(slot_name, p.arg_types[i]);
   }
   return out;
 }
@@ -430,7 +436,7 @@ std::string ExpandTemplate(const Grammar& g, const Production& p,
     WalkCtx sub = ctx;
     sub.depth_budget--;
     for (const auto& [n, t] : p.extra_scope_for_arg[i]) {
-      sub.in_scope.push_back({n, t});
+      sub.in_scope.emplace_back(n, t);
     }
     const std::string arg = Walk(g, p.arg_types[i], sub);
     out = absl::StrReplaceAll(out, {{absl::StrCat("%", i), arg}});
@@ -473,7 +479,7 @@ TEST(SliceBGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
   int total_sampled = 0;
   for (int depth : kDepths) {
     for (int seed = 0; seed < kSeedsPerDepth; ++seed) {
-      std::mt19937_64 rng(static_cast<uint64_t>(seed) * 1000u +
+      std::mt19937_64 rng((static_cast<uint64_t>(seed) * 1000u) +
                           static_cast<uint64_t>(depth));
       l3::WalkCtx ctx{depth, {}, &rng};
       const std::string source = l3::Walk(g, CelType::Bool(), ctx);
@@ -514,8 +520,9 @@ TEST(SliceCGrammarTest, BuildsAndPassesL1Validation) {
   EXPECT_THAT(g.Validate(), IsOk());
   // C1 must register list<T> for every scalar T and a sampled
   // K×V map vocab.
-  for (CelType elt : {CelType::Bool(), CelType::Int(), CelType::Uint(),
-                      CelType::Double(), CelType::String(), CelType::Bytes()}) {
+  for (const CelType& elt :
+       {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
+        CelType::String(), CelType::Bytes()}) {
     EXPECT_TRUE(g.HasType(CelType::List(elt)))
         << "Slice C is missing list<" << TypeKey(elt) << ">";
     EXPECT_FALSE(g.Rules(CelType::List(elt)).empty());
@@ -532,8 +539,9 @@ TEST(SliceCGrammarTest, EveryListAndMapHasALeaf) {
   // edit that drops the literal-only leaf gets a focused
   // failure message.
   Grammar g = BuildSliceCGrammar();
-  for (CelType elt : {CelType::Bool(), CelType::Int(), CelType::Uint(),
-                      CelType::Double(), CelType::String(), CelType::Bytes()}) {
+  for (const CelType& elt :
+       {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
+        CelType::String(), CelType::Bytes()}) {
     bool has_leaf = false;
     for (const Production& p : g.Rules(CelType::List(elt))) {
       if (p.is_leaf) {
@@ -550,11 +558,10 @@ TEST(SliceCGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
   Grammar g = BuildSliceCGrammar();
   std::size_t productions_checked = 0;
   for (const CelType& target : g.Types()) {
-    // L2 currently only knows how to verify scalar root Reprs
-    // (cel-cpp's annotator stamps Repr::kList / kMap on
-    // aggregate roots but it's the AGGREGATE's own kind, not a
-    // scalar) — for aggregate targets we just confirm
-    // ParseAndCheck succeeds, no Repr equality assertion.
+    // `ExpectedRoot` covers scalar AND aggregate targets (the
+    // annotator stamps an aggregate root with Repr::kList /
+    // kMap), so every registered target gets the Repr equality
+    // assertion.
     const Repr expected_scalar = l2::ExpectedRoot(target);
     for (const Production& p : g.Rules(target)) {
       const auto synth = l2::Synthesise(p);

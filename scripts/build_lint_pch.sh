@@ -90,7 +90,7 @@ with open('compile_commands.json') as f:
 # emitters); skip those.
 PROJ_DIRS = ('compiler/', 'eval/', 'common/', 'abi/', 'runtime/',
              'tools/', 'conformance/', 'e2e/', 'bench/', 'testdata/')
-entry = None
+candidates = []
 for e in db:
     f = e.get('file', '')
     if not f.endswith('.cc') or not any(d in f for d in PROJ_DIRS):
@@ -110,43 +110,60 @@ for e in db:
     # but is currently disabled" plus a target-triple mismatch.
     if '-target' in args_blob and 'wasm32' in args_blob:
         continue
-    entry = e
-    break
-if entry is None:
+    candidates.append(e)
+    if len(candidates) >= 25:
+        break
+if not candidates:
     sys.exit('no non-test project .cc entry with absl+protobuf deps')
 
-args = list(entry['arguments'])
-out = []
-i = 0
-while i < len(args):
-    a = args[i]
-    # Drop output / dependency / per-file flags that don't apply to PCH.
-    if a in ('-c', '-MD'):
-        i += 1; continue
-    if a in ('-MF', '-o'):
-        i += 2; continue
-    if a.startswith('-frandom-seed='):
-        i += 1; continue
-    # Drop any source-file positional (compile_commands records
-    # exactly one .cc, but be defensive — clang errors with
-    # "cannot specify -o when generating multiple output files"
-    # if any leak through).
-    if a.endswith(('.cc', '.cpp', '.cxx', '.c', '.m', '.mm')):
-        i += 1; continue
-    out.append(a)
-    i += 1
+def pch_cmd(entry):
+    args = list(entry['arguments'])
+    out = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        # Drop output / dependency / per-file flags that don't apply
+        # to PCH.
+        if a in ('-c', '-MD'):
+            i += 1; continue
+        if a in ('-MF', '-o'):
+            i += 2; continue
+        if a.startswith('-frandom-seed='):
+            i += 1; continue
+        # Drop any source-file positional (compile_commands records
+        # exactly one .cc, but be defensive — clang errors with
+        # "cannot specify -o when generating multiple output files"
+        # if any leak through).
+        if a.endswith(('.cc', '.cpp', '.cxx', '.c', '.m', '.mm')):
+            i += 1; continue
+        out.append(a)
+        i += 1
+    # Replace bazel's recorded compiler with brew clang++ (must match
+    # clang-tidy's clang).  Append PCH-build directives.
+    out[0] = clang
+    return out + ['-x', 'c++-header', header_abs, '-o', pch_out_abs]
 
-# Replace bazel's recorded compiler with brew clang++ (must match
-# clang-tidy's clang).  Append PCH-build directives.
-out[0] = clang
-cmd = out + ['-x', 'c++-header', header_abs, '-o', pch_out_abs]
-
-# compile_commands records `directory` as the bazel exec root; its
-# `-iquote .`, `-iquote bazel-out/...`, `-Ibazel-out/...` paths
-# resolve from there.  Run with that as cwd so include resolution
-# matches what clang-tidy will see at lint time.
-os.chdir(entry['directory'])
-subprocess.check_call(cmd)
+# Not every absl+protobuf TU sees every header lint_pch.h references
+# (e.g. `google/protobuf/compiler/importer.h` is only on the include
+# path of TUs that depend on protobuf's compiler lib).  Which entry
+# comes first depends on compile_commands.json generation order, so
+# try candidates until one's flag set compiles the header — the PCH
+# only needs ONE working flag set.
+last_err = ''
+for entry in candidates:
+    # compile_commands records `directory` as the bazel exec root; its
+    # `-iquote .`, `-iquote bazel-out/...`, `-Ibazel-out/...` paths
+    # resolve from there.  Run with that as cwd so include resolution
+    # matches what clang-tidy will see at lint time.
+    os.chdir(entry['directory'])
+    proc = subprocess.run(pch_cmd(entry), capture_output=True, text=True)
+    if proc.returncode == 0:
+        break
+    last_err = proc.stderr
+else:
+    sys.stderr.write(last_err)
+    sys.exit('no candidate TU flag set could compile lint_pch.h; '
+             'last error above')
 PY
 
 size=$(stat -f%z "$PCH_OUT" 2>/dev/null || stat -c%s "$PCH_OUT")

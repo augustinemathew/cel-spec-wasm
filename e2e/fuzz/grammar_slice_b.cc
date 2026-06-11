@@ -31,18 +31,35 @@ std::vector<ActivationBinding> SliceBActivation() {
   // shape; one of each other scalar.  No collision-prone single-
   // letter names — every name carries its type tag, which makes
   // the generated CEL source self-describing in failure messages.
+  //
+  // `xs` / `ms` are the bound-aggregate entries from the m27
+  // vocabulary table: an activation-bound list/map reaches the
+  // host-origin aggregate paths (`cel_list_in` over bound data,
+  // host map lookup) that literal aggregates — arena-built every
+  // eval — never touch.  Their ident leaves feed every existing
+  // list<int> / map<string,int> production (size, _in_,
+  // comprehension ranges) with no new grammar rules.
   return {
-      {"i_a", CelType::Int()},   {"i_b", CelType::Int()},
-      {"u_a", CelType::Uint()},  {"d_a", CelType::Double()},
-      {"b_a", CelType::Bool()},  {"s_a", CelType::String()},
+      {"i_a", CelType::Int()},
+      {"i_b", CelType::Int()},
+      {"u_a", CelType::Uint()},
+      {"d_a", CelType::Double()},
+      {"b_a", CelType::Bool()},
+      {"s_a", CelType::String()},
       {"y_a", CelType::Bytes()},
+      {"xs", CelType::List(CelType::Int())},
+      {"ms", CelType::Map(CelType::String(), CelType::Int())},
   };
 }
 
 // ── Catalog ──────────────────────────────────────────────────────
+// One registration helper per production family, mirroring the
+// section structure of the m27 design doc; `RegisterSliceBProductions`
+// is the ordered composition.
 
-void RegisterSliceBProductions(GrammarBuilder& b) {
-  // ── Constant leaves ────────────────────────────────────────────
+namespace {
+
+void RegisterConstantLeaves(GrammarBuilder& b) {
   // Bool.
   b.Leaf(CelType::Bool(), "bool_true", "true");
   b.Leaf(CelType::Bool(), "bool_false", "false");
@@ -76,11 +93,10 @@ void RegisterSliceBProductions(GrammarBuilder& b) {
   // Bytes — same shape as string.
   b.Leaf(CelType::Bytes(), "bytes_empty", R"(b"")");
   b.Leaf(CelType::Bytes(), "bytes_x", R"(b"x")");
+}
 
-  // ── Ident leaves ───────────────────────────────────────────────
-  RegisterIdentLeaves(b, SliceBActivation());
-
-  // ── Arithmetic (+, -, *) — no / or % per the safety policy ────
+// Arithmetic (+, -, *) — no / or % per the safety policy.
+void RegisterArithmetic(GrammarBuilder& b) {
   // Int: unary neg + 3 binaries.
   b.Unary(CelType::Int(), "int_neg", "(-%0)", CelType::Int());
   b.Binary(CelType::Int(), "int_add", "(%0 + %1)", CelType::Int(),
@@ -108,9 +124,12 @@ void RegisterSliceBProductions(GrammarBuilder& b) {
            CelType::Double());
   b.Binary(CelType::Double(), "double_mul", "(%0 * %1)", CelType::Double(),
            CelType::Double());
+}
 
-  // ── Comparison (yields Bool) — every CEL-spec overload ────────
-  for (CelType numeric : {CelType::Int(), CelType::Uint(), CelType::Double()}) {
+// Comparison + logical (both yield Bool) — every CEL-spec overload.
+void RegisterBoolProducers(GrammarBuilder& b) {
+  for (const CelType& numeric :
+       {CelType::Int(), CelType::Uint(), CelType::Double()}) {
     const std::string tag = TypeKey(numeric);
     b.Binary(CelType::Bool(), tag + "_eq", "(%0 == %1)", numeric, numeric);
     b.Binary(CelType::Bool(), tag + "_ne", "(%0 != %1)", numeric, numeric);
@@ -123,7 +142,7 @@ void RegisterSliceBProductions(GrammarBuilder& b) {
   // CEL-spec'd but its semantics interact with locale handling we
   // haven't yet decided to admit through the static subset (see
   // m12 string-ext rejection rows); deferred to Slice C.
-  for (CelType lex : {CelType::String(), CelType::Bytes()}) {
+  for (const CelType& lex : {CelType::String(), CelType::Bytes()}) {
     const std::string tag = TypeKey(lex);
     b.Binary(CelType::Bool(), tag + "_eq", "(%0 == %1)", lex, lex);
     b.Binary(CelType::Bool(), tag + "_ne", "(%0 != %1)", lex, lex);
@@ -140,7 +159,10 @@ void RegisterSliceBProductions(GrammarBuilder& b) {
            CelType::Bool());
   b.Binary(CelType::Bool(), "bool_or", "(%0 || %1)", CelType::Bool(),
            CelType::Bool());
+}
 
+// Concat / ternary / size / total conversions.
+void RegisterMixedTotalOps(GrammarBuilder& b) {
   // ── Concat — total over the typed input domain ───────────────
   b.Binary(CelType::String(), "string_concat", "(%0 + %1)", CelType::String(),
            CelType::String());
@@ -148,8 +170,9 @@ void RegisterSliceBProductions(GrammarBuilder& b) {
            CelType::Bytes());
 
   // ── Ternary — one rule per scalar result type ────────────────
-  for (CelType t : {CelType::Bool(), CelType::Int(), CelType::Uint(),
-                    CelType::Double(), CelType::String(), CelType::Bytes()}) {
+  for (const CelType& t :
+       {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
+        CelType::String(), CelType::Bytes()}) {
     b.Ternary(t, TypeKey(t) + "_ternary", "(%0 ? %1 : %2)", CelType::Bool(), t,
               t);
   }
@@ -169,6 +192,16 @@ void RegisterSliceBProductions(GrammarBuilder& b) {
   // / uint(string) are partial — they can range-fail.  Deliberately
   // omitted from Slice B; revisit in Slice C with literal-bounded
   // sources.
+}
+
+}  // namespace
+
+void RegisterSliceBProductions(GrammarBuilder& b) {
+  RegisterConstantLeaves(b);
+  RegisterIdentLeaves(b, SliceBActivation());
+  RegisterArithmetic(b);
+  RegisterBoolProducers(b);
+  RegisterMixedTotalOps(b);
 }
 
 Grammar BuildSliceBGrammar() {

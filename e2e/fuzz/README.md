@@ -136,6 +136,37 @@ first if the productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — bound aggregates + error classification + harness dedup
+
+- **Bound aggregates live**: `xs: list<int>` / `ms: map<string,int>`
+  joined the activation (gap #0a) — PBT now reaches host-origin
+  aggregate codegen.  Validation: bool d6 × 2000 seeds → 1997
+  agreed / 0 diverged / 3 capacity-rejects.
+- **Found + root-caused**: cel-cpp's `comprehension_max_iterations`
+  (10k/eval DoS guard) fired on a generated 4-level `exists_one`
+  nest needing ~11k iterations (bool seed=683 d6) — the oracle now
+  runs with a 10M budget (`testdata/cel_cpp_oracle.cc`) and the
+  seed agrees on value.  Production note for m29: cel-wasm has NO
+  eval iteration cap at all.
+- **Error-ness is now a compared dimension**: `GenAndEvalStatus`
+  split `kOracleErrorValue` → `kBothErrored` (agreement) vs
+  `kOracleErrorOnly` (the error-swallowing detector; miner prints
+  `ERROR-DIVERGE`).  This unblocks gap #2 (error-producing
+  productions) and boundary-value leaves (#3): overflow shapes
+  classify instead of polluting runs.
+- **Dedup**: `cel_oracle_property_test.cc` carried a full
+  pre-harness copy of the plumbing (activation drift was the
+  failure mode — it broke the moment `xs` landed).  Now routed
+  through `oracle_harness`; property depth domain raised 0..8 with
+  ResourceExhausted capacity-rejects skipped.
+- **New `compare.{h,cc}` (+14-case test)**: recursive type-driven
+  ours-vs-oracle comparator (nested aggregates ready) replacing the
+  miner's per-kind if-chains.
+- Dev-tooling unblocked in passing: `refresh_compile_db.sh` no
+  longer dies on the wasm32-only manual target;
+  `build_lint_pch.sh` tries candidate TU flag sets until the PCH
+  compiles (entry order broke it after a compile-db regen).
+
 ### 2026-06-11 — first deep-depth mining session (gap #1 opened)
 
 Miner runs (fastbuild, Apple Silicon), all on the Slice C grammar:

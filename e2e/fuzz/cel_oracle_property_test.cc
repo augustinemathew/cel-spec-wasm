@@ -1,13 +1,22 @@
-// Slice B — value-oracle property test.  Generates a CEL source
-// string of type Bool from the typed-attribute grammar, evaluates
-// it through BOTH our pipeline and cel-cpp's, asserts both accept
-// and that the boolean results agree.
+// Value-oracle property tests.  Each property generates a CEL
+// source string of its target type from the typed-attribute
+// grammar, evaluates it through BOTH our pipeline and cel-cpp's
+// (via `oracle_harness`, the same plumbing `mine_divergences`
+// uses), asserts both accept and that the results agree.
 //
 // The grammar is guarded so every emitted source is guaranteed to
 // type-check (L2) and total over its declared input domain (per
 // m27 §"Guarded productions").  Any oracle divergence reported by
 // this property is therefore necessarily a runtime / codegen bug
 // on our side, not a generator misconfiguration.
+//
+// Depth domain is 0..8.  At depths 7-8 a small percentage of
+// generated expressions legitimately exceed the 8192-byte static
+// window and are rejected at Compile with `ResourceExhausted`
+// (the known capacity limitation pinned by
+// `KnownBugs.LiteralIntListInScan*`); the property SKIPS those —
+// `mine_divergences` is the tool that tracks rejection rates.
+// Every other rejection is a failure.
 //
 // **This target is tagged `manual`** because the property mines
 // for real bugs and WILL fail when it finds them — that's the
@@ -18,239 +27,74 @@
 //   - `bazel test //e2e/fuzz:cel_oracle_property_test`  — unit-
 //     test mode (~1000 randomised iterations).
 //   - `bazel run --config=fuzztest //e2e/fuzz:cel_oracle_property_test
-//      -- --fuzz=CelOracleProperty.EvalAgreesWithOracle`  — long-
-//     running coverage-guided fuzzer.
+//      -- --fuzz=CelOracleProperty.BoolEvalAgreesWithOracle`  —
+//     long-running coverage-guided fuzzer.
 //
 // Discovered divergences become known_bugs_test.cc entries
 // pinning the exact source + activation; PBT is the discovery
-// tool, known_bugs is the regression-pinning tool.  Current
-// known divergences as of 2026-06-05:
-//
-//   - `((size("") < (i_a - (b_a ? 0 : i_b))) == ("" == "x"))`
-//     produces `kError` on our side, `false` per the spec.
-//     Pinned by `KnownBugs.PbtTernaryInsideIntSubtract`.
+// tool, known_bugs is the regression-pinning tool.  Past finds
+// (since fixed, pinned as live regression guards):
+// `KnownBugs.PbtTernaryInsideIntSubtract`,
+// `KnownBugs.PbtExistsOne*`.
 
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
-#include <random>
 #include <string>
-#include <utility>
-#include <vector>
 
-#include "absl/log/absl_check.h"
-#include "absl/status/statusor.h"
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
-#include "cel/expr/value.pb.h"
-#include "compiler/compiler.h"
-#include "e2e/fuzz/generator.h"
-#include "e2e/fuzz/grammar.h"
-#include "e2e/fuzz/grammar_slice_b.h"
-#include "e2e/fuzz/grammar_slice_c.h"
-#include "eval/activation.h"
-#include "eval/engine.h"
-#include "eval/instance.h"
+#include "e2e/fuzz/oracle_harness.h"
 #include "eval/value.h"
 #include "fuzztest/fuzztest.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
-#include "testdata/cel_cpp_oracle.h"
 
 namespace celwasm::fuzz {
 namespace {
 
-// One bound activation entry, in both representations: a
-// `celwasm::Value` for our pipeline, and a `cel::expr::Value` for
-// the cel-cpp oracle.  The two carry the same logical value; the
-// duplication exists only because the two pipelines speak
-// different value types.
-struct BoundActivation {
-  std::string name;
-  CelType type;
-  Value ours;
-  cel::expr::Value oracle;
-};
-
-// Build a `cel::expr::Value` for each scalar.
-cel::expr::Value MakeOracleBool(bool x) {
-  cel::expr::Value v;
-  v.set_bool_value(x);
-  return v;
-}
-cel::expr::Value MakeOracleInt(int64_t x) {
-  cel::expr::Value v;
-  v.set_int64_value(x);
-  return v;
-}
-cel::expr::Value MakeOracleUint(uint64_t x) {
-  cel::expr::Value v;
-  v.set_uint64_value(x);
-  return v;
-}
-cel::expr::Value MakeOracleDouble(double x) {
-  cel::expr::Value v;
-  v.set_double_value(x);
-  return v;
-}
-cel::expr::Value MakeOracleString(absl::string_view x) {
-  cel::expr::Value v;
-  v.set_string_value(std::string(x));
-  return v;
-}
-cel::expr::Value MakeOracleBytes(absl::string_view x) {
-  cel::expr::Value v;
-  v.set_bytes_value(std::string(x));
-  return v;
-}
-
-// Concrete values bound to the Slice B activation.  Same values
-// on both sides — divergence in eval comes from operator
-// semantics, not from binding asymmetry.  Picked so each scalar
-// has a non-trivial, non-default value (distinguishes
-// `(i_a == 0)` from `(i_a == 7)` etc.).
-const std::vector<BoundActivation>& SliceBBoundActivation() {
-  static const auto* kBound = new std::vector<BoundActivation>{
-      {"i_a", CelType::Int(), Value::Int(7), MakeOracleInt(7)},
-      {"i_b", CelType::Int(), Value::Int(11), MakeOracleInt(11)},
-      {"u_a", CelType::Uint(), Value::Uint(5), MakeOracleUint(5)},
-      {"d_a", CelType::Double(), Value::Double(3.14), MakeOracleDouble(3.14)},
-      {"b_a", CelType::Bool(), Value::Bool(true), MakeOracleBool(true)},
-      {"s_a", CelType::String(), Value::String("hello"),
-       MakeOracleString("hello")},
-      {"y_a", CelType::Bytes(), Value::Bytes("hi"), MakeOracleBytes("hi")},
-  };
-  return *kBound;
-}
-
-// Process-wide engine — instantiating one per property iteration
-// would dominate the per-eval cost.
-Engine& GlobalEngine() {
-  static Engine* engine = [] {
-    auto e = Engine::NewBuilder().Build();
-    ABSL_CHECK_OK(e);
-    return new Engine(*std::move(e));
-  }();
-  return *engine;
-}
-
-// Build a `Compiler` declaring every Slice B activation variable.
-// Shared across iterations — `Compiler::Compile()` is cheap to
-// invoke many times.
-const Compiler& SliceBCompiler() {
-  static const Compiler* compiler = [] {
-    Compiler::Builder b;
-    for (const BoundActivation& bv : SliceBBoundActivation()) {
-      b.DeclareVariable(bv.name, bv.type);
-    }
-    auto c = std::move(b).Build();
-    ABSL_CHECK_OK(c);
-    return new Compiler(*std::move(c));
-  }();
-  return *compiler;
-}
-
-// Build an Activation pre-bound with every Slice B value.
-Activation MakeBoundActivation() {
-  Activation a;
-  for (const BoundActivation& bv : SliceBBoundActivation()) {
-    a.Bind(bv.name, bv.ours);
-  }
-  return a;
-}
-
-// Build the cel-cpp `OracleVar` list mirroring the activation.
-std::vector<testdata::OracleVar> MakeOracleVars() {
-  std::vector<testdata::OracleVar> out;
-  out.reserve(SliceBBoundActivation().size());
-  for (const BoundActivation& bv : SliceBBoundActivation()) {
-    out.push_back({bv.name, bv.oracle});
-  }
-  return out;
-}
-
-// Our pipeline: Compile → Plan → Eval.  Returns the value or a
-// status error (which the property body distinguishes from a CEL
-// eval error).
-absl::StatusOr<Value> OurEval(absl::string_view source) {
-  auto program = SliceBCompiler().Compile(source);
-  if (!program.ok()) return program.status();
-  auto instance = GlobalEngine().Plan(*program);
-  if (!instance.ok()) return instance.status();
-  Activation a = MakeBoundActivation();
-  return instance->Eval(a);
-}
-
-// Cap on per-iteration source size.  The grammar admits sources
-// up to ~thousands of characters at depth 6 — fine for cel-cpp
-// but our compiler's WAT lowering benchmarks slower with depth.
-// Cap to keep CI iteration cost reasonable; failures above the
-// cap still get reported.
-constexpr std::size_t kMaxSourceBytes = 4 * 1024;
-
-// ── Shared property body ─────────────────────────────────────────
-//
-// One property per scalar target type.  Each generates a source
-// of its target type, evals through both pipelines, and verifies
-// (a) both accept, (b) neither errors, (c) `ours->kind()` matches
-// the expected `Value::Kind`, (d) the payload value agrees.
-//
-// The shared `RunPropertyForBool/Int/Uint/Double/String/Bytes`
-// helpers take a `compare` callable so each kind can extract
-// the right `Value::Kind` and `cel::expr::Value` field without
-// duplicating the error-message boilerplate.
-
-// Generate a source of `target`, eval both sides, ASSERT both
-// accept, ASSERT neither errors, RETURN both values to the
-// caller (which then compares the kind-specific payload).
-// Returns false (and emits its own ASSERT failures) if any
-// pre-condition fails — caller should early-return in that case.
-struct GenAndEvalResult {
-  std::string source;
-  Value ours;
-  cel::expr::Value oracle;
-};
+// Generate a source of `target`, eval both sides through the
+// shared harness, ASSERT both accept, RETURN both values to the
+// caller (which compares the kind-specific payload).  Returns
+// false (emitting its own failure unless the outcome is a known
+// skip) if any pre-condition fails.
 bool GenAndEval(const CelType& target, uint64_t seed, int depth,
                 absl::string_view kind_label, GenAndEvalResult& out) {
-  static const Grammar& grammar = *new Grammar(BuildSliceCGrammar());
-
-  std::mt19937_64 rng(seed);
-  GenCtx ctx = NewGenCtxForSliceB(depth, rng);
-  out.source = GenerateExpr(grammar, target, ctx);
-
-  if (out.source.size() > kMaxSourceBytes) return false;
-
-  auto ours = OurEval(out.source);
-  auto oracle = testdata::PartialEvalWithCelCpp(out.source, /*container=*/"",
-                                                /*vars=*/MakeOracleVars(),
-                                                /*unknown_patterns=*/{});
-
-  if (!ours.ok()) {
-    ADD_FAILURE() << "our pipeline rejected a grammar-emitted " << kind_label
-                  << " expression:\n  seed=" << seed << " depth=" << depth
-                  << "\n  source=`" << out.source
-                  << "`\n  error=" << ours.status();
-    return false;
+  std::string err;
+  switch (GenAndEvalSliceC(target, seed, depth, out, &err)) {
+    case GenAndEvalStatus::kOk:
+      return true;
+    case GenAndEvalStatus::kSourceTooLarge:
+      return false;  // capped, not a bug — see kMaxSourceBytes
+    case GenAndEvalStatus::kOurPipelineRejected:
+      if (absl::IsResourceExhausted(out.our_status)) {
+        // Static-window capacity rejection — the known limitation
+        // at depths 7-8 (see file header), not a divergence.
+        return false;
+      }
+      ADD_FAILURE() << "our pipeline rejected a grammar-emitted " << kind_label
+                    << " expression:\n  seed=" << seed << " depth=" << depth
+                    << "\n  source=`" << out.source << "`\n  error=" << err;
+      return false;
+    case GenAndEvalStatus::kOracleRejected:
+      ADD_FAILURE() << "cel-cpp rejected a grammar-emitted " << kind_label
+                    << " expression:\n  seed=" << seed << " depth=" << depth
+                    << "\n  source=`" << out.source << "`\n  error=" << err;
+      return false;
+    case GenAndEvalStatus::kBothErrored:
+      // Both engines agree the expression errors (an overflow-style
+      // guard leak in the grammar, or a future error-producing
+      // production).  Agreement — nothing to compare.
+      return false;
+    case GenAndEvalStatus::kOracleErrorOnly:
+      ADD_FAILURE() << "ERROR-VALUE DIVERGENCE (" << kind_label
+                    << "): cel-cpp evaluates to a CEL error but our "
+                    << "pipeline produced a plain value.\n  seed=" << seed
+                    << " depth=" << depth << "\n  source=`" << out.source
+                    << "`\n  oracle.error_message=`" << err << "`";
+      return false;
   }
-  if (!oracle.ok()) {
-    ADD_FAILURE() << "cel-cpp rejected a grammar-emitted " << kind_label
-                  << " expression:\n  seed=" << seed << " depth=" << depth
-                  << "\n  source=`" << out.source
-                  << "`\n  error=" << oracle.status();
-    return false;
-  }
-  if (oracle->is_error) {
-    ADD_FAILURE() << "cel-cpp produced an eval error on a grammar-"
-                  << "emitted " << kind_label << " expression — the "
-                  << "safety guards in the catalog let an error-"
-                  << "producing shape through.\n  seed=" << seed
-                  << " depth=" << depth << "\n  source=`" << out.source
-                  << "`\n  oracle.error_message=`" << oracle->error_message
-                  << "`";
-    return false;
-  }
-  out.ours = *std::move(ours);
-  out.oracle = oracle->value;
-  return true;
+  ADD_FAILURE() << "unhandled GenAndEvalStatus";
+  return false;
 }
 
 // ── Per-target properties ────────────────────────────────────────
@@ -328,24 +172,27 @@ void BytesEvalAgreesWithOracle(uint64_t seed, int depth) {
 // Six properties, one per scalar target type.  Each runs ~1000
 // random iterations in unit-test mode; under `--config=fuzztest`
 // the same registration becomes a coverage-guided fuzzer over
-// that target.  Together they multiply oracle surface by ~6×
-// over the original Bool-only property — a divergence in any
-// pure-Int / Uint / Double / String / Bytes computation now
-// fires its own kind-specific test rather than having to bubble
-// up through a comparison into a bool.
+// that target.  Depth 0..8: 7-8 are the deep-nesting band the
+// 2026-06-11 mining session opened (capacity rejects there are
+// skipped, see `GenAndEval`).
 
+// NOLINTBEGIN(bugprone-throwing-static-initialization) — the
+// FUZZ_TEST registration macro expands to a static registrar whose
+// constructor allocates; same accepted pattern as the kLinked
+// registrars in testdata/cel_cpp_oracle.cc.
 FUZZ_TEST(CelOracleProperty, BoolEvalAgreesWithOracle)
-    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 6));
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
 FUZZ_TEST(CelOracleProperty, IntEvalAgreesWithOracle)
-    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 6));
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
 FUZZ_TEST(CelOracleProperty, UintEvalAgreesWithOracle)
-    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 6));
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
 FUZZ_TEST(CelOracleProperty, DoubleEvalAgreesWithOracle)
-    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 6));
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
 FUZZ_TEST(CelOracleProperty, StringEvalAgreesWithOracle)
-    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 6));
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
 FUZZ_TEST(CelOracleProperty, BytesEvalAgreesWithOracle)
-    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 6));
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
+// NOLINTEND(bugprone-throwing-static-initialization)
 
 }  // namespace
 }  // namespace celwasm::fuzz

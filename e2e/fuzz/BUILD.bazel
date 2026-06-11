@@ -154,14 +154,43 @@ cc_library(
 # unit-test mode buffers the EXPECT_EQ output and the message
 # never reaches the test log.  Run as `bazel run //e2e/fuzz:
 # mine_divergences -- <target> <max_seeds> <depth> [stop_after]`.
+# Recursive type-driven ours-vs-oracle value comparison (scalars,
+# lists, maps, nested) + printable renders for divergence logs.
+cc_library(
+    name = "compare",
+    testonly = True,
+    srcs = ["compare.cc"],
+    hdrs = ["compare.h"],
+    deps = [
+        "//eval:cel_host",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/strings",
+        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
+    ],
+)
+
+cc_test(
+    name = "compare_test",
+    size = "small",
+    srcs = ["compare_test.cc"],
+    deps = [
+        ":compare",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "mine_divergences",
     testonly = True,
     srcs = ["mine_divergences.cc"],
     tags = ["manual"],
     deps = [
+        ":compare",
         ":oracle_harness",
-        "//eval:cel_host",
         "//eval:value",
         "//shared:type",
         "@com_google_absl//absl/strings",
@@ -186,19 +215,10 @@ cc_test(
     # cel_oracle_property_test.cc.
     tags = ["manual"],
     deps = [
-        ":generator",
-        ":grammar",
-        ":grammar_slice_b",
-        ":grammar_slice_c",
-        "//compiler:compiler",
-        "//eval:activation",
-        "//eval:engine",
-        "//eval:instance",
+        ":oracle_harness",
         "//eval:value",
         "//shared:type",
-        "//testdata:cel_cpp_oracle",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
         "@com_google_googletest//:gtest",
