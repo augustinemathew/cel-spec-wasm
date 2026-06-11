@@ -53,6 +53,7 @@ cc_binary(
         "-Wl,--export=cew_alloc",
         "-Wl,--export=cew_free",
         "-Wl,--export=cew_compile",
+        "-Wl,--export=cew_compile_opts",
         "-Wl,--export=cew_program",
         "-Wl,--export=cew_program_len",
         "-Wl,--export=cew_error",

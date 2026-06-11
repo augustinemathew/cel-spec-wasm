@@ -23,12 +23,38 @@ import { CelCompileError, parseDiagnostics } from '../errors.js';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * How the compiled Program links against the CEL runtime.
+ *
+ *  - `static` — a self-contained ~1.3 MB module with the runtime baked
+ *    in (imports only host trampolines + WASI). Runs anywhere with no
+ *    companion module.
+ *  - `dynamic` — a ~6 KB thin expression module that imports the runtime
+ *    surface (`cel.*`); the evaluator instantiates it against a shared
+ *    `cel_runtime.wasm`. Smaller artifacts, one runtime shared across
+ *    many Programs.
+ */
+export type LinkMode = 'static' | 'dynamic';
+
 /** A request to compile one expression (already-resolved CLI inputs). */
 export interface CompileRequest {
   readonly source: string;
   readonly vars: readonly { readonly name: string; readonly type: string }[];
+  /**
+   * Host-function declarations (`@host` signatures), each a `.celfn`
+   * source string the compiler parses into a function declaration.
+   */
+  readonly fns?: readonly string[];
   readonly container?: string;
   readonly optimizeLevel?: 0 | 1 | 2 | 3;
+  /** Static (self-contained) vs dynamic (runtime-linked) Program. */
+  readonly linkMode?: LinkMode;
+  /**
+   * Absolute path to a serialized `FileDescriptorSet` (the bytes
+   * `protoc --descriptor_set_out` emits).  Passed to the CLI's
+   * `--descriptor_set` so a proto expression's message types type-check.
+   */
+  readonly descriptorSet?: string;
 }
 
 /**
@@ -87,6 +113,9 @@ export function buildCompileArgs(
   }
   if (request.container !== undefined) {
     args.push('--container', request.container);
+  }
+  if (request.descriptorSet !== undefined) {
+    args.push('--descriptor_set', request.descriptorSet);
   }
   if (request.optimizeLevel !== undefined) {
     args.push('--O', String(request.optimizeLevel));

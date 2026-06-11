@@ -9,7 +9,11 @@
 import { decodeAbi, type Program } from '@cel-wasm/eval';
 
 import { CelCompileError, type Diagnostic } from './errors.js';
-import { CliBackend, type CompileBackend } from './internal/cli-backend.js';
+import {
+  CliBackend,
+  type CompileBackend,
+  type LinkMode,
+} from './internal/cli-backend.js';
 
 export type { Program } from '@cel-wasm/eval';
 export { CelCompileError } from './errors.js';
@@ -20,7 +24,7 @@ export type { Diagnostic } from './errors.js';
 // so a Node consumer of `compile()` never bundles the browser shim — and,
 // conversely, a browser bundle of the backend never drags in the
 // Node-only CLI backend this barrel also wires up.
-export type { CompileRequest } from './internal/cli-backend.js';
+export type { CompileRequest, LinkMode } from './internal/cli-backend.js';
 
 /**
  * A declared variable's CEL type, written in the spec's surface syntax
@@ -39,6 +43,25 @@ export interface VariableDecl {
 export interface CompileOptions {
   readonly container?: string;
   readonly optimizeLevel?: 0 | 1 | 2 | 3;
+  /**
+   * Host-function declarations (`@host` signatures), each a `.celfn`
+   * source string the compiler parses into a function declaration so an
+   * expression calling the host function type-checks.
+   */
+  readonly fns?: readonly string[];
+  /**
+   * How the Program links against the CEL runtime: `'static'` (default)
+   * bakes the ~1.3 MB runtime in; `'dynamic'` emits a ~6 KB expression
+   * module the evaluator links against a shared `cel_runtime.wasm`.
+   */
+  readonly linkMode?: LinkMode;
+  /**
+   * Absolute path to a serialized `FileDescriptorSet` (the bytes
+   * `protoc --descriptor_set_out` emits) supplying the message types a
+   * proto-typed expression references.  Without it, a `Foo{...}` literal
+   * or a message-typed field read fails to type-check.
+   */
+  readonly descriptorSet?: string;
 }
 
 // The default backend is constructed lazily on first compile so importing
@@ -69,9 +92,14 @@ export async function compile(
   const wasm = await backend.compile({
     source,
     vars: vars ?? [],
+    ...(opts?.fns !== undefined ? { fns: opts.fns } : {}),
     ...(opts?.container !== undefined ? { container: opts.container } : {}),
     ...(opts?.optimizeLevel !== undefined
       ? { optimizeLevel: opts.optimizeLevel }
+      : {}),
+    ...(opts?.linkMode !== undefined ? { linkMode: opts.linkMode } : {}),
+    ...(opts?.descriptorSet !== undefined
+      ? { descriptorSet: opts.descriptorSet }
       : {}),
   });
 

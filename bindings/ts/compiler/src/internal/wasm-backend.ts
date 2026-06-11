@@ -8,8 +8,9 @@
 // (see `bindings/c/compiler_wasm_exports.cc`). This backend provides a
 // minimal hand-written WASI shim (no `node:wasi`, which is Node-only),
 // runs the C++ static constructors via `__wasm_call_ctors`, marshals the
-// source + variable declarations through linear memory, and reads the
-// Program bytes back.
+// source plus a compile-option records blob (variable / function
+// declarations, container, optimize level, static-vs-dynamic link mode)
+// through linear memory, and reads the Program bytes back.
 //
 // KNOWN LIMITATION — error diagnostics. cel-cpp's parser (ANTLR) uses C++
 // exceptions, and stock wasi-sdk ships libc++abi without an exception
@@ -40,10 +41,66 @@ interface CompilerExports {
   readonly __wasm_call_ctors: () => void;
   readonly cew_alloc: (n: number) => number;
   readonly cew_free: (p: number) => void;
-  readonly cew_compile: (sourcePtr: number, varDeclsPtr: number) => number;
+  readonly cew_compile_opts: (
+    sourcePtr: number,
+    optionsPtr: number,
+    optionsLen: number,
+  ) => number;
   readonly cew_program: () => number;
   readonly cew_error: () => number;
   readonly cew_reset: () => void;
+}
+
+// Compile-option record kinds for `cew_compile_opts` (one byte each).
+// Mirrors `ApplyOptions` in bindings/c/compiler_wasm_exports.cc: each
+// record is `[u8 kind][u32 len little-endian][value bytes]`.
+const OPT_KIND_VAR = 'v'.charCodeAt(0); // value: "name:type"
+const OPT_KIND_FN = 'f'.charCodeAt(0); // value: a `.celfn` source
+const OPT_KIND_CONTAINER = 'c'.charCodeAt(0); // value: container name
+const OPT_KIND_OPTIMIZE = 'o'.charCodeAt(0); // value: 1 byte, level 0..3
+const OPT_KIND_LINK = 'l'.charCodeAt(0); // value: 1 byte, 0=dynamic 1=static
+
+/** The 5-byte record header: kind (1) + little-endian length (4). */
+const OPT_RECORD_HEADER_BYTES = 5;
+
+/**
+ * Encode a {@link CompileRequest} into the length-prefixed records blob
+ * `cew_compile_opts` parses. Returns the bytes to write into linear
+ * memory. The static link mode is the C ABI default, so `linkMode` is
+ * always emitted explicitly to make the artifact shape deterministic.
+ */
+function encodeCompileOptions(request: CompileRequest): Uint8Array {
+  const enc = new TextEncoder();
+  const records: (readonly [number, Uint8Array])[] = [];
+  for (const v of request.vars) {
+    records.push([OPT_KIND_VAR, enc.encode(`${v.name}:${v.type}`)]);
+  }
+  for (const fn of request.fns ?? []) {
+    records.push([OPT_KIND_FN, enc.encode(fn)]);
+  }
+  if (request.container !== undefined) {
+    records.push([OPT_KIND_CONTAINER, enc.encode(request.container)]);
+  }
+  if (request.optimizeLevel !== undefined) {
+    records.push([OPT_KIND_OPTIMIZE, Uint8Array.of(request.optimizeLevel)]);
+  }
+  const linkByte = request.linkMode === 'dynamic' ? 0 : 1;
+  records.push([OPT_KIND_LINK, Uint8Array.of(linkByte)]);
+
+  const total = records.reduce(
+    (sum, [, value]) => sum + OPT_RECORD_HEADER_BYTES + value.length,
+    0,
+  );
+  const buf = new Uint8Array(total);
+  const view = new DataView(buf.buffer);
+  let pos = 0;
+  for (const [kind, value] of records) {
+    buf[pos] = kind;
+    view.setUint32(pos + 1, value.length, true);
+    buf.set(value, pos + OPT_RECORD_HEADER_BYTES);
+    pos += OPT_RECORD_HEADER_BYTES + value.length;
+  }
+  return buf;
 }
 
 /** A no-op WASI preview1 errno. */
@@ -219,14 +276,15 @@ export class WasmCompileBackend implements CompileBackend {
       return new TextDecoder().decode(u8.slice(ptr, end));
     };
 
-    const varDecls = request.vars.map((v) => `${v.name}:${v.type}`).join('\n');
+    const options = encodeCompileOptions(request);
 
     let srcPtr = 0;
-    let varsPtr = 0;
+    let optsPtr = 0;
     try {
       srcPtr = writeCString(request.source);
-      varsPtr = writeCString(varDecls);
-      const len = ex.cew_compile(srcPtr, varsPtr);
+      optsPtr = ex.cew_alloc(options.length);
+      new Uint8Array(mem(), optsPtr, options.length).set(options);
+      const len = ex.cew_compile_opts(srcPtr, optsPtr, options.length);
       if (len < 0) {
         // The C ABI returned a caught diagnostic with full detail — this
         // is the TYPE-CHECK error path (undeclared refs, unknown
@@ -262,7 +320,7 @@ export class WasmCompileBackend implements CompileBackend {
     } finally {
       if (this.#instance !== null) {
         if (srcPtr !== 0) ex.cew_free(srcPtr);
-        if (varsPtr !== 0) ex.cew_free(varsPtr);
+        if (optsPtr !== 0) ex.cew_free(optsPtr);
       }
     }
   }
