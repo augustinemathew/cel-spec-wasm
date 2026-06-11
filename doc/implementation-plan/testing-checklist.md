@@ -3170,6 +3170,54 @@ logic ops carry the oracle-confirmed UNKNOWN-over-ERROR precedence
         `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest`
         (unknown-over-error, both orders, both ops).
 
+## Rewrite M29 — TypeScript bindings + browser demo (shipped 2026-06-11)
+
+Pure-TS evaluator + compiler binding + Monaco demo under `bindings/ts/`.
+Gate: `lint` + `build` + `typecheck` + `test` green — 781 pass / 13 skip
+(41 files). Coverage by component:
+
+  - [x] wire-format contract — `bindings/ts/eval/src/types.test.ts`
+        (CelKind/CelErrorCode/offset/stride constants pinned to
+        `runtime/cel_data.h`).
+  - [x] ABI decoder — `eval/src/abi.test.ts` (39): wasm section walk +
+        protobufjs CelAbi parse vs the golden fixtures' variable tables;
+        non-cel reject.
+  - [x] CelValue codec — `eval/src/celvalue.test.ts` (66): every in-scope
+        kind, bigint i64/u64, span/arena decode, error→CelError,
+        little-endian, INT64_MIN/MAX/UINT64_MAX boundaries, UTF-8 +
+        embedded-NUL.
+  - [x] externref table — `eval/src/externref.test.ts` (19): three
+        namespaces, slot-0 sentinel, reset.
+  - [x] host trampolines — `eval/src/host/aggregates.test.ts` (52,
+        list/map), `host/proto.test.ts` (41, proto/WKT/message),
+        `host/stubs.test.ts` (24, cel_env + WASI): 3VL absorption,
+        errors-as-values, NO_SUCH_KEY/INDEX_OOB.
+  - [x] proto backing — `eval/src/proto/{descriptors,backing}.test.ts`
+        (44): FileDescriptorSet load, field read/has/set, object↔message
+        coercion, WKT peel.
+  - [x] assembly (the keystone) — `eval/src/{engine,instance,marshal,
+        activation,resolving-codec}.test.ts` (372 total in eval):
+        **all 27 golden fixtures evaluate e2e** through
+        `Engine.create → plan → eval`; host-fn round-trip + message-var
+        marshal unit-pinned.
+  - [x] compiler binding — `compiler/src/{index,errors,internal/cli-backend}.test.ts`
+        (26): compile→Program byte-identical to `var_int_add.wasm`;
+        CelCompileError diagnostics.
+  - [x] e2e behavior ports — `eval/e2e/*.test.ts` (200 + 11 skip):
+        operators/strings/lists/maps/comprehensions/conversions/
+        timestamps, each citing its `e2e/*_test.cc` origin + langdef.
+  - [x] conformance harness — `conformance/src/*.test.ts` (97): textproto
+        reader, classify (skip categories), compare, monotonic ratchet.
+        Full corpus: **1451 pass / 336 fail (ratcheted)** — the 336 are
+        tracked, not yet categorized (Future work in `m29-typescript-bindings.md`).
+  - [x] browser demo — `web/**/*.test.ts` (84): variables parse, render,
+        compile-client transport, dev-server endpoint, and the
+        `src/run.test.ts` compile→eval wiring proof. Monaco glue is
+        browser-only (verified via `vite build` + `web/README.md`).
+  - [x] C ABI — `bindings/c/cel_capi_test.cc` (12, bazel): const/var/
+        aggregate compile + magic check; bad-expr/undeclared/bad-opt/
+        bad-host-fn diagnostics.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

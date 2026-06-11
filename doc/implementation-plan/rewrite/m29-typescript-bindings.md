@@ -1,11 +1,31 @@
 # M29 — TypeScript bindings + the browser killer-demo
 
-Status: plan — drafted 2026-06-11, not yet started. This doc is both the
-design and the **parallel-build work-breakdown**: Part A is the design;
-Part B decomposes it into phases → independently-farmable work items,
-each with the file ownership, dependencies, spec pointers, and
-definition-of-done an agent needs to execute it without reading any other
-work item.
+Status: **shipped 2026-06-11.** This doc is both the design and the
+**parallel-build work-breakdown**: Part A is the design; Part B
+decomposes it into phases → independently-farmable work items, each with
+the file ownership, dependencies, spec pointers, and definition-of-done
+an agent needs to execute it without reading any other work item.
+
+> **What landed (2026-06-11).** The full bindings monorepo under
+> `bindings/ts/` (npm workspaces: `@cel-wasm/{eval,compiler,conformance,web}`)
+> plus the `bindings/c` C ABI, built by parallel agents in four waves and
+> integrated commit-by-commit. The **pure-TS evaluator works end-to-end**:
+> all 27 golden fixtures evaluate through `Engine.create → plan → eval`
+> (`marshal` mirrors C++ `Instance::Eval` — `arena_init` seed, string/bytes
+> above `__heap_base`, externref reset). The **compiler binding** compiles
+> in-scope CEL to byte-identical Programs via a subprocess backend over the
+> native `cel` CLI (N-API/emscripten deferred behind the same
+> `CompileBackend` interface — emscripten is a written conditional-GO
+> spike, `m29-wi24-emscripten-spike.md`). The **Monaco demo** (`bindings/ts/web`)
+> does compile → download → run with client-side eval and inline
+> diagnostics. Gate: `lint` + `build` + `typecheck` + `test` green —
+> **781 tests pass / 13 reasoned skips** across 41 files. Conformance:
+> **1451 pass / 336 fail** under a monotonic ratchet (the 336 are tracked,
+> not categorized — see Future work). As-shipped deltas from the plan:
+> WI-2.2 N-API replaced by the subprocess backend (works tonight; N-API a
+> follow-up); `src/kinds.ts` folded into the shared `types.ts`; the demo
+> physically lives at `bindings/ts/web` (npm-workspace), named
+> `@cel-wasm/web`. Per-WI "Shipped"/"Status" notes are inline below.
 
 ---
 
@@ -656,17 +676,44 @@ contracts first** (a `bindings/ts/eval/src/types.ts` with `CelValue`,
 interface), committed by WI-0.1 so every WI imports stable types from day
 one and integration in WI-1.5 is wiring, not redesign.
 
-### Definition of done (the milestone gate)
+### Definition of done (the milestone gate) — as shipped
 
-1. `bindings/ts`: `lint` + `build` + `test` green across all packages.
-2. The eval binding evaluates the golden Programs and the e2e ports.
-3. The compiler binding compiles arbitrary in-scope CEL → a Program the
-   eval binding runs.
-4. The conformance harness runs the corpus with **0 fail** and a committed
-   baseline.
-5. The demo compiles → downloads → runs in the browser, errors in Monaco.
-6. `compiler.wasm` (WI-2.4) either works client-side, or has a written
-   go/no-go + the demo runs on the fallback.
+1. ✅ `bindings/ts`: `lint` + `build` + `typecheck` + `test` green across
+   all packages — **781 tests pass / 13 reasoned skips** (41 files).
+2. ✅ The eval binding evaluates the golden Programs (27/27) and the e2e
+   ports (200 assertions, 8 suites).
+3. ✅ The compiler binding compiles arbitrary in-scope CEL → a Program the
+   eval binding runs (byte-identical to the golden fixtures).
+4. ⚠️ The conformance harness runs the corpus under a committed monotonic
+   ratchet — **but at 1451 pass / 336 fail, NOT "0 fail."** The 336 fails
+   are tracked (the ratchet forbids regressing the pass count or growing
+   the fail count) but not yet each converted to a reasoned skip; that
+   categorization is Future work. (The full-corpus run also OOMs near
+   ~1400 rows in a single process — the harness needs streaming/batching
+   to scale; the vitest pins a subset + the unit suites.)
+5. ✅ The demo compiles → downloads → runs in the browser, errors inline
+   in Monaco (headless-verified: `vite build`, the compile endpoint, and
+   the `run.test.ts` compile→eval wiring; the Monaco glue itself is
+   browser-only, verified via build + the `web/README.md` manual steps).
+6. ✅ `compiler.wasm` (WI-2.4) has a written conditional-GO go/no-go
+   (`m29-wi24-emscripten-spike.md`); the demo runs on the subprocess/
+   local-endpoint fallback.
+
+### Future work (surfaced during execution)
+
+- **Categorize the 336 conformance fails** into fixes vs reasoned skips
+  (the one honest gap vs the "0 fail" aspiration). Make the full-corpus
+  run streaming/batched so it doesn't OOM (~1400 rows in one process).
+- **N-API and emscripten compile backends** behind the existing
+  `CompileBackend` interface (subprocess is v1; emscripten is the
+  conditional-GO spike — protobuf-to-wasm is the ~3–5 day long pole).
+- **Host-fn and message-var e2e fixtures** — the `cel_fn.*` and
+  message-typed-variable paths are unit-pinned but not yet driven from a
+  compiled `@host` / message Program (the CLI backend has no `@host`-decl
+  flag; a compiled message-typed fixture is needed).
+- The `typecheck` gate (`tsc --noEmit` incl tests, added this milestone)
+  catches the test-only type-error class the build/lint/vitest gate
+  missed — keep it in CI.
 
 ### Risks
 
