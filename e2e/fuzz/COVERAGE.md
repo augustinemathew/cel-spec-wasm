@@ -38,7 +38,7 @@ note) · ⬜ none generated yet.
 | Comprehensions (`exists`/`all`/`exists_one`/`filter`/`map`) | (macros) | ✅ over lists; maps predicate-only |
 | Aggregates (list/map literals, nested) | — | ✅ |
 | String functions | ~27 | 🟡 see breakdown |
-| Type conversions | ~30 | 🟡 only `double(int\|uint)` |
+| Type conversions | ~30 | 🟡 cross-numeric + string(x) + bytes/bool done; numeric-string-leaf + duration/timestamp parse open |
 | **math_ext** | 28 | ✅ |
 | **net_ext** | 20 | ⬜ |
 | **timestamp accessors** | 23 | 🟡 no-tz forms done; `_with_tz` open |
@@ -112,19 +112,29 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [ ] `strings_quote`
 - [ ] `list_join` `list_join_string`
 
-## Type conversions — 🟡 (`grammar_scalars.cc`: RegisterMixedTotalOps)
+## Type conversions — 🟡 (`grammar_scalars.cc`: RegisterMixedTotalOps + RegisterConversions)
 
 - [x] `int64_to_double` `uint64_to_double` (`double(int)` / `double(uint)`)
-- [x] identity: `double_to_double` (transitively via the above)
-- [ ] `int64_to_int64` `int64_to_uint64` `int64_to_timestamp`
-      `int64_to_duration`
-- [ ] `double_to_int64` `double_to_uint64` `double_to_string`
-- [ ] `uint64_to_int64` `uint64_to_string`
-- [ ] `bool_to_string` `bytes_to_string` `int64_to_string` (the
-      `string(x)` family)
-- [ ] `string_to_{bool,bytes,double,int64,uint64,duration,timestamp}`
-      (the `int('5')` / `timestamp('…')` family — fallible, parse errors)
-- [ ] `bytes_to_bytes` `bool_to_bool` `string_to_string` (identity)
+- [x] `int64_to_uint64` `uint64_to_int64` `double_to_int64`
+      `double_to_uint64` (cross-numeric — fallible, range-compared)
+- [x] `string_to_int64` `string_to_uint64` `string_to_double`
+      `string_to_bool` (parse family — fallible; current string
+      leaves are non-numeric, so mostly both-error)
+- [x] `int64_to_string` `uint64_to_string` `double_to_string`
+      `bool_to_string` `bytes_to_string` (the `string(x)` family)
+- [x] `string_to_bytes` (`bytes(string)`)
+- [x] `int64_to_timestamp`-via-`int(timestamp)` reverse +
+      `string(timestamp|duration)` shipped with RegisterTemporal
+- [ ] `string_to_{duration,timestamp}` (`duration('…')` /
+      `timestamp('…')` — need date/duration-shaped string leaves)
+- [ ] numeric-shaped string leaves (`"42"`, `"3.14"`, `"  3.14  "`,
+      `"+5"`) to actually exercise the parse path + its known bugs
+      (`DoubleFromStringRejectsWhitespace`) — deferred
+- [ ] identity: `int64_to_int64` `uint64_to_uint64` `double_to_double`
+      `bytes_to_bytes` `bool_to_bool` `string_to_string`
+- Note: `int(duration)` (`duration_to_int64`) deliberately omitted —
+      cel-cpp rejects it; over-permissiveness pinned as
+      `PbtIntOfDurationOverPermissive`.
 
 ## math_ext — ✅ (`grammar_scalars.cc`: RegisterMathExt; oracle gained MathCompilerLibrary + RegisterMathExtensionFunctions)
 

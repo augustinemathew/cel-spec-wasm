@@ -379,10 +379,44 @@ void RegisterMixedTotalOps(GrammarBuilder& b) {
   b.Unary(CelType::Double(), "double_from_int", "double(%0)", CelType::Int());
   b.Unary(CelType::Double(), "double_from_uint", "double(%0)", CelType::Uint());
 
-  // int(uint) / uint(int) / int(double) / uint(double) / int(string)
-  // / uint(string) are partial — they can range-fail.  Deliberately
-  // omitted here; planned under m30.B with literal-bounded
-  // sources.
+  // double(int) and double(uint) above are the only TOTAL numeric
+  // conversions; the rest live in RegisterConversions (many are
+  // fallible — range/parse errors — but error-ness is compared).
+}
+
+// The conversion family beyond `double(int|uint)`.  Cross-numeric
+// (`int(uint)` / `uint(int)` / `int(double)` / `uint(double)`),
+// `string(x)`, `bytes(string)`, and the fallible string→numeric /
+// string→bool parses.  Range and parse failures are reachable (the
+// boundary leaves overflow int(double); the non-numeric string
+// leaves fail int(string)), but error-ness is a compared dimension
+// so both-error is agreement.  NB: `int(duration)` is deliberately
+// NOT here — cel-cpp rejects it (PbtIntOfDurationOverPermissive).
+void RegisterConversions(GrammarBuilder& b) {
+  const CelType i = CelType::Int();
+  const CelType u = CelType::Uint();
+  const CelType d = CelType::Double();
+  const CelType s = CelType::String();
+  // → Int.
+  b.Unary(i, "int_from_uint", "int(%0)", u);
+  b.Unary(i, "int_from_double", "int(%0)", d);
+  b.Unary(i, "int_from_string", "int(%0)", s);
+  // → Uint.
+  b.Unary(u, "uint_from_int", "uint(%0)", i);
+  b.Unary(u, "uint_from_double", "uint(%0)", d);
+  b.Unary(u, "uint_from_string", "uint(%0)", s);
+  // → Double.
+  b.Unary(d, "double_from_string", "double(%0)", s);
+  // → String.
+  b.Unary(s, "string_from_int", "string(%0)", i);
+  b.Unary(s, "string_from_uint", "string(%0)", u);
+  b.Unary(s, "string_from_double", "string(%0)", d);
+  b.Unary(s, "string_from_bool", "string(%0)", CelType::Bool());
+  b.Unary(s, "string_from_bytes", "string(%0)", CelType::Bytes());
+  // → Bytes.
+  b.Unary(CelType::Bytes(), "bytes_from_string", "bytes(%0)", s);
+  // → Bool.
+  b.Unary(CelType::Bool(), "bool_from_string", "bool(%0)", s);
 }
 
 }  // namespace
@@ -398,6 +432,7 @@ void RegisterScalarProductions(GrammarBuilder& b) {
   RegisterTemporal(b);
   RegisterBoolProducers(b);
   RegisterMixedTotalOps(b);
+  RegisterConversions(b);
 }
 
 Grammar BuildScalarGrammar() {

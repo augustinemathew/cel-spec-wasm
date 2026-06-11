@@ -189,6 +189,23 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — conversion family
+
+- `RegisterConversions`: cross-numeric (`int(uint)` / `uint(int)` /
+  `int(double)` / `uint(double)`), the `string(x)` family, the
+  fallible string→numeric / string→bool parses, and `bytes(string)`.
+  Standard library — no oracle change.
+- Mining all six scalar targets at d4 = **0 divergences** (int 113,
+  uint 55, double 46, string 41, bytes 48, bool 38 agreed; the
+  both_errored buckets are range/parse failures both engines agree
+  on). No over-permissiveness this time (contrast `int(duration)`).
+- Note: the current string leaves are non-numeric, so the
+  string→numeric *parse* path mostly both-errors. Numeric-shaped
+  string leaves (`"42"`, `"  3.14  "`, `"+5"`) — which would
+  exercise the parse path and resurface
+  `DoubleFromStringRejectsWhitespace` — are deferred to a focused
+  follow-up so that known bug gets pinned deliberately.
+
 ### 2026-06-11 — timestamp/duration + a conformance finding
 
 - `RegisterTemporal`: timestamp/duration leaves, the no-tz accessor
