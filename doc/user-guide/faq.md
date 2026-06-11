@@ -21,8 +21,11 @@ Three reasons, one trade:
   See the [security model](security-model.md).
 
 The trade: no `dyn` (next question), and a smaller extension surface
-than cel-cpp — 55 conformance rows sit on unimplemented extensions and
-92 rows currently fail (see the README conformance table).
+than cel-cpp. Of the upstream conformance corpus, **every attempted
+row passes (0 fails)**; 481 rows are intentionally skipped — 227 need
+`dyn`, 144 are check-disabled, and 110 sit on not-yet-shipped scope
+(55 of those on unimplemented extension rows). Live per-fixture
+breakdown: [`conformance/README.md`](../../conformance/README.md).
 
 ### Does it support `dyn`?
 
@@ -42,8 +45,10 @@ evaluator (`-c opt`, Apple Silicon, static-linked mode): **corpus-wide
 geomean 0.95× — parity — with a sharply two-sided distribution.**
 
 - **Wins:** 9× on a 100-element `.all()`, 25× on a 20-element
-  `.map()`, 17–22× on 1000-term arithmetic chains. The crossover is
-  roughly 10 operations — anything with repetition amortizes the
+  `.map()`, 2.2× on a 100-term string-concat chain. (The 1000-term
+  arithmetic-chain numbers predate the slot-reuse codegen rework; we
+  don't quote a speedup there until it's re-measured.) The crossover
+  is roughly 10 operations — anything with repetition amortizes the
   compiled code.
 - **Losses:** 44× on a 100-entry **map literal** (constant aggregates
   are rebuilt every Eval today; cel-cpp folds them at plan time), 8×
@@ -132,7 +137,7 @@ dynamic schemas: `--proto <file>` (a `.proto` source file) or
 - `math_ext` (194/199, 0 fails)
 - `encoders` (`base64.encode` / `base64.decode`)
 - `network_ext` (69/69)
-- `optionals` — partial (22/70; the rest need `dyn`)
+- `optionals` — partial (26/70; the rest need `dyn`)
 
 ### Is it production-ready?
 

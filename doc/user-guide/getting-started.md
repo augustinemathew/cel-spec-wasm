@@ -18,7 +18,8 @@ Bazel. Prefer Docker? Use [`docker/Dockerfile`](../../docker/Dockerfile).
 ## 2. Clone and fetch the front end
 
 ```bash
-git clone <this repo> && cd cel-spec-wasm
+git clone https://github.com/augustinemathew/cel-spec-wasm.git
+cd cel-spec-wasm
 third_party/fetch_cel_cpp.sh   # one-time: the vendored parser/type-checker
 ```
 
