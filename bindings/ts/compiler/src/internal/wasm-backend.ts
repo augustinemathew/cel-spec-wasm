@@ -20,7 +20,11 @@
 // the exception runtime); until then use the native/subprocess backend
 // when precise errors matter.
 
-import { CelCompileError, type Diagnostic } from '../errors.js';
+import {
+  CelCompileError,
+  parseDiagnostics,
+  type Diagnostic,
+} from '../errors.js';
 
 import type { CompileBackend, CompileRequest } from './cli-backend.js';
 
@@ -209,7 +213,10 @@ export class WasmCompileBackend implements CompileBackend {
       const u8 = new Uint8Array(mem());
       let end = ptr;
       while (u8[end] !== 0) end++;
-      return new TextDecoder().decode(u8.subarray(ptr, end));
+      // `.slice` (a copy), NOT `.subarray` (a view): compiler.wasm is a
+      // wasi-threads module so its memory is a SharedArrayBuffer, and
+      // TextDecoder refuses to decode a view backed by shared memory.
+      return new TextDecoder().decode(u8.slice(ptr, end));
     };
 
     const varDecls = request.vars.map((v) => `${v.name}:${v.type}`).join('\n');
@@ -221,11 +228,17 @@ export class WasmCompileBackend implements CompileBackend {
       varsPtr = writeCString(varDecls);
       const len = ex.cew_compile(srcPtr, varsPtr);
       if (len < 0) {
-        // The C ABI returned a real (caught) diagnostic — rare in wasm,
-        // since most errors unwind to the WasmExceptionEscape path below.
+        // The C ABI returned a caught diagnostic with full detail — this
+        // is the TYPE-CHECK error path (undeclared refs, unknown
+        // overloads), which cel-cpp returns as a status rather than
+        // throwing. Parse it into structured line/col diagnostics so the
+        // UI can render inline markers. (Pure SYNTAX errors instead unwind
+        // through the WasmExceptionEscape path below, which has no detail.)
         const message = readCString(ex.cew_error());
-        const diag: Diagnostic = { message };
-        throw new CelCompileError([diag], message);
+        const parsed = parseDiagnostics(message);
+        const diagnostics: Diagnostic[] =
+          parsed.length > 0 ? parsed : [{ message }];
+        throw new CelCompileError(diagnostics, message);
       }
       // Copy the Program out before any further allocation can move memory.
       const program = new Uint8Array(mem(), ex.cew_program(), len).slice();
