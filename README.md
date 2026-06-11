@@ -1,5 +1,9 @@
 # cel-wasm
 
+[![CI](https://github.com/augustinemathew/cel-spec-wasm/actions/workflows/ci.yml/badge.svg)](https://github.com/augustinemathew/cel-spec-wasm/actions/workflows/ci.yml)
+[![Conformance](https://img.shields.io/badge/CEL%20conformance-1973%2F2454%20·%200%20fail-success)](conformance/README.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 **Compile [CEL](https://github.com/google/cel-spec) to WebAssembly,
 ahead of time. JIT it to native code. Run the same artifact on every
 host — sandboxed.**
