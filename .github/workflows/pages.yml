@@ -6,7 +6,10 @@ name: docs
 
 on:
   push:
-    branches: [master]
+    # `m29-spa` is included so the in-browser playground SPA deploys to the
+    # live Pages site from that feature branch (the demo lives there until
+    # it merges to master).
+    branches: [master, m29-spa]
     paths:
       - doc/**
       - mkdocs.yml
