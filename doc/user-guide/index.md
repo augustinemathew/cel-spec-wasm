@@ -458,16 +458,16 @@ separate module, no host callback, no runtime registration):
 > **parses and type-checks today** — the grammar accepts it, the
 > `FunctionLibrary` captures the body, and the checker registers the
 > overload so call sites type-check and `Compile` succeeds. But it does
-> **not evaluate**: the body-lowering producer is an unimplemented
-> header stub. `compiler/celfn/library_module.h` *declares*
-> `CompileLibraryBodies(...)` but there is no `library_module.cc`, no
-> BUILD target, and **no caller** — `compiler/internal/compile.cc` never
-> populates `CompiledArtifact.library_modules` (`compile.h:113`), and
+> **not evaluate**: no body-lowering code exists in the tree, not even
+> a scaffold. The pipeline (`compiler/internal/compile.cc`) has no
+> stage that lowers library bodies, `CompiledArtifact`
+> (`compiler/internal/compile.h`) carries no library-module field, and
 > `eval/engine.cc`'s `Plan` never registers a CEL-defined library
-> module. So compiling `addone(41)` succeeds, but evaluating it cannot
-> produce a result on this branch. The earlier "N-functions-in-one-module"
-> codegen did not survive the repo reorg; only the `library_module.h`
-> scaffold remains. The syntax + API below is the **target** shape.
+> module. (The earlier "N-functions-in-one-module" codegen did not
+> survive the repo reorg, and the `library_module.h` scaffold that
+> outlived it has since been deleted too.) So compiling `addone(41)`
+> succeeds, but evaluating it cannot produce a result on this branch.
+> The syntax + API below is the **target** shape.
 
 ```celfn
 int    @native.addone(int x)      = x + 1;
@@ -505,12 +505,11 @@ Intended properties (target shape — see the Status callout above):
   other (non-cyclic) CEL-defined functions.
 
 > **Current eval coverage:** none — `@native` bodies do **not** evaluate
-> on this branch. `CompileLibraryBodies` (the producer that would lower
-> the bodies) is an unimplemented header stub with no codegen,
-> registration, or e2e; scalar/string returns are **not** proven
-> end-to-end today. When the producer lands, `list`/`map` params/returns
-> inside CEL-defined bodies will additionally share the marshalling gap
-> described in §6.2.
+> on this branch. The body-lowering producer does not exist in the tree
+> (no codegen, no registration, no e2e); scalar/string returns are
+> **not** proven end-to-end today. When the producer lands, `list`/`map`
+> params/returns inside CEL-defined bodies will additionally share the
+> marshalling gap described in §6.2.
 
 ---
 
@@ -957,7 +956,7 @@ variables too (§3.3).
 | **Host fns** — proto / list / map args, aggregate / new-string returns | ✅ (m21) |
 | Typed `AddTypedFunction` + `HostCallContext` adapter | ✅ (m21); raw 4-arg `HostCallback` removed |
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
-| **CEL-defined fns** (`@native`) — body lowering + eval (scalar/string/any return) | ⛔ `CompileLibraryBodies` is an unimplemented header stub — no `.cc`, no BUILD target, no caller; never registered in `Plan`. Does not evaluate (§7) |
+| **CEL-defined fns** (`@native`) — body lowering + eval (scalar/string/any return) | ⛔ no body-lowering code in the tree (the former `library_module.h` scaffold has been deleted); never registered in `Plan`. Does not evaluate (§7) |
 | **CEL-defined fns** (`@native`) — list/map params/returns | ⛔ blocked on the body-lowering producer above (the host-side marshalling those would reuse is now shipped — see §6) |
 | **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent`; proto args/returns via the manual-tagged `demo_component_proto` fixture; component-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
 | **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
