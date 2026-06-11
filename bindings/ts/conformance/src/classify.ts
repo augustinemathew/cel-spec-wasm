@@ -29,10 +29,12 @@ export type SkipCategory =
   | 'type_env' // a declared-variable type the renderer can't lower
   | 'bindings' // a binding value the harness can't marshal
   | 'object_value' // proto-construction matcher (out of scope, §A.3)
+  | 'proto_unimpl' // proto message construction / field read (no descriptors)
   | 'ext_unimpl' // an extension-library expression (no decls registered)
   | 'static_subset' // a `dyn` / dynamic-typing construct (RejectDyn)
   | 'compile_unimpl' // compiler rejected a not-yet-supported construct
-  | 'eval_unimpl'; // eval rejected a not-yet-supported construct
+  | 'eval_unimpl' // eval rejected a not-yet-supported construct
+  | 'cli_limitation'; // the expr can't pass through the CLI process-arg boundary
 
 /** A pre-compile scope decision: either a SKIP or "proceed to compile". */
 export type ScopeDecision =
@@ -276,4 +278,38 @@ export function looksLikeExtension(expr: string): boolean {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Proto-row detection.  Message construction, field reads, and WKT
+// wrapper construction need a descriptor set the harness does not load
+// (proto rows beyond supplied descriptors are out of scope, §A.3).  A
+// row is a proto row when its container is a proto-conformance namespace
+// OR its expression constructs / references a proto message type.
+// ───────────────────────────────────────────────────────────────────
+
+const PROTO_CONTAINER_PREFIXES = [
+  'cel.expr.conformance.proto2',
+  'cel.expr.conformance.proto3',
+  'google.api.expr.test',
+];
+
+// Proto message construction / WKT wrapper construction: a type name (a
+// dotted or bare identifier) immediately followed by `{` is a message
+// literal; `TestAllTypes` / `NestedTestAllTypes` are the corpus fixtures.
+const PROTO_CONSTRUCTION_RE =
+  /(google\.protobuf\.\w+\s*\{|\bTestAllTypes\b|\bNestedTestAllTypes\b)/;
+
+/**
+ * Does this row build or read a proto message the harness has no
+ * descriptor for?  Used to reclassify a compile / eval failure as a
+ * proto SKIP rather than a FAIL.
+ */
+export function looksLikeProtoRow(expr: string, container: string): boolean {
+  for (const prefix of PROTO_CONTAINER_PREFIXES) {
+    if (container === prefix || container.startsWith(`${prefix}.`)) {
+      return true;
+    }
+  }
+  return PROTO_CONSTRUCTION_RE.test(expr);
 }

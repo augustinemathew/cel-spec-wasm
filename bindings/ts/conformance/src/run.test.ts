@@ -61,10 +61,12 @@ describe('conformance harness — pinned basic.textproto', () => {
         'type_env',
         'bindings',
         'object_value',
+        'proto_unimpl',
         'ext_unimpl',
         'static_subset',
         'compile_unimpl',
         'eval_unimpl',
+        'cli_limitation',
       ]).toContain(category);
     }
   });

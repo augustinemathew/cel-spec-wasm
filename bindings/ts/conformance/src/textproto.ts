@@ -142,6 +142,19 @@ class Lexer {
     return this.src.charAt(this.pos);
   }
 
+  // Consume one full Unicode code point (a surrogate pair counts as one),
+  // updating line/column.  Used for literal string chars so astral
+  // characters survive as a single code point.
+  private advanceCodePoint(): number {
+    const cp = this.src.codePointAt(this.pos) ?? 0;
+    // A code point above the BMP occupies two UTF-16 code units.
+    const units = cp > 0xffff ? 2 : 1;
+    for (let i = 0; i < units; i += 1) {
+      this.advance();
+    }
+    return cp;
+  }
+
   private advance(): string {
     const ch = this.src.charAt(this.pos);
     this.pos += 1;
@@ -301,7 +314,10 @@ class Lexer {
         this.readEscape(bytes, line, column);
         continue;
       }
-      pushUtf8(bytes, this.advance().codePointAt(0) ?? 0);
+      // A literal char: read a full Unicode code point so an astral
+      // char (a UTF-16 surrogate pair, e.g. an emoji) becomes its 4-byte
+      // UTF-8 sequence rather than two broken halves.
+      pushUtf8(bytes, this.advanceCodePoint());
     }
     const buf = Uint8Array.from(bytes);
     return {

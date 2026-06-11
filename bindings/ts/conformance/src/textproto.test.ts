@@ -31,20 +31,30 @@ function message(msg: TextprotoMessage, name: string): TextprotoMessage {
   return v;
 }
 
+// A string scalar carries both `value` (UTF-8 text) and `bytes` (octets);
+// most assertions only care about the decoded text.
+function stringValue(msg: TextprotoMessage, name: string): string {
+  const s = scalar(msg, name);
+  if (s.kind !== 'string') {
+    throw new Error(`expected string field '${name}', got ${s.kind}`);
+  }
+  return s.value;
+}
+
 describe('parseTextproto — scalars', () => {
   it('reads a double-quoted string', () => {
     const m = parseTextproto('expr: "abc"');
-    expect(scalar(m, 'expr')).toEqual({ kind: 'string', value: 'abc' });
+    expect(stringValue(m, 'expr')).toBe('abc');
   });
 
   it('reads a single-quoted string', () => {
     const m = parseTextproto("expr: 'abc'");
-    expect(scalar(m, 'expr')).toEqual({ kind: 'string', value: 'abc' });
+    expect(stringValue(m, 'expr')).toBe('abc');
   });
 
   it('reads an empty string', () => {
     const m = parseTextproto('value: ""');
-    expect(scalar(m, 'value')).toEqual({ kind: 'string', value: '' });
+    expect(stringValue(m, 'value')).toBe('');
   });
 
   it('reads a bool', () => {
@@ -105,26 +115,39 @@ describe('parseTextproto — scalars', () => {
 describe('parseTextproto — escapes', () => {
   it('decodes C-style escapes', () => {
     const m = parseTextproto('v: "a\\nb\\tc\\\\d\\"e"');
-    expect(scalar(m, 'v')).toEqual({ kind: 'string', value: 'a\nb\tc\\d"e' });
+    expect(stringValue(m, 'v')).toBe('a\nb\tc\\d"e');
   });
 
-  it('decodes a hex byte escape to a single code unit', () => {
+  it('decodes a hex byte escape to a single byte', () => {
     const m = parseTextproto('v: "\\x00"');
     const s = scalar(m, 'v');
     expect(s.kind).toBe('string');
     if (s.kind === 'string') {
-      expect(s.value.length).toBe(1);
-      expect(s.value.charCodeAt(0)).toBe(0);
+      expect(Array.from(s.bytes)).toEqual([0]);
+      // \x00 is a valid (NUL) UTF-8 byte → the decoded string is U+0000.
+      expect(s.value).toBe('\x00');
     }
   });
 
-  it('decodes an octal byte escape', () => {
-    // \377 == 0xFF.
+  it('decodes an octal byte escape to its raw byte', () => {
+    // \377 == 0xFF — a lone invalid-UTF-8 byte; it stays a byte in
+    // `bytes`, and `value` (the UTF-8 decode) is the replacement char.
     const m = parseTextproto('v: "\\377"');
     const s = scalar(m, 'v');
     expect(s.kind).toBe('string');
     if (s.kind === 'string') {
-      expect(s.value.charCodeAt(0)).toBe(0xff);
+      expect(Array.from(s.bytes)).toEqual([0xff]);
+    }
+  });
+
+  it('decodes \\xHH bytes of a multibyte char as UTF-8', () => {
+    // \xe2\x9c\x8c is the UTF-8 of ✌ (U+270C).
+    const m = parseTextproto('v: "\\xe2\\x9c\\x8c"');
+    const s = scalar(m, 'v');
+    expect(s.kind).toBe('string');
+    if (s.kind === 'string') {
+      expect(Array.from(s.bytes)).toEqual([0xe2, 0x9c, 0x8c]);
+      expect(s.value).toBe('✌');
     }
   });
 
@@ -136,7 +159,7 @@ describe('parseTextproto — escapes', () => {
 
   it('concatenates adjacent string literals', () => {
     const m = parseTextproto('expr:\n  "foo"\n  "bar"');
-    expect(scalar(m, 'expr')).toEqual({ kind: 'string', value: 'foobar' });
+    expect(stringValue(m, 'expr')).toBe('foobar');
   });
 });
 
@@ -193,14 +216,14 @@ describe('parseTextproto — messages', () => {
 describe('parseTextproto — trivia', () => {
   it('skips line comments', () => {
     const m = parseTextproto('# a comment\nexpr: "x"  # trailing\n');
-    expect(scalar(m, 'expr')).toEqual({ kind: 'string', value: 'x' });
+    expect(stringValue(m, 'expr')).toBe('x');
   });
 
   it('handles the proto-file / proto-message header comments', () => {
     const m = parseTextproto(
       '# proto-file: x.proto\n# proto-message: Foo\nname: "basic"\n',
     );
-    expect(scalar(m, 'name')).toEqual({ kind: 'string', value: 'basic' });
+    expect(stringValue(m, 'name')).toBe('basic');
   });
 });
 

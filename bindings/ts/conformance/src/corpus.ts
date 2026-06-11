@@ -510,38 +510,3 @@ function enumField(msg: TextprotoMessage, name: string): string | undefined {
   const v = scalarField(msg, name);
   return v?.kind === 'enum' ? v.value : undefined;
 }
-
-/**
- * Re-interpret a latin1-decoded textproto string as UTF-8 text.  The
- * reader decodes `\xHH` / `\ooo` byte escapes to single code units ≤ 255;
- * for a `string` field those bytes are UTF-8, so decode them.  A string
- * containing a code unit > 255 is already decoded text (a literal
- * multi-byte char) and round-trips through UTF-8 re-encode+decode.
- */
-export function decodeUtf8String(s: string): string {
-  return new TextDecoder('utf-8').decode(latin1ToBytes(s));
-}
-
-/**
- * Re-encode a textproto byte string to a `Uint8Array`.  Escape sequences
- * (`\xHH` / `\ooo`) decode to single code units ≤ 255, so the common
- * case is a 1:1 latin1 mapping; a literal multi-byte UTF-8 char (code
- * unit > 255) is UTF-8-encoded so its bytes round-trip.
- */
-export function latin1ToBytes(s: string): Uint8Array {
-  let needsUtf8 = false;
-  for (let i = 0; i < s.length; i += 1) {
-    if (s.charCodeAt(i) > 0xff) {
-      needsUtf8 = true;
-      break;
-    }
-  }
-  if (needsUtf8) {
-    return new TextEncoder().encode(s);
-  }
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i += 1) {
-    out[i] = s.charCodeAt(i) & 0xff;
-  }
-  return out;
-}

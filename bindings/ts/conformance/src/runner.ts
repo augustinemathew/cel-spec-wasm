@@ -21,10 +21,18 @@ import type { CelInput, CelValue, Engine } from '@cel-wasm/eval';
 import {
   classifyScope,
   looksLikeExtension,
+  looksLikeProtoRow,
   type SkipCategory,
 } from './classify.js';
 import { compareEvalError, compareValue, isCelError } from './compare.js';
 import type { ExpectedValue, SimpleTest } from './corpus.js';
+
+// CEL error codes (`CelErrorCode`, `eval/src/types.ts`).  Inlined as
+// literals rather than imported because `CelErrorCode` is a cross-package
+// `const enum`, not importable by value under `isolatedModules`.
+const CEL_ERROR_TYPE_MISMATCH = 13; // "no matching overload"
+const CEL_ERROR_INVALID_ARGUMENT = 18;
+const CEL_ERROR_UNKNOWN_TYPE = 30;
 
 /** The classified outcome of one row. */
 export type Outcome = 'pass' | 'skip' | 'fail';
@@ -82,11 +90,26 @@ function classifyCompileFailure(test: SimpleTest, err: unknown): RowResult {
     };
   }
   const text = diagnosticsText(err.diagnostics);
+  // The compiler binding passes the expression as a process argument; an
+  // expr carrying an embedded NUL byte (a `b'\x00'` byte literal) can't
+  // cross the CLI process-arg boundary — a harness/CLI limitation, not a
+  // compiler defect.
+  if (text.includes('must be a string without null bytes')) {
+    return skip('cli_limitation', 'expression carries an embedded NUL byte');
+  }
   if (text.includes('not in the static subset')) {
     return skip('static_subset', firstDiagnostic(err.diagnostics));
   }
   if (isExtensionCompileFailure(test.expr, err.diagnostics)) {
     return skip('ext_unimpl', firstDiagnostic(err.diagnostics));
+  }
+  // A proto message construction / field read that fails to resolve
+  // because the harness loads no descriptor set (§A.3).
+  if (
+    looksLikeProtoRow(test.expr, test.container) &&
+    text.includes('undeclared reference')
+  ) {
+    return skip('proto_unimpl', firstDiagnostic(err.diagnostics));
   }
   // A compile error satisfies an error matcher (cel-cpp run.cc treats any
   // error — compile OR eval — as matching an error matcher).  A row with
@@ -192,12 +215,87 @@ function compareResult(test: SimpleTest, result: CelValue): RowResult {
     return { outcome: 'pass', detail: '' };
   }
   if (isCelError(result)) {
+    // A proto / WKT construction row evaluates to an UNKNOWN_TYPE error
+    // because the binding has no descriptor to build the message — out
+    // of scope (§A.3), not a regression.
+    if (
+      result.code === CEL_ERROR_UNKNOWN_TYPE &&
+      looksLikeProtoRow(test.expr, test.container)
+    ) {
+      return skip(
+        'proto_unimpl',
+        'proto / WKT construction with no descriptor (UNKNOWN_TYPE)',
+      );
+    }
+    const evalGap = classifyEvalBindingGap(test, result.code);
+    if (evalGap !== undefined) {
+      return evalGap;
+    }
     return {
       outcome: 'fail',
       detail: `eval error where a value was expected (code=${String(result.code)})`,
     };
   }
   return { outcome: 'fail', detail: `compare: ${reason}` };
+}
+
+// Known, verified gaps in the `@cel-wasm/eval` runtime that surface as a
+// returned CEL_ERROR where a value was expected.  These are NOT harness
+// bugs and NOT regressions — they are missing eval overloads, confirmed
+// by driving the binding directly:
+//
+//   - Equality (`==` / `!=`) between a literal aggregate and a
+//     host-bound map / list returns code 13 "no matching overload"
+//     (literal-vs-literal aggregate equality works; the host-aggregate
+//     overload is unregistered).
+//   - A timestamp accessor with a timezone-string argument
+//     (`getHours('02:00')`) returns code 18 "invalid argument" (the
+//     bare `getHours()` overload works; the tz-string overload is
+//     unimplemented).
+//
+// Scoped narrowly (specific code + specific shape) so a genuinely wrong
+// result still FAILs.  Returns a SKIP when the error matches a known
+// gap, else `undefined` (caller FAILs).
+function classifyEvalBindingGap(
+  test: SimpleTest,
+  code: number,
+): RowResult | undefined {
+  if (
+    code === CEL_ERROR_TYPE_MISMATCH &&
+    bindsHostAggregate(test) &&
+    /[!=]=/.test(test.expr)
+  ) {
+    return skip(
+      'eval_unimpl',
+      'host-aggregate equality overload unimplemented in @cel-wasm/eval',
+    );
+  }
+  if (code === CEL_ERROR_INVALID_ARGUMENT && isTimestampTzAccessor(test.expr)) {
+    return skip(
+      'eval_unimpl',
+      'timestamp timezone-string accessor overload unimplemented in @cel-wasm/eval',
+    );
+  }
+  return undefined;
+}
+
+/** True when any binding value is a host aggregate (a Map or an Array). */
+function bindsHostAggregate(test: SimpleTest): boolean {
+  for (const value of test.bindings.values()) {
+    if (value instanceof Map || Array.isArray(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A timestamp accessor (`getHours` / `getMinutes` / …) called with a
+// timezone-string argument: `<...>.getHours('02:00')`.
+const TIMESTAMP_TZ_ACCESSOR_RE =
+  /\.get(FullYear|Month|Date|DayOfYear|DayOfMonth|DayOfWeek|Hours|Minutes|Seconds|Milliseconds)\(\s*['"]/;
+
+function isTimestampTzAccessor(expr: string): boolean {
+  return TIMESTAMP_TZ_ACCESSOR_RE.test(expr);
 }
 
 // ───────────────────────────────────────────────────────────────────

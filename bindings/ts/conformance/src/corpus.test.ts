@@ -11,7 +11,6 @@ import { describe, expect, it } from 'vitest';
 import {
   expectedToInput,
   interpretValue,
-  latin1ToBytes,
   loadSimpleTestFile,
   type ExpectedValue,
 } from './corpus.js';
@@ -187,14 +186,29 @@ describe('expectedToInput', () => {
   });
 });
 
-describe('latin1ToBytes', () => {
-  it('maps escape-decoded chars 1:1', () => {
-    expect(Array.from(latin1ToBytes('\x00\xff'))).toEqual([0, 255]);
+describe('interpretValue — string vs bytes byte handling', () => {
+  it('reads a bytes_value as raw escape bytes (UTF-8 of ÿ)', () => {
+    // `\303\277` is the UTF-8 of ÿ; in a bytes field it stays two octets.
+    const v = interpretValue(valueMsg('bytes_value: "\\303\\277"'));
+    expect(v.kind).toBe('bytes');
+    if (v.kind === 'bytes') {
+      expect(Array.from(v.value)).toEqual([0xc3, 0xbf]);
+    }
   });
 
-  it('utf-8-encodes a literal multibyte char (code unit > 255)', () => {
-    // '€' is U+20AC — a single code unit above latin1, UTF-8 = E2 82 AC.
-    expect(Array.from(latin1ToBytes('€'))).toEqual([0xe2, 0x82, 0xac]);
+  it('reads a string_value whose escape bytes are UTF-8 (ÿ)', () => {
+    // The same bytes in a string field decode as UTF-8 → the char ÿ.
+    expect(interpretValue(valueMsg('string_value: "\\303\\277"'))).toEqual({
+      kind: 'string',
+      value: 'ÿ',
+    });
+  });
+
+  it('reads a string_value with a literal multibyte char', () => {
+    expect(interpretValue(valueMsg('string_value: "rôle"'))).toEqual({
+      kind: 'string',
+      value: 'rôle',
+    });
   });
 });
 
