@@ -33,6 +33,11 @@ const CORPUS_DIR = fileURLToPath(
 );
 const BASELINE_PATH = `${PACKAGE_DIR}.baseline`;
 const MAX_FAIL_PATH = `${PACKAGE_DIR}.max_fail`;
+// The committed conformance descriptor set (built by
+// scripts/build-conformance-fds.sh) supplying the proto2/proto3 test types.
+const DESCRIPTOR_SET_PATH = fileURLToPath(
+  new URL('../fixtures/cel_conformance_protos.fds', import.meta.url),
+);
 
 interface CliOptions {
   readonly update: boolean;
@@ -93,6 +98,7 @@ async function main(): Promise<number> {
 
   const report = await runCorpus({
     corpusDir: CORPUS_DIR,
+    descriptorSetPath: DESCRIPTOR_SET_PATH,
     ...(opts.files !== undefined ? { files: opts.files } : {}),
     onRow,
   });

@@ -74,6 +74,129 @@ export function compareEvalError(got: CelValue): string | undefined {
   return isCelError(got) ? undefined : mismatch('error', got);
 }
 
+/**
+ * Deep structural equality of two decoded {@link CelValue} trees — used for
+ * `object_value` matchers, where the expected message is built and decoded
+ * through the binding's own `messageToObject`, yielding a `CelValue` (not an
+ * `ExpectedValue`).  Returns `undefined` on a match, else a mismatch reason.
+ * Handles scalars, bigint, Uint8Array, arrays, Maps, the tagged
+ * timestamp/duration records, and message objects (`{ [field]: CelValue }`).
+ */
+export function celValuesEqual(
+  got: CelValue,
+  want: CelValue,
+): string | undefined {
+  if (got === null || want === null) {
+    return got === want
+      ? undefined
+      : `want ${describe(want)}, got ${describe(got)}`;
+  }
+  if (typeof want === 'bigint') {
+    return got === want
+      ? undefined
+      : `want ${want.toString()}, got ${describe(got)}`;
+  }
+  if (typeof want === 'number') {
+    return compareDouble(got, want);
+  }
+  if (typeof want === 'boolean' || typeof want === 'string') {
+    return got === want
+      ? undefined
+      : `want ${String(want)}, got ${describe(got)}`;
+  }
+  if (want instanceof Uint8Array) {
+    return compareBytes(got, want);
+  }
+  if (Array.isArray(want)) {
+    return celArraysEqual(got, want);
+  }
+  if (want instanceof Map) {
+    return celMapsEqual(got, want);
+  }
+  // A tagged record (timestamp / duration / error) or a message object.
+  return celObjectsEqual(got, want);
+}
+
+function celArraysEqual(
+  got: CelValue,
+  want: readonly CelValue[],
+): string | undefined {
+  if (!Array.isArray(got)) {
+    return mismatch('list', got);
+  }
+  if (got.length !== want.length) {
+    return `list size want=${String(want.length)} got=${String(got.length)}`;
+  }
+  for (let i = 0; i < want.length; i += 1) {
+    const g = got[i];
+    const w = want[i];
+    if (g === undefined || w === undefined) {
+      return `list[${String(i)}] missing`;
+    }
+    const reason = celValuesEqual(g, w);
+    if (reason !== undefined) {
+      return `list[${String(i)}]: ${reason}`;
+    }
+  }
+  return undefined;
+}
+
+function celMapsEqual(
+  got: CelValue,
+  want: Map<CelValue, CelValue>,
+): string | undefined {
+  if (!(got instanceof Map)) {
+    return mismatch('map', got);
+  }
+  if (got.size !== want.size) {
+    return `map size want=${String(want.size)} got=${String(got.size)}`;
+  }
+  const gotEntries = [...got.entries()];
+  for (const [wk, wv] of want) {
+    const match = gotEntries.find(
+      ([gk]) => celValuesEqual(gk, wk) === undefined,
+    );
+    if (match === undefined) {
+      return 'map key missing in result';
+    }
+    const reason = celValuesEqual(match[1], wv);
+    if (reason !== undefined) {
+      return `map value mismatch: ${reason}`;
+    }
+  }
+  return undefined;
+}
+
+function celObjectsEqual(
+  got: CelValue,
+  want: Record<string, CelValue> | object,
+): string | undefined {
+  if (
+    typeof got !== 'object' ||
+    got === null ||
+    Array.isArray(got) ||
+    got instanceof Uint8Array ||
+    got instanceof Map
+  ) {
+    return mismatch('message/record', got);
+  }
+  const g = got as Record<string, CelValue>;
+  const w = want as Record<string, CelValue>;
+  const keys = new Set([...Object.keys(g), ...Object.keys(w)]);
+  for (const key of keys) {
+    const gv = g[key];
+    const wv = w[key];
+    if (gv === undefined || wv === undefined) {
+      return `field '${key}' present on only one side`;
+    }
+    const reason = celValuesEqual(gv, wv);
+    if (reason !== undefined) {
+      return `field '${key}': ${reason}`;
+    }
+  }
+  return undefined;
+}
+
 function compareInteger(got: CelValue, want: bigint): string | undefined {
   if (typeof got === 'bigint' && got === want) {
     return undefined;

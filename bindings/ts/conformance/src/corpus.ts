@@ -61,9 +61,15 @@ export type ExpectedValue =
   | { readonly kind: 'enum'; readonly value: bigint }
   | { readonly kind: 'list'; readonly elements: readonly ExpectedValue[] }
   | { readonly kind: 'map'; readonly entries: readonly ExpectedMapEntry[] }
-  // object_value (proto construction) is out of scope (§A.3); modelled so
-  // the classifier can SKIP rather than the loader dropping the row.
-  | { readonly kind: 'object' }
+  // object_value (proto construction): an `Any` wrapping the expected
+  // message.  `fqn` is the unpacked message type (the `Any` type-url tail);
+  // `message` is the parsed textproto body — the comparator builds the
+  // expected protobufjs message from these against the loaded descriptors.
+  | {
+      readonly kind: 'object';
+      readonly fqn: string;
+      readonly message: TextprotoMessage;
+    }
   // A value message with no recognized kind (e.g. an empty `value {}`),
   // or one this model doesn't represent — carried as an out-of-envelope
   // sentinel so the classifier SKIPs rather than the loader throwing.
@@ -384,10 +390,44 @@ function interpretAggregateValue(value: TextprotoMessage): ExpectedValue {
   if (map !== undefined && map.kind === 'message') {
     return interpretMapValue(map);
   }
-  if (fieldValue(value, 'object_value') !== undefined) {
-    return { kind: 'object' };
+  const obj = fieldValue(value, 'object_value');
+  if (obj !== undefined && obj.kind === 'message') {
+    return interpretObjectValue(obj);
   }
   return { kind: 'unrecognized', reason: 'unrecognized cel.expr.Value kind' };
+}
+
+// An `object_value` matcher is a `google.protobuf.Any` rendered in textproto
+// as a single Any-expansion field: `[type.googleapis.com/<fqn>] { <body> }`.
+// The textproto reader surfaces that as one field whose name is the bracketed
+// extension token; pull the FQN out of the type-url and keep the body as the
+// raw message for the comparator to build against the descriptors.
+function interpretObjectValue(obj: TextprotoMessage): ExpectedValue {
+  for (const [fieldName, values] of obj.fields) {
+    const fqn = anyTypeUrlFqn(fieldName);
+    if (fqn === undefined) {
+      continue;
+    }
+    const body = values[0];
+    if (body === undefined || body.kind !== 'message') {
+      continue;
+    }
+    return { kind: 'object', fqn, message: body };
+  }
+  return {
+    kind: 'unrecognized',
+    reason: 'object_value Any has no `[type.url]{...}` expansion',
+  };
+}
+
+// Extract the message FQN from an Any-expansion field name. The textproto
+// reader renders the bracketed name as `[type.googleapis.com/<fqn>]`; the
+// FQN is the path tail after the host part.
+const ANY_FIELD_RE = /^\[[^/\]]*\/([^\]]+)\]$/;
+
+function anyTypeUrlFqn(fieldName: string): string | undefined {
+  const m = ANY_FIELD_RE.exec(fieldName);
+  return m?.[1];
 }
 
 function interpretMapValue(map: TextprotoMessage): ExpectedValue {

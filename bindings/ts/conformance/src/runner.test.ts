@@ -7,14 +7,16 @@
 // Needs the `cel` CLI built; the suite skips with the build recipe when
 // it is absent (not a silent pass).
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { Engine } from '@cel-wasm/eval';
+import { DescriptorSet } from '@cel-wasm/eval/proto';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import type { SimpleTest } from './corpus.js';
-import { runRow, type RowResult } from './runner.js';
+import { runRow, type ProtoEnv, type RowResult } from './runner.js';
+import { parseTextproto } from './textproto.js';
 
 const CLI_PATH = fileURLToPath(
   new URL('../../../../bazel-bin/tools/cel/cel', import.meta.url),
@@ -156,5 +158,65 @@ describe('runRow — classification', () => {
   it.skipIf(cliBuilt)('SKIPPED: cel CLI not built', () => {
     // Build with `bazel build //tools/cel:cel`, then re-run.
     expect(cliBuilt).toBe(false);
+  });
+});
+
+// With a descriptor set wired into both compile (`--descriptor_set`) and the
+// Engine (`Engine.create({descriptors})`), proto construction / field-read
+// rows run instead of skipping.  These pin the object_value PASS path + the
+// field-read PASS path end-to-end.
+const FDS_PATH = fileURLToPath(
+  new URL('../fixtures/cel_conformance_protos.fds', import.meta.url),
+);
+const protoReady = cliBuilt && existsSync(FDS_PATH);
+
+describe('runRow — proto descriptor path', () => {
+  let engine: Engine;
+  let proto: ProtoEnv;
+
+  beforeAll(async () => {
+    if (protoReady) {
+      const bytes = new Uint8Array(readFileSync(FDS_PATH));
+      engine = await Engine.create({ descriptors: bytes });
+      proto = {
+        descriptors: DescriptorSet.fromFileDescriptorSet(bytes),
+        descriptorSetPath: FDS_PATH,
+      };
+    }
+  });
+
+  it.runIf(protoReady)('passes an object_value construction row', async () => {
+    const r = await runRow(
+      row({
+        expr: 'cel.expr.conformance.proto3.TestAllTypes{single_int64: 17}',
+        matcher: {
+          kind: 'value',
+          value: {
+            kind: 'object',
+            fqn: 'cel.expr.conformance.proto3.TestAllTypes',
+            message: parseTextproto('single_int64: 17'),
+          },
+        },
+      }),
+      engine,
+      proto,
+    );
+    expect(r.outcome).toBe('pass');
+  });
+
+  it.runIf(protoReady)('passes a proto field-read row', async () => {
+    const r = await runRow(
+      row({
+        expr: 'cel.expr.conformance.proto3.TestAllTypes{single_int64: 17}.single_int64',
+        matcher: { kind: 'value', value: { kind: 'int', value: 17n } },
+      }),
+      engine,
+      proto,
+    );
+    expect(r.outcome).toBe('pass');
+  });
+
+  it.skipIf(protoReady)('SKIPPED: cel CLI or FDS fixture not built', () => {
+    expect(protoReady).toBe(false);
   });
 });

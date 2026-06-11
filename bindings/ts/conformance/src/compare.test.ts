@@ -5,7 +5,12 @@
 import type { CelValue } from '@cel-wasm/eval';
 import { describe, expect, it } from 'vitest';
 
-import { compareEvalError, compareValue, isCelError } from './compare.js';
+import {
+  celValuesEqual,
+  compareEvalError,
+  compareValue,
+  isCelError,
+} from './compare.js';
 import type { ExpectedValue } from './corpus.js';
 
 function err(code: number): CelValue {
@@ -161,5 +166,60 @@ describe('isCelError', () => {
     expect(isCelError({ kind: 'timestamp', epochSeconds: 0n, nanos: 0 })).toBe(
       false,
     );
+  });
+});
+
+describe('celValuesEqual — deep CelValue equality (object_value compare)', () => {
+  it('matches equal scalars across kinds', () => {
+    expect(celValuesEqual(1n, 1n)).toBeUndefined();
+    expect(celValuesEqual(1n, 2n)).toBeDefined();
+    expect(celValuesEqual(true, true)).toBeUndefined();
+    expect(celValuesEqual('a', 'a')).toBeUndefined();
+    expect(celValuesEqual('a', 'b')).toBeDefined();
+    expect(celValuesEqual(null, null)).toBeUndefined();
+    expect(celValuesEqual(null, 1n)).toBeDefined();
+  });
+
+  it('matches doubles with NaN-equals-NaN', () => {
+    expect(celValuesEqual(1.5, 1.5)).toBeUndefined();
+    expect(celValuesEqual(NaN, NaN)).toBeUndefined();
+    expect(celValuesEqual(1.5, 2.5)).toBeDefined();
+  });
+
+  it('matches bytes element-wise', () => {
+    expect(
+      celValuesEqual(Uint8Array.of(1, 2), Uint8Array.of(1, 2)),
+    ).toBeUndefined();
+    expect(celValuesEqual(Uint8Array.of(1), Uint8Array.of(1, 2))).toBeDefined();
+  });
+
+  it('matches lists order-aware', () => {
+    expect(celValuesEqual([1n, 2n], [1n, 2n])).toBeUndefined();
+    expect(celValuesEqual([1n, 2n], [2n, 1n])).toBeDefined();
+  });
+
+  it('matches maps order-agnostic', () => {
+    const a = new Map<CelValue, CelValue>([
+      ['x', 1n],
+      ['y', 2n],
+    ]);
+    const b = new Map<CelValue, CelValue>([
+      ['y', 2n],
+      ['x', 1n],
+    ]);
+    expect(celValuesEqual(a, b)).toBeUndefined();
+    expect(celValuesEqual(a, new Map([['x', 1n]]))).toBeDefined();
+  });
+
+  it('matches message objects field-by-field', () => {
+    const got: CelValue = { a: 1n, b: 'hi', c: [true] };
+    expect(celValuesEqual(got, { a: 1n, b: 'hi', c: [true] })).toBeUndefined();
+    expect(celValuesEqual(got, { a: 2n, b: 'hi', c: [true] })).toBeDefined();
+    expect(celValuesEqual(got, { a: 1n, b: 'hi' })).toBeDefined();
+  });
+
+  it('matches nested message + tagged records', () => {
+    const ts = { kind: 'timestamp', epochSeconds: 5n, nanos: 0 };
+    expect(celValuesEqual({ when: ts }, { when: { ...ts } })).toBeUndefined();
   });
 });

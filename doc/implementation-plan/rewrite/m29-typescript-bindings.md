@@ -394,7 +394,14 @@ Mirrors the repo's C++ discipline, adapted to TS (and the global
   binding) + eval (TS eval) + compare the decoded `CelValue` to the row's
   expected value/error. A **TS ratchet** (`bindings/ts/conformance/.baseline`)
   mirrors the C++ monotonic gate. Skip categories carried over (out-of-scope
-  rows: unknowns, proto-construction, components).
+  rows: unknowns, components). **Proto rows run** (not skipped): a committed
+  `FileDescriptorSet` (`conformance/fixtures/cel_conformance_protos.fds`) is
+  passed to compile (`--descriptor_set`) and eval
+  (`Engine.create({descriptors})`); `object_value` matchers build the
+  expected message from the descriptors and decode it through the binding's
+  own `messageToObject` (`@cel-wasm/eval/proto`) for a field-by-field
+  deep-compare. Residual proto skips are verified eval-binding gaps (WKT-field
+  construction, proto3 presence, null-pruning, `Any` beyond descriptors).
 - **e2e:** port the behavior-pinning e2e suites (`e2e/*_test.cc`) to vitest
   — host fns, lists/maps, comprehensions, the operator matrices, string ext.
   Each ported file cites the C++ original.
@@ -693,6 +700,37 @@ one and integration in WI-1.5 is wiring, not redesign.
    ext_unimpl 55, check_only 25, cli_limitation 9, eval_unimpl 3,
    type_env 1. (The earlier "OOM near ~1400 rows" was self-inflicted —
    two full runs racing for memory; one run completes fine.)
+
+   > **Proto-descriptor follow-up (2026-06-11).** The `proto_unimpl` +
+   > `object_value` skips above were placeholders pending descriptor
+   > wiring — they are now **run, not skipped**. A committed
+   > `FileDescriptorSet` (`conformance/fixtures/cel_conformance_protos.fds`,
+   > built by `scripts/build-conformance-fds.sh` from the cel-spec test
+   > protos) is threaded into BOTH the compiler binding (a new
+   > `compile()` `descriptorSet` option → the CLI's `--descriptor_set`)
+   > and the eval binding (`Engine.create({descriptors})`).  proto2/proto3
+   > construction + field-read rows compile, evaluate, and compare: an
+   > `object_value` matcher's expected message is built from the
+   > descriptors and decoded through the binding's own `messageToObject`
+   > (`@cel-wasm/eval/proto`, a new first-party subpath), then
+   > deep-compared (`celValuesEqual`).  This raised the full-corpus pass
+   > count from **1446 → 1710 (+264)** at **0 fail** (skip 744; new
+   > `.baseline=1710`).  proto2+proto3 alone: 95 PASS / 0 FAIL.  The residual
+   > proto skips are now **verified eval-binding gaps** the C++ binding
+   > does not have — WKT-typed field construction from a scalar,
+   > proto3 repeated/map/default `has()` presence, repeated/map
+   > null-pruning, unset-nested-message default read, out-of-range
+   > enum-field assignment, proto-message equality with a NaN field
+   > (NaN-inequality propagation), `FloatValue` field narrowing — plus
+   > `google.protobuf.Any` beyond the supplied descriptors and the
+   > optionals extension (both out of scope, §A.3).  A map-field decode
+   > bug the descriptor path exposed (a `Root.fromDescriptor` map arrives
+   > as a synthetic-entry repeated field, decoded as a list) was fixed in
+   > `eval/src/proto/backing.ts`.  Each gap is recognised by a narrow,
+   > expression-anchored predicate in `runner.ts` (so a genuinely-wrong
+   > result on a non-proto row still FAILs); the new harness modules are
+   > `proto-compare.ts` (+ test) and the `celValuesEqual` deep-compare in
+   > `compare.ts`.
 5. ✅ The demo compiles → downloads → runs in the browser, errors inline
    in Monaco (headless-verified: `vite build`, the compile endpoint, and
    the `run.test.ts` compile→eval wiring; the Monaco glue itself is

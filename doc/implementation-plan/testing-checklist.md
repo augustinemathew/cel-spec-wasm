@@ -3206,10 +3206,15 @@ Gate: `lint` + `build` + `typecheck` + `test` green — 781 pass / 13 skip
   - [x] e2e behavior ports — `eval/e2e/*.test.ts` (200 + 11 skip):
         operators/strings/lists/maps/comprehensions/conversions/
         timestamps, each citing its `e2e/*_test.cc` origin + langdef.
-  - [x] conformance harness — `conformance/src/*.test.ts` (108): textproto
+  - [x] conformance harness — `conformance/src/*.test.ts`: textproto
         reader (all 2454 rows / 30 files), classify (skip categories),
-        compare, monotonic ratchet. Full corpus: **1446 pass / 1008
-        categorized skip / 0 fail** (`.baseline=1446`, `.max_fail=0`).
+        compare + `celValuesEqual` deep-compare, `proto-compare` expected-
+        message builder, monotonic ratchet. Full corpus with proto
+        descriptors wired into compile (`--descriptor_set`) + eval
+        (`Engine.create({descriptors})`): **1710 pass / 744 categorized
+        skip / 0 fail** (`.baseline=1710`, `.max_fail=0`) — proto2/proto3
+        construction + field-read rows run; residual proto skips are
+        verified eval-binding gaps.
   - [x] browser demo — `web/**/*.test.ts` (84): variables parse, render,
         compile-client transport, dev-server endpoint, and the
         `src/run.test.ts` compile→eval wiring proof. Monaco glue is

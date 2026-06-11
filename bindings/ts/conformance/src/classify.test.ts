@@ -57,8 +57,10 @@ describe('renderType', () => {
     expect(renderType(t)).toBe('map<string, list<int>>');
   });
 
-  it('returns undefined for a non-WKT message type', () => {
-    expect(renderType({ kind: 'message', fqn: 'cel.expr.X' })).toBeUndefined();
+  it('renders a non-WKT message type to its fully-qualified name', () => {
+    expect(renderType({ kind: 'message', fqn: 'cel.expr.X' })).toBe(
+      'cel.expr.X',
+    );
   });
 
   it('returns undefined for an unsupported decl', () => {
@@ -92,20 +94,29 @@ describe('classifyScope', () => {
     expect(d.kind === 'skip' && d.category).toBe('envelope');
   });
 
-  it('skips an object_value matcher', () => {
+  it('proceeds an object_value matcher (compared against descriptors)', () => {
     const d = classifyScope(
-      row({ matcher: { kind: 'value', value: { kind: 'object' } } }),
+      row({
+        matcher: {
+          kind: 'value',
+          value: {
+            kind: 'object',
+            fqn: 'cel.expr.conformance.proto3.TestAllTypes',
+            message: { kind: 'message', fields: new Map() },
+          },
+        },
+      }),
     );
-    expect(d.kind === 'skip' && d.category).toBe('object_value');
+    expect(d.kind).toBe('proceed');
   });
 
-  it('skips a row whose type_env has a non-WKT message decl', () => {
+  it('renders a non-WKT message type_env decl to its FQN', () => {
     const d = classifyScope(
       row({
         typeEnv: [{ name: 'm', type: { kind: 'message', fqn: 'cel.expr.X' } }],
       }),
     );
-    expect(d.kind === 'skip' && d.category).toBe('type_env');
+    expect(d.kind === 'proceed' && d.compileVars[0]?.type).toBe('cel.expr.X');
   });
 
   it('skips a row with an unsupported binding value', () => {

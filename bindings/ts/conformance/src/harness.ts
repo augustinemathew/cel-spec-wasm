@@ -5,13 +5,14 @@
 //
 // Spec: doc/implementation-plan/rewrite/m29-typescript-bindings.md §A.7.
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 import { Engine } from '@cel-wasm/eval';
+import { DescriptorSet } from '@cel-wasm/eval/proto';
 
 import type { SkipCategory } from './classify.js';
 import { loadSimpleTestFile, type SimpleTest } from './corpus.js';
-import { runRow, type RowResult } from './runner.js';
+import { runRow, type ProtoEnv, type RowResult } from './runner.js';
 import { parseTextproto } from './textproto.js';
 
 /** A row tagged with its outcome — used for the FAIL / per-row detail list. */
@@ -43,6 +44,38 @@ export interface RunCorpusOptions {
   readonly files?: readonly string[];
   /** Called after each row completes (for progress reporting). */
   readonly onRow?: (tagged: TaggedResult) => void;
+  /**
+   * Absolute path to a serialized `FileDescriptorSet` supplying the
+   * conformance test message types.  When present, proto rows compile (via
+   * the compiler binding's `--descriptor_set`) and eval (via
+   * `Engine.create({descriptors})`) instead of skipping.  When absent, proto
+   * rows SKIP as `proto_unimpl`.
+   */
+  readonly descriptorSetPath?: string;
+}
+
+interface ProtoSetup {
+  readonly env: ProtoEnv;
+  /** The descriptor bytes for `Engine.create`, or `undefined` if none. */
+  readonly descriptorBytes: Uint8Array | undefined;
+}
+
+/** Load the descriptor set (once) into both the {@link ProtoEnv} + Engine bytes. */
+function loadProtoSetup(descriptorSetPath: string | undefined): ProtoSetup {
+  if (descriptorSetPath === undefined || !existsSync(descriptorSetPath)) {
+    return {
+      env: { descriptors: undefined, descriptorSetPath: undefined },
+      descriptorBytes: undefined,
+    };
+  }
+  const bytes = new Uint8Array(readFileSync(descriptorSetPath));
+  return {
+    env: {
+      descriptors: DescriptorSet.fromFileDescriptorSet(bytes),
+      descriptorSetPath,
+    },
+    descriptorBytes: bytes,
+  };
 }
 
 /** Load every corpus row under `corpusDir` (optionally a subset of files). */
@@ -75,7 +108,12 @@ export async function runCorpus(
   opts: RunCorpusOptions,
 ): Promise<ConformanceReport> {
   const rows = loadCorpus(opts.corpusDir, opts.files);
-  const engine = await Engine.create();
+  const proto = loadProtoSetup(opts.descriptorSetPath);
+  const engine = await Engine.create(
+    proto.descriptorBytes !== undefined
+      ? { descriptors: proto.descriptorBytes }
+      : {},
+  );
 
   let pass = 0;
   let skip = 0;
@@ -84,7 +122,7 @@ export async function runCorpus(
   const failures: TaggedResult[] = [];
 
   for (const row of rows) {
-    const result = await runRow(row, engine);
+    const result = await runRow(row, engine, proto.env);
     const tagged: TaggedResult = {
       file: row.file,
       section: row.section,

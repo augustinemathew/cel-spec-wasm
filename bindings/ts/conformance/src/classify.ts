@@ -34,6 +34,7 @@ export type SkipCategory =
   | 'static_subset' // a `dyn` / dynamic-typing construct (RejectDyn)
   | 'compile_unimpl' // compiler rejected a not-yet-supported construct
   | 'eval_unimpl' // eval rejected a not-yet-supported construct
+  | 'spec_unimpl' // a feature the CEL spec flags "specified but not implemented"
   | 'cli_limitation'; // the expr can't pass through the CLI process-arg boundary
 
 /** A pre-compile scope decision: either a SKIP or "proceed to compile". */
@@ -89,9 +90,9 @@ function classifyMatcher(test: SimpleTest): ScopeDecision | undefined {
   if (m.kind === 'unsupported') {
     return skip('envelope', m.reason);
   }
-  if (m.kind === 'value' && m.value.kind === 'object') {
-    return skip('object_value', 'object_value matcher (proto construction)');
-  }
+  // object_value matchers (proto construction) now run: the comparator
+  // builds the expected message from the descriptor set (`proto-compare.ts`)
+  // and deep-compares the decoded result.  They are no longer pre-skipped.
   if (m.kind === 'value' && m.value.kind === 'unrecognized') {
     return skip('envelope', m.value.reason);
   }
@@ -122,9 +123,10 @@ export function renderType(type: DeclaredType): string | undefined {
     case 'wellKnown':
       return renderWellKnown(type.name);
     case 'message':
-      // A non-WKT message type needs a descriptor set the harness does
-      // not load — proto rows are out of scope (§A.3).
-      return undefined;
+      // A non-WKT message type resolves against the descriptor set the
+      // harness now loads — render it as its fully-qualified name (the
+      // compiler's `--var name:<fqn>` surface).
+      return type.fqn;
     case 'list': {
       // The `cel` CLI's --var type grammar uses angle brackets
       // (`list<T>`, `map<K,V>`) — see tools/cel/var_parser.cc:ParseListT.

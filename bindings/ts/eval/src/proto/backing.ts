@@ -202,13 +202,49 @@ function resolveField(
 }
 
 function decodeField(field: protobuf.Field, value: unknown): CelValue {
-  if (field.map) {
-    return decodeMap(field, asRecord(value));
+  if (isMapField(field)) {
+    return decodeMap(field, value);
   }
   if (field.repeated) {
     return decodeRepeated(field, value);
   }
   return decodeSingular(field, value);
+}
+
+/**
+ * True iff `field` is a protobuf map field.  A `Root` built from a
+ * `FileDescriptorSet` (`Root.fromDescriptor`) does not reconstruct
+ * `MapField` instances — a `map<K,V>` arrives as a `repeated` field whose
+ * resolved element type is the synthetic `*Entry` message carrying the
+ * `map_entry` option.  `field.map` is therefore unreliable across descriptor
+ * sources; the `map_entry` option on the resolved element type is the
+ * authoritative signal (and matches what `protoc` stamps).
+ */
+function isMapField(field: protobuf.Field): boolean {
+  if (field.map) {
+    return true;
+  }
+  if (!field.repeated) {
+    return false;
+  }
+  field.resolve();
+  const elem = field.resolvedType;
+  // The `map_entry` option is necessary but not sufficient: protobufjs's
+  // `Root.fromDescriptor` over-stamps it onto types that merely *contain* a
+  // map field (e.g. `google.protobuf.Struct`).  A genuine synthetic map-entry
+  // type also has exactly the two fields `key` and `value`; require both.
+  if (
+    !(elem instanceof protobuf.Type) ||
+    (elem.options as { map_entry?: boolean } | undefined)?.map_entry !== true
+  ) {
+    return false;
+  }
+  const names = Object.keys(elem.fields);
+  return (
+    names.length === 2 &&
+    elem.fields.key !== undefined &&
+    elem.fields.value !== undefined
+  );
 }
 
 function decodeSingular(field: protobuf.Field, value: unknown): CelValue {
@@ -278,20 +314,84 @@ function decodeRepeated(field: protobuf.Field, value: unknown): CelValue {
   return value.map(elementDecode);
 }
 
-function decodeMap(
-  field: protobuf.Field,
-  value: Record<string, unknown>,
-): CelValue {
+function decodeMap(field: protobuf.Field, value: unknown): CelValue {
   const out = new Map<CelValue, CelValue>();
-  if (!(field instanceof protobuf.MapField)) {
-    throw new Error(`field '${field.name}' is not a map field`);
+  const { keyType, keyDecode, valueDecode } = mapDecoders(field);
+  // A `MapField` stores its entries as a `{ K: V }` record; a synthetic
+  // map-entry `repeated` field (descriptors from `Root.fromDescriptor`)
+  // stores an array of `{ key, value }` entry messages.  Handle both.
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const rec = asRecord(entry);
+      out.set(keyDecode(rec.key), valueDecode(rec.value));
+    }
+    return out;
   }
-  const keyType = field.keyType;
-  const elementDecode = singularElementDecoder(field);
-  for (const [rawKey, rawVal] of Object.entries(value)) {
-    out.set(decodeMapKey(keyType, rawKey), elementDecode(rawVal));
+  for (const [rawKey, rawVal] of Object.entries(asRecord(value))) {
+    out.set(decodeMapKey(keyType, rawKey), valueDecode(rawVal));
   }
   return out;
+}
+
+/**
+ * The (keyType, value-element decoder) pair for a map field.  A `MapField`
+ * (descriptors from `.proto` source / the generated pool) carries `keyType`
+ * directly and its value type is the field's own resolved type.  A synthetic
+ * map-entry `repeated` field (descriptors from `Root.fromDescriptor`) instead
+ * exposes the entry message's `key` / `value` sub-fields — read both off the
+ * entry type.
+ */
+function mapDecoders(field: protobuf.Field): {
+  keyType: string;
+  keyDecode: (raw: unknown) => CelValue;
+  valueDecode: (element: unknown) => CelValue;
+} {
+  if (field instanceof protobuf.MapField) {
+    return {
+      keyType: field.keyType,
+      keyDecode: (raw) => decodeMapKey(field.keyType, stringifyMapKey(raw)),
+      valueDecode: singularElementDecoder(field),
+    };
+  }
+  field.resolve();
+  const entry = field.resolvedType;
+  if (!(entry instanceof protobuf.Type)) {
+    throw new Error(`map field '${field.name}' has no entry type`);
+  }
+  const keyField = entry.fields.key;
+  const valueField = entry.fields.value;
+  if (keyField === undefined || valueField === undefined) {
+    throw new Error(`map field '${field.name}' entry lacks key/value`);
+  }
+  keyField.resolve();
+  valueField.resolve();
+  const keyType = keyField.type;
+  return {
+    keyType,
+    keyDecode: (raw) => decodeMapKey(keyType, stringifyMapKey(raw)),
+    valueDecode: singularElementDecoder(valueField),
+  };
+}
+
+// A map key off a synthetic entry message is a proto scalar (string / number /
+// bool / Long).  `decodeMapKey` re-parses it from a string, so normalize any
+// scalar form to its string spelling without tripping a base-to-string lint on
+// `unknown`.
+function stringifyMapKey(raw: unknown): string {
+  if (typeof raw === 'string') {
+    return raw;
+  }
+  if (
+    typeof raw === 'number' ||
+    typeof raw === 'bigint' ||
+    typeof raw === 'boolean'
+  ) {
+    return String(raw);
+  }
+  if (isLongLike(raw)) {
+    return raw.toString();
+  }
+  return '';
 }
 
 /**

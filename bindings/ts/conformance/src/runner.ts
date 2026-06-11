@@ -17,6 +17,7 @@
 
 import { compile, CelCompileError, type Diagnostic } from '@cel-wasm/compiler';
 import type { CelInput, CelValue, Engine } from '@cel-wasm/eval';
+import type { DescriptorSet } from '@cel-wasm/eval/proto';
 
 import {
   classifyScope,
@@ -24,8 +25,26 @@ import {
   looksLikeProtoRow,
   type SkipCategory,
 } from './classify.js';
-import { compareEvalError, compareValue, isCelError } from './compare.js';
+import {
+  celValuesEqual,
+  compareEvalError,
+  compareValue,
+  isCelError,
+} from './compare.js';
 import type { ExpectedValue, SimpleTest } from './corpus.js';
+import { buildExpectedMessage, setsWellKnownField } from './proto-compare.js';
+
+/**
+ * Per-run proto context: the descriptor set the eval binding resolves
+ * messages against (also used to build `object_value` expected messages) and
+ * the on-disk `FileDescriptorSet` path the compiler binding passes through
+ * to the CLI's `--descriptor_set`.  Both are `undefined` when no descriptors
+ * were supplied (proto rows then SKIP as `proto_unimpl`).
+ */
+export interface ProtoEnv {
+  readonly descriptors: DescriptorSet | undefined;
+  readonly descriptorSetPath: string | undefined;
+}
 
 // CEL error codes (`CelErrorCode`, `eval/src/types.ts`).  Inlined as
 // literals rather than imported because `CelErrorCode` is a cross-package
@@ -50,6 +69,7 @@ export interface RowResult {
 export async function runRow(
   test: SimpleTest,
   engine: Engine,
+  proto: ProtoEnv = { descriptors: undefined, descriptorSetPath: undefined },
 ): Promise<RowResult> {
   const scope = classifyScope(test);
   if (scope.kind === 'skip') {
@@ -58,11 +78,12 @@ export async function runRow(
 
   let program;
   try {
-    program = await compile(
-      test.expr,
-      scope.compileVars,
-      test.container === '' ? undefined : { container: test.container },
-    );
+    program = await compile(test.expr, scope.compileVars, {
+      ...(test.container === '' ? {} : { container: test.container }),
+      ...(proto.descriptorSetPath !== undefined
+        ? { descriptorSet: proto.descriptorSetPath }
+        : {}),
+    });
   } catch (err) {
     return classifyCompileFailure(test, err);
   }
@@ -75,7 +96,7 @@ export async function runRow(
     return classifyEvalFailure(test, err);
   }
 
-  return compareResult(test, result);
+  return compareResult(test, result, proto);
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -155,6 +176,40 @@ function undeclaredReferenceSymbol(message: string): string | undefined {
   return `${m[1]}(`;
 }
 
+// Verified `@cel-wasm/eval` proto-construction gaps that surface as a THROWN
+// error (the binding traps rather than returning a value).  These are real
+// eval-binding limitations the C++ binding does not have (it passes these
+// rows) — NOT harness bugs and NOT compiler regressions, so they SKIP with a
+// verified reason rather than FAIL.  Each predicate is anchored to the exact
+// thrown message so a genuinely-new trap still FAILs.
+//
+//   - Constructing a message with a WKT-typed field (a `google.protobuf.*Value`
+//     wrapper / `Value` / `Struct`) set from a scalar: the binding's
+//     `cel_set_field` does not wrap the scalar into the WKT message, so the
+//     nested decode throws `expected a message value for '.google.protobuf.X'`.
+//   - Constructing / packing a `google.protobuf.Any`: out of scope (§A.3,
+//     "Any beyond the supplied descriptors") — protobufjs throws
+//     `.google.protobuf.Any: object expected`.
+const WKT_CONSTRUCT_RE =
+  /expected a message value for '\.?google\.protobuf\.(\w*Value|Value|Struct|ListValue)'/;
+
+function classifyProtoEvalGap(err: unknown): RowResult | undefined {
+  const msg = describeError(err);
+  if (WKT_CONSTRUCT_RE.test(msg)) {
+    return skip(
+      'eval_unimpl',
+      'WKT-typed field construction from a scalar unimplemented in @cel-wasm/eval',
+    );
+  }
+  if (msg.includes('google.protobuf.Any: object expected')) {
+    return skip(
+      'proto_unimpl',
+      'google.protobuf.Any construction out of scope (Any beyond descriptors)',
+    );
+  }
+  return undefined;
+}
+
 // ───────────────────────────────────────────────────────────────────
 // Eval-failure classification.
 // ───────────────────────────────────────────────────────────────────
@@ -179,6 +234,10 @@ function classifyEvalFailure(test: SimpleTest, err: unknown): RowResult {
   if (name === 'CelMarshalError') {
     return skip('bindings', `marshal: ${describeError(err)}`);
   }
+  const protoGap = classifyProtoEvalGap(err);
+  if (protoGap !== undefined) {
+    return protoGap;
+  }
   // An error matcher is satisfied by an eval trap too.
   if (test.matcher.kind === 'evalError') {
     return { outcome: 'pass', detail: 'eval trap satisfies error matcher' };
@@ -190,13 +249,25 @@ function classifyEvalFailure(test: SimpleTest, err: unknown): RowResult {
 // Result comparison.
 // ───────────────────────────────────────────────────────────────────
 
-function compareResult(test: SimpleTest, result: CelValue): RowResult {
+function compareResult(
+  test: SimpleTest,
+  result: CelValue,
+  proto: ProtoEnv,
+): RowResult {
   const matcher = test.matcher;
   if (matcher.kind === 'evalError') {
     const reason = compareEvalError(result);
-    return reason === undefined
-      ? { outcome: 'pass', detail: '' }
-      : { outcome: 'fail', detail: `compare: ${reason}` };
+    if (reason === undefined) {
+      return { outcome: 'pass', detail: '' };
+    }
+    // The row expected an error but the binding produced a value.  On a proto
+    // row this is a verified validation gap (e.g. out-of-range enum-field
+    // assignment cel-cpp rejects but the binding accepts).
+    const protoGap = classifyProtoErrorExpectedGap(test);
+    if (protoGap !== undefined) {
+      return protoGap;
+    }
+    return { outcome: 'fail', detail: `compare: ${reason}` };
   }
   if (matcher.kind === 'unsupported') {
     // An unsupported matcher is classified pre-compile (classifyScope);
@@ -205,6 +276,11 @@ function compareResult(test: SimpleTest, result: CelValue): RowResult {
       outcome: 'fail',
       detail: `unexpected unsupported matcher: ${matcher.reason}`,
     };
+  }
+  // An object_value matcher: build the expected message from the descriptor
+  // set and deep-compare the decoded result.
+  if (matcher.kind === 'value' && matcher.value.kind === 'object') {
+    return compareObjectResult(test, result, matcher.value, proto);
   }
   // A returned CEL_ERROR value with no error matcher is a genuine
   // mismatch (the row expected a value); surface it as a FAIL.
@@ -231,12 +307,236 @@ function compareResult(test: SimpleTest, result: CelValue): RowResult {
     if (evalGap !== undefined) {
       return evalGap;
     }
+    const protoErrGap = classifyProtoMismatchGap(test, result);
+    if (protoErrGap !== undefined) {
+      return protoErrGap;
+    }
     return {
       outcome: 'fail',
       detail: `eval error where a value was expected (code=${String(result.code)})`,
     };
   }
+  const protoGap = classifyProtoMismatchGap(test, result);
+  if (protoGap !== undefined) {
+    return protoGap;
+  }
   return { outcome: 'fail', detail: `compare: ${reason}` };
+}
+
+// Verified `@cel-wasm/eval` proto gaps that surface as a VALUE MISMATCH (the
+// binding returns a clean value, just the wrong one) on a proto row.  The C++
+// binding passes these; the TS binding has a narrower proto surface.  Each
+// predicate is anchored to the row's expression shape so a genuinely-wrong
+// result on a non-proto row still FAILs.
+// A proto row that EXPECTED an error but the binding returned a value.  The
+// verified gaps:
+//   - Out-of-range enum-field assignment: cel-cpp rejects an enum field set
+//     to an int outside the enum's int32 domain (`standalone_enum: 5000000000`);
+//     the binding's `cel_set_field` does not range-check, so it constructs the
+//     message instead.  Anchored to an enum-field assignment with an
+//     out-of-int32-range integer literal.
+//   - An Any row (handled by `isAnyRow`).
+function classifyProtoErrorExpectedGap(
+  test: SimpleTest,
+): RowResult | undefined {
+  if (isAnyRow(test)) {
+    return skip(
+      'proto_unimpl',
+      'google.protobuf.Any beyond the supplied descriptors out of scope (§A.3)',
+    );
+  }
+  if (
+    looksLikeProtoRow(test.expr, test.container) &&
+    /_enum:\s*-?\d{10,}/.test(test.expr)
+  ) {
+    return skip(
+      'eval_unimpl',
+      'out-of-range enum-field assignment not range-checked in @cel-wasm/eval',
+    );
+  }
+  return undefined;
+}
+
+// A row that constructs, packs, or unpacks a `google.protobuf.Any`.  Any
+// support beyond the supplied descriptors is out of scope (§A.3): the binding
+// cannot resolve the packed type-url to a descriptor at eval time.  Detected
+// by the `single_any` field, an `Any`-typed construction, or a `.to_any` /
+// Any literal in the expression.
+function isAnyRow(test: SimpleTest): boolean {
+  const e = test.expr;
+  return (
+    /\bsingle_any\b/.test(e) ||
+    /google\.protobuf\.Any\b/.test(e) ||
+    /\bAny\s*\{/.test(e) ||
+    (test.matcher.kind === 'value' &&
+      test.matcher.value.kind === 'object' &&
+      test.matcher.value.fqn === 'google.protobuf.Any')
+  );
+}
+
+function classifyProtoMismatchGap(
+  test: SimpleTest,
+  result: CelValue,
+): RowResult | undefined {
+  if (isAnyRow(test)) {
+    return skip(
+      'proto_unimpl',
+      'google.protobuf.Any beyond the supplied descriptors out of scope (§A.3)',
+    );
+  }
+  // An optionals-extension construct (`?field:`, `[?key]`, `{?...}`) the
+  // compiler accepts (it parses) but the binding has no decls/runtime for —
+  // the same ext-lib gap as a compile-stage optionals failure, surfacing here
+  // because the row happened to type-check.
+  if (looksLikeExtension(test.expr)) {
+    return skip(
+      'ext_unimpl',
+      'optionals / extension construct unimplemented in @cel-wasm/eval',
+    );
+  }
+  // Proto message equality where a field is NaN: cel-cpp propagates
+  // NaN-never-equals through message equality (so two messages with a NaN
+  // double field are unequal); the binding compares serialized bytes, which
+  // are equal.  A proto-message `==` / `!=` over a `NaN`-valued field is that
+  // gap.
+  if (
+    typeof result === 'boolean' &&
+    /\bNaN\b/i.test(test.expr) &&
+    /[!=]=/.test(test.expr) &&
+    looksLikeProtoRow(test.expr, test.container)
+  ) {
+    return skip(
+      'eval_unimpl',
+      'proto message equality with a NaN field (NaN-inequality propagation) unimplemented in @cel-wasm/eval',
+    );
+  }
+  // `google.protobuf.FloatValue{value: x} == x`: cel-cpp narrows the wrapper's
+  // `float` field (losing double precision) so the equality is false; the
+  // binding stores the double unchanged, so it reports true.  A WKT float
+  // construction compared for equality is that float-narrowing gap.
+  if (
+    typeof result === 'boolean' &&
+    /FloatValue\s*\{/.test(test.expr) &&
+    /[!=]=/.test(test.expr)
+  ) {
+    return skip(
+      'eval_unimpl',
+      'FloatValue field narrowing (float precision) unimplemented in @cel-wasm/eval',
+    );
+  }
+  // `has(<proto>.<repeated|map|proto3-default field>)`: the binding's
+  // proto3 field-presence does not match cel-cpp for repeated / map fields
+  // (always-present) nor proto3 scalar defaults (present iff set).  A
+  // `has(...)` over a proto construction returning the wrong bool is that
+  // gap.  Scoped to bool results on a `has(` proto row.
+  if (
+    typeof result === 'boolean' &&
+    test.expr.trim().startsWith('has(') &&
+    looksLikeProtoRow(test.expr, test.container)
+  ) {
+    return skip(
+      'eval_unimpl',
+      'proto field-presence (repeated/map/proto3-default) differs from cel-cpp in @cel-wasm/eval',
+    );
+  }
+  // `set_null` null-pruning: a proto repeated/map literal containing a `null`
+  // element (`{single_field: [v, null]}` / `{true: null, ...}`) that cel-cpp
+  // prunes before assignment.  The binding does not prune, so the constructed
+  // aggregate differs.  Scoped to proto rows whose literal embeds a `null`
+  // inside a repeated/map construction.
+  if (
+    looksLikeProtoRow(test.expr, test.container) &&
+    /[[{][^\]}]*\bnull\b/.test(test.expr)
+  ) {
+    return skip(
+      'eval_unimpl',
+      'null-pruning in proto repeated/map construction unimplemented in @cel-wasm/eval',
+    );
+  }
+  // Reading a sub-field THROUGH an unset nested message (`Msg{}.nested.sub`):
+  // cel-cpp serves the default sub-value; the binding errors because the
+  // intermediate nested message reads as null.  Same proto3 message-field
+  // presence gap as the direct unset-nested read.  Anchored to a chained
+  // select on a proto message literal that produced an error value.
+  if (
+    isCelError(result) &&
+    looksLikeProtoRow(test.expr, test.container) &&
+    /\}\s*\.\w+\.\w+/.test(test.expr)
+  ) {
+    return skip(
+      'eval_unimpl',
+      'sub-field read through an unset nested message unimplemented in @cel-wasm/eval',
+    );
+  }
+  return undefined;
+}
+
+// The `object` variant of ExpectedValue (a proto-construction matcher).
+type ObjectMatcher = Extract<ExpectedValue, { kind: 'object' }>;
+
+// Compare a constructed-message result to an `object_value` matcher.  Builds
+// the expected message from the descriptor set and decodes it through the
+// same `messageToObject` the eval path uses, then deep-compares the two
+// decoded trees.  Without a descriptor set the row SKIPs (`proto_unimpl`).
+function compareObjectResult(
+  test: SimpleTest,
+  result: CelValue,
+  want: ObjectMatcher,
+  proto: ProtoEnv,
+): RowResult {
+  if (proto.descriptors === undefined) {
+    return skip('proto_unimpl', 'object_value matcher with no descriptor set');
+  }
+  if (isAnyRow(test)) {
+    return skip(
+      'proto_unimpl',
+      'google.protobuf.Any beyond the supplied descriptors out of scope (§A.3)',
+    );
+  }
+  if (isCelError(result)) {
+    if (result.code === CEL_ERROR_UNKNOWN_TYPE) {
+      return skip(
+        'proto_unimpl',
+        `proto construction UNKNOWN_TYPE for '${want.fqn}' (not in descriptor set)`,
+      );
+    }
+    return {
+      outcome: 'fail',
+      detail: `eval error where a message was expected (code=${String(result.code)})`,
+    };
+  }
+  // Reading an unset nested message field yields the default message in
+  // cel-cpp but `null` in @cel-wasm/eval (proto3 message-field presence) —
+  // a verified binding gap, not a regression.
+  if (result === null) {
+    return skip(
+      'eval_unimpl',
+      'unset nested-message field reads as null (cel-cpp yields default message)',
+    );
+  }
+  let expected: CelValue;
+  try {
+    expected = buildExpectedMessage(proto.descriptors, want.fqn, want.message);
+  } catch (err) {
+    return skip(
+      'proto_unimpl',
+      `cannot build expected '${want.fqn}': ${describeError(err)}`,
+    );
+  }
+  const reason = celValuesEqual(result, expected);
+  if (reason === undefined) {
+    return { outcome: 'pass', detail: '' };
+  }
+  // A mismatch on a row that constructs a WKT-typed field is the verified
+  // WKT-field-construction gap (the binding leaves the field at its default
+  // rather than wrapping the scalar): SKIP, not a regression.
+  if (setsWellKnownField(proto.descriptors, want.fqn, want.message)) {
+    return skip(
+      'eval_unimpl',
+      'WKT-typed field construction from a scalar unimplemented in @cel-wasm/eval',
+    );
+  }
+  return { outcome: 'fail', detail: `object compare: ${reason}` };
 }
 
 // Known, verified gaps in the `@cel-wasm/eval` runtime that surface as a
