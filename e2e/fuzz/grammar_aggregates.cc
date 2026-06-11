@@ -231,6 +231,63 @@ void RegisterMapComprehensions(GrammarBuilder& b) {
   }
 }
 
+// One-level-nested aggregate targets — `list<list<T>>`,
+// `list<map<K,V>>`, `map<K, list<V>>`.  These exercise codegen
+// paths flat aggregates never reach: a `HostListBacking` whose
+// elements are themselves containers, a map value that is a list,
+// a comprehension whose iter_var is a container.  The recursive
+// `compare.cc::Compare` already verifies them element-by-element,
+// so no harness change is needed — only the grammar productions.
+//
+// Kept to a hand-picked vocab (not the full nested Cartesian
+// product) so the catalog stays bounded; every inner type is
+// already a registered target, so L1's arg-type-reachability
+// check passes.
+void RegisterNestedAggregates(GrammarBuilder& b) {
+  struct Nest {
+    CelType type;
+    const char* tag = nullptr;
+    const char* leaf = nullptr;
+    CelType inner;  // the element (list) or value (map) type
+  };
+  const CelType li = CelType::List(CelType::Int());
+  const CelType ls = CelType::List(CelType::String());
+  const CelType lb = CelType::List(CelType::Bool());
+  const CelType msi = CelType::Map(CelType::String(), CelType::Int());
+  const Nest nests[] = {
+      {CelType::List(li), "list_list_int", "[[1, 2, 3]]", li},
+      {CelType::List(ls), "list_list_string", R"([["a", "b"]])", ls},
+      {CelType::List(lb), "list_list_bool", "[[true, false]]", lb},
+      {CelType::List(msi), "list_map_string_int", R"([{"k": 0}])", msi},
+      {CelType::Map(CelType::String(), li), "map_string_list_int",
+       R"({"k": [1, 2, 3]})", li},
+  };
+  for (const Nest& n : nests) {
+    // Leaf (depth-0) + 1- and 2-element constructors whose slots
+    // are filled by the inner-aggregate sub-walk.
+    b.Leaf(n.type, absl::StrCat(n.tag, "_leaf"), n.leaf);
+    if (n.type.kind() == CelType::Kind::kList) {
+      b.Unary(n.type, absl::StrCat(n.tag, "_lit_1"), "[%0]", n.inner);
+      b.Binary(n.type, absl::StrCat(n.tag, "_lit_2"), "[%0, %1]", n.inner,
+               n.inner);
+    } else {
+      // Map with a fixed string key and one value slot — a single
+      // placeholder, so Unary.
+      b.Unary(n.type, absl::StrCat(n.tag, "_lit_1"), R"({"k": %0})", n.inner);
+    }
+    // size() over the outer container.
+    b.Unary(CelType::Int(), absl::StrCat("size_", n.tag), "size(%0)", n.type);
+  }
+  // Comprehensions whose iter_var is itself a container: the body
+  // can call size()/_in_ on the inner aggregate.  Just the list-of-
+  // list shapes — enough to exercise the container-iter_var path.
+  b.Comprehension(CelType::Bool(), "comp_exists_list_list_int",
+                  "(%0).exists(v, %1)", CelType::List(li), /*iter=*/{"v", li},
+                  /*body_type=*/CelType::Bool());
+  b.Comprehension(CelType::Bool(), "comp_all_list_list_int", "(%0).all(v, %1)",
+                  CelType::List(li), {"v", li}, CelType::Bool());
+}
+
 }  // namespace
 
 Grammar BuildFullGrammar() {
@@ -249,6 +306,7 @@ Grammar BuildFullGrammar() {
   RegisterInProductions(b);
   RegisterListComprehensions(b);
   RegisterMapComprehensions(b);
+  RegisterNestedAggregates(b);
 
   Grammar g = std::move(b).Build();
   ABSL_CHECK_OK(g.Validate())

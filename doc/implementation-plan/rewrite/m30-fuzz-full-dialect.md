@@ -2,9 +2,9 @@
 
 Status: in progress — drafted 2026-06-11, executing via the
 autonomous loop (one slice per iteration, top-down).  **M30.A
-(adversarial leaves) and M30.B (error-producing arithmetic) shipped
-2026-06-11; M30.G's name/activation cleanup landed with the
-reviewability refactor.**  Supersedes the unshipped remainder of
+(adversarial leaves), M30.B (error-producing arithmetic), and M30.C's
+nested-aggregate sub-part shipped 2026-06-11; M30.G's name/activation
+cleanup landed with the reviewability refactor.**  Supersedes the unshipped remainder of
 m27 (Slice C2 proto targets, Slice D corpus/CI); m27's shipped
 machinery (typed attribute grammar, L1/L2/L3 validation, oracle
 harness, fuzztest properties, divergence miner) is the foundation
@@ -99,9 +99,11 @@ sweeps at depths 6–9 across all 11 targets; every find pinned.
   `OptionalSelectOnMapRejected` gate — pin rides until fixed).
 - proto messages (old m27 Slice C2): `celwasm.testdata.Customer`
   struct/select/has productions + a message-typed binding.
-- Nested aggregates: `list<list<int>>`, `map<string, list<int>>` —
-  the registration loops iterate a one-level-closed TypeVocab; the
-  recursive comparator (e9ab2fc) already handles the comparison.
+- **Nested aggregates shipped 2026-06-11** — `list<list<T>>`,
+  `list<map<K,V>>`, `map<string,list<int>>` (`RegisterNestedAggregates`);
+  the recursive comparator (e9ab2fc) handled the verdict, so only
+  grammar productions were needed.  0 divergences mining
+  `list_list_int` / `map_string_list_int` at d4.
 
 ### M30.D — Full operator surface ("speak the whole dialect")
 

@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <utility>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -31,18 +32,25 @@ using ::celwasm::fuzz::GenAndEvalStatus;
 namespace {
 
 CelType ParseTarget(absl::string_view s) {
-  if (s == "bool") return CelType::Bool();
-  if (s == "int") return CelType::Int();
-  if (s == "uint") return CelType::Uint();
-  if (s == "double") return CelType::Double();
-  if (s == "string") return CelType::String();
-  if (s == "bytes") return CelType::Bytes();
-  if (s == "list_int") return CelType::List(CelType::Int());
-  if (s == "list_bool") return CelType::List(CelType::Bool());
-  if (s == "list_double") return CelType::List(CelType::Double());
-  if (s == "list_string") return CelType::List(CelType::String());
-  if (s == "map_string_int") {
-    return CelType::Map(CelType::String(), CelType::Int());
+  const CelType i = CelType::Int();
+  const CelType str = CelType::String();
+  const std::pair<absl::string_view, CelType> table[] = {
+      {"bool", CelType::Bool()},
+      {"int", i},
+      {"uint", CelType::Uint()},
+      {"double", CelType::Double()},
+      {"string", str},
+      {"bytes", CelType::Bytes()},
+      {"list_int", CelType::List(i)},
+      {"list_bool", CelType::List(CelType::Bool())},
+      {"list_double", CelType::List(CelType::Double())},
+      {"list_string", CelType::List(str)},
+      {"map_string_int", CelType::Map(str, i)},
+      {"list_list_int", CelType::List(CelType::List(i))},
+      {"map_string_list_int", CelType::Map(str, CelType::List(i))},
+  };
+  for (const auto& [name, type] : table) {
+    if (s == name) return type;
   }
   std::cerr << "unknown target `" << s << "`\n";
   std::exit(2);
@@ -118,32 +126,19 @@ int RunMine(absl::string_view target_str, const CelType& target,
         break;
       case GenAndEvalStatus::kOurPipelineRejected:
         ++c.our_rejected;
-        std::printf("OUR-REJECT [%s seed=%llu] %s\n  source = %s\n",
-                    std::string(target_str).c_str(),
-                    static_cast<unsigned long long>(seed), err.c_str(),
-                    r.source.c_str());
-        std::fflush(stdout);
+        PrintAnomaly("OUR-REJECT", target_str, seed, err, r.source);
         break;
       case GenAndEvalStatus::kOracleRejected:
         ++c.oracle_rejected;
-        std::printf("ORACLE-REJECT [%s seed=%llu] %s\n  source = %s\n",
-                    std::string(target_str).c_str(),
-                    static_cast<unsigned long long>(seed), err.c_str(),
-                    r.source.c_str());
-        std::fflush(stdout);
+        PrintAnomaly("ORACLE-REJECT", target_str, seed, err, r.source);
         break;
       case GenAndEvalStatus::kBothErrored:
         ++c.both_errored;
         break;
       case GenAndEvalStatus::kOracleErrorOnly:
         ++c.diverged;
-        std::printf(
-            "ERROR-DIVERGE [%s seed=%llu] oracle errored, ours is a "
-            "value: %s\n  source = %s\n",
-            std::string(target_str).c_str(),
-            static_cast<unsigned long long>(seed), err.c_str(),
-            r.source.c_str());
-        std::fflush(stdout);
+        PrintAnomaly("ERROR-DIVERGE (oracle errored, ours is a value)",
+                     target_str, seed, err, r.source);
         break;
     }
     if (c.diverged + c.our_rejected >= stop_after) {

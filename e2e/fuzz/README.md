@@ -168,14 +168,35 @@ productions existed.
 5. **String-ext + conversion calls** — `contains`/`startsWith`/
    `endsWith`/`indexOf`/`replace`/`split`/`format`, `int(string)`
    shapes (the wave-4 manual bug cluster).
-6. **Nested aggregates** — `list<list<int>>`, `map<string,list<T>>`;
-   the comparator already recurses, the registration loops don't.
+6. ~~**Nested aggregates**~~ — shipped (M30.C): `list<list<T>>`,
+   `list<map<K,V>>`, `map<string,list<int>>` leaves + constructors
+   + size + container-iter_var comprehensions. The comparator
+   already recursed; only grammar productions were needed.
 7. **Timestamp / duration** — absent entirely; the max-range
    construction bug class was found manually.
 8. **Proto struct/select** — `celwasm.testdata.Customer` productions
    + a message-typed binding (needs OracleVar proto marshalling).
 
 ## Notes log (newest first; add an entry per session)
+
+### 2026-06-11 — M30.C nested aggregates
+
+- `RegisterNestedAggregates` adds one-level-nested targets:
+  `list<list<{int,string,bool}>>`, `list<map<string,int>>`,
+  `map<string,list<int>>` — leaf + constructors + `size()` + two
+  container-iter_var comprehensions (`list<list<int>>.exists/all`).
+  Every inner type is already a registered target, so L1's
+  arg-reachability check passes; the recursive `compare.cc` already
+  handles the verdict, so no harness change was needed.
+- L1/L2/L3 green (grammar_test: 22 tests); mining `list_list_int`
+  (38 agreed/0 div/2 both_errored) and `map_string_list_int` (40
+  agreed/0 div) at d4 — nested codegen agrees with cel-cpp,
+  including error propagation through the nesting.
+- **Process-hygiene fix**: stray `mine_divergences` processes from
+  earlier loop iterations were competing for CPU and inflating the
+  per-seed times in the M30.B notes (~0.85 s was partly contention,
+  not pure cost). `pkill -f mine_divergences` between sessions; the
+  nightly job (m30.F) should bound concurrency.
 
 ### 2026-06-11 — M30.B error-producing arithmetic
 
