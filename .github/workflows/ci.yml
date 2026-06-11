@@ -60,3 +60,46 @@ jobs:
 
       - name: Manual-tagged targets + dual-mode conformance gate
         run: scripts/run_full_suite.sh
+
+  # Linux leg — host deps mirror docker/Dockerfile: clang+lld are
+  # required (the runtime C needs clang; gold crashes on the host
+  # link), tzdata-legacy supplies the US/* timezone aliases the
+  # conformance corpus reads.  Verified 2026-06-10 in the
+  # docker/Dockerfile container: full sweep green after the
+  # wasm_clang.sh fuse-ld fix (130/133 with only parallel-load
+  # timeout artifacts, since re-sized).
+  test-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host deps (mirrors docker/Dockerfile)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+
+      - name: Fetch vendored cel-cpp (pinned SHA)
+        run: third_party/fetch_cel_cpp.sh
+
+      - name: Restore bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      - name: Point bazel at the disk cache
+        # .bazelrc try-imports user.bazelrc; `test` inherits `build` flags.
+        run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
+
+      - name: Build
+        run: bazel build //...
+
+      - name: Test
+        run: bazel test --test_output=errors //...
+
+      - name: Manual-tagged targets + dual-mode conformance gate
+        run: scripts/run_full_suite.sh

@@ -1,6 +1,9 @@
 #include "compiler/frontend/parse_and_check.h"
 
+#include <pthread.h>
+
 #include <cstddef>
+#include <functional>
 #include <string>
 
 #include "absl/status/status.h"
@@ -552,6 +555,35 @@ TEST(ParseAndCheckTest, RejectsTypeMismatch) {
 // unbounded depth is a SIGSEGV on valid CEL
 // (doc/implementation-plan/cleanup-backlog.md #45).
 
+// Runs `body` on a thread with an explicit 64 MiB stack.  The deep
+// depth-gate cases below feed `ParseAndCheck` expressions nested
+// ~kMaxExpressionNestingDepth levels deep, and cel-cpp's ANTLR parser
+// burns native stack per nesting level.  The worst shape — bracket
+// nesting, `[[[...1...]]]` — overflows Linux's default 8 MiB
+// main-thread stack BEFORE the gate can reject (verified: the test
+// binary SIGSEGVs at `ulimit -s 8192`, passes at `ulimit -s 65536`;
+// Linux aarch64 fastbuild, 2026-06-10).  macOS passes the same input
+// only by margin.  An explicit stack makes the assertion
+// deterministic across platforms instead of hostage to the host's
+// rlimit and frame-size luck.
+void RunWithLargeStack(std::function<void()> body) {
+  constexpr size_t kDeepParseStackBytes = 64u << 20;  // 64 MiB
+  pthread_attr_t attr;
+  ASSERT_EQ(pthread_attr_init(&attr), 0);
+  ASSERT_EQ(pthread_attr_setstacksize(&attr, kDeepParseStackBytes), 0);
+  pthread_t tid;
+  ASSERT_EQ(pthread_create(
+                &tid, &attr,
+                +[](void* arg) -> void* {
+                  (*static_cast<std::function<void()>*>(arg))();
+                  return nullptr;
+                },
+                &body),
+            0);
+  ASSERT_EQ(pthread_join(tid, nullptr), 0);
+  ASSERT_EQ(pthread_attr_destroy(&attr), 0);
+}
+
 // "1+1+...+1" with `terms` terms.  `+` is left-associative, so the
 // checked AST nests exactly `terms` levels deep (a lone literal is
 // depth 1; each further `+1` adds one call level).  Built with a
@@ -571,33 +603,40 @@ TEST(ParseAndCheckTest, DepthGateAdmitsShallowExpression) {
 }
 
 TEST(ParseAndCheckTest, DepthGateAdmitsChainExactlyAtLimit) {
-  auto r = ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth), {});
-  ASSERT_THAT(r, IsOk());
-  EXPECT_EQ(RootRepr(*r), Repr::kInt);
+  RunWithLargeStack([] {
+    auto r = ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth), {});
+    ASSERT_THAT(r, IsOk());
+    EXPECT_EQ(RootRepr(*r), Repr::kInt);
+  });
 }
 
 TEST(ParseAndCheckTest, DepthGateRejectsChainOneOverLimit) {
   // Boundary: limit+1 must reject, naming both the measured depth and
   // the limit so an embedder can act on the message.
-  EXPECT_THAT(
-      ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth + 1), {}),
-      StatusIs(absl::StatusCode::kResourceExhausted,
-               AllOf(HasSubstr(absl::StrCat("depth ",
-                                            kMaxExpressionNestingDepth + 1)),
-                     HasSubstr(absl::StrCat(kMaxExpressionNestingDepth)))));
+  RunWithLargeStack([] {
+    EXPECT_THAT(
+        ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth + 1), {}),
+        StatusIs(absl::StatusCode::kResourceExhausted,
+                 AllOf(HasSubstr(absl::StrCat("depth ",
+                                              kMaxExpressionNestingDepth + 1)),
+                       HasSubstr(absl::StrCat(kMaxExpressionNestingDepth)))));
+  });
 }
 
 TEST(ParseAndCheckTest, DepthGateRejectsNestedListOneOverLimit) {
   // Second shape: nesting via aggregate literals, `[[[...1...]]]`.
   // Each bracket adds one AST level around the depth-1 literal, so
-  // `kMaxExpressionNestingDepth` brackets land at limit+1.
-  const int brackets = kMaxExpressionNestingDepth;
-  std::string source(static_cast<size_t>(brackets), '[');
-  source.push_back('1');
-  source.append(static_cast<size_t>(brackets), ']');
-  EXPECT_THAT(ParseAndCheck(source, {}),
-              StatusIs(absl::StatusCode::kResourceExhausted,
-                       HasSubstr(absl::StrCat(kMaxExpressionNestingDepth))));
+  // `kMaxExpressionNestingDepth` brackets land at limit+1.  This is
+  // the stack-hungriest shape — the case RunWithLargeStack exists for.
+  RunWithLargeStack([] {
+    const int brackets = kMaxExpressionNestingDepth;
+    std::string source(static_cast<size_t>(brackets), '[');
+    source.push_back('1');
+    source.append(static_cast<size_t>(brackets), ']');
+    EXPECT_THAT(ParseAndCheck(source, {}),
+                StatusIs(absl::StatusCode::kResourceExhausted,
+                         HasSubstr(absl::StrCat(kMaxExpressionNestingDepth))));
+  });
 }
 
 TEST(ParseAndCheckTest, DepthGateParserBackstopIsResourceExhausted) {
@@ -606,10 +645,12 @@ TEST(ParseAndCheckTest, DepthGateParserBackstopIsResourceExhausted) {
   // is rejected at PARSE — and that rejection is normalised to the
   // same ResourceExhausted shape the post-check gate produces, so an
   // embedder sees one error for the whole over-deep class.
-  EXPECT_THAT(
-      ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth + 200), {}),
-      StatusIs(absl::StatusCode::kResourceExhausted,
-               HasSubstr(absl::StrCat(kMaxExpressionNestingDepth))));
+  RunWithLargeStack([] {
+    EXPECT_THAT(
+        ParseAndCheck(IntAdditionChain(kMaxExpressionNestingDepth + 200), {}),
+        StatusIs(absl::StatusCode::kResourceExhausted,
+                 HasSubstr(absl::StrCat(kMaxExpressionNestingDepth))));
+  });
 }
 
 // ---- Slice 1.5: dyn(scalar) passthrough ------------------------------------

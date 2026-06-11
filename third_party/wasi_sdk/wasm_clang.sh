@@ -18,6 +18,43 @@
 for d in "$(dirname "$0")"/../../external/*wasi_sdk_*/bin; do
   WASI_BIN="$d"
 done
+
+# Strip any `-fuse-ld=*` the host config injected.  `.bazelrc` pins
+# `build:linux --linkopt=-fuse-ld=lld` (GNU gold crashes on the host
+# link), and bazel appends user linkopts AFTER toolchain flags, so the
+# override leaks into wasm links too.  For wasm32-wasi(-threads) that
+# is merely redundant (clang maps lld → wasm-ld, the default), but for
+# wasm32-wasip2 it overrides clang's `wasm-component-ld` driver choice
+# and silently emits a CORE module where a Component-Model component
+# is expected (wasmtime then rejects it at AddComponent).  No wasm
+# target ever wants the host linker override, so drop it here.
+#
+# Bazel passes link args via a params file (`@bazel-out/.../*.params`,
+# one arg per line), not argv — so the strip must also look inside any
+# `@<file>` arg.  When a params file contains a `-fuse-ld=` line, we
+# write a filtered copy to $TMPDIR and substitute the reference; clean
+# params files pass through untouched (a single `grep -q` per file is
+# the only extra cost on that path).
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    -fuse-ld=*) ;;
+    @*)
+      params_file="${arg#@}"
+      if [ -f "$params_file" ] && \
+         grep -qE "^['\"]?-fuse-ld=" "$params_file"; then
+        filtered="$(mktemp "${TMPDIR:-/tmp}/wasm_clang_params.XXXXXX")"
+        grep -vE "^['\"]?-fuse-ld=" "$params_file" > "$filtered"
+        args+=("@$filtered")
+      else
+        args+=("$arg")
+      fi
+      ;;
+    *) args+=("$arg") ;;
+  esac
+done
+set -- "${args[@]}"
+
 for arg in "$@"; do
   case "$arg" in
     *.cc|*.cpp|*.cxx|*.C)
