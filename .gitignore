@@ -24,6 +24,11 @@ user.bazelrc
 # `git add` of it would sweep thousands of files).  Restored via `npm ci`.
 bindings/ts/node_modules/
 
+# TypeScript bindings build + coverage output — generated, never committed.
+bindings/ts/**/dist/
+bindings/ts/**/coverage/
+bindings/ts/**/*.tsbuildinfo
+
 # Rendered docs site (mkdocs build output) — published by
 # .github/workflows/pages.yml, never committed.
 /site/
