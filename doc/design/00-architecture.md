@@ -5,6 +5,45 @@ Status: current — authored 2026-06-10 from the design-rebuild notes
 two-phase-runtime-isolation.md, m28-configurable-linking.md (architecture
 content; those docs remain as history).
 
+Start with the one-sentence version: **we compile a CEL expression to a
+sandboxed `.wasm` artifact once, then evaluate those exact bytes
+anywhere at native speed.** Everything in this doc is in service of that
+sentence — and of the two kinds of workload it's built for.
+
+**The security-critical case.** You are running an expression you don't
+fully trust on data you very much do — a fraud rule in a payments path,
+an entitlement check authored by a customer, a transaction-limit policy
+in a regulated system. You want it evaluated at native speed, but you
+cannot let it read host memory, reach the network or disk, or hang the
+process. A cel-wasm `Program` runs in a bounded, syscall-free WebAssembly
+sandbox: it sees only the variables you marshal in, and the worst a
+hostile expression can do is return the wrong `Value` or an error — never
+escape. The expression's failure modes are *values*, not crashes.
+
+**The lightweight-edge case.** You are an Envoy filter, an API-gateway
+hop, a per-request routing or rate-limit decision — thousands of times a
+second, on every node. You want one tiny, deterministic artifact you
+compile once and run byte-for-byte identically everywhere, with no
+per-host interpreter to drift and no AST walk on the hot path. A static
+`Program` is exactly that: self-contained wasm, JIT-compiled once at
+`Plan`, then native code per `Eval`.
+
+```
+            ┌─────────────┐                       ┌──────────────┐
+  CEL  ───► │  Compiler   │ ─── Program (bytes) ──►│   Engine     │──► Value
+  source    │ (compile    │      .wasm + cel.abi   │  (eval time, │
+  + decls   │  time)      │   ↓ ship / store / send  any host,    │
+            └─────────────┘     across time,        many nodes)   │
+                                process, machine    └──────────────┘
+   one compile  ───────────────────────────────────►  many evals, anywhere
+```
+
+The two phases are separable in **time, process, and machine**: a
+Program is plain bytes and carries everything the evaluator needs, so you
+can compile on a build server and evaluate in a process that never links
+the compiler — or in a browser tab, where the eval side is pure
+TypeScript over the same bytes (`bindings/`).
+
 This is the entry point of the design-doc set. It states the problem,
 the four-role lifecycle, the link-mode fork, the data contracts the
 roles exchange, and the end-to-end threading model. Byte-level detail
@@ -20,8 +59,9 @@ evaluator built on wasmtime. The compile step turns CEL source plus
 variable/function declarations into a self-describing wasm module (a
 `Program`); the eval step instantiates that module and evaluates it
 against per-call variable bindings (an `Activation`), producing a
-`Value`. The two steps are separable in time, process, and machine:
-a Program is plain bytes and carries everything the evaluator needs.
+`Value`. The separability that makes this worth doing — Program as a
+plain-bytes boundary across time, process, and machine — is the lede
+above; the rest of this doc is how the pieces hold that contract.
 
 Scope decisions that bound the whole system:
 
