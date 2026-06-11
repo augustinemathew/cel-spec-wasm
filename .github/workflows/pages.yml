@@ -34,6 +34,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          # Our requirements file isn't named requirements.txt, so the
+          # cache keyer needs to be pointed at it explicitly.
+          cache-dependency-path: mkdocs-requirements.txt
       - run: pip install -r mkdocs-requirements.txt
       # Non-strict: some prose still links to out-of-tree repo files
       # (../conformance/README.md, …) that resolve on GitHub but warn
