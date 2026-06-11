@@ -155,9 +155,12 @@ productions existed.
 1. **Depth > 8** — depth 7–8 opened 2026-06-11 (0 divergences; the
    static window is the limiter — rejection ~1% at d7, ~8% at d8 for
    bool). The 9–12 band is unmined.
-2. **Error-producing productions** — no `/`, `%`, unbounded index,
-   so 3VL absorption divergences (`ExistsAbsorbsErrorAccumulator`)
-   stay invisible. The harness side is ready (error-ness compared).
+2. **Error-producing productions** — ~~no `/`, `%`~~ int/uint `/`
+   and `%` shipped (M30.B): division/modulo by zero errors, both
+   engines agree (`both_errored`), and an error reaching a value
+   slot is an `ERROR-DIVERGE` find. Still open: unbounded list
+   index, fallible `int(string)`-style conversions (those land
+   with M30.D's string-ext calls).
 3. ~~**Boundary-value leaves**~~ — shipped (M30.A, 8236374): INT64
    boundaries, 2^53±1, UINT64_MAX, −0.0/epsilon/denormal/1e308.
 4. ~~**Multi-byte UTF-8 leaves**~~ — shipped (M30.A, 8236374):
@@ -173,6 +176,26 @@ productions existed.
    + a message-typed binding (needs OracleVar proto marshalling).
 
 ## Notes log (newest first; add an entry per session)
+
+### 2026-06-11 — M30.B error-producing arithmetic
+
+- Admitted int/uint `/` and `%` (`RegisterFallibleArithmetic`).
+  These error on a zero divisor — reachable from the `0`/`0u`
+  leaves or a computed zero — so an error value now flows through
+  comprehensions and 3VL logic, the bug class the guarded-total
+  grammar structurally could not reach. Double `/` stays with the
+  total ops (`x/0.0` is ±inf/NaN, a value in CEL).
+- L1/L2/L3 green; mining (200 seeds × {int, uint, bool} at d4)
+  shows **0 value divergences / 0 our-rejects**, with `both_errored`
+  a steady bucket (int 5, uint 31, bool 18 — division/modulo by
+  zero, both engines agree) — the error-classification path
+  (e9ab2fc) doing its job.
+- **Throughput note**: with M30.A's boundary leaves + aggregate
+  literals, a depth-4 expression is already hundreds of nodes, so
+  one full Compile→JIT→Eval + cel-cpp round-trip is ~0.85 s. A
+  10k-seed sweep is ~2.5 h — fine for a nightly job (m30.F), too
+  slow for the inner loop. Mine 200–600 seeds interactively; the
+  property test's shrinker is the better deep-search tool.
 
 ### 2026-06-11 — M30.A adversarial leaves + readability refactor
 

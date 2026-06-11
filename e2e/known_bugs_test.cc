@@ -943,23 +943,23 @@ TEST(KnownBugs, LongArith1000TermsStillEvalsUnderDepthGate) {
 
 namespace pbt_repro {
 
-void DeclareSliceBPbtVars(Compiler::Builder& b) {
+void DeclareScalarPbtVars(Compiler::Builder& b) {
   b.DeclareVariable("i_a", CelType::Int());
   b.DeclareVariable("i_b", CelType::Int());
   b.DeclareVariable("b_a", CelType::Bool());
 }
 
-void BindSliceBPbtVars(Activation& a) {
+void BindScalarPbtVars(Activation& a) {
   a.Bind("i_a", Value::Int(7));
   a.Bind("i_b", Value::Int(11));
   a.Bind("b_a", Value::Bool(true));
 }
 
 // Slice C PBT activation — Slice B vars plus uint / double / string
-// / bytes leaves the Slice C grammar pulls from.  Mirrors
-// `e2e/fuzz/oracle_harness.cc::SliceBBoundActivation` so a repro
+// / bytes leaves the full grammar pulls from.  Mirrors
+// `e2e/fuzz/oracle_harness.cc::BoundActivationEntries` so a repro
 // the miner shrunk runs unchanged here.
-void DeclareSliceCPbtVars(Compiler::Builder& b) {
+void DeclareFullPbtVars(Compiler::Builder& b) {
   b.DeclareVariable("i_a", CelType::Int());
   b.DeclareVariable("i_b", CelType::Int());
   b.DeclareVariable("u_a", CelType::Uint());
@@ -969,7 +969,7 @@ void DeclareSliceCPbtVars(Compiler::Builder& b) {
   b.DeclareVariable("y_a", CelType::Bytes());
 }
 
-void BindSliceCPbtVars(Activation& a) {
+void BindFullPbtVars(Activation& a) {
   a.Bind("i_a", Value::Int(7));
   a.Bind("i_b", Value::Int(11));
   a.Bind("u_a", Value::Uint(5));
@@ -1002,8 +1002,8 @@ void BindSliceCPbtVars(Activation& a) {
 TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
   constexpr absl::string_view source =
       R"(((size("") < (i_a - (b_a ? 0 : i_b))) == ("" == "x")))";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceBPbtVars,
-                            pbt_repro::BindSliceBPbtVars);
+  auto v = TryEvalActivated(source, pbt_repro::DeclareScalarPbtVars,
+                            pbt_repro::BindScalarPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
   EXPECT_FALSE(*v->AsBool()) << "ternary inside int subtract evaluated wrong";
@@ -1029,8 +1029,8 @@ TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
 TEST(KnownBugs, PbtExistsOneInTernaryCondBytes) {
   constexpr absl::string_view source =
       R"((({b_a: (-1)}).exists_one(k, (d_a < 1.0)) ? y_a : b"x") + b"x")";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
-                            pbt_repro::BindSliceCPbtVars);
+  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+                            pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
   EXPECT_EQ(*v->AsBytes(), "xx") << "exists_one cond mis-routed";
@@ -1042,14 +1042,14 @@ TEST(KnownBugs, PbtExistsOneInTernaryCondBytes) {
 TEST(KnownBugs, PbtExistsOneInTernaryCondTakesThen) {
   constexpr absl::string_view source =
       R"((({"k": 1}).exists_one(k, true) ? y_a : b"x") + b"x")";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
-                            pbt_repro::BindSliceCPbtVars);
+  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+                            pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
   EXPECT_EQ(*v->AsBytes(), "hix");
 }
 
-// PBT int seed=137 (Slice C grammar, 2026-06-05) — reduced form
+// PBT int seed=137 (full grammar, 2026-06-05) — reduced form
 // of the `size((cond ? <bytes-ternary> : <bytes-ternary>))` shape
 // that was producing kError because the inner bytes ternary's
 // result kind was being read from the wrong slot.  Spec eval: the
@@ -1058,8 +1058,8 @@ TEST(KnownBugs, PbtExistsOneInTernaryCondTakesThen) {
 TEST(KnownBugs, PbtSizeOfExistsOneTernaryBytes) {
   constexpr absl::string_view source =
       R"(size((({"k": 1}).exists_one(k, true) ? (y_a + y_a) : (y_a + b"x"))))";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareSliceCPbtVars,
-                            pbt_repro::BindSliceCPbtVars);
+  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+                            pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
   EXPECT_EQ(*v->AsInt(), 4);

@@ -161,6 +161,29 @@ void RegisterArithmetic(GrammarBuilder& b) {
            CelType::Double());
 }
 
+// Fallible integer arithmetic — `/` and `%` over int/uint.  These
+// ERROR on a zero divisor (and int `/` errors on INT64_MIN / -1
+// overflow), and a zero divisor is reachable: the leaf set has
+// `0` / `0u`, and a sub-expression can compute zero.  Admitting
+// them is the point of m30.B — an error flowing through
+// comprehensions and 3VL logic is the bug class the guarded-total
+// grammar could never reach (cf. `ExistsAbsorbsErrorAccumulator`).
+// Safe to admit now that error-ness is a compared dimension: both
+// engines erroring is agreement; only one erroring is a find.
+//
+// (Double `/` is NOT here — `x / 0.0` is ±inf/NaN, a VALUE in CEL,
+// so it stays with the total double ops above.)
+void RegisterFallibleArithmetic(GrammarBuilder& b) {
+  b.Binary(CelType::Int(), "int_div", "(%0 / %1)", CelType::Int(),
+           CelType::Int());
+  b.Binary(CelType::Int(), "int_mod", "(%0 % %1)", CelType::Int(),
+           CelType::Int());
+  b.Binary(CelType::Uint(), "uint_div", "(%0 / %1)", CelType::Uint(),
+           CelType::Uint());
+  b.Binary(CelType::Uint(), "uint_mod", "(%0 % %1)", CelType::Uint(),
+           CelType::Uint());
+}
+
 // Comparison + logical (both yield Bool) — every CEL-spec overload.
 void RegisterBoolProducers(GrammarBuilder& b) {
   for (const CelType& numeric :
@@ -236,6 +259,7 @@ void RegisterScalarProductions(GrammarBuilder& b) {
   RegisterLexicalLeaves(b);
   RegisterIdentLeaves(b, ActivationSchema());
   RegisterArithmetic(b);
+  RegisterFallibleArithmetic(b);
   RegisterBoolProducers(b);
   RegisterMixedTotalOps(b);
 }

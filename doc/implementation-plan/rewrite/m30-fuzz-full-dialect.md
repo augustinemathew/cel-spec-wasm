@@ -1,11 +1,14 @@
 # m30 — Differential fuzzing to the full CEL dialect
 
-Status: plan — drafted 2026-06-11, executing via the autonomous
-loop (one slice per iteration, top-down).  Supersedes the unshipped
-remainder of m27 (Slice C2 proto targets, Slice D corpus/CI);
-m27's shipped machinery (typed attribute grammar, L1/L2/L3
-validation, oracle harness, fuzztest properties, divergence miner)
-is the foundation this builds on.
+Status: in progress — drafted 2026-06-11, executing via the
+autonomous loop (one slice per iteration, top-down).  **M30.A
+(adversarial leaves) and M30.B (error-producing arithmetic) shipped
+2026-06-11; M30.G's name/activation cleanup landed with the
+reviewability refactor.**  Supersedes the unshipped remainder of
+m27 (Slice C2 proto targets, Slice D corpus/CI); m27's shipped
+machinery (typed attribute grammar, L1/L2/L3 validation, oracle
+harness, fuzztest properties, divergence miner) is the foundation
+this builds on.  Live status + mining results: `e2e/fuzz/README.md`.
 
 ## 0. Objective
 
@@ -46,7 +49,7 @@ fuzzing; coverage-guided byte-level fuzzing of the parser (m27
 
 ## 2. Milestones
 
-### M30.A — Adversarial leaf domains (boundary numerics + unicode)
+### M30.A — Adversarial leaf domains (boundary numerics + unicode) — SHIPPED 2026-06-11 (8236374)
 
 The cheapest yield: the grammar's shapes are good, its *constants*
 are tame (`0/1/7`, ASCII `"hello"`).  Add leaf productions:
@@ -75,12 +78,11 @@ sweeps at depths 6–9 across all 11 targets; every find pinned.
 
 ### M30.B — Error semantics + unknowns as first-class properties
 
-- Admit the guarded-out error producers: `/`, `%`, unbounded list
-  index, `int(string)`-style fallible conversions.  Property: both
-  sides agree on error-ness (messages stay uncompared, backlog
-  #31).  This makes the 3VL absorption matrix minable —
-  `ExistsAbsorbsErrorAccumulator` is the manually-found bug class
-  PBT could not see.
+- **Int/uint `/` and `%` shipped 2026-06-11.** Both sides agree on
+  error-ness (messages stay uncompared, backlog #31); the 3VL
+  absorption matrix is now reachable.  Remaining error producers
+  (unbounded list index, fallible `int(string)`) land with the
+  string-ext calls in M30.D.
 - Unknowns: the oracle's `PartialEvalWithCelCpp` already takes
   unknown patterns and ours has `PartialEval`; add a property that
   marks a random activation subset unknown and asserts
