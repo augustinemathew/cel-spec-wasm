@@ -76,12 +76,27 @@ not a generator misconfiguration.
 
 ## Running a session
 
+`scripts/fuzz.sh` is the one entry point — it builds the miner, kills
+stray miner processes (long sweeps compete for CPU and skew timings),
+and exits non-zero on a divergence so it gates CI directly:
+
 ```bash
-bazel test //e2e/fuzz:grammar_test            # validate the grammar first
-bazel run //e2e/fuzz:mine_divergences -- bool 2000 6       # target, seeds, depth
-bazel run //e2e/fuzz:mine_divergences -- list_int 1000 8 3 # …optional stop_after
+scripts/fuzz.sh validate                 # L1/L2/L3 grammar checks (run first)
+scripts/fuzz.sh mine bool 2000 6         # one target: seeds, depth
+scripts/fuzz.sh sweep 500 6              # every target; fails if any diverges
+scripts/fuzz.sh repro string 113 4       # re-run one seed, print source + both sides
+scripts/fuzz.sh samples bool 4 10        # eyeball what the grammar emits
+scripts/fuzz.sh kill                     # kill stray miners
+```
+
+The miner prints a `--- summary ---` block plus a machine-readable
+`RESULT target=… diverged=…` line; its **exit code is the divergence
+count** (0 = clean). The raw targets are also runnable directly:
+
+```bash
+bazel test //e2e/fuzz:grammar_test                         # the L1/L2/L3 suite
+bazel run //e2e/fuzz:mine_divergences -- list_int 1000 8 3 # target seeds depth [stop_after]
 bazel test //e2e/fuzz:cel_oracle_property_test             # fuzztest mode (shrinking)
-bazel run //e2e/fuzz:dump_samples -- bool 4 10             # eyeball what the grammar emits
 ```
 
 Targets: `bool int uint double string bytes list_int list_bool

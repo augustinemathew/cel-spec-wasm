@@ -1,11 +1,17 @@
 // Mine oracle divergences over a target type by sequential seed.
 // Prints each divergence with its seed + source + ours-vs-oracle
-// values; intended for triaging what the property test catches
-// when fuzztest's unit-test mode buffers the EXPECT_EQ message.
+// values, a `--- summary ---` block, and a machine-readable
+// `RESULT ...` line.  **Exits non-zero (= divergence count, capped
+// at 125) iff a value/error divergence was found** — so it is
+// CI-gateable.  `scripts/fuzz.sh` wraps the common invocations.
+//
 // Run as:
 //   bazel run //e2e/fuzz:mine_divergences -- <target> <max_seeds> <depth> [stop_after]
-// `target` is one of bool / int / uint / double / string / bytes.
-// `stop_after` (default 5) caps how many divergences before exit.
+// `target` ∈ { bool, int, uint, double, string, bytes, list_int,
+//   list_bool, list_double, list_string, map_string_int,
+//   list_list_int, map_string_list_int }.
+// `stop_after` (default 5) caps how many divergences+our-rejects
+// before early exit.
 
 #include <cstdint>
 #include <cstdio>
@@ -100,6 +106,14 @@ void PrintSummary(absl::string_view target_str, int depth, const Counters& c) {
       "both_errored=%d  too_large=%d\n",
       c.agreed, c.diverged, c.our_rejected, c.oracle_rejected, c.both_errored,
       c.too_large);
+  // Machine-readable line (stable prefix `RESULT `) for scripts/CI
+  // to grep — see scripts/fuzz.sh.
+  std::printf(
+      "RESULT target=%s depth=%d agreed=%d diverged=%d our_rejected=%d "
+      "oracle_rejected=%d both_errored=%d too_large=%d\n",
+      std::string(target_str).c_str(), depth, c.agreed, c.diverged,
+      c.our_rejected, c.oracle_rejected, c.both_errored, c.too_large);
+  std::fflush(stdout);
 }
 
 // Mining loop: generate seeds 1..max_seeds, run each through the
@@ -147,7 +161,11 @@ int RunMine(absl::string_view target_str, const CelType& target,
   }
 
   PrintSummary(target_str, depth, c);
-  return 0;
+  // CI-gateable exit code: non-zero iff a value/error divergence was
+  // found (our-rejects and both-errored are NOT failures — see
+  // README "Reading the summary").  Clamped to 125 so it never
+  // collides with the shell's 126/127/128+signal range.
+  return c.diverged > 125 ? 125 : c.diverged;
 }
 
 }  // namespace
