@@ -14,6 +14,13 @@ import { CliBackend, type CompileBackend } from './internal/cli-backend.js';
 export type { Program } from '@cel-wasm/eval';
 export { CelCompileError } from './errors.js';
 export type { Diagnostic } from './errors.js';
+// The browser compile backend runs `compiler.wasm` client-side so a static
+// page (e.g. GitHub Pages) can compile CEL with no server.  It is exposed
+// on the `@cel-wasm/compiler/wasm-backend` subpath rather than this barrel
+// so a Node consumer of `compile()` never bundles the browser shim — and,
+// conversely, a browser bundle of the backend never drags in the
+// Node-only CLI backend this barrel also wires up.
+export type { CompileRequest } from './internal/cli-backend.js';
 
 /**
  * A declared variable's CEL type, written in the spec's surface syntax

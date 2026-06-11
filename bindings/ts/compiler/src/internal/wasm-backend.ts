@@ -24,6 +24,12 @@ import { CelCompileError, type Diagnostic } from '../errors.js';
 
 import type { CompileBackend, CompileRequest } from './cli-backend.js';
 
+// Re-exported here so a browser bundle reaches the typed compile-failure
+// surface through the same Node-free subpath as the backend, never the
+// package barrel (which also wires up the Node-only CLI backend).
+export { CelCompileError } from '../errors.js';
+export type { Diagnostic } from '../errors.js';
+
 /** The `cew_*` reactor surface exported by `compiler.wasm`. */
 interface CompilerExports {
   readonly memory: WebAssembly.Memory;

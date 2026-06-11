@@ -1,17 +1,18 @@
 // The demo's orchestration: wire the Monaco editor and the
 // compile → download → run loop onto an already-built {@link DemoView}.
 //
-// Compile goes through the dev-server endpoint (the browser can't
-// subprocess the native CLI); run is pure client-side eval via
-// `@cel-wasm/eval`.  Compile diagnostics are surfaced both inline in
-// Monaco (`setModelMarkers`) and in a readable error panel.
+// Compile runs `compiler.wasm` fully client-side via {@link CompileClient}
+// (lazy-fetched on first use); run is pure client-side eval via
+// `@cel-wasm/eval`.  The whole app is static — no server hop at any step.
+// Compile diagnostics are surfaced both inline in Monaco
+// (`setModelMarkers`) and in a readable error panel.
 
 import type { Activation, CelValue, Program } from '@cel-wasm/eval';
 import * as monaco from 'monaco-editor';
 
 import {
-  CompileClientError,
-  compileViaEndpoint,
+  CelCompileError,
+  CompileClient,
   type CompileDiagnostic,
 } from './compile-client.js';
 import { downloadWasm } from './download.js';
@@ -45,10 +46,16 @@ class DemoController {
   private readonly view: DemoView;
   private readonly editor: monaco.editor.IStandaloneCodeEditor;
   private readonly model: monaco.editor.ITextModel;
+  private readonly compiler: CompileClient;
   private compiled: CompiledState | undefined;
 
   constructor(view: DemoView) {
     this.view = view;
+    this.compiler = new CompileClient({
+      onLoadStart: () => {
+        this.setStatus('Loading compiler (~6 MB)… first compile only.', 'busy');
+      },
+    });
     registerCelLanguage();
     this.model = monaco.editor.createModel(
       defaultExample().source,
@@ -134,9 +141,11 @@ class DemoController {
       this.showVariablesError(err);
       return;
     }
-    this.setBusy('Compiling…');
+    this.setBusy(
+      this.compiler.ready ? 'Compiling…' : 'Loading compiler (~6 MB)…',
+    );
     try {
-      const program = await compileViaEndpoint(
+      const program = await this.compiler.compile(
         source,
         variables.map((v) => v.decl),
       );
@@ -162,9 +171,9 @@ class DemoController {
   }
 
   private onCompileError(err: unknown): void {
-    if (err instanceof CompileClientError) {
+    if (err instanceof CelCompileError) {
       this.markDiagnostics(err.diagnostics);
-      this.showError('Compile failed', err.diagnostics, err.message);
+      this.showError('Compile failed', err.diagnostics, err.message, true);
       this.setStatus('Compile failed — see diagnostics.', 'error');
       return;
     }
@@ -280,6 +289,7 @@ class DemoController {
     heading: string,
     diagnostics: readonly CompileDiagnostic[],
     message: string,
+    fromCompiler = false,
   ): void {
     const children: Node[] = [panelTitle(heading)];
     if (diagnostics.length > 0) {
@@ -288,6 +298,15 @@ class DemoController {
       }
     } else {
       children.push(diagnosticLine({ message }));
+    }
+    // The client-side wasm compiler cannot recover cel-cpp's line/column
+    // diagnostic (no C++ exception runtime in the stock wasi-sdk build);
+    // tell the user where precise diagnostics come from.
+    const hasLocation = diagnostics.some(
+      (d) => d.line !== undefined && d.column !== undefined,
+    );
+    if (fromCompiler && !hasLocation) {
+      children.push(errorNote());
     }
     this.view.errorPanel.replaceChildren(...children);
     this.show(this.view.errorPanel);
@@ -354,6 +373,15 @@ function resultValue(text: string, className: 'value' | 'error'): HTMLElement {
   pre.className = `result-value result-${className}`;
   pre.textContent = text;
   return pre;
+}
+
+function errorNote(): HTMLElement {
+  const note = document.createElement('p');
+  note.className = 'error-note';
+  note.textContent =
+    'Note: the in-browser wasm compiler reports a generic message — ' +
+    'precise line/column diagnostics need the native (or emscripten) backend.';
+  return note;
 }
 
 function diagnosticLine(d: CompileDiagnostic): HTMLElement {

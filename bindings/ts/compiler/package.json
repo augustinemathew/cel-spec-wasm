@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./wasm-backend": {
+      "types": "./dist/internal/wasm-backend.d.ts",
+      "import": "./dist/internal/wasm-backend.js"
     }
   },
   "files": [

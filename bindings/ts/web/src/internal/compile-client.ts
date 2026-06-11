@@ -1,13 +1,22 @@
-// The browser-side compile client: POST the CEL source to the dev-server
-// `/api/compile` endpoint and decode its response into a runnable
-// {@link Program}.
+// The browser-side compile client: runs `compiler.wasm` (the CEL compiler
+// cross-compiled to wasm32-wasi) fully client-side via
+// {@link WasmCompileBackend}, so the demo is a static page with no server.
 //
-// This is the demo's one network hop, and it exists only because the
-// browser cannot subprocess the native `cel` CLI.  Eval never round-trips
-// — once this returns a Program, the run path is pure client-side TS.
-// When the emscripten `compiler.wasm` backend lands, this module is the
-// single seam that swaps to a client-side compile.
+// The compiler wasm is ~54 MB raw (~6 MB gzipped); it is lazy-fetched on
+// the first compile and the instantiated backend is cached for the rest of
+// the session.  Eval never round-trips — once this returns a Program, the
+// run path is pure client-side TS (`run.ts`).
+//
+// KNOWN LIMITATION — diagnostics.  The stock wasi-sdk `compiler.wasm` has
+// no C++ exception runtime, so an invalid expression cannot recover
+// cel-cpp's line/column diagnostic; {@link WasmCompileBackend} throws a
+// single generic {@link CelCompileError}.  Precise diagnostics need the
+// native / emscripten backend.
 
+import {
+  WasmCompileBackend,
+  type Diagnostic,
+} from '@cel-wasm/compiler/wasm-backend';
 import { decodeAbi, type Program } from '@cel-wasm/eval';
 
 /** A declared free variable for the compile request. */
@@ -16,99 +25,90 @@ export interface CompileVar {
   readonly type: string;
 }
 
-/** The compile-endpoint route the dev-server middleware mounts. */
-const COMPILE_ROUTE = '/api/compile';
+/** A diagnostic surfaced from the compiler (line/column are 1-based). */
+export type CompileDiagnostic = Diagnostic;
 
-/** A diagnostic parsed from the compiler (line/column are 1-based). */
-export interface CompileDiagnostic {
-  readonly message: string;
-  readonly line?: number;
-  readonly column?: number;
-}
+/** Re-exported so callers import the typed failure from one module. */
+export { CelCompileError } from '@cel-wasm/compiler/wasm-backend';
+export type { Diagnostic } from '@cel-wasm/compiler/wasm-backend';
 
-/** Thrown when the compile endpoint reports a parse / type-check failure. */
-export class CompileClientError extends Error {
-  override readonly name = 'CompileClientError';
-  readonly diagnostics: readonly CompileDiagnostic[];
-
-  constructor(message: string, diagnostics: readonly CompileDiagnostic[]) {
-    super(message);
-    this.diagnostics = diagnostics;
-  }
-}
-
-interface SuccessResponse {
-  readonly ok: true;
-  readonly wasmBase64: string;
-  readonly byteLength: number;
-}
-
-interface FailureResponse {
-  readonly ok: false;
-  readonly error: string;
-  readonly diagnostics: readonly CompileDiagnostic[];
+/**
+ * Observe the one-time compiler-wasm load.  `onLoadStart` fires before the
+ * (potentially multi-second) fetch + instantiate of the first compile;
+ * `onLoadEnd` fires once the backend is ready (or fetch failed).
+ */
+export interface CompileClientHooks {
+  readonly onLoadStart?: () => void;
+  readonly onLoadEnd?: () => void;
 }
 
 /**
- * Compile `source` (with optional declared `vars`) via the dev-server
- * endpoint, returning the portable {@link Program}.
- *
- * @throws {CompileClientError} on a compile failure, carrying the parsed
- *   diagnostics so the caller can mark them inline in Monaco.
+ * The lazy client-side CEL compiler.  Fetches and instantiates
+ * `compiler.wasm` on first use, caching the backend for the session.
  */
-export async function compileViaEndpoint(
-  source: string,
-  vars: readonly CompileVar[],
-): Promise<Program> {
-  const response = await fetch(COMPILE_ROUTE, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source, vars }),
-  });
-  const body: unknown = await response.json();
-  const parsed = parseResponse(body, response.status);
-  if (!parsed.ok) {
-    throw new CompileClientError(parsed.error, parsed.diagnostics);
-  }
-  // The endpoint returns only the portable wasm bytes; the `cel.abi`
-  // descriptor is decoded from them here, client-side — the same decode
-  // the eval binding does at plan time.  This keeps protobufjs off the
-  // Node dev-server path (the browser bundles it for the run path anyway).
-  const wasm = base64ToBytes(parsed.wasmBase64);
-  return { wasm, abi: decodeAbi(wasm) };
-}
+export class CompileClient {
+  #backend: WasmCompileBackend | undefined;
+  #loading: Promise<WasmCompileBackend> | undefined;
+  readonly #hooks: CompileClientHooks;
 
-function parseResponse(
-  body: unknown,
-  status: number,
-): SuccessResponse | FailureResponse {
-  if (typeof body !== 'object' || body === null) {
-    return {
-      ok: false,
-      error: `compile endpoint returned a non-JSON response (HTTP ${String(status)})`,
-      diagnostics: [],
-    };
+  constructor(hooks: CompileClientHooks = {}) {
+    this.#hooks = hooks;
   }
-  const record = body as Record<string, unknown>;
-  if (record.ok === true) {
-    return record as unknown as SuccessResponse;
-  }
-  const error =
-    typeof record.error === 'string'
-      ? record.error
-      : `compile failed (HTTP ${String(status)})`;
-  const diagnostics = Array.isArray(record.diagnostics)
-    ? (record.diagnostics as CompileDiagnostic[])
-    : [];
-  return { ok: false, error, diagnostics };
-}
 
-/** Decode a base64 string to raw bytes using the browser's `atob`. */
-export function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
+  /** Whether the compiler wasm has already been fetched + instantiated. */
+  get ready(): boolean {
+    return this.#backend !== undefined;
   }
-  return bytes;
+
+  /**
+   * Compile `source` (with optional declared `vars`) to a portable
+   * {@link Program}.  The first call fetches `compiler.wasm` (showing the
+   * load hooks); subsequent calls reuse the cached backend.
+   *
+   * @throws {CelCompileError} on a parse / type-check failure.  The wasm
+   *   backend reports a single location-less diagnostic (see the
+   *   module-level KNOWN LIMITATION note).
+   */
+  async compile(source: string, vars: readonly CompileVar[]): Promise<Program> {
+    const backend = await this.#getBackend();
+    const wasm = await backend.compile({
+      source,
+      vars: vars.map((v) => ({ name: v.name, type: v.type })),
+    });
+    // The backend returns only the portable wasm bytes; the `cel.abi`
+    // descriptor is decoded from them here, client-side — the same decode
+    // the eval binding does at plan time.
+    return { wasm, abi: decodeAbi(wasm) };
+  }
+
+  async #getBackend(): Promise<WasmCompileBackend> {
+    if (this.#backend !== undefined) {
+      return this.#backend;
+    }
+    this.#loading ??= this.#load();
+    return this.#loading;
+  }
+
+  async #load(): Promise<WasmCompileBackend> {
+    this.#hooks.onLoadStart?.();
+    try {
+      const url = `${import.meta.env.BASE_URL}compiler.wasm`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(
+          `failed to fetch the compiler wasm (HTTP ${String(response.status)})`,
+        );
+      }
+      const bytes = await response.arrayBuffer();
+      const backend = await WasmCompileBackend.create(bytes);
+      this.#backend = backend;
+      return backend;
+    } finally {
+      // Allow a retry if the fetch failed; clear the in-flight promise.
+      if (this.#backend === undefined) {
+        this.#loading = undefined;
+      }
+      this.#hooks.onLoadEnd?.();
+    }
+  }
 }

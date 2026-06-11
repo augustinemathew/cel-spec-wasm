@@ -8,7 +8,9 @@ import { describe, it } from 'vitest';
 // wiring beneath the editor IS exercised headlessly in `run.test.ts`
 // (compile via the dev-server handler → eval via `@cel-wasm/eval`); the
 // view structure in `view.test.ts`; the variables / render / compile-client
-// logic in their own colocated suites.  The Monaco integration itself is
+// logic in their own colocated suites.  The client-side compile→run path
+// (the SPA's only moving parts) is exercised end-to-end in `run.test.ts`
+// against the committed `compiler.wasm`.  The Monaco integration itself is
 // verified by `vite build` (a clean static bundle) plus the manual browser
 // steps in `README.md`.
 describe('@cel-wasm/web mountDemo', () => {

@@ -358,3 +358,10 @@ body {
   color: var(--error);
   padding: 4px 0;
 }
+
+.error-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}

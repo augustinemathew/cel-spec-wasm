@@ -1,15 +1,33 @@
+import { CelCompileError } from '@cel-wasm/compiler/wasm-backend';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  CompileClientError,
-  base64ToBytes,
-  compileViaEndpoint,
-} from './compile-client.js';
+import { CompileClient } from './compile-client.js';
 
-// The client decodes the `cel.abi` from the returned wasm bytes via
-// `@cel-wasm/eval`'s `decodeAbi`.  These unit tests exercise the transport
-// + error shaping with a stub wasm, so the real decoder is mocked; the
-// genuine compile → decode → eval round-trip is pinned in `run.test.ts`.
+// The client fetches `compiler.wasm`, instantiates a `WasmCompileBackend`,
+// and decodes the returned bytes' `cel.abi` via `@cel-wasm/eval`.  These
+// unit tests stub both heavy collaborators so they exercise the transport
+// (lazy fetch + caching + load hooks) and error shaping in isolation; the
+// genuine compiler.wasm → decode → eval round-trip is pinned end-to-end in
+// `run.test.ts` against the committed `compiler.wasm`.
+
+const { compileMock, createMock } = vi.hoisted(() => {
+  const compile = vi.fn();
+  return {
+    compileMock: compile,
+    createMock: vi.fn(() => Promise.resolve({ compile })),
+  };
+});
+
+vi.mock('@cel-wasm/compiler/wasm-backend', async () => {
+  const actual = await vi.importActual<
+    typeof import('@cel-wasm/compiler/wasm-backend')
+  >('@cel-wasm/compiler/wasm-backend');
+  return {
+    ...actual,
+    WasmCompileBackend: { create: createMock },
+  };
+});
+
 vi.mock('@cel-wasm/eval', () => ({
   decodeAbi: (): unknown => ({
     version: 1,
@@ -21,101 +39,95 @@ vi.mock('@cel-wasm/eval', () => ({
   }),
 }));
 
-describe('base64ToBytes', () => {
-  it('decodes base64 to raw bytes', () => {
-    // "wasm" magic 0x00 0x61 0x73 0x6d → base64 "AGFzbQ==".
-    expect(Array.from(base64ToBytes('AGFzbQ=='))).toEqual([0, 97, 115, 109]);
-  });
+function stubFetch(ok: boolean, bytes: Uint8Array, status = 200): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      (): Promise<Response> =>
+        Promise.resolve({
+          ok,
+          status,
+          arrayBuffer: (): Promise<ArrayBuffer> =>
+            Promise.resolve(bytes.buffer),
+        } as Response),
+    ),
+  );
+}
 
-  it('decodes the empty string to an empty array', () => {
-    expect(base64ToBytes('')).toEqual(new Uint8Array(0));
-  });
-});
+const WASM_MAGIC = new Uint8Array([0, 97, 115, 109]);
 
-describe('compileViaEndpoint', () => {
+describe('CompileClient', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    compileMock.mockReset();
+    createMock.mockClear();
   });
 
-  function stubFetch(status: number, body: unknown): void {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        (): Promise<Response> =>
-          Promise.resolve({
-            status,
-            json: (): Promise<unknown> => Promise.resolve(body),
-          } as Response),
-      ),
-    );
-  }
+  it('lazy-fetches compiler.wasm and returns a Program with decoded abi', async () => {
+    stubFetch(true, WASM_MAGIC);
+    compileMock.mockResolvedValue(WASM_MAGIC);
+    const client = new CompileClient();
+    expect(client.ready).toBe(false);
 
-  it('returns a Program on a success response', async () => {
-    stubFetch(200, {
-      ok: true,
-      wasmBase64: 'AGFzbQ==',
-      byteLength: 4,
-      abi: {
-        version: 1,
-        variables: [],
-        fields: [],
-        types: [],
-        runtimeAbiVersion: 1,
-        linkMode: 1,
-      },
-    });
-    const program = await compileViaEndpoint('1 + 2', []);
+    const program = await client.compile('1 + 2', []);
+
     expect(Array.from(program.wasm)).toEqual([0, 97, 115, 109]);
     expect(program.abi.version).toBe(1);
+    expect(client.ready).toBe(true);
   });
 
-  it('throws CompileClientError with diagnostics on a failure response', async () => {
-    stubFetch(200, {
-      ok: false,
-      error: '1:4: missing operand',
-      diagnostics: [{ message: 'missing operand', line: 1, column: 4 }],
+  it('fires the load hooks exactly once, even across two compiles', async () => {
+    stubFetch(true, WASM_MAGIC);
+    compileMock.mockResolvedValue(WASM_MAGIC);
+    const onLoadStart = vi.fn();
+    const onLoadEnd = vi.fn();
+    const client = new CompileClient({ onLoadStart, onLoadEnd });
+
+    await client.compile('1', []);
+    await client.compile('2', []);
+
+    expect(onLoadStart).toHaveBeenCalledTimes(1);
+    expect(onLoadEnd).toHaveBeenCalledTimes(1);
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes source and vars through to the backend', async () => {
+    stubFetch(true, WASM_MAGIC);
+    compileMock.mockResolvedValue(WASM_MAGIC);
+    const client = new CompileClient();
+
+    await client.compile('age > 18', [{ name: 'age', type: 'int' }]);
+
+    expect(compileMock).toHaveBeenCalledWith({
+      source: 'age > 18',
+      vars: [{ name: 'age', type: 'int' }],
     });
-    await expect(compileViaEndpoint('1 +', [])).rejects.toBeInstanceOf(
-      CompileClientError,
-    );
-    await compileViaEndpoint('1 +', []).catch((err: unknown) => {
-      expect(err).toBeInstanceOf(CompileClientError);
-      if (err instanceof CompileClientError) {
-        expect(err.diagnostics[0]?.line).toBe(1);
-        expect(err.diagnostics[0]?.column).toBe(4);
-      }
-    });
   });
 
-  it('throws on a non-JSON-object response', async () => {
-    stubFetch(500, 'oops');
-    await expect(compileViaEndpoint('x', [])).rejects.toBeInstanceOf(
-      CompileClientError,
+  it('propagates CelCompileError from the backend', async () => {
+    stubFetch(true, WASM_MAGIC);
+    compileMock.mockRejectedValue(
+      new CelCompileError([{ message: 'Invalid CEL expression' }]),
+    );
+    const client = new CompileClient();
+
+    await expect(client.compile('1 +', [])).rejects.toBeInstanceOf(
+      CelCompileError,
     );
   });
 
-  it('sends source and vars in the request body', async () => {
-    const fetchMock = vi.fn(
-      (_input: string, _init?: RequestInit): Promise<Response> =>
-        Promise.resolve({
-          status: 200,
-          json: (): Promise<unknown> =>
-            Promise.resolve({ ok: true, wasmBase64: '', byteLength: 0 }),
-        } as Response),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-    await compileViaEndpoint('age > 18', [{ name: 'age', type: 'int' }]);
-    const call = fetchMock.mock.calls[0];
-    expect(call?.[0]).toBe('/api/compile');
-    const rawBody = call?.[1]?.body;
-    if (typeof rawBody !== 'string') {
-      throw new Error('expected a string request body');
-    }
-    const body = JSON.parse(rawBody) as {
-      source: string;
-      vars: { name: string }[];
-    };
-    expect(body.source).toBe('age > 18');
-    expect(body.vars[0]?.name).toBe('age');
+  it('throws on a failed wasm fetch and allows a retry', async () => {
+    stubFetch(false, new Uint8Array(0), 404);
+    const client = new CompileClient();
+
+    await expect(client.compile('1', [])).rejects.toThrow(/HTTP 404/);
+    expect(client.ready).toBe(false);
+
+    // A subsequent successful fetch must not be blocked by the cached
+    // in-flight load promise from the failed attempt.
+    stubFetch(true, WASM_MAGIC);
+    compileMock.mockResolvedValue(WASM_MAGIC);
+    const program = await client.compile('1', []);
+    expect(Array.from(program.wasm)).toEqual([0, 97, 115, 109]);
   });
 });

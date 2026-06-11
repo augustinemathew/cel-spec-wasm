@@ -88,6 +88,7 @@ validation:
 
 nav:
   - Home: index.md
+  - Try it in your browser: playground.md
   - Getting started: user-guide/getting-started.md
   - User guide:
       - Overview: user-guide/index.md

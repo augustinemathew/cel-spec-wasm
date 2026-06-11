@@ -1,108 +1,20 @@
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import { defineConfig } from 'vite';
 
-import { defineConfig, type Plugin, type Connect } from 'vite';
+// The app is fully static: compile runs `compiler.wasm` client-side
+// (see `src/internal/compile-client.ts`) and eval is pure client-side TS.
+// There is NO dev-server endpoint — the build is plain static files
+// servable by any static host (GitHub Pages, an S3 bucket, …).
 
-import {
-  parseCompileRequest,
-  runCompile,
-} from './dev-server/compile-handler.js';
+// The published site lives under the docs-site subpath on GitHub Pages
+// (`https://augustinemathew.github.io/cel-spec-wasm/playground/`), so the
+// production build must emit asset URLs rooted there.  `npm run dev` keeps
+// serving from `/` for a friction-free local loop; only `vite build` (and
+// `vite preview`) apply the Pages base.  Override with `VITE_BASE` if the
+// site moves.
+const PAGES_BASE = process.env.VITE_BASE ?? '/cel-spec-wasm/playground/';
 
-const COMPILE_ROUTE = '/api/compile';
-const MAX_BODY_BYTES = 256 * 1024;
-
-/**
- * Read a request body up to {@link MAX_BODY_BYTES}, rejecting if it grows
- * past the cap (a hostile / runaway client should not exhaust memory).
- */
-async function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(new Error('request body too large'));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => {
-      resolve(Buffer.concat(chunks).toString('utf8'));
-    });
-    req.on('error', reject);
-  });
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.statusCode = status;
-  res.setHeader('Content-Type', 'application/json');
-  res.end(payload);
-}
-
-/**
- * Handle one `POST /api/compile`.  Parses the body, runs the native
- * compiler in-process, and returns the discriminated compile response.
- * A malformed request is a 400; a missing CLI (or any non-compile
- * failure) is a 500 carrying a readable message.
- */
-async function handleCompile(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let request;
-  try {
-    const raw = await readBody(req);
-    request = parseCompileRequest(JSON.parse(raw));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    sendJson(res, 400, { ok: false, error: message, diagnostics: [] });
-    return;
-  }
-  try {
-    const response = await runCompile(request);
-    sendJson(res, 200, response);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    sendJson(res, 500, {
-      ok: false,
-      error: `compile failed in the dev server: ${message}`,
-      diagnostics: [{ message }],
-    });
-  }
-}
-
-/**
- * A Vite plugin that mounts the `POST /api/compile` middleware on the dev
- * server.  This is the demo's documented Node-side compile fallback: the
- * browser can't subprocess the native `cel` CLI, so compile runs here and
- * eval runs client-side.
- */
-function compileEndpoint(): Plugin {
-  return {
-    name: 'cel-wasm-compile-endpoint',
-    configureServer(server) {
-      const middleware: Connect.NextHandleFunction = (req, res, next) => {
-        if (req.method !== 'POST' || req.url !== COMPILE_ROUTE) {
-          next();
-          return;
-        }
-        void handleCompile(req, res).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          sendJson(res, 500, {
-            ok: false,
-            error: `compile endpoint crashed: ${message}`,
-            diagnostics: [{ message }],
-          });
-        });
-      };
-      server.middlewares.use(middleware);
-    },
-  };
-}
-
-export default defineConfig({
-  plugins: [compileEndpoint()],
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? PAGES_BASE : '/',
   resolve: {
     alias: [
       {
@@ -132,4 +44,4 @@ export default defineConfig({
   worker: {
     format: 'es',
   },
-});
+}));
