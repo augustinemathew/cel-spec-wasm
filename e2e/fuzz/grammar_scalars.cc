@@ -184,6 +184,33 @@ void RegisterFallibleArithmetic(GrammarBuilder& b) {
            CelType::Uint());
 }
 
+// Scalar-returning string functions (receiver form).  These are
+// core dialect the grammar lacked — and the territory where the
+// wave-4 codepoint-vs-byte bug cluster was found by hand
+// (`IndexOfPosBoundIsByteNotCodepoint`, the size() unicode rows).
+// All are total over the typed inputs:
+//   - contains/startsWith/endsWith → Bool, always defined
+//   - indexOf(sub)      → Int, returns -1 when absent (the
+//     two-arg indexOf(sub, pos) form CAN range-error and is
+//     deferred to the fallible-string slice)
+//   - matches(re)       → Bool; the pattern is a generated
+//     string, but the leaf alphabet has no regex metacharacters
+//     that form an invalid pattern, so it's total in practice
+//     (and error-ness is compared if that ever changes).
+// `split` lives in the aggregate catalog (it yields list<string>).
+void RegisterStringFunctions(GrammarBuilder& b) {
+  b.Binary(CelType::Bool(), "string_contains", "(%0).contains(%1)",
+           CelType::String(), CelType::String());
+  b.Binary(CelType::Bool(), "string_starts_with", "(%0).startsWith(%1)",
+           CelType::String(), CelType::String());
+  b.Binary(CelType::Bool(), "string_ends_with", "(%0).endsWith(%1)",
+           CelType::String(), CelType::String());
+  b.Binary(CelType::Int(), "string_index_of", "(%0).indexOf(%1)",
+           CelType::String(), CelType::String());
+  b.Binary(CelType::Bool(), "string_matches", "(%0).matches(%1)",
+           CelType::String(), CelType::String());
+}
+
 // Comparison + logical (both yield Bool) — every CEL-spec overload.
 void RegisterBoolProducers(GrammarBuilder& b) {
   for (const CelType& numeric :
@@ -260,6 +287,7 @@ void RegisterScalarProductions(GrammarBuilder& b) {
   RegisterIdentLeaves(b, ActivationSchema());
   RegisterArithmetic(b);
   RegisterFallibleArithmetic(b);
+  RegisterStringFunctions(b);
   RegisterBoolProducers(b);
   RegisterMixedTotalOps(b);
 }

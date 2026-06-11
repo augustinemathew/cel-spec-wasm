@@ -165,9 +165,12 @@ productions existed.
    boundaries, 2^53±1, UINT64_MAX, −0.0/epsilon/denormal/1e308.
 4. ~~**Multi-byte UTF-8 leaves**~~ — shipped (M30.A, 8236374):
    2/3/4-byte, embedded NUL, combining mark; invalid-UTF-8 bytes.
-5. **String-ext + conversion calls** — `contains`/`startsWith`/
-   `endsWith`/`indexOf`/`replace`/`split`/`format`, `int(string)`
-   shapes (the wave-4 manual bug cluster).
+5. **String-ext + conversion calls** — total subset shipped
+   (M30.D): `contains`/`startsWith`/`endsWith`/`indexOf(sub)`/
+   `matches`/`split`. Still open (fallible, pairs with the known
+   codepoint bugs): `substring`, two-arg `indexOf(sub, pos)`
+   (`IndexOfPosBoundIsByteNotCodepoint`), `replace`, `format`,
+   `int(string)` with leading-`+`/whitespace shapes.
 6. ~~**Nested aggregates**~~ — shipped (M30.C): `list<list<T>>`,
    `list<map<K,V>>`, `map<string,list<int>>` leaves + constructors
    + size + container-iter_var comprehensions. The comparator
@@ -178,6 +181,40 @@ productions existed.
    + a message-typed binding (needs OracleVar proto marshalling).
 
 ## Notes log (newest first; add an entry per session)
+
+### 2026-06-11 — M30.D string functions + FIRST REAL BUG FOUND
+
+The loop's purpose realized: a new surface found a real miscompile.
+
+- Added scalar string functions to the grammar (`contains`,
+  `startsWith`, `endsWith`, `indexOf(sub)`, `matches` →
+  `grammar_scalars.cc`; `split` → `list<string>` in
+  `grammar_aggregates.cc`).
+- **Oracle gap found and closed first.** Mining showed a burst of
+  `ORACLE-REJECT` on every `split`/`indexOf` source: the oracle's
+  checker/runtime registered only the standard + optional libraries,
+  not the **strings extension** our compiler has — so cel-cpp
+  rejected `s.split(...)` we accept. Fixed by registering
+  `StringsCompilerLibrary` + `RegisterStringsFunctions` in
+  `testdata/cel_cpp_oracle.cc` (the "extend the oracle, don't guess"
+  rule). With the oracle aligned, the rejects became real
+  comparisons — and surfaced a divergence.
+- **THE BUG** (`list_string` seed=104): `('hello'+'hello').split('é')`
+  returned `["\x01\x00\x00\x00…"]` (garbage) instead of
+  `["hellohello"]`. Root cause: the compiler gives `split`'s output
+  the same workspace slot as its **computed** string input (slot
+  reuse), and `DoSplit` re-read `s->payload.s.ptr` *after*
+  `AllocList(out,…)` stamped a list header over that shared slot —
+  so every element pointed at the header bytes. The slot-aliasing
+  bug class this suite exists to catch. The CLI literal case always
+  worked (literals don't alias the output slot) — **only the
+  differential fuzzer over computed receivers caught it.**
+- **Fixed** in `runtime/cel_string_ext_list.cc` (capture
+  `source_ptr` before `AllocList`); pinned at two layers —
+  `runtime/cel_string_ext_list_test.cc::SplitOutputAliasesSourceSlot*`
+  (kernel, direct slot alias) and
+  `e2e/known_bugs_test.cc::PbtSplitComputedReceiverSlotAlias` (e2e,
+  the exact PBT shape). Both live guards.
 
 ### 2026-06-11 — M30.C nested aggregates
 

@@ -141,6 +141,18 @@ void DoSplit(CelValue* out, const CelValue* s, const CelValue* sep,
     return;
   }
   if (limit < 0) limit = std::numeric_limits<int64_t>::max();
+  // Capture the source pointer BEFORE AllocList writes into `out`.
+  // The compiler may assign `out` the same workspace slot as `s`
+  // (slot reuse when `s` is a computed temporary, e.g.
+  // `('a'+'b').split(sep)`).  `AllocList(out, …)` then stamps a
+  // CEL_LIST_ARENA header over that slot, so re-reading
+  // `s->payload.s.ptr` afterward yields the header offset, not the
+  // string data — every element would stamp garbage.  The string
+  // DATA at `source_ptr` is untouched (only the CelValue slot is
+  // overwritten), so elements pointing into it stay valid.  Literal
+  // / variable receivers never alias the output slot, which is why
+  // this only bit computed receivers.
+  const uint32_t source_ptr = s->payload.s.ptr;
   const absl::string_view haystack = BorrowSpan(s->payload.s);
   const absl::string_view sep_view = BorrowSpan(sep->payload.s);
   std::vector<std::pair<uint32_t, uint32_t>> ranges;
@@ -148,7 +160,7 @@ void DoSplit(CelValue* out, const CelValue* s, const CelValue* sep,
   ArenaListHeader* hdr = AllocList(out, static_cast<uint32_t>(ranges.size()));
   if (hdr == nullptr) return;
   for (uint32_t k = 0; k < ranges.size(); ++k) {
-    StampSubstring(ListElement(hdr, k), s->payload.s.ptr, ranges[k].first,
+    StampSubstring(ListElement(hdr, k), source_ptr, ranges[k].first,
                    ranges[k].second - ranges[k].first);
   }
 }

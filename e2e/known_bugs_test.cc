@@ -1065,5 +1065,33 @@ TEST(KnownBugs, PbtSizeOfExistsOneTernaryBytes) {
   EXPECT_EQ(*v->AsInt(), 4);
 }
 
+// PBT list_string seed=104 (M30.D string-functions grammar,
+// 2026-06-11).  `split` on a COMPUTED receiver returned garbage
+// memory bytes: `('hello' + 'hello').split('é')` produced a list
+// whose only element was the result list's own ArenaListHeader
+// bytes (`\x01\x00\x00\x00…`) instead of `"hellohello"`.  Root
+// cause: the compiler assigns the split's output the same workspace
+// slot as its computed-string input (slot reuse), and
+// `cel_string_ext_list.cc::DoSplit` re-read `s->payload.s.ptr`
+// AFTER `AllocList(out, …)` had stamped a CEL_LIST_ARENA header over
+// that shared slot.  Fixed by capturing `source_ptr` before
+// AllocList.  Literal receivers never alias the output slot, which
+// is why the CLI literal case (`'hellohello'.split('é')`) always
+// worked and only the differential fuzzer caught it.  Live guard.
+TEST(KnownBugs, PbtSplitComputedReceiverSlotAlias) {
+  // Assert through CEL scalars (size / index) so the test needs no
+  // HostListBacking access: both reach into the split result, which
+  // is where the garbage surfaced.
+  auto sz = TryEval(R"(size(("hello" + "hello").split("é")))");
+  ASSERT_TRUE(sz.ok()) << sz.status();
+  ASSERT_EQ(sz->kind(), Value::Kind::kInt) << static_cast<int>(sz->kind());
+  EXPECT_EQ(*sz->AsInt(), 1);
+
+  auto el = TryEval(R"((("hello" + "hello").split("é"))[0])");
+  ASSERT_TRUE(el.ok()) << el.status();
+  ASSERT_EQ(el->kind(), Value::Kind::kString) << static_cast<int>(el->kind());
+  EXPECT_EQ(*el->AsString(), "hellohello");
+}
+
 }  // namespace
 }  // namespace celwasm

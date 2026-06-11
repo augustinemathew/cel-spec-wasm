@@ -144,6 +144,26 @@ TEST_F(StringExtFixture, SplitNoMatchReturnsWholeString) {
   EXPECT_EQ(ListAsStrings(At(out)), (std::vector<std::string>{"hello"}));
 }
 
+// Output slot aliases the source-string slot — the shape the
+// compiler produces when the receiver is a computed temporary
+// (`('a'+'b').split(...)`).  AllocList stamps the result list over
+// the slot that also held `s`, so DoSplit MUST capture the source
+// pointer before AllocList; otherwise every element stamps the
+// list header's bytes as string data.  Found by e2e/fuzz
+// (`list_string` seed=104): `('hello'+'hello').split('é')` returned
+// garbage instead of `["hellohello"]`.
+TEST_F(StringExtFixture, SplitOutputAliasesSourceSlot) {
+  uint32_t s = MakeStr("hellohello");
+  cel_string_split_at_vv(/*out=*/s, /*s=*/s, MakeStr("X"));
+  EXPECT_EQ(ListAsStrings(At(s)), (std::vector<std::string>{"hellohello"}));
+}
+
+TEST_F(StringExtFixture, SplitOutputAliasesSourceSlotWithMatches) {
+  uint32_t s = MakeStr("a,b,c");
+  cel_string_split_at_vv(/*out=*/s, /*s=*/s, MakeStr(","));
+  EXPECT_EQ(ListAsStrings(At(s)), (std::vector<std::string>{"a", "b", "c"}));
+}
+
 TEST_F(StringExtFixture, SplitEmptyHaystackWithSep) {
   uint32_t out = MakeOut();
   cel_string_split_at_vv(out, MakeStr(""), MakeStr(" "));

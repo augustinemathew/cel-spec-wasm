@@ -159,6 +159,16 @@ void RegisterMapConstructors(GrammarBuilder& b) {
   }
 }
 
+// String functions that PRODUCE an aggregate — `split` yields a
+// list<string>.  Total over its typed inputs (an empty separator
+// splits into characters; cel-cpp and we agree).  The scalar-
+// returning string functions (contains/indexOf/matches/…) live in
+// the scalar catalog.
+void RegisterStringAggregateFunctions(GrammarBuilder& b) {
+  b.Binary(CelType::List(CelType::String()), "string_split", "(%0).split(%1)",
+           CelType::String(), CelType::String());
+}
+
 void RegisterSizeProductions(GrammarBuilder& b) {
   for (const CelType& elt : ScalarVocab()) {
     b.Unary(CelType::Int(), absl::StrCat("size_list_", Tag(elt)), "size(%0)",
@@ -307,6 +317,7 @@ Grammar BuildFullGrammar() {
   RegisterListComprehensions(b);
   RegisterMapComprehensions(b);
   RegisterNestedAggregates(b);
+  RegisterStringAggregateFunctions(b);
 
   Grammar g = std::move(b).Build();
   ABSL_CHECK_OK(g.Validate())

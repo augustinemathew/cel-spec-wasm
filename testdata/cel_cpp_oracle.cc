@@ -26,6 +26,7 @@
 #include "compiler/standard_library.h"
 #include "extensions/protobuf/enum_adapter.h"
 #include "extensions/protobuf/runtime_adapter.h"
+#include "extensions/strings.h"
 #include "google/protobuf/arena.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/generated_message_reflection.h"
@@ -109,6 +110,17 @@ absl::StatusOr<std::unique_ptr<const cel::Runtime>> BuildRuntime(
   if (auto s = cel::extensions::EnableOptionalTypes(*builder); !s.ok()) {
     return s;
   }
+  // Strings extension runtime functions (`split` / `indexOf` /
+  // `substring` / `replace` / `format` / …), mirroring our
+  // compiler which registers the same extension.  Without this the
+  // oracle's runtime would reject `s.split(...)` that our pipeline
+  // evaluates — a harness asymmetry, not a real divergence.  Paired
+  // with the `StringsCompilerLibrary` registration in CompileSource.
+  if (auto s = cel::extensions::RegisterStringsFunctions(
+          builder->function_registry(), opts);
+      !s.ok()) {
+    return s;
+  }
   auto& registry = builder->type_registry();
   for (const google::protobuf::EnumDescriptor* enum_desc : {
            ::cel::expr::conformance::proto2::GlobalEnum_descriptor(),
@@ -135,24 +147,29 @@ namespace {
 // resolved enum references live in the CheckedExpr's reference_map;
 // ProtobufRuntimeAdapter applies them at eval (the bare
 // runtime->CreateProgram(ast) path does not, treating a qualified enum
+// Register the checker libraries the oracle understands: the
+// standard library, optional syntax + decls (`?field:`, the
+// optional macros / `optional_type` decls — needed for the
+// `optional.ofNonZeroValue` pins), and the strings extension
+// (`split`/`indexOf`/… — pairs with `RegisterStringsFunctions` in
+// BuildRuntime so the checker accepts what our compiler accepts).
+absl::Status AddCompilerLibraries(cel::CompilerBuilder& builder) {
+  if (auto s = builder.AddLibrary(cel::StandardCompilerLibrary()); !s.ok()) {
+    return s;
+  }
+  if (auto s = builder.AddLibrary(cel::OptionalCompilerLibrary()); !s.ok()) {
+    return s;
+  }
+  return builder.AddLibrary(cel::extensions::StringsCompilerLibrary());
+}
+
 // name as an unbound activation variable).
 absl::StatusOr<cel::expr::CheckedExpr> CompileSource(
     const google::protobuf::DescriptorPool* pool, absl::string_view source,
     absl::string_view container, absl::Span<const OracleVar> vars) {
   auto compiler_builder = cel::NewCompilerBuilder(pool);
   if (!compiler_builder.ok()) return compiler_builder.status();
-  if (auto s = (*compiler_builder)->AddLibrary(cel::StandardCompilerLibrary());
-      !s.ok()) {
-    return s;
-  }
-  // Optional syntax + decls (`?field:`, the optional macros, the
-  // `optional_type` decls).  Keeps the oracle able to answer
-  // optional-typed questions, e.g. the `optional.ofNonZeroValue`
-  // zero-value pins.
-  if (auto s = (*compiler_builder)->AddLibrary(cel::OptionalCompilerLibrary());
-      !s.ok()) {
-    return s;
-  }
+  if (auto s = AddCompilerLibraries(**compiler_builder); !s.ok()) return s;
   auto& checker = (*compiler_builder)->GetCheckerBuilder();
   checker.set_container(std::string(container));
   // Declare every free variable as `dyn`: the static type is irrelevant

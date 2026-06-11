@@ -2,9 +2,11 @@
 
 Status: in progress — drafted 2026-06-11, executing via the
 autonomous loop (one slice per iteration, top-down).  **M30.A
-(adversarial leaves), M30.B (error-producing arithmetic), and M30.C's
-nested-aggregate sub-part shipped 2026-06-11; M30.G's name/activation
-cleanup landed with the reviewability refactor.**  Supersedes the unshipped remainder of
+(adversarial leaves), M30.B (error-producing arithmetic), M30.C's
+nested-aggregate sub-part, and M30.D's total string-function subset
+shipped 2026-06-11; M30.G's name/activation cleanup landed with the
+reviewability refactor.  M30.D found and fixed the first real
+miscompile — a `split` slot-aliasing bug on computed receivers.**  Supersedes the unshipped remainder of
 m27 (Slice C2 proto targets, Slice D corpus/CI); m27's shipped
 machinery (typed attribute grammar, L1/L2/L3 validation, oracle
 harness, fuzztest properties, divergence miner) is the foundation
@@ -106,6 +108,19 @@ sweeps at depths 6–9 across all 11 targets; every find pinned.
   `list_list_int` / `map_string_list_int` at d4.
 
 ### M30.D — Full operator surface ("speak the whole dialect")
+
+> **Total string subset shipped 2026-06-11.** `contains` /
+> `startsWith` / `endsWith` / `indexOf(sub)` / `matches` / `split`
+> added; the oracle gained the strings checker + runtime extension
+> (it only had standard + optional before, so it was rejecting
+> `split`/`indexOf` our compiler accepts).  This surface found the
+> first real miscompile: `split` on a computed receiver
+> (`('a'+'b').split(sep)`) returned garbage because the output slot
+> aliased the input and `DoSplit` re-read the source pointer after
+> `AllocList` clobbered it — fixed in `cel_string_ext_list.cc`,
+> pinned kernel + e2e.  Still open: fallible string forms
+> (`substring`, two-arg `indexOf(sub, pos)`, `replace`, `format`),
+> string/bytes ordering, the generated coverage table.
 
 Enumerate the checker's builtin + shipped-extension overload
 catalog (`compiler/celfn/overload_table.cc` is the seed list)
