@@ -189,6 +189,22 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — string/bytes ordering + net_ext/optionals triage
+
+- Added string/bytes `<` `<=` `>` `>=` (the grammar had deferred
+  them on an outdated "locale handling" concern — verified `'a' <
+  'b'` type-checks in our static subset). Mining bool at d4 = 0
+  divergences; the multi-byte / embedded-NUL string leaves exercise
+  the bytewise comparison and agree with cel-cpp. Comparison block
+  now just-missing the cross-type ⊘ rows.
+- **net_ext (20) and optionals (~14) triaged as BLOCKED**, not
+  to-do: both need types the fuzzer's `CelType` can't represent —
+  `net.IP`/`net.CIDR` opaque types and `optional<T>`. The bare-name
+  net functions work in our subset (`isIP`/`ip`/`cidr`), but
+  `ip(...)` yields an opaque type with no `CelType` kind. Wiring
+  either requires extending `shared/type.h`'s type vocabulary (a
+  compiler change), out of grammar-only scope. Marked in COVERAGE.
+
 ### 2026-06-11 — encoders (base64) + cross-type comparison triage
 
 - Added `base64.encode(bytes)` / `base64.decode(string)`

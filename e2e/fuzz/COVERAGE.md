@@ -40,11 +40,11 @@ note) · ⬜ none generated yet.
 | String functions | ~27 | 🟡 all but `format` + the two-arg pos/limit forms |
 | Type conversions | ~30 | 🟡 cross-numeric + string(x) + bytes/bool done; numeric-string-leaf + duration/timestamp parse open |
 | **math_ext** | 28 | ✅ |
-| **net_ext** | 20 | ⬜ |
+| **net_ext** | 20 | ⬜ blocked — needs `CelType` opaque-type support |
 | **timestamp accessors** | 23 | 🟡 no-tz forms done; `_with_tz` open |
 | **duration accessors** | 7 | ✅ |
 | **encoders (base64)** | 2 | ✅ |
-| **optionals** | ~14 | ⬜ |
+| **optionals** | ~14 | ⬜ blocked — needs `CelType` optional-type support |
 | `type()` | 1 | ⬜ |
 
 The ⬜ rows are the work queue, roughly by bug-yield. They map onto
@@ -74,8 +74,9 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [x] same-type numeric `{less,less_equals,greater,greater_equals,
       equals,not_equals}_{int64,uint64,double}`
 - [x] `equals` / `not_equals` (heterogeneous top-level), bool/string/bytes eq
-- [ ] string/bytes **ordering**: `less_string` `less_bytes`
-      `greater_string` `greater_bytes` `less_equals_*` `greater_equals_*`
+- [x] string/bytes **ordering**: `less_string` `less_bytes`
+      `greater_string` `greater_bytes` `less_equals_*`
+      `greater_equals_*` (bytewise; in the static subset)
 - ⊘ **cross-type numeric** (24): `less_double_int64`
       `greater_int64_uint64` `less_equals_uint64_double` … — OUT OF
       the static subset by design.  Verified 2026-06-11: `1 < 2u`,
@@ -153,7 +154,15 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [x] `math_bitAnd_{int_int,uint_uint}` `math_bitOr_*` `math_bitXor_*`
       `math_bitNot_*` `math_bitShiftLeft_*` `math_bitShiftRight_*`
 
-## net_ext — ⬜ (no productions; needs `net.IP` / `net.CIDR` opaque-type leaves)
+## net_ext — ⬜ (BLOCKED: needs `CelType` opaque-type support)
+
+> The bare-name functions (`isIP`/`ip`/`cidr` + ip/cidr receiver
+> methods) work in our static subset, but `ip(...)`/`cidr(...)`
+> produce the `net.IP`/`net.CIDR` **opaque types**, which the
+> fuzzer's `CelType` (`shared/type.h`) cannot represent — no opaque
+> kind.  Wiring net_ext requires extending the shared type
+> vocabulary first (a compiler change, not a grammar-only slice).
+> Same blocker as `optionals` (`optional<T>`).
 
 - [ ] `net_isIP_string` `net_isIP_string_int` `net_string_ip` `net_string_cidr`
 - [ ] `net_ip_*` (family, isCanonical, isLoopback, isGlobalUnicast, …)
@@ -180,7 +189,12 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [x] `base64_decode_string` (`base64.decode(string)` → Bytes,
       fallible — non-base64 leaves both-error)
 
-## optionals — ⬜ (needs `optional<T>` leaves; `.?` blocked by `OptionalSelectOnMapRejected`)
+## optionals — ⬜ (BLOCKED: needs `CelType` optional-type support)
+
+> `CelType` (`shared/type.h`) has no `optional<T>` kind, so the
+> fuzzer can't type optional-producing productions.  Like net_ext,
+> this needs a shared type-vocabulary extension first.  (`.?` syntax
+> is additionally blocked by `OptionalSelectOnMapRejected`.)
 
 - [ ] `optional_of` `optional_ofNonZeroValue` `optional_none`
       `optional_value` `optional_hasValue` `optional_or_optional`

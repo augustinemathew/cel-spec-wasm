@@ -353,14 +353,21 @@ void RegisterBoolProducers(GrammarBuilder& b) {
     b.Binary(CelType::Bool(), tag + "_gt", "(%0 > %1)", numeric, numeric);
     b.Binary(CelType::Bool(), tag + "_ge", "(%0 >= %1)", numeric, numeric);
   }
-  // String / bytes — equality only.  Ordering on string / bytes is
-  // CEL-spec'd but its semantics interact with locale handling we
-  // haven't yet decided to admit through the static subset (see
-  // m12 string-ext rejection rows); planned under m30.D.
+  // String / bytes — full comparison set.  Ordering is bytewise
+  // (lexicographic over the UTF-8 / raw bytes) in both cel-cpp and
+  // our runtime; it's in the static subset (`'a' < 'b'`
+  // type-checks), so the earlier eq/ne-only restriction was overly
+  // cautious.  The multi-byte / embedded-NUL string leaves make the
+  // ordering bug-prone (a byte-vs-codepoint comparison would
+  // diverge).
   for (const CelType& lex : {CelType::String(), CelType::Bytes()}) {
     const std::string tag = TypeKey(lex);
     b.Binary(CelType::Bool(), tag + "_eq", "(%0 == %1)", lex, lex);
     b.Binary(CelType::Bool(), tag + "_ne", "(%0 != %1)", lex, lex);
+    b.Binary(CelType::Bool(), tag + "_lt", "(%0 < %1)", lex, lex);
+    b.Binary(CelType::Bool(), tag + "_le", "(%0 <= %1)", lex, lex);
+    b.Binary(CelType::Bool(), tag + "_gt", "(%0 > %1)", lex, lex);
+    b.Binary(CelType::Bool(), tag + "_ge", "(%0 >= %1)", lex, lex);
   }
   // Bool equality only — there's no ordering on bool in CEL.
   b.Binary(CelType::Bool(), "bool_eq", "(%0 == %1)", CelType::Bool(),
