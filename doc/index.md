@@ -5,15 +5,32 @@ hide:
 
 # cel-wasm
 
-**An AOT compiler for [CEL](https://github.com/google/cel-spec): it lowers an
-expression to a portable `.wasm` module, then JITs that to native machine code
-inside a sandbox. Up to 25× faster than the `cel-cpp` interpreter on repeated
-evaluation — and the *same artifact* runs, byte-for-byte, on every host.**
+**[CEL](https://github.com/google/cel-spec) is the expression language
+Kubernetes, Envoy, and IAM already use to decide *"is this allowed?"*.
+cel-wasm compiles it *ahead of time* into a sandboxed WebAssembly artifact —
+so you can evaluate sensitive or untrusted policy expressions at native speed,
+on every host, with no way for the expression to escape the sandbox, read host
+memory, do I/O, or hang the process.**
 
-Stock CEL is a tree-walking interpreter, re-implemented per host language.
-cel-wasm compiles instead: no AST walk and no interpreter at eval time, just
-Cranelift-emitted native code in a bounded, syscall-free sandbox. Compile once;
-every runtime executes identical bytes.
+Up to **25× faster** than the `cel-cpp` interpreter on repeated evaluation,
+**0 conformance failures**, and one portable artifact that runs byte-for-byte
+everywhere. Stock CEL is a tree-walking interpreter, re-implemented per host
+language; cel-wasm compiles instead — no AST walk and no interpreter at eval
+time, just Cranelift-emitted native code in a bounded, syscall-free sandbox.
+
+!!! abstract "Built for two shapes of workload"
+
+    **🔐 Security-critical & regulated** — banking, fintech, healthcare,
+    multi-tenant SaaS. Evaluate sensitive business rules or *customer-authored*
+    predicates (a fraud check, an entitlement rule, a transaction-limit policy)
+    without the expression seeing more than you marshal in, escaping the
+    sandbox, or being able to crash or hang your service. Even custom functions
+    can run as isolated WebAssembly components you don't have to trust.
+
+    **⚡ Lightweight & at the edge** — Envoy / API-gateway filters, request
+    routing, rate-limit decisions, feature flags. One tiny, deterministic
+    `.wasm`: compile once and run identical bytes at every proxy or node at
+    native speed, with no per-host interpreter to drift.
 
 ```bash
 bazel run //tools/cel:cel -- eval 'age >= 18 && country in ["US","CA"]' \
