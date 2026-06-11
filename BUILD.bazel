@@ -16,6 +16,7 @@
 package_group(
     name = "internal",
     packages = [
+        "//bindings/...",
         "//compiler/...",
         "//eval/...",
         "//shared/...",

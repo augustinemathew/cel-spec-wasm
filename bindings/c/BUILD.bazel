@@ -1,0 +1,38 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+# The C ABI seam over the C++ `celwasm::Compiler`.  An `extern "C"`
+# surface the language bindings (an N-API native addon, an
+# emscripten `compiler.wasm`) build on without binding the C++ class
+# layout directly.  Thin marshalling shim: depends only on the
+# public compiler surface (//compiler:{compiler,program}) plus
+# //shared:type for the variable-declaration type vocabulary.
+#
+# Scoped to //:internal — the first-party bindings packages consume
+# it (they are in the //:internal package_group); it is not part of
+# the external public API contract.
+
+cc_library(
+    name = "cel_capi",
+    srcs = ["cel_capi.cc"],
+    hdrs = ["cel_capi.h"],
+    visibility = ["//:internal"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//shared:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "cel_capi_test",
+    size = "small",
+    srcs = ["cel_capi_test.cc"],
+    deps = [
+        ":cel_capi",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
