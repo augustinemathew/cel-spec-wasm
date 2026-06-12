@@ -59,6 +59,7 @@ const OPT_KIND_FN = 'f'.charCodeAt(0); // value: a `.celfn` source
 const OPT_KIND_CONTAINER = 'c'.charCodeAt(0); // value: container name
 const OPT_KIND_OPTIMIZE = 'o'.charCodeAt(0); // value: 1 byte, level 0..3
 const OPT_KIND_LINK = 'l'.charCodeAt(0); // value: 1 byte, 0=dynamic 1=static
+const OPT_KIND_DESCRIPTOR = 'd'.charCodeAt(0); // value: FileDescriptorSet bytes
 
 /** The 5-byte record header: kind (1) + little-endian length (4). */
 const OPT_RECORD_HEADER_BYTES = 5;
@@ -86,6 +87,9 @@ function encodeCompileOptions(request: CompileRequest): Uint8Array {
   }
   const linkByte = request.linkMode === 'dynamic' ? 0 : 1;
   records.push([OPT_KIND_LINK, Uint8Array.of(linkByte)]);
+  if (request.descriptorSetBytes !== undefined) {
+    records.push([OPT_KIND_DESCRIPTOR, request.descriptorSetBytes]);
+  }
 
   const total = records.reduce(
     (sum, [, value]) => sum + OPT_RECORD_HEADER_BYTES + value.length,

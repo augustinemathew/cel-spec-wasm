@@ -53,8 +53,17 @@ export interface CompileRequest {
    * Absolute path to a serialized `FileDescriptorSet` (the bytes
    * `protoc --descriptor_set_out` emits).  Passed to the CLI's
    * `--descriptor_set` so a proto expression's message types type-check.
+   * The path form is the native/CLI backend's input.
    */
   readonly descriptorSet?: string;
+  /**
+   * A serialized `FileDescriptorSet` supplied **in memory** (the same bytes
+   * `protoc --descriptor_set_out` emits).  This is the browser/wasm form —
+   * there is no filesystem, so the bytes are marshalled through the compiler
+   * wasm directly (a `'d'` record) rather than via a path.  The wasm backend
+   * builds a descriptor pool (layered over the generated pool) from them.
+   */
+  readonly descriptorSetBytes?: Uint8Array;
 }
 
 /**
@@ -120,6 +129,9 @@ export function buildCompileArgs(
   if (request.optimizeLevel !== undefined) {
     args.push('--O', String(request.optimizeLevel));
   }
+  // Pass --link_mode explicitly (default static) so this backend's output is
+  // independent of the `cel` CLI's own default, which is `dynamic`.
+  args.push('--link_mode', request.linkMode ?? 'static');
   args.push('--output', outputPath);
   return args;
 }

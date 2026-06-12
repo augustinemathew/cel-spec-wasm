@@ -183,3 +183,46 @@ describe('static vs dynamic link mode (cew_compile_opts)', () => {
     expect(instance.eval({})).toEqual([2n, 4n, 6n]);
   });
 });
+
+// A serialized FileDescriptorSet for `celwasm.test.Widget { string label = 1; }`
+// (the bytes `protoc --descriptor_set_out` emits; regenerate via
+// protobufjs/ext/descriptor or the C++ `BuildWidgetFds`). Widget exists ONLY
+// in these bytes, never in any generated pool — so a compile that resolves it
+// proves the descriptorSetBytes path is load-bearing.
+const WIDGET_FDS_HEX =
+  '0a3d0a0c7769646765742e70726f746f120c63656c7761736d2e74657374' +
+  '22170a06576964676574120d0a056c6162656c180120012809620670726f746f33';
+
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+// descriptorSetBytes feeds an in-memory FileDescriptorSet to the wasm compiler
+// (a 'd' record → cel_compile_opts_set_descriptor_set), so a proto-typed
+// expression type-checks in the browser with no filesystem.
+describe('descriptorSetBytes (proto compile via the wasm backend)', () => {
+  it('resolves a supplied-pool message type from the FDS bytes', async () => {
+    const wasm = await backend.compile({
+      source: 'w.label',
+      vars: [{ name: 'w', type: 'celwasm.test.Widget' }],
+      descriptorSetBytes: hexToBytes(WIDGET_FDS_HEX),
+      linkMode: 'dynamic',
+    });
+    // Type-checked + lowered to a Program (the message resolved via the FDS).
+    expect(decodeAbi(wasm).version).toBeGreaterThanOrEqual(0);
+  });
+
+  it('fails without the FDS — the message type is undeclared', async () => {
+    await expect(
+      backend.compile({
+        source: 'w.label',
+        vars: [{ name: 'w', type: 'celwasm.test.Widget' }],
+        linkMode: 'dynamic',
+      }),
+    ).rejects.toBeInstanceOf(CelCompileError);
+  });
+});

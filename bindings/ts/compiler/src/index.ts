@@ -59,9 +59,17 @@ export interface CompileOptions {
    * Absolute path to a serialized `FileDescriptorSet` (the bytes
    * `protoc --descriptor_set_out` emits) supplying the message types a
    * proto-typed expression references.  Without it, a `Foo{...}` literal
-   * or a message-typed field read fails to type-check.
+   * or a message-typed field read fails to type-check.  The path form is
+   * consumed by the native/CLI backend.
    */
   readonly descriptorSet?: string;
+  /**
+   * A serialized `FileDescriptorSet` supplied **in memory** — the wasm
+   * backend's form of {@link descriptorSet}, since the browser has no
+   * filesystem.  The same message types; the bytes are marshalled through
+   * the compiler wasm directly.
+   */
+  readonly descriptorSetBytes?: Uint8Array;
 }
 
 // The default backend is constructed lazily on first compile so importing
@@ -100,6 +108,9 @@ export async function compile(
     ...(opts?.linkMode !== undefined ? { linkMode: opts.linkMode } : {}),
     ...(opts?.descriptorSet !== undefined
       ? { descriptorSet: opts.descriptorSet }
+      : {}),
+    ...(opts?.descriptorSetBytes !== undefined
+      ? { descriptorSetBytes: opts.descriptorSetBytes }
       : {}),
   });
 
