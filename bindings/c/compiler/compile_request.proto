@@ -1,0 +1,80 @@
+// The serialized compile-request message that crosses the compiler
+// wasm's C ABI boundary (`cew_compile` in compiler_wasm_exports.cc).
+//
+// One `CompileRequest` carries everything a single compile needs —
+// the CEL source plus every option the `cel_compile_opts_*` builder
+// accepts — so the JS caller marshals exactly ONE length-delimited
+// buffer through linear memory instead of the ad-hoc length-prefixed
+// records blob this message replaced.  Proto (not JSON) because the
+// request embeds binary `FileDescriptorSet` bytes (JSON would force
+// base64) and both sides already link protobuf.
+//
+// A load-bearing property: `source` is length-delimited on the wire,
+// so a CEL expression carrying an embedded NUL byte (a `b'\x00'`
+// byte literal) survives the crossing — a NUL-terminated `const
+// char*` source boundary would truncate it.
+//
+// Produced by bindings/ts/compiler/src/internal/compile-request.ts
+// (protobufjs).  Consumed by bindings/c/compiler/compiler_wasm_exports.cc.
+// Field numbers are locked; extensions are additive only.
+
+syntax = "proto3";
+
+package celwasm.compile;
+
+// One declared free variable: `name` is the source-level identifier,
+// `type` a type spec in the `cel` CLI's `--var` grammar (e.g. "int",
+// "list<int>", "map<string, int>", a message FQN) — the grammar
+// `cel_compile_opts_declare_var` parses.
+message VariableDecl {
+  string name = 1;
+  string type = 2;
+}
+
+// How the runtime helpers are linked into the emitted Program.wasm.
+// Numbering matches `celwasm.abi.LinkMode` (abi/cel_abi.proto) so the
+// request-side and Program-side labels never disagree on a value.
+//
+// NOTE: the proto3 zero value is DYNAMIC, so an absent field decodes
+// as a dynamic-link request — the opposite of the C API's static
+// default.  `cew_compile` applies the decoded value unconditionally;
+// a caller that wants the recommended self-contained static Program
+// must set LINK_MODE_STATIC explicitly (the TS binding always sets
+// the field).
+enum LinkMode {
+  LINK_MODE_DYNAMIC = 0;
+  LINK_MODE_STATIC = 1;
+}
+
+// Everything one compile needs.  Mirrors the `cel_compile_opts_*`
+// builder surface (cel_capi.h) field-for-field.
+message CompileRequest {
+  // The CEL expression source, UTF-8.  Length-delimited: embedded
+  // NUL bytes are legal and preserved.
+  string source = 1;
+
+  // Free variables visible to the expression.
+  repeated VariableDecl variables = 2;
+
+  // Host-function declarations, each a `.celfn` IDL source string
+  // (e.g. "string @host.upper(this string s);") — the form
+  // `cel_compile_opts_declare_host_fn` stages.
+  repeated string fns = 3;
+
+  // Name-resolution container (CEL `container`).  Empty = none.
+  string container = 4;
+
+  // Binaryen optimize level for the emitted expr module, [0, 3].
+  // Out-of-range surfaces as INVALID_ARGUMENT from the compile.
+  uint32 optimize_level = 5;
+
+  // Static vs dynamic runtime linking; see the enum's default-value
+  // note above.
+  LinkMode link_mode = 6;
+
+  // A binary-serialized `google.protobuf.FileDescriptorSet` (the
+  // bytes `protoc --descriptor_set_out` emits) describing the
+  // message types the expression references.  Empty = resolve
+  // against the generated pool only.
+  bytes descriptor_set = 7;
+}

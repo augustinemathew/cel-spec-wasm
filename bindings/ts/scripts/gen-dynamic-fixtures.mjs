@@ -3,18 +3,18 @@
 //
 // A dynamic Program is a thin (~6 KB) expr module that imports the runtime
 // helpers from the `cel` namespace instead of bundling them.  The compiler
-// emits dynamic Programs via `cew_compile_opts(srcPtr, optionsPtr,
-// optionsLen)` with a `link_mode` option record set to DYNAMIC.  This
+// emits dynamic Programs via `cew_compile(requestPtr, requestLen)` with a
+// serialized `celwasm.compile.CompileRequest` whose `link_mode` is
+// DYNAMIC (`bindings/c/compiler/compile_request.proto`).  This
 // script drives `bazel-bin/bindings/c/compiler/compiler_wasm.wasm` from Node (the
 // same WASI-shim pattern as `compiler/src/internal/wasm-backend.ts`) and
 // compiles a curated subset of the static fixture manifest in dynamic link
 // mode, writing each to `eval/fixtures/dynamic/<name>.wasm`.
 //
-// The compile-options blob is a sequence of records — `kind` (1 byte) +
-// `len` (u32 LE) + `len` payload bytes — per `cew_compile_opts`'s
-// `ApplyOptions` (`bindings/c/compiler/compiler_wasm_exports.cc`).  We emit a `v`
-// record per `name:type` var-decl and an `l` (link-mode) record whose
-// single payload byte is 0 = DYNAMIC.
+// The request bytes come from the compiler binding's own encoder
+// (`compiler/dist/internal/compile-request.js` — the built output of
+// `compile-request.ts`), so this script can never drift from the schema
+// the backend ships.
 //
 // The subset is chosen so each dynamic fixture is the dynamic twin of a
 // static fixture with the SAME source + activation (so the dynamic test
@@ -22,11 +22,14 @@
 // or the curated subset changes; the .wasm files are committed.
 //
 // Usage:  node bindings/ts/scripts/gen-dynamic-fixtures.mjs
-// (run from the repo root, after `bazel build //bindings/c/compiler:compiler_wasm`).
+// (run from the repo root, after `bazel build //bindings/c/compiler:compiler_wasm`
+// and `npm run build` in bindings/ts).
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+
+import { encodeCompileRequest } from '../compiler/dist/internal/compile-request.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../..');
@@ -128,50 +131,19 @@ async function instantiate(mod) {
   return holder.instance;
 }
 
-// Build the compile-options blob: a `v` record per var-decl + an `l`
-// link-mode record (payload byte 0 = DYNAMIC).
-function buildOptionsBlob(compileVars) {
-  const enc = new TextEncoder();
-  const records = [];
-  const pushRecord = (kind, payload) => {
-    const header = new Uint8Array(5);
-    header[0] = kind.charCodeAt(0);
-    const n = payload.length;
-    header[1] = n & 0xff;
-    header[2] = (n >> 8) & 0xff;
-    header[3] = (n >> 16) & 0xff;
-    header[4] = (n >> 24) & 0xff;
-    records.push(header, payload);
-  };
-  for (const decl of compileVars ?? []) {
-    pushRecord('v', enc.encode(decl));
-  }
-  pushRecord('l', Uint8Array.of(0)); // 0 = DYNAMIC link mode
-  const total = records.reduce((acc, r) => acc + r.length, 0);
-  const blob = new Uint8Array(total);
-  let off = 0;
-  for (const r of records) {
-    blob.set(r, off);
-    off += r.length;
-  }
-  return blob;
-}
-
 function compileDynamic(inst, source, compileVars) {
   const ex = inst.exports;
-  const enc = new TextEncoder();
   const mem = () => ex.memory.buffer;
-  const writeBytes = (b) => {
-    const p = ex.cew_alloc(b.length + 1);
-    const dst = new Uint8Array(mem(), p, b.length + 1);
-    dst.set(b);
-    dst[b.length] = 0;
-    return p;
-  };
-  const srcPtr = writeBytes(enc.encode(source));
-  const blob = buildOptionsBlob(compileVars);
-  const optsPtr = writeBytes(blob);
-  const len = ex.cew_compile_opts(srcPtr, optsPtr, blob.length);
+  // The manifest carries `name:type` decl strings; the request wants
+  // {name, type} pairs (split on the FIRST ':' — types contain none).
+  const vars = (compileVars ?? []).map((decl) => {
+    const colon = decl.indexOf(':');
+    return { name: decl.slice(0, colon), type: decl.slice(colon + 1) };
+  });
+  const request = encodeCompileRequest({ source, vars, linkMode: 'dynamic' });
+  const requestPtr = ex.cew_alloc(request.length);
+  new Uint8Array(mem(), requestPtr, request.length).set(request);
+  const len = ex.cew_compile(requestPtr, request.length);
   if (len < 0) {
     const u8 = new Uint8Array(mem());
     let end = ex.cew_error();
@@ -180,6 +152,7 @@ function compileDynamic(inst, source, compileVars) {
     throw new Error(`compile failed: ${msg}`);
   }
   const program = new Uint8Array(mem(), ex.cew_program(), len).slice();
+  ex.cew_free(requestPtr);
   ex.cew_reset();
   return program;
 }

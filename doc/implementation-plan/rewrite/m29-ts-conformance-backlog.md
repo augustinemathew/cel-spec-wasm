@@ -193,6 +193,8 @@ below):
 - **ext_unimpl (27):** `block_ext` (undeclared refs + non-simple
   comprehension var names) + one `optionals`.
 - **cli_limitation (9):** `comparisons` (embedded-NUL byte literals).
+  SHIPPED 2026-06-12 — m30 slice F (proto `CompileRequest`, length-
+  delimited source); the 9 rows PASS.
 - **type_env (1):** `comparisons`.
 
 ## (c) Prioritized backlog — skip-reason groups ranked by rows-unlocked
@@ -214,7 +216,7 @@ and are excluded here.
 | 5 | **18** | proto_unimpl | **enums undeclared references** — enum value refs the descriptor path does not resolve | enums |
 | 7 | **14** | proto_unimpl | **google.protobuf.Any beyond supplied descriptors** — out of scope (§A.3): cannot resolve packed type-url at eval | comparisons, dynamic, proto2, proto3, wrappers |
 | 8 | **10** | eval_unimpl | **proto field-presence (repeated/map/proto3-default)** differs from cel-cpp | proto2, proto3 |
-| 9 | **9** | cli_limitation | **embedded NUL byte in expression** — a `b'\x00'` literal can't cross the CLI process-arg boundary (subprocess backend limitation) | comparisons |
+| 9 | ~~9~~ **SHIPPED 2026-06-12 (+9 pass)** | cli_limitation | **embedded NUL byte in expression** — a `b'\x00'` literal couldn't cross the CLI process-arg boundary, then (as `embedded_nul`) the wasm shim's NUL-terminated source. m30 slice F's proto `CompileRequest` made the source length-delimited; the rows PASS and the skip category is removed | comparisons |
 | 10 | **8** | proto_unimpl | **google.protobuf.Any construction** out of scope (Any beyond descriptors) | wrappers |
 | 10 | **8** | eval_unimpl | **null-pruning in proto repeated/map construction** unimplemented | proto2, proto3 |
 | 12 | **4** | ext_unimpl | **`exists()` variable name must be a simple identifier** (block_ext rewrite shape) | block_ext |

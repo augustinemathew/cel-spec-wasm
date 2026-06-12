@@ -16,7 +16,7 @@
 //      runtime's SharedArrayBuffer (the runtime is wasi-threads).
 //
 // The dynamic `.wasm` fixtures under `fixtures/dynamic/` were produced by
-// driving `compiler.wasm`'s `cew_compile_opts` with the link_mode option
+// driving `compiler.wasm`'s `cew_compile` with the CompileRequest link_mode
 // set to DYNAMIC (see `scripts/gen-dynamic-fixtures.mjs`); each shares its
 // name AND source with the static twin of the same name under `fixtures/`,
 // so the parity assertion is exact (same source ⇒ same result).

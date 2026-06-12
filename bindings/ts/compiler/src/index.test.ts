@@ -48,6 +48,18 @@ describe('compile (in-process compiler.wasm)', () => {
     expect(program.wasm.subarray(0, 4)).toEqual(WASM_PREAMBLE.subarray(0, 4));
   });
 
+  it("compiles a source carrying an embedded NUL byte (b'\\x00' literal)", async () => {
+    // Regression: the proto CompileRequest's length-delimited source — a
+    // NUL-terminated source boundary truncated this expression (the 9
+    // `embedded_nul` conformance rows in comparisons.textproto).  Built
+    // via fromCharCode so the test file carries no literal NUL.
+    const nul = String.fromCharCode(0);
+    const program = await compile(`b'${nul}' < b'${String.fromCharCode(1)}'`);
+    expect(program.wasm.subarray(0, WASM_PREAMBLE.length)).toEqual(
+      WASM_PREAMBLE,
+    );
+  });
+
   it('rejects a syntactically invalid expression with a non-empty diagnostic', async () => {
     await expect(compile('1 +')).rejects.toThrow(CelCompileError);
     const err = await compile('1 +').catch((e: unknown) => e);

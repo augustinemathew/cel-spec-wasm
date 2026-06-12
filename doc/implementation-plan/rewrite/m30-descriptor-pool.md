@@ -149,6 +149,12 @@ supplied it leaves the pool null (→ generated pool, unchanged).
 
 ### 3.3 `cew_compile_opts` records entry
 
+> Superseded by slice F: the records blob (and `cew_compile_opts`
+> itself) was replaced by the proto `CompileRequest`
+> (`bindings/c/compiler/compile_request.proto`), whose `descriptor_set`
+> bytes field carries the FDS.  The text below describes the slice-B
+> interim shape.
+
 The structured records format already added in m29
 (`compiler_wasm_exports.cc`, `ApplyOptions`) gains one kind:
 
@@ -278,18 +284,42 @@ it with the oracle where a value is in question.
     > entry point (slice F's proto `CompileRequest`) would let these
     > compile. Pass floor held; the skip count rose 735 → 744 as the FAILs
     > that briefly surfaced were reclassified to the renamed SKIP.
+    > (Resolved in slice F: the proto `CompileRequest` landed the
+    > length-delimited source, the 9 rows PASS, and the `embedded_nul`
+    > category is gone.)
   - **E — relocate the C ABI.** `bindings/c/` → `bindings/c/compiler/`
     (it is the *compiler* C ABI; leaves room for a future
     `bindings/c/eval`).  Move sources + BUILD targets + fix the
     `//bindings/c:...` label references across the tree.
-  - **F — schema'd CompileRequest.** Replace the ad-hoc length-prefixed
+  - **F — schema'd CompileRequest. ✅ DONE.** The ad-hoc length-prefixed
     records blob (`cew_compile_opts`'s `'v'`/`'f'`/`'c'`/`'o'`/`'l'`/`'d'`)
-    with a single **proto** `CompileRequest` message (source, repeated
-    var decls, repeated fn decls, container, optimize_level, link_mode,
-    descriptor_set bytes).  Proto over JSON: the request carries binary
-    FDS bytes (JSON would force base64) and both sides already link
-    protobuf.  The C ABI takes serialized `CompileRequest` bytes; the JS
-    side serializes via protobufjs.
+    is replaced by a single **proto** message —
+    `bindings/c/compiler/compile_request.proto`,
+    `celwasm.compile.CompileRequest` {`source`, repeated `VariableDecl
+    {name, type}` `variables`, repeated string `fns`, `container`,
+    uint32 `optimize_level`, enum `LinkMode link_mode` (numbering
+    matches `celwasm.abi.LinkMode`; the proto3 zero value is therefore
+    DYNAMIC — callers wanting static state it explicitly, and the TS
+    encoder always does), bytes `descriptor_set`}.  Proto over JSON: the
+    request carries binary FDS bytes (JSON would force base64) and both
+    sides already link protobuf.  The wasm export boundary is now
+    `cew_compile(request_ptr, request_len)` (the old two-buffer
+    `cew_compile_opts` + the legacy `cew_compile(source, var_decls,
+    dynamic)` are gone); the shim parses the proto and applies it onto
+    the unchanged `cel_compile_opts_*` C API, compiling through the new
+    additive `cel_compile_n(source, source_len, …)` so the
+    length-delimited source survives intact.  The JS side serializes via
+    protobufjs (`compiler/src/internal/compile-request.ts`, schema
+    embedded as a JSON descriptor + round-trip/field-number-pin tests);
+    the `OPT_KIND_*` records encoder is deleted.  New native-config
+    coverage: `compiler_wasm_exports_test.cc` drives `cew_compile` with
+    real serialized requests (every field, plus malformed-request /
+    unknown-link-mode / embedded-NUL negatives), and `cel_capi_test.cc`
+    pins `cel_compile_n`.  **Payoff landed:** the 9 `embedded_nul`
+    conformance skips (raw-NUL `b'\x00'` byte literals in
+    `comparisons.textproto`) now compile and PASS — the skip predicate
+    and category are removed from the TS harness, and the baseline
+    ratcheted 1842 → 1851.
 
 Slices A–C are additive and regression-free.  D is the behavioural switch
 (carries the conformance gate); E is a mechanical relocation; F is a

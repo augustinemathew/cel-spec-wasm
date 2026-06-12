@@ -3252,6 +3252,33 @@ Gate: `lint` + `build` + `typecheck` + `test` green — 781 pass / 13 skip
         aggregate compile + magic check; bad-expr/undeclared/bad-opt/
         bad-host-fn diagnostics.
 
+## Rewrite M30 slice F — proto CompileRequest over the compile C ABI (2026-06-12)
+
+The compiler-wasm boundary takes one serialized
+`celwasm.compile.CompileRequest` (`bindings/c/compiler/compile_request.proto`)
+instead of a NUL-terminated source + records blob.
+
+  - [x] length-delimited C compile — `bindings/c/compiler/cel_capi_test.cc`
+        `CompileN*` (embedded-NUL source compiles; strlen-equivalence
+        byte-identity; null-arg negatives).
+  - [x] cew_* export layer (native config) —
+        `bindings/c/compiler/compiler_wasm_exports_test.cc` (20): every
+        request field positive (vars/fns/container/optimize/link/FDS),
+        embedded-NUL source, absent-link-mode wire default (dynamic),
+        static-vs-dynamic size gap, malformed-request / unknown-link-mode /
+        bad-decl / invalid-FDS / null negatives, reset/replace lifecycle,
+        alloc-write-compile-free round trip.
+  - [x] TS request encoder —
+        `bindings/ts/compiler/src/internal/compile-request.test.ts` (8):
+        full-option + minimal round trips, embedded-NUL +
+        multi-byte-UTF-8 source, full-byte-range FDS, wire field-number
+        pins to compile_request.proto, link_mode zero-value semantics.
+  - [x] embedded-NUL regression e2e — `compiler/src/index.test.ts`
+        (compile) + `web/src/run.test.ts` (compile→eval, mirrors
+        conformance row `gt_bytes`); the 9 `embedded_nul` conformance
+        skips flip to PASS (skip predicate + category deleted; baseline
+        1842 → 1851, 0 fail).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

@@ -53,7 +53,7 @@ export interface RunCorpusOptions {
    * Absolute path to a serialized `FileDescriptorSet` supplying the
    * conformance test message types.  When present, the harness reads the
    * bytes and proto rows compile (the compiler binding marshals those bytes
-   * through the compiler wasm as a `'d'` record) and eval (via
+   * through the compiler wasm in the CompileRequest proto) and eval (via
    * `Engine.create({descriptors})`) instead of skipping.  When absent, proto
    * rows SKIP as `proto_unimpl`.
    */
@@ -79,7 +79,8 @@ function loadProtoSetup(descriptorSetPath: string | undefined): ProtoSetup {
     env: {
       descriptors: DescriptorSet.fromFileDescriptorSet(bytes),
       // The compiler binding marshals the same bytes through the compiler
-      // wasm (a 'd' record) to type-check proto types in-process.
+      // wasm (CompileRequest.descriptor_set) to type-check proto types
+      // in-process.
       descriptorSetBytes: bytes,
     },
     descriptorBytes: bytes,

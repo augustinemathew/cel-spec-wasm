@@ -7,10 +7,13 @@
 // `compiler.wasm` is a wasi-sdk *reactor* exporting the `cew_*` functions
 // (see `bindings/c/compiler/compiler_wasm_exports.cc`). This backend provides a
 // minimal hand-written WASI shim (no `node:wasi`, which is Node-only),
-// runs the C++ static constructors via `__wasm_call_ctors`, marshals the
-// source plus a compile-option records blob (variable / function
-// declarations, container, optimize level, static-vs-dynamic link mode)
-// through linear memory, and reads the Program bytes back.
+// runs the C++ static constructors via `__wasm_call_ctors`, marshals one
+// serialized `celwasm.compile.CompileRequest` proto (the source plus every
+// compile option — see `compile-request.ts` /
+// `bindings/c/compiler/compile_request.proto`) through linear memory, and
+// reads the Program bytes back.  Because the request is length-delimited,
+// an expression carrying an embedded NUL byte (a `b'\x00'` literal)
+// compiles correctly.
 //
 // KNOWN LIMITATION — error diagnostics. cel-cpp's parser (ANTLR) uses C++
 // exceptions, and stock wasi-sdk ships libc++abi without an exception
@@ -28,6 +31,7 @@ import {
 } from '../errors.js';
 
 import type { CompileBackend, CompileRequest } from './backend.js';
+import { encodeCompileRequest } from './compile-request.js';
 import { readShippedCompilerWasm } from './compiler-loader.js';
 
 // Re-exported here so a browser bundle reaches the typed compile-failure
@@ -42,70 +46,10 @@ interface CompilerExports {
   readonly __wasm_call_ctors: () => void;
   readonly cew_alloc: (n: number) => number;
   readonly cew_free: (p: number) => void;
-  readonly cew_compile_opts: (
-    sourcePtr: number,
-    optionsPtr: number,
-    optionsLen: number,
-  ) => number;
+  readonly cew_compile: (requestPtr: number, requestLen: number) => number;
   readonly cew_program: () => number;
   readonly cew_error: () => number;
   readonly cew_reset: () => void;
-}
-
-// Compile-option record kinds for `cew_compile_opts` (one byte each).
-// Mirrors `ApplyOptions` in bindings/c/compiler/compiler_wasm_exports.cc: each
-// record is `[u8 kind][u32 len little-endian][value bytes]`.
-const OPT_KIND_VAR = 'v'.charCodeAt(0); // value: "name:type"
-const OPT_KIND_FN = 'f'.charCodeAt(0); // value: a `.celfn` source
-const OPT_KIND_CONTAINER = 'c'.charCodeAt(0); // value: container name
-const OPT_KIND_OPTIMIZE = 'o'.charCodeAt(0); // value: 1 byte, level 0..3
-const OPT_KIND_LINK = 'l'.charCodeAt(0); // value: 1 byte, 0=dynamic 1=static
-const OPT_KIND_DESCRIPTOR = 'd'.charCodeAt(0); // value: FileDescriptorSet bytes
-
-/** The 5-byte record header: kind (1) + little-endian length (4). */
-const OPT_RECORD_HEADER_BYTES = 5;
-
-/**
- * Encode a {@link CompileRequest} into the length-prefixed records blob
- * `cew_compile_opts` parses. Returns the bytes to write into linear
- * memory. The static link mode is the C ABI default, so `linkMode` is
- * always emitted explicitly to make the artifact shape deterministic.
- */
-function encodeCompileOptions(request: CompileRequest): Uint8Array {
-  const enc = new TextEncoder();
-  const records: (readonly [number, Uint8Array])[] = [];
-  for (const v of request.vars) {
-    records.push([OPT_KIND_VAR, enc.encode(`${v.name}:${v.type}`)]);
-  }
-  for (const fn of request.fns ?? []) {
-    records.push([OPT_KIND_FN, enc.encode(fn)]);
-  }
-  if (request.container !== undefined) {
-    records.push([OPT_KIND_CONTAINER, enc.encode(request.container)]);
-  }
-  if (request.optimizeLevel !== undefined) {
-    records.push([OPT_KIND_OPTIMIZE, Uint8Array.of(request.optimizeLevel)]);
-  }
-  const linkByte = request.linkMode === 'dynamic' ? 0 : 1;
-  records.push([OPT_KIND_LINK, Uint8Array.of(linkByte)]);
-  if (request.descriptorSetBytes !== undefined) {
-    records.push([OPT_KIND_DESCRIPTOR, request.descriptorSetBytes]);
-  }
-
-  const total = records.reduce(
-    (sum, [, value]) => sum + OPT_RECORD_HEADER_BYTES + value.length,
-    0,
-  );
-  const buf = new Uint8Array(total);
-  const view = new DataView(buf.buffer);
-  let pos = 0;
-  for (const [kind, value] of records) {
-    buf[pos] = kind;
-    view.setUint32(pos + 1, value.length, true);
-    buf.set(value, pos + OPT_RECORD_HEADER_BYTES);
-    pos += OPT_RECORD_HEADER_BYTES + value.length;
-  }
-  return buf;
 }
 
 /** A no-op WASI preview1 errno. */
@@ -261,16 +205,7 @@ export class WasmCompileBackend implements CompileBackend {
     }
     const ex = this.#instance.exports as unknown as CompilerExports;
     const mem = (): ArrayBuffer => ex.memory.buffer;
-    const enc = new TextEncoder();
 
-    const writeCString = (s: string): number => {
-      const bytes = enc.encode(s);
-      const ptr = ex.cew_alloc(bytes.length + 1);
-      const dst = new Uint8Array(mem(), ptr, bytes.length + 1);
-      dst.set(bytes);
-      dst[bytes.length] = 0;
-      return ptr;
-    };
     const readCString = (ptr: number): string => {
       const u8 = new Uint8Array(mem());
       let end = ptr;
@@ -281,15 +216,15 @@ export class WasmCompileBackend implements CompileBackend {
       return new TextDecoder().decode(u8.slice(ptr, end));
     };
 
-    const options = encodeCompileOptions(request);
+    // One serialized CompileRequest proto carries the source and every
+    // option through linear memory (compile-request.ts).
+    const requestBytes = encodeCompileRequest(request);
 
-    let srcPtr = 0;
-    let optsPtr = 0;
+    let requestPtr = 0;
     try {
-      srcPtr = writeCString(request.source);
-      optsPtr = ex.cew_alloc(options.length);
-      new Uint8Array(mem(), optsPtr, options.length).set(options);
-      const len = ex.cew_compile_opts(srcPtr, optsPtr, options.length);
+      requestPtr = ex.cew_alloc(requestBytes.length);
+      new Uint8Array(mem(), requestPtr, requestBytes.length).set(requestBytes);
+      const len = ex.cew_compile(requestPtr, requestBytes.length);
       if (len < 0) {
         // The C ABI returned a caught diagnostic with full detail — this
         // is the TYPE-CHECK error path (undeclared refs, unknown
@@ -323,9 +258,8 @@ export class WasmCompileBackend implements CompileBackend {
       }
       throw err;
     } finally {
-      if (this.#instance !== null) {
-        if (srcPtr !== 0) ex.cew_free(srcPtr);
-        if (optsPtr !== 0) ex.cew_free(optsPtr);
+      if (this.#instance !== null && requestPtr !== 0) {
+        ex.cew_free(requestPtr);
       }
     }
   }

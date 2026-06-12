@@ -37,7 +37,8 @@ export interface CompileRequest {
   /**
    * A serialized `FileDescriptorSet` supplied **in memory** (the same bytes
    * `protoc --descriptor_set_out` emits).  The wasm backend marshals the
-   * bytes through linear memory (a `'d'` record) so a proto expression's
+   * bytes through linear memory (the CompileRequest proto's descriptor_set
+   * field) so a proto expression's
    * message types type-check with no filesystem; it builds a descriptor pool
    * (layered over the generated pool) from them.
    */

@@ -20,10 +20,14 @@ const CORPUS_DIR = fileURLToPath(
 );
 
 // One shared run of the pinned file; the cases assert slices of it.
-let report: ConformanceReport | undefined;
+// The PROMISE is cached (not the awaited result) so the corpus runs
+// exactly once even if the first awaiting test times out under a
+// loaded full-suite run — a timed-out case must not trigger a fresh
+// (and equally slow) recompute in the next one.
+let report: Promise<ConformanceReport> | undefined;
 
-async function pinnedReport(): Promise<ConformanceReport> {
-  report ??= await runCorpus({ corpusDir: CORPUS_DIR, files: ['basic'] });
+function pinnedReport(): Promise<ConformanceReport> {
+  report ??= runCorpus({ corpusDir: CORPUS_DIR, files: ['basic'] });
   return report;
 }
 
@@ -55,8 +59,9 @@ describe('conformance harness — pinned basic.textproto', () => {
         'static_subset',
         'compile_unimpl',
         'eval_unimpl',
-        'embedded_nul',
       ]).toContain(category);
     }
-  });
+    // Same headroom as the first case: under a loaded full-suite run
+    // this may be the case that pays for the shared corpus run.
+  }, 60_000);
 });

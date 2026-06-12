@@ -97,6 +97,19 @@ describe('compile (compiler.wasm) → client-side run path', () => {
     expect(await runProgram(program, {})).toBe(5n);
   });
 
+  it("compiles AND evaluates a b'\\x00' byte literal (embedded NUL in source)", async () => {
+    // Regression for the 9 `embedded_nul` conformance rows
+    // (comparisons.textproto): the proto CompileRequest carries the
+    // source length-delimited, so the raw NUL byte inside the literal
+    // survives the wasm boundary.  Mirrors row `gt_bytes` (`b'\x01' >
+    // b'\x00'` -> true).
+    const nul = String.fromCharCode(0);
+    const program = await compileToProgram(
+      `b'${String.fromCharCode(1)}' > b'${nul}'`,
+    );
+    expect(await runProgram(program, {})).toBe(true);
+  });
+
   it('surfaces divide-by-zero as a CelError value, not a throw', async () => {
     const program = await compileToProgram('1 / 0');
     const result = await runProgram(program, {});
@@ -112,13 +125,13 @@ describe('compile (compiler.wasm) → client-side run path', () => {
   });
 });
 
-// The `linkMode` compile option (records-encoded into `cew_compile_opts`)
+// The `linkMode` compile option (the CompileRequest proto's link_mode field)
 // chooses between a self-contained STATIC Program and a thin DYNAMIC expr
 // module that imports the runtime from `cel.*`. The two artifacts differ
 // by ~200x in size; both evaluate identically through the same `plan` →
 // `eval` path (the Engine instantiates `cel_runtime.wasm` for the dynamic
 // one, loadable from the shipped runtime in Node).
-describe('static vs dynamic link mode (cew_compile_opts)', () => {
+describe('static vs dynamic link mode (cew_compile link_mode)', () => {
   it('static mode bakes the runtime in — no cel.* imports, large', async () => {
     const wasm = await backend.compile({
       source: '1 + 2',
@@ -202,7 +215,7 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 // descriptorSetBytes feeds an in-memory FileDescriptorSet to the wasm compiler
-// (a 'd' record → cel_compile_opts_set_descriptor_set), so a proto-typed
+// (the CompileRequest proto's descriptor_set bytes → cel_compile_opts_set_descriptor_set), so a proto-typed
 // expression type-checks in the browser with no filesystem.
 describe('descriptorSetBytes (proto compile via the wasm backend)', () => {
   it('resolves a supplied-pool message type from the FDS bytes', async () => {

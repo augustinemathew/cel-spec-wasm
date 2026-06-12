@@ -276,6 +276,63 @@ TEST(CelCapi, NullRequiredArgsYieldInternal) {
             CEL_STATUS_INTERNAL);
 }
 
+// The length-delimited compile: a CEL `b'\x00'` byte literal puts a raw
+// NUL byte in the source text, which `cel_compile`'s NUL-terminated
+// `const char*` would truncate; `cel_compile_n` carries it intact.
+TEST(CelCapi, CompileNHandlesEmbeddedNulSource) {
+  std::string source = "b'";
+  source.push_back('\0');
+  source += "' < b'";
+  source.push_back('\x01');
+  source += "'";
+
+  uint8_t* wasm = nullptr;
+  size_t len = 0;
+  char* err = nullptr;
+  const CelStatus st =
+      cel_compile_n(source.data(), source.size(), nullptr, &wasm, &len, &err);
+  FreeGuard wasm_guard(wasm);
+  FreeGuard err_guard(err);
+
+  EXPECT_EQ(st, CEL_STATUS_OK) << (err != nullptr ? err : "");
+  ASSERT_NE(wasm, nullptr);
+  EXPECT_TRUE(StartsWithWasmMagic(wasm, len));
+}
+
+// cel_compile is the strlen convenience over cel_compile_n: identical
+// bytes for NUL-free source (deterministic compile).
+TEST(CelCapi, CompileNMatchesCompileForPlainSource) {
+  const char* source = "1 + 2";
+  uint8_t* wasm_a = nullptr;
+  size_t len_a = 0;
+  ASSERT_EQ(cel_compile(source, nullptr, &wasm_a, &len_a, nullptr),
+            CEL_STATUS_OK);
+  FreeGuard a_guard(wasm_a);
+
+  uint8_t* wasm_b = nullptr;
+  size_t len_b = 0;
+  ASSERT_EQ(cel_compile_n(source, std::strlen(source), nullptr, &wasm_b, &len_b,
+                          nullptr),
+            CEL_STATUS_OK);
+  FreeGuard b_guard(wasm_b);
+
+  ASSERT_EQ(len_a, len_b);
+  EXPECT_EQ(std::memcmp(wasm_a, wasm_b, len_a), 0);
+}
+
+TEST(CelCapi, CompileNNullRequiredArgsYieldInternal) {
+  uint8_t* wasm = nullptr;
+  size_t len = 0;
+  char* err = nullptr;
+  EXPECT_EQ(cel_compile_n(nullptr, 0, nullptr, &wasm, &len, &err),
+            CEL_STATUS_INTERNAL);
+  FreeGuard err_guard(err);
+  EXPECT_EQ(cel_compile_n("1 + 2", 5, nullptr, nullptr, &len, nullptr),
+            CEL_STATUS_INTERNAL);
+  EXPECT_EQ(cel_compile_n("1 + 2", 5, nullptr, &wasm, nullptr, nullptr),
+            CEL_STATUS_INTERNAL);
+}
+
 TEST(CelCapi, FreeAndOptsFreeAcceptNull) {
   cel_free(nullptr);
   cel_compile_opts_free(nullptr);

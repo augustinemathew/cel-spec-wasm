@@ -150,6 +150,17 @@ CelStatus cel_compile_opts_set_descriptor_set(CelCompileOpts* opts,
 CelStatus cel_compile(const char* source, const CelCompileOpts* opts,
                       uint8_t** out_wasm, size_t* out_len, char** out_err);
 
+// Length-delimited variant of `cel_compile`: compiles the
+// `source_len` bytes at `source`, which need NOT be NUL-terminated
+// and MAY contain embedded NUL bytes (a CEL `b'\x00'` byte literal
+// is legal source).  Same contract as `cel_compile` otherwise.
+// This is the entry point a length-delimited transport (e.g. the
+// proto `CompileRequest` the compiler-wasm export layer parses)
+// compiles through; `cel_compile` is the strlen convenience over it.
+CelStatus cel_compile_n(const char* source, size_t source_len,
+                        const CelCompileOpts* opts, uint8_t** out_wasm,
+                        size_t* out_len, char** out_err);
+
 // Release a buffer or string previously returned through a `cel_*`
 // out-parameter (`*out_wasm`, `*out_err`).  Safe to call with null.
 void cel_free(void* ptr);

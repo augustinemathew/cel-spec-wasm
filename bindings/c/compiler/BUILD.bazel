@@ -1,3 +1,5 @@
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 load("//third_party/wasi_sdk:wasm_cc_binary.bzl", "wasm_cpp_cc_binary")
 
@@ -40,22 +42,67 @@ cc_test(
     ],
 )
 
+# The serialized request message that crosses the compiler-wasm C ABI
+# (`cew_compile`): the CEL source + every compile option in one
+# length-delimited proto buffer.  Mirrored on the JS side by
+# bindings/ts/compiler/src/internal/compile-request.ts (protobufjs).
+proto_library(
+    name = "compile_request_proto",
+    srcs = ["compile_request.proto"],
+)
+
+cc_proto_library(
+    name = "compile_request_cc_proto",
+    visibility = ["//:internal"],
+    deps = [":compile_request_proto"],
+)
+
+# The cew_* export layer as a library so the native test below and the
+# wasm binary share one implementation.  `alwayslink` because the wasm
+# binary references the extern "C" symbols only via `-Wl,--export=`
+# (no C++ caller), which would otherwise let the linker drop them.
+cc_library(
+    name = "compiler_wasm_exports",
+    srcs = ["compiler_wasm_exports.cc"],
+    hdrs = ["compiler_wasm_exports.h"],
+    alwayslink = True,
+    visibility = ["//:internal"],
+    deps = [
+        ":cel_capi",
+        ":compile_request_cc_proto",
+    ],
+)
+
+# Native-config test for the cew_* layer: builds CompileRequest protos,
+# serializes them, and drives cew_compile / cew_program / cew_error /
+# cew_reset exactly as the JS caller does — minus the wasm boundary.
+cc_test(
+    name = "compiler_wasm_exports_test",
+    size = "small",
+    srcs = ["compiler_wasm_exports_test.cc"],
+    deps = [
+        ":compile_request_cc_proto",
+        ":compiler_wasm_exports",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # compiler.wasm — the CEL compiler cross-compiled to wasm32-wasi so a
 # browser (or any WASI host) can compile CEL → Program with no native
 # toolchain.  `compiler_wasm_exports.cc` adds a small JS-friendly `cew_*`
-# export layer over the C ABI (the module is a reactor; JS marshals
-# strings through linear memory and calls the exports), and
-# `wasm_cpp_cc_binary` builds it under the wasm toolchain with C++
-# exceptions/RTTI enabled for the cel-cpp + Binaryen deps.  `manual` so
-# `//...` (host config) never tries to build the wasm binary directly.
+# export layer over the C ABI (the module is a reactor; JS marshals a
+# serialized CompileRequest through linear memory and calls the
+# exports), and `wasm_cpp_cc_binary` builds it under the wasm toolchain
+# with C++ exceptions/RTTI enabled for the cel-cpp + Binaryen deps.
+# `manual` so `//...` (host config) never tries to build the wasm binary
+# directly.
 cc_binary(
     name = "compiler_wasm.bin",
-    srcs = ["compiler_wasm_exports.cc"],
     linkopts = [
         "-Wl,--export=cew_alloc",
         "-Wl,--export=cew_free",
         "-Wl,--export=cew_compile",
-        "-Wl,--export=cew_compile_opts",
         "-Wl,--export=cew_program",
         "-Wl,--export=cew_program_len",
         "-Wl,--export=cew_error",
@@ -69,7 +116,7 @@ cc_binary(
     ],
     tags = ["manual"],
     visibility = ["//:internal"],
-    deps = [":cel_capi"],
+    deps = [":compiler_wasm_exports"],
 )
 
 wasm_cpp_cc_binary(

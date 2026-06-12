@@ -373,6 +373,15 @@ CelStatus cel_compile_opts_set_descriptor_set(CelCompileOpts* opts,
 
 CelStatus cel_compile(const char* source, const CelCompileOpts* opts,
                       uint8_t** out_wasm, size_t* out_len, char** out_err) {
+  // strlen here (not in cel_compile_n) so the null-source diagnostic
+  // below still fires before any length computation.
+  return cel_compile_n(source, source == nullptr ? 0 : std::strlen(source),
+                       opts, out_wasm, out_len, out_err);
+}
+
+CelStatus cel_compile_n(const char* source, size_t source_len,
+                        const CelCompileOpts* opts, uint8_t** out_wasm,
+                        size_t* out_len, char** out_err) {
   if (out_err != nullptr) *out_err = nullptr;
   if (out_wasm != nullptr) *out_wasm = nullptr;
   if (out_len != nullptr) *out_len = 0;
@@ -388,8 +397,10 @@ CelStatus cel_compile(const char* source, const CelCompileOpts* opts,
     return Fail(compiler.status(), out_err);
   }
 
-  absl::StatusOr<celwasm::Program> program =
-      compiler->Compile(source, MakeCompilerOptions(opts));
+  // string_view, not c_str: the source is length-delimited so an
+  // embedded NUL byte (a `b'\x00'` literal) reaches the parser intact.
+  absl::StatusOr<celwasm::Program> program = compiler->Compile(
+      absl::string_view(source, source_len), MakeCompilerOptions(opts));
   if (!program.ok()) {
     return Fail(program.status(), out_err);
   }
