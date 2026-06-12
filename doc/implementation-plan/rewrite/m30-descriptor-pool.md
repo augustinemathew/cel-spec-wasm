@@ -246,16 +246,59 @@ it with the oracle where a value is in question.
     `CelCompileOpts` → `builder.SetDescriptorPool`), the `'d'` record in
     `ApplyOneOption`, rebuild `compiler.wasm`, C ABI test. End-to-end
     testable via a Node harness driving the rebuilt wasm (the m29 pattern).
-  - **C — TS backend.** `descriptorSetBytes` on `CompileRequest`,
-    `wasm-backend.ts` encoder, unit test.
-  - **D — retire the CLI.** Move the compiler.wasm asset into the
-    compiler package, switch `compile()` + conformance to the wasm
-    backend, delete `cli-backend.ts`, re-home the backend interfaces.
-    Gate: full conformance corpus holds 1710/0.
+  - **C — TS backend. ✅ DONE.** `descriptorSetBytes` on `CompileRequest`
+    + `CompileOptions`, `wasm-backend.ts` `'d'`-record encoder, Widget e2e
+    in `web/run.test.ts`.  (Also: `buildCompileArgs` now passes
+    `--link_mode` explicitly so the CliBackend stays static-by-default
+    after the cel tool's dynamic-default flip.)
+  - **D — retire the CLI. ✅ DONE.** The compiler.wasm asset now lives with
+    the `@cel-wasm/compiler` package (`compiler/wasm/compiler.wasm`,
+    git-ignored, installed by `scripts/build-wasm-assets.sh`, loaded lazily
+    from the built path via `internal/compiler-loader.ts` — mirroring
+    eval's `runtime-loader.ts`). `getDefaultBackend()` is now the
+    `WasmCompileBackend` (lazy+cached `getDefaultWasmBackend()`); the
+    `cli-backend.ts` + `cli-backend.test.ts` are deleted; the
+    `CompileBackend` / `CompileRequest` / `LinkMode` interfaces moved to a
+    backend-neutral `internal/backend.ts`; the path-based `descriptorSet` +
+    `resolveCelCli` / `CEL_CLI` plumbing is gone (the wasm backend takes
+    only `descriptorSetBytes`). Conformance compiles via the wasm backend
+    with in-memory `descriptorSetBytes`. Gate: full corpus holds **1710
+    pass / 744 skip / 0 fail** (was 1710/735/0), wall-clock ~5.3 min (vs
+    the CLI backend's ~10 min — the in-process backend is faster, no
+    subprocess fork per row).
 
-Slices A–C are additive and regression-free (nothing routes through the
-new path until D). D is the behavioural switch and carries the
-conformance gate.
+    > **Plan-vs-execution delta (slice D).** The 9 `cli_limitation` rows
+    > (embedded-NUL `b'\x00'` byte literals) did **not** convert to PASS:
+    > the C ABI's source boundary is a NUL-terminated `const char*`
+    > (`cew_compile_opts`), so an embedded NUL still truncates the source
+    > (now tripping the EH-wall as a generic compile error rather than the
+    > CLI's process-arg rejection). They remain a reasoned SKIP, renamed
+    > `cli_limitation` → `embedded_nul` and detected on the expression
+    > itself (the wasm diagnostic is generic). A length-delimited source
+    > entry point (slice F's proto `CompileRequest`) would let these
+    > compile. Pass floor held; the skip count rose 735 → 744 as the FAILs
+    > that briefly surfaced were reclassified to the renamed SKIP.
+  - **E — relocate the C ABI.** `bindings/c/` → `bindings/c/compiler/`
+    (it is the *compiler* C ABI; leaves room for a future
+    `bindings/c/eval`).  Move sources + BUILD targets + fix the
+    `//bindings/c:...` label references across the tree.
+  - **F — schema'd CompileRequest.** Replace the ad-hoc length-prefixed
+    records blob (`cew_compile_opts`'s `'v'`/`'f'`/`'c'`/`'o'`/`'l'`/`'d'`)
+    with a single **proto** `CompileRequest` message (source, repeated
+    var decls, repeated fn decls, container, optimize_level, link_mode,
+    descriptor_set bytes).  Proto over JSON: the request carries binary
+    FDS bytes (JSON would force base64) and both sides already link
+    protobuf.  The C ABI takes serialized `CompileRequest` bytes; the JS
+    side serializes via protobufjs.
+
+Slices A–C are additive and regression-free.  D is the behavioural switch
+(carries the conformance gate); E is a mechanical relocation; F is a
+wire-format change to the compile boundary.
+
+Adjacent workstream (NOT m30): the **eval-binding conformance backlog**
+(`m29-ts-conformance-backlog.md`) — the 357 fixable skips the breakdown
+surfaced, led by WKT-typed field construction from a scalar (110 rows).
+These are `@cel-wasm/eval` runtime-ABI gaps, scheduled after slice D.
 
 ## 6. Open questions
 

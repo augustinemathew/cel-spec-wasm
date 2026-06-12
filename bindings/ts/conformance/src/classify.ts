@@ -35,7 +35,7 @@ export type SkipCategory =
   | 'compile_unimpl' // compiler rejected a not-yet-supported construct
   | 'eval_unimpl' // eval rejected a not-yet-supported construct
   | 'spec_unimpl' // a feature the CEL spec flags "specified but not implemented"
-  | 'cli_limitation'; // the expr can't pass through the CLI process-arg boundary
+  | 'embedded_nul'; // expr has an embedded NUL byte the C-ABI source boundary truncates
 
 /** A pre-compile scope decision: either a SKIP or "proceed to compile". */
 export type ScopeDecision =

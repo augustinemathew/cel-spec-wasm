@@ -27,7 +27,8 @@ import {
   type Diagnostic,
 } from '../errors.js';
 
-import type { CompileBackend, CompileRequest } from './cli-backend.js';
+import type { CompileBackend, CompileRequest } from './backend.js';
+import { readShippedCompilerWasm } from './compiler-loader.js';
 
 // Re-exported here so a browser bundle reaches the typed compile-failure
 // surface through the same Node-free subpath as the backend, never the
@@ -328,4 +329,23 @@ export class WasmCompileBackend implements CompileBackend {
       }
     }
   }
+}
+
+// The process-wide default backend, compiled once on first compile.  The
+// 56 MB `compiler.wasm` module is expensive to compile, so the backend is
+// cached behind a Promise (so concurrent first-callers share one compile)
+// and the read+compile is lazy — a type-only importer never pays for it.
+let defaultBackend: Promise<WasmCompileBackend> | undefined;
+
+/**
+ * The lazily-constructed default {@link WasmCompileBackend}, reading the
+ * shipped `compiler.wasm` from disk (Node).  Cached for the process; the
+ * underlying `WebAssembly.Module` is compiled once and reused across every
+ * {@link compile} call.
+ */
+export function getDefaultWasmBackend(): Promise<WasmCompileBackend> {
+  defaultBackend ??= readShippedCompilerWasm().then((bytes) =>
+    WasmCompileBackend.create(bytes),
+  );
+  return defaultBackend;
 }

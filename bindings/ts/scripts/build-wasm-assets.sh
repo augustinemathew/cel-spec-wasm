@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Build the wasm artifacts the TS bindings consume, from the bazel C++/wasm
-# build, and copy them into the (git-ignored) locations the dev server and
-# the eval package read:
+# build, and copy them into the (git-ignored) locations the dev server, the
+# compiler package, and the eval package read:
 #
-#   //bindings/c:compiler_wasm   -> web/public/compiler.wasm   (the SPA's
-#                                   client-side CEL compiler, ~54 MB)
+#   //bindings/c:compiler_wasm   -> compiler/wasm/compiler.wasm  (the
+#                                   @cel-wasm/compiler package's own
+#                                   in-process CEL compiler, the default
+#                                   compile backend, ~56 MB) AND
+#                                   web/public/compiler.wasm   (the SPA's
+#                                   client-side CEL compiler — same bytes,
+#                                   fetched over HTTP by the browser)
 #   //runtime:cel_runtime_wasm   -> web/public/cel_runtime.wasm AND
 #                                   eval/runtime/cel_runtime.wasm  (the
 #                                   shared dynamic-link runtime, ~2.8 MB)
@@ -46,6 +51,7 @@ install_asset() {
   echo "  $(basename "${dst}") <- $(basename "${src}")  ($(wc -c < "${dst}" | tr -d ' ') bytes)"
 }
 
+install_asset "${COMPILER_WASM}" "${TS_ROOT}/compiler/wasm/compiler.wasm"
 install_asset "${COMPILER_WASM}" "${TS_ROOT}/web/public/compiler.wasm"
 install_asset "${RUNTIME_WASM}" "${TS_ROOT}/web/public/cel_runtime.wasm"
 install_asset "${RUNTIME_WASM}" "${TS_ROOT}/eval/runtime/cel_runtime.wasm"

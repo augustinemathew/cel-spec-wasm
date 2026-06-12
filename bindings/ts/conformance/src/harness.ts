@@ -46,8 +46,9 @@ export interface RunCorpusOptions {
   readonly onRow?: (tagged: TaggedResult) => void;
   /**
    * Absolute path to a serialized `FileDescriptorSet` supplying the
-   * conformance test message types.  When present, proto rows compile (via
-   * the compiler binding's `--descriptor_set`) and eval (via
+   * conformance test message types.  When present, the harness reads the
+   * bytes and proto rows compile (the compiler binding marshals those bytes
+   * through the compiler wasm as a `'d'` record) and eval (via
    * `Engine.create({descriptors})`) instead of skipping.  When absent, proto
    * rows SKIP as `proto_unimpl`.
    */
@@ -64,7 +65,7 @@ interface ProtoSetup {
 function loadProtoSetup(descriptorSetPath: string | undefined): ProtoSetup {
   if (descriptorSetPath === undefined || !existsSync(descriptorSetPath)) {
     return {
-      env: { descriptors: undefined, descriptorSetPath: undefined },
+      env: { descriptors: undefined, descriptorSetBytes: undefined },
       descriptorBytes: undefined,
     };
   }
@@ -72,7 +73,9 @@ function loadProtoSetup(descriptorSetPath: string | undefined): ProtoSetup {
   return {
     env: {
       descriptors: DescriptorSet.fromFileDescriptorSet(bytes),
-      descriptorSetPath,
+      // The compiler binding marshals the same bytes through the compiler
+      // wasm (a 'd' record) to type-check proto types in-process.
+      descriptorSetBytes: bytes,
     },
     descriptorBytes: bytes,
   };

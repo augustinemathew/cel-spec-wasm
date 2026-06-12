@@ -50,7 +50,7 @@ describe('isFixable / OUT_OF_SCOPE_CATEGORIES', () => {
     expect(isFixable('bindings')).toBe(true);
     expect(isFixable('envelope')).toBe(true);
     expect(isFixable('type_env')).toBe(true);
-    expect(isFixable('cli_limitation')).toBe(true);
+    expect(isFixable('embedded_nul')).toBe(true);
     expect(isFixable('ext_unimpl')).toBe(true);
     expect(isFixable('proto_unimpl')).toBe(true);
     expect(isFixable('compile_unimpl')).toBe(true);

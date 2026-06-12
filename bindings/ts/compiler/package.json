@@ -16,7 +16,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "wasm/compiler.wasm"
   ],
   "scripts": {
     "build": "tsc --build tsconfig.build.json"

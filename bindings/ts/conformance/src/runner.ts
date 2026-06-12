@@ -37,13 +37,14 @@ import { buildExpectedMessage, setsWellKnownField } from './proto-compare.js';
 /**
  * Per-run proto context: the descriptor set the eval binding resolves
  * messages against (also used to build `object_value` expected messages) and
- * the on-disk `FileDescriptorSet` path the compiler binding passes through
- * to the CLI's `--descriptor_set`.  Both are `undefined` when no descriptors
- * were supplied (proto rows then SKIP as `proto_unimpl`).
+ * the raw `FileDescriptorSet` bytes the compiler binding marshals through the
+ * compiler wasm (a `'d'` record) so proto types type-check.  Both are
+ * `undefined` when no descriptors were supplied (proto rows then SKIP as
+ * `proto_unimpl`).
  */
 export interface ProtoEnv {
   readonly descriptors: DescriptorSet | undefined;
-  readonly descriptorSetPath: string | undefined;
+  readonly descriptorSetBytes: Uint8Array | undefined;
 }
 
 // CEL error codes (`CelErrorCode`, `eval/src/types.ts`).  Inlined as
@@ -52,6 +53,12 @@ export interface ProtoEnv {
 const CEL_ERROR_TYPE_MISMATCH = 13; // "no matching overload"
 const CEL_ERROR_INVALID_ARGUMENT = 18;
 const CEL_ERROR_UNKNOWN_TYPE = 30;
+
+// A NUL byte (`\x00`).  An expression carrying one (a `b'\x00'` byte literal)
+// cannot cross the compiler wasm's NUL-terminated `const char*` source
+// boundary, so such rows SKIP as `embedded_nul`.  Built via fromCharCode so
+// the source file itself carries no literal NUL.
+const EMBEDDED_NUL = String.fromCharCode(0);
 
 /** The classified outcome of one row. */
 export type Outcome = 'pass' | 'skip' | 'fail';
@@ -69,7 +76,7 @@ export interface RowResult {
 export async function runRow(
   test: SimpleTest,
   engine: Engine,
-  proto: ProtoEnv = { descriptors: undefined, descriptorSetPath: undefined },
+  proto: ProtoEnv = { descriptors: undefined, descriptorSetBytes: undefined },
 ): Promise<RowResult> {
   const scope = classifyScope(test);
   if (scope.kind === 'skip') {
@@ -80,8 +87,8 @@ export async function runRow(
   try {
     program = await compile(test.expr, scope.compileVars, {
       ...(test.container === '' ? {} : { container: test.container }),
-      ...(proto.descriptorSetPath !== undefined
-        ? { descriptorSet: proto.descriptorSetPath }
+      ...(proto.descriptorSetBytes !== undefined
+        ? { descriptorSetBytes: proto.descriptorSetBytes }
         : {}),
     });
   } catch (err) {
@@ -111,12 +118,16 @@ function classifyCompileFailure(test: SimpleTest, err: unknown): RowResult {
     };
   }
   const text = diagnosticsText(err.diagnostics);
-  // The compiler binding passes the expression as a process argument; an
-  // expr carrying an embedded NUL byte (a `b'\x00'` byte literal) can't
-  // cross the CLI process-arg boundary — a harness/CLI limitation, not a
-  // compiler defect.
-  if (text.includes('must be a string without null bytes')) {
-    return skip('cli_limitation', 'expression carries an embedded NUL byte');
+  // An expr carrying an embedded NUL byte (a `b'\x00'` byte literal) cannot
+  // cross the compiler wasm's source boundary: the C ABI takes the source as
+  // a NUL-terminated `const char*` (`cew_compile_opts`), so the embedded NUL
+  // truncates the source and the now-unterminated literal trips the parser
+  // (a generic compile error via the EH wall).  A C-ABI surface limitation,
+  // not a compiler defect; detected on the expression itself since the wasm
+  // backend's diagnostic is generic.  A length-delimited source entry point
+  // (m30 slice F) would let these compile.
+  if (test.expr.includes(EMBEDDED_NUL)) {
+    return skip('embedded_nul', 'expression carries an embedded NUL byte');
   }
   if (text.includes('not in the static subset')) {
     return skip('static_subset', firstDiagnostic(err.diagnostics));

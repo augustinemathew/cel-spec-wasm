@@ -3,8 +3,6 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { resolveCelCli } from './internal/cli-backend.js';
-
 import { compile, CelCompileError } from './index.js';
 
 // The wasm preamble: `\0asm` magic + version 1 (little-endian u32).
@@ -17,13 +15,9 @@ const GOLDEN_VAR_INT_ADD = new Uint8Array(
   readFileSync(`${FIXTURES_DIR}var_int_add.wasm`),
 );
 
-// This binding inherently needs the native compiler.  When the CLI is
-// absent we skip the suite (naming the bazel target) rather than fail;
-// when present, the tests run for real.
-const describeWithCli =
-  resolveCelCli() === undefined ? describe.skip : describe;
-
-describeWithCli('compile (real cel CLI)', () => {
+// `compile()` runs the in-process `compiler.wasm` backend — no native CLI is
+// required — so these run unconditionally.
+describe('compile (in-process compiler.wasm)', () => {
   it('compiles a constant expression to a Program with an empty variable table', async () => {
     const program = await compile('1 + 2');
     expect(program.wasm.subarray(0, WASM_PREAMBLE.length)).toEqual(
