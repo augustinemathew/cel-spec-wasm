@@ -96,17 +96,8 @@ function classifyMatcher(test: SimpleTest): ScopeDecision | undefined {
   if (m.kind === 'value' && m.value.kind === 'unrecognized') {
     return skip('envelope', m.value.reason);
   }
-  if (m.kind === 'value' && m.value.kind === 'type') {
-    // A `type(...)` result decodes to a CEL_TYPE value, which is not in
-    // the binding's value surface (§A.3; celvalue.ts throws
-    // CelUnsupportedKindError for TYPE).  No comparator exists.
-    return skip(
-      'envelope',
-      'type_value matcher (CEL_TYPE out of value surface)',
-    );
-  }
-  // enum matchers and aggregates are in envelope (the comparator handles
-  // them); evalError / boolTrue / concrete values proceed.
+  // enum / type matchers and aggregates are in envelope (the comparator
+  // handles them); evalError / boolTrue / concrete values proceed.
   return undefined;
 }
 

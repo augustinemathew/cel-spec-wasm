@@ -7,12 +7,12 @@
 // decode to `bigint`.
 //
 // Scope (WI-1.2, §A.4.1): the in-linear-memory kinds — NULL, BOOL, INT,
-// UINT, DOUBLE, STRING, BYTES, TIMESTAMP, DURATION, ERROR, LIST_ARENA,
-// MAP_ARENA.  The externref-slot kinds (LIST_HOST, MAP_HOST, MESSAGE)
-// need the externref table the assembly WI wires up; reading one here
-// throws {@link CelExternrefBoundaryError}.  OPTIONAL / UNKNOWN are out
-// of scope by design (§A.3) and throw {@link CelUnsupportedKindError},
-// as do TYPE / IP / CIDR (not in this binding's value surface).
+// UINT, DOUBLE, STRING, BYTES, TYPE, TIMESTAMP, DURATION, ERROR,
+// LIST_ARENA, MAP_ARENA.  The externref-slot kinds (LIST_HOST, MAP_HOST,
+// MESSAGE) need the externref table the assembly WI wires up; reading one
+// here throws {@link CelExternrefBoundaryError}.  OPTIONAL / UNKNOWN are
+// out of scope by design (§A.3) and throw {@link CelUnsupportedKindError},
+// as do IP / CIDR (not in this binding's value surface).
 //
 // Spec: doc/implementation-plan/rewrite/m29-typescript-bindings.md §A.4.1.
 
@@ -60,7 +60,7 @@ export class CelExternrefBoundaryError extends Error {
 
 /**
  * Thrown for a CelKind outside this binding's static value surface —
- * OPTIONAL / UNKNOWN (out of scope per §A.3) or TYPE / IP / CIDR (not a
+ * OPTIONAL / UNKNOWN (out of scope per §A.3) or IP / CIDR (not a
  * decoded value in these bindings).
  */
 export class CelUnsupportedKindError extends Error {
@@ -180,7 +180,7 @@ function readDurTs(
  * decodes each in-scope kind to its JS-natural shape.
  *
  * @throws {CelExternrefBoundaryError} for LIST_HOST / MAP_HOST / MESSAGE.
- * @throws {CelUnsupportedKindError} for OPTIONAL / UNKNOWN / TYPE / IP / CIDR.
+ * @throws {CelUnsupportedKindError} for OPTIONAL / UNKNOWN / IP / CIDR.
  */
 export function readCelValue(
   view: DataView,
@@ -208,6 +208,13 @@ export function readCelValue(
       return UTF8_DECODER.decode(readSpanBytes(view, offset, memory));
     case CelKind.BYTES:
       return readSpanBytes(view, offset, memory);
+    case CelKind.TYPE:
+      // CEL_TYPE reuses the span arm: the payload points at the spec
+      // type-name bytes ("int", a message FQN, …) — `cel_data.h:164-174`.
+      return {
+        kind: 'type',
+        name: UTF8_DECODER.decode(readSpanBytes(view, offset, memory)),
+      };
     case CelKind.TIMESTAMP: {
       const { seconds, nanos } = readDurTs(view, payload);
       return { kind: 'timestamp', epochSeconds: seconds, nanos };
@@ -230,7 +237,6 @@ export function readCelValue(
       throw new CelExternrefBoundaryError(kind, view.getUint32(payload, true));
     case CelKind.OPTIONAL:
     case CelKind.UNKNOWN:
-    case CelKind.TYPE:
     case CelKind.IP:
     case CelKind.CIDR:
       throw new CelUnsupportedKindError(kind);
@@ -347,15 +353,16 @@ export function writeScalarDouble(
 }
 
 /**
- * Write a STRING / BYTES span CelValue.  The codec does NOT allocate —
- * the caller passes a `ptr` into linear memory where the `len` payload
- * bytes already live (allocated via the runtime's `arena_alloc`); this
- * stamps the kind + the `{ptr, len}` span (`CelSpan`, `cel_data.h:54-57`).
+ * Write a STRING / BYTES / TYPE span CelValue.  The codec does NOT
+ * allocate — the caller passes a `ptr` into linear memory where the `len`
+ * payload bytes already live (allocated via the runtime's `arena_alloc`);
+ * this stamps the kind + the `{ptr, len}` span (`CelSpan`,
+ * `cel_data.h:54-57`; CEL_TYPE reuses the span arm, `cel_data.h:164-174`).
  */
 export function writeSpan(
   view: DataView,
   offset: number,
-  kind: CelKind.STRING | CelKind.BYTES,
+  kind: CelKind.STRING | CelKind.BYTES | CelKind.TYPE,
   ptr: number,
   len: number,
 ): void {

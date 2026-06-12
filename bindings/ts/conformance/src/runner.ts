@@ -30,6 +30,7 @@ import {
   compareEvalError,
   compareValue,
   isCelError,
+  isCelType,
 } from './compare.js';
 import type { ExpectedValue, SimpleTest } from './corpus.js';
 import { buildExpectedMessage, setsWellKnownField } from './proto-compare.js';
@@ -331,7 +332,40 @@ function compareResult(
   if (protoGap !== undefined) {
     return protoGap;
   }
+  const strongEnumGap = classifyStrongEnumTypeGap(test, result, want);
+  if (strongEnumGap !== undefined) {
+    return strongEnumGap;
+  }
   return { outcome: 'fail', detail: `compare: ${reason}` };
+}
+
+// Strong-typed enums are a CEL-spec feature flagged "specified but not
+// implemented" upstream (cel-cpp BUILD `_TESTS_TO_SKIP`, issues/119); the
+// compiler lowers proto enums to int, so `type(<enum value>)` yields the
+// TYPE `int` where the corpus's strong_proto2/3 sections expect the enum
+// FQN.  Mirrors the C++ harness's per-row skip (`conformance/runner.cc::
+// IsSpecUnimplSection`).  Anchored to exactly that shape — an enums-file
+// strong-enum section, a type matcher wanting an enum FQN, and the binding
+// reporting TYPE int — so any other type mismatch still FAILs.
+function classifyStrongEnumTypeGap(
+  test: SimpleTest,
+  result: CelValue,
+  want: ExpectedValue,
+): RowResult | undefined {
+  if (
+    test.file === 'enums' &&
+    (test.section === 'strong_proto2' || test.section === 'strong_proto3') &&
+    want.kind === 'type' &&
+    want.name.includes('.') &&
+    isCelType(result) &&
+    result.name === 'int'
+  ) {
+    return skip(
+      'spec_unimpl',
+      'strong enum typing (type(<enum>) → enum FQN) specified but not implemented (cel-cpp issues/119); enums lower to int',
+    );
+  }
+  return undefined;
 }
 
 // Verified `@cel-wasm/eval` proto gaps that surface as a VALUE MISMATCH (the

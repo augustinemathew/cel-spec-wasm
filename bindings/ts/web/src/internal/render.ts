@@ -11,6 +11,7 @@ import type {
   CelDuration,
   CelError,
   CelTimestamp,
+  CelType,
   CelValue,
 } from '@cel-wasm/eval';
 
@@ -72,6 +73,9 @@ export function renderValue(value: CelValue): string {
   }
   if (isCelDuration(value)) {
     return renderDuration(value);
+  }
+  if (isCelTypeValue(value)) {
+    return value.name;
   }
   if (isCelError(value)) {
     return `error(${String(value.code)}): ${value.message}`;
@@ -154,6 +158,9 @@ export function typeNameOf(value: CelValue): string {
   if (isCelDuration(value)) {
     return 'duration';
   }
+  if (isCelTypeValue(value)) {
+    return 'type';
+  }
   if (isCelError(value)) {
     return 'error';
   }
@@ -170,6 +177,10 @@ function isCelTimestamp(value: CelValue): value is CelTimestamp {
 
 function isCelDuration(value: CelValue): value is CelDuration {
   return isTagged(value, 'duration');
+}
+
+function isCelTypeValue(value: CelValue): value is CelType {
+  return isTagged(value, 'type');
 }
 
 function isTagged(value: CelValue, kind: string): boolean {

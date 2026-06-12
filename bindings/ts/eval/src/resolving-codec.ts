@@ -210,11 +210,11 @@ export function encodeCelValue(
   encodeRecord(env, slot, value);
 }
 
-/** Stamp a STRING / BYTES span, arena-copying the payload bytes first. */
+/** Stamp a STRING / BYTES / TYPE span, arena-copying the payload bytes first. */
 function writeStringOrBytes(
   env: CodecEnv,
   slot: number,
-  kind: CelKind.STRING | CelKind.BYTES,
+  kind: CelKind.STRING | CelKind.BYTES | CelKind.TYPE,
   payload: Uint8Array,
 ): void {
   let ptr = 0;
@@ -253,11 +253,12 @@ function internHostMap(
 }
 
 /**
- * Encode a tagged record (timestamp / duration / error) or a plain
- * message-shaped object.  A `{kind: 'timestamp'|'duration'|'error'}`
- * record stamps its native CelValue; any other plain object is a decoded
- * message — re-interned as a host map (its decoded field object) so a
- * nested message round-trips structurally.
+ * Encode a tagged record (timestamp / duration / type / error) or a
+ * plain message-shaped object.  A `{kind:
+ * 'timestamp'|'duration'|'type'|'error'}` record stamps its native
+ * CelValue; any other plain object is a decoded message — re-interned as
+ * a host map (its decoded field object) so a nested message round-trips
+ * structurally.
  */
 function encodeRecord(
   env: CodecEnv,
@@ -284,6 +285,14 @@ function encodeRecord(
   }
   if (tag === 'error') {
     writeErrorValue(env.view(), slot, (value as { code: number }).code);
+    return;
+  }
+  if (tag === 'type') {
+    // CEL_TYPE is a span over the type-name bytes (`cel_data.h:164-174`);
+    // arena-copy the name so runtime equality (a memcmp on the span)
+    // sees the bytes in linear memory.
+    const name = (value as { name: string }).name;
+    writeStringOrBytes(env, slot, CelKind.TYPE, encodeUtf8(name));
     return;
   }
   // A decoded message object: intern it as a host map of its fields so it

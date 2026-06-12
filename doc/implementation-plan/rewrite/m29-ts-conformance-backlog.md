@@ -16,9 +16,23 @@ change to refresh the numbers.
 
 | Implementation | Corpus | pass | skip | fail |
 | --- | --- | ---: | ---: | ---: |
-| **TS bindings** (`@cel-wasm/*`) | 2454 rows | **1813** | 641 | **0** |
+| **TS bindings** (`@cel-wasm/*`) | 2454 rows | **1842** | 612 | **0** |
 | **C++** (`conformance/.baseline`, dynamic mode) | 2454 rows | **1973** | — | 0 |
 
+> Update 2026-06-12 (b): backlog item #3 (**type_value matcher**) shipped —
+> CEL_TYPE (kind 11) joined the eval binding's value surface as
+> `{ kind: 'type', name }` (`types.ts` + the `celvalue.ts` span-read arm +
+> `resolving-codec.ts` + the web result renderer), and the conformance
+> comparator matches an expected `type_value` by exact name.  **+29 PASS**
+> (1813 → 1842), **0 fail**; `envelope` dropped 59 → 23 (the residual 23 are
+> the `typed_result` check-only matcher + one unrecognized-Value-kind row).
+> Residuals from the original 36: **6 strong-enum rows** (`enums`
+> `strong_proto2/3`: `type(<enum>)` is specified to yield the enum FQN but
+> enums lower to int — "specified but not implemented" upstream, cel-cpp
+> issues/119; new `spec_unimpl` category mirroring the C++ harness's
+> per-row skip, anchored to exactly that shape) and 1 `dyn` row →
+> `static_subset`.  `.baseline` ratcheted to 1842.
+>
 > Update 2026-06-12: backlog item #2 (**bind an object value**) shipped — the
 > corpus loader now lowers an `object_value` binding to a protobufjs message
 > built against the conformance descriptor set (`proto-compare.ts::

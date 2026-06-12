@@ -71,6 +71,11 @@ describe('renderValue', () => {
     expect(renderValue(dur)).toBe('duration(90s)');
   });
 
+  it('renders a type value as its name', () => {
+    const ty: CelValue = { kind: 'type', name: 'int' };
+    expect(renderValue(ty)).toBe('int');
+  });
+
   it('renders an error value', () => {
     const err: CelValue = {
       kind: 'error',
@@ -94,6 +99,7 @@ describe('typeNameOf', () => {
     [{ field: 1n }, 'message'],
     [{ kind: 'timestamp', epochSeconds: 0n, nanos: 0 }, 'timestamp'],
     [{ kind: 'duration', seconds: 0n, nanos: 0 }, 'duration'],
+    [{ kind: 'type', name: 'int' }, 'type'],
     [{ kind: 'error', code: 11, message: 'x' }, 'error'],
   ])('names %o as %s', (value, expected) => {
     expect(typeNameOf(value)).toBe(expected);

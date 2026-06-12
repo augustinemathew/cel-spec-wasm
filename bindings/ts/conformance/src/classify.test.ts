@@ -110,6 +110,15 @@ describe('classifyScope', () => {
     expect(d.kind).toBe('proceed');
   });
 
+  it('proceeds a type_value matcher (compared via the type comparator)', () => {
+    const d = classifyScope(
+      row({
+        matcher: { kind: 'value', value: { kind: 'type', name: 'int' } },
+      }),
+    );
+    expect(d.kind).toBe('proceed');
+  });
+
   it('renders a non-WKT message type_env decl to its FQN', () => {
     const d = classifyScope(
       row({

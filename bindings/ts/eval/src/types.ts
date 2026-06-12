@@ -135,6 +135,7 @@ export type CelValue =
   | { [field: string]: CelValue } // a message (protobufjs toObject)
   | CelTimestamp
   | CelDuration
+  | CelType
   | CelError;
 
 /** A decoded TIMESTAMP CelValue (§A.5). */
@@ -149,6 +150,18 @@ export interface CelDuration {
   readonly kind: 'duration';
   readonly seconds: bigint;
   readonly nanos: number;
+}
+
+/**
+ * A decoded TYPE CelValue — what a `type(...)` expression evaluates to.
+ * `name` is the spec type-name string ("int", "bool", "list", "map",
+ * "null_type", "type", a message FQN, …) carried on the wire as a
+ * `CelSpan` into linear memory (`cel_data.h:164-174` — CEL_TYPE reuses
+ * the `payload.s` span arm; equality is byte equality of the name).
+ */
+export interface CelType {
+  readonly kind: 'type';
+  readonly name: string;
 }
 
 /**

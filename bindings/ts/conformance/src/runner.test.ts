@@ -76,6 +76,60 @@ describe('runRow — classification', () => {
     expect(r.outcome).toBe('pass');
   });
 
+  it('passes a type_value matcher end-to-end (type(1) → int)', async () => {
+    const r = await run(
+      row({
+        expr: 'type(1)',
+        matcher: { kind: 'value', value: { kind: 'type', name: 'int' } },
+      }),
+    );
+    expect(r.outcome).toBe('pass');
+  });
+
+  it('passes a message-FQN type_value matcher (type(timestamp(0)))', async () => {
+    const r = await run(
+      row({
+        expr: 'type(timestamp(0))',
+        matcher: {
+          kind: 'value',
+          value: { kind: 'type', name: 'google.protobuf.Timestamp' },
+        },
+      }),
+    );
+    expect(r.outcome).toBe('pass');
+  });
+
+  it('fails a mismatched type_value outside the strong-enum carve-out', async () => {
+    const r = await run(
+      row({
+        expr: 'type(1)',
+        matcher: { kind: 'value', value: { kind: 'type', name: 'uint' } },
+      }),
+    );
+    expect(r.outcome).toBe('fail');
+  });
+
+  it('skips a strong-enum type row as spec_unimpl (cel-cpp issues/119)', async () => {
+    // Strong enum typing: the corpus expects type(<enum>) → the enum FQN;
+    // enums lower to int, so the binding reports TYPE int.  Anchored to
+    // the enums strong_proto2/3 sections (`classifyStrongEnumTypeGap`).
+    const r = await run(
+      row({
+        file: 'enums',
+        section: 'strong_proto2',
+        expr: 'type(1)',
+        matcher: {
+          kind: 'value',
+          value: {
+            kind: 'type',
+            name: 'cel.expr.conformance.proto2.GlobalEnum',
+          },
+        },
+      }),
+    );
+    expect(r).toMatchObject({ outcome: 'skip', category: 'spec_unimpl' });
+  });
+
   it('skips a disable_check row before compiling', async () => {
     const r = await run(row({ disableCheck: true }));
     expect(r).toMatchObject({ outcome: 'skip', category: 'disable_check' });

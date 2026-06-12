@@ -10,6 +10,7 @@ import {
   compareEvalError,
   compareValue,
   isCelError,
+  isCelType,
 } from './compare.js';
 import type { ExpectedValue } from './corpus.js';
 
@@ -77,6 +78,64 @@ describe('compareValue — scalars', () => {
         value: new Uint8Array([0, 2]),
       }),
     ).toBeDefined();
+  });
+});
+
+describe('compareValue — type matcher (type_value)', () => {
+  it.each<string>(['int', 'uint', 'bool', 'list', 'map', 'null_type', 'type'])(
+    'matches the scalar type name %s exactly',
+    (name) => {
+      expect(
+        compareValue({ kind: 'type', name }, { kind: 'type', name }),
+      ).toBeUndefined();
+    },
+  );
+
+  it('matches a message-FQN type name', () => {
+    const fqn = 'google.protobuf.Timestamp';
+    expect(
+      compareValue({ kind: 'type', name: fqn }, { kind: 'type', name: fqn }),
+    ).toBeUndefined();
+  });
+
+  it('rejects a mismatched type name (exact equality, no loose match)', () => {
+    expect(
+      compareValue(
+        { kind: 'type', name: 'uint' },
+        { kind: 'type', name: 'int' },
+      ),
+    ).toBeDefined();
+    // A prefix / suffix is not a match.
+    expect(
+      compareValue(
+        { kind: 'type', name: 'google.protobuf.Timestamp' },
+        { kind: 'type', name: 'Timestamp' },
+      ),
+    ).toBeDefined();
+  });
+
+  it('rejects a non-type result against a type matcher', () => {
+    // The STRING "int" is not the TYPE int.
+    expect(compareValue('int', { kind: 'type', name: 'int' })).toBeDefined();
+    expect(
+      compareValue(null, { kind: 'type', name: 'null_type' }),
+    ).toBeDefined();
+    expect(compareValue(err(13), { kind: 'type', name: 'int' })).toBeDefined();
+  });
+});
+
+describe('isCelType', () => {
+  it('narrows a tagged type record', () => {
+    expect(isCelType({ kind: 'type', name: 'int' })).toBe(true);
+  });
+
+  it('rejects other shapes', () => {
+    expect(isCelType('type')).toBe(false);
+    expect(isCelType(null)).toBe(false);
+    expect(isCelType(err(13))).toBe(false);
+    expect(isCelType({ kind: 'timestamp', epochSeconds: 0n, nanos: 0 })).toBe(
+      false,
+    );
   });
 });
 

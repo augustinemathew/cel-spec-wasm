@@ -110,7 +110,7 @@ describe('readCelValue — string / bytes spans', () => {
   const PAYLOAD_PTR = 256;
 
   function buildSpan(
-    kind: CelKind.STRING | CelKind.BYTES,
+    kind: CelKind.STRING | CelKind.BYTES | CelKind.TYPE,
     raw: Uint8Array,
   ): {
     view: DataView;
@@ -164,6 +164,30 @@ describe('readCelValue — string / bytes spans', () => {
     const out = readCelValue(view, 0, bytes) as Uint8Array;
     bytes[PAYLOAD_PTR] = 99; // mutate underlying memory
     expect(Array.from(out)).toEqual([1, 2, 3]);
+  });
+
+  // CEL_TYPE reuses the span arm: the payload points at the spec
+  // type-name bytes (`cel_data.h:164-174`).
+  it.each<string>([
+    'int',
+    'uint',
+    'bool',
+    'double',
+    'string',
+    'bytes',
+    'list',
+    'map',
+    'null_type',
+    'type',
+  ])('decodes TYPE (%s) → tagged type record', (name) => {
+    const { view, bytes } = buildSpan(CelKind.TYPE, encodeUtf8(name));
+    expect(readCelValue(view, 0, bytes)).toEqual({ kind: 'type', name });
+  });
+
+  it('decodes a message-FQN TYPE name', () => {
+    const fqn = 'google.protobuf.Timestamp';
+    const { view, bytes } = buildSpan(CelKind.TYPE, encodeUtf8(fqn));
+    expect(readCelValue(view, 0, bytes)).toEqual({ kind: 'type', name: fqn });
   });
 });
 
@@ -332,7 +356,6 @@ describe('readCelValue — out-of-scope kinds', () => {
   it.each<[string, CelKind]>([
     ['OPTIONAL', CelKind.OPTIONAL],
     ['UNKNOWN', CelKind.UNKNOWN],
-    ['TYPE', CelKind.TYPE],
     ['IP', CelKind.IP],
     ['CIDR', CelKind.CIDR],
   ])('throws CelUnsupportedKindError for %s', (_name, kind) => {
@@ -432,6 +455,15 @@ describe('writeScalar* → readCelValue round-trip', () => {
     writeSpan(view, 0, CelKind.BYTES, PTR, raw.length);
     const out = readCelValue(view, 0, bytes) as Uint8Array;
     expect(Array.from(out)).toEqual([0, 255, 0]);
+  });
+
+  it('writes a TYPE span over caller-allocated bytes', () => {
+    const { view, bytes } = newMemory();
+    const PTR = 300;
+    const raw = encodeUtf8('int');
+    bytes.set(raw, PTR);
+    writeSpan(view, 0, CelKind.TYPE, PTR, raw.length);
+    expect(readCelValue(view, 0, bytes)).toEqual({ kind: 'type', name: 'int' });
   });
 
   it('writes scalars at a non-zero offset (slot_offset > 0)', () => {

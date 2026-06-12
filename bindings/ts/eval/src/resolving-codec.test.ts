@@ -158,6 +158,20 @@ describe('encodeCelValue — scalars round-trip', () => {
     });
   });
 
+  it('encodes a type record as a CEL_TYPE span (not a host map)', () => {
+    const h = makeHarness();
+    encodeCelValue(h.env, 0, { kind: 'type', name: 'int' });
+    expect(h.view.getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(CelKind.TYPE);
+    expect(resolveCelValue(h.env, 0)).toEqual({ kind: 'type', name: 'int' });
+  });
+
+  it('encodes a message-FQN type record', () => {
+    const h = makeHarness();
+    const fqn = 'google.protobuf.Duration';
+    encodeCelValue(h.env, 0, { kind: 'type', name: fqn });
+    expect(resolveCelValue(h.env, 0)).toEqual({ kind: 'type', name: fqn });
+  });
+
   it('encodes an error record', () => {
     const h = makeHarness();
     encodeCelValue(h.env, 0, {

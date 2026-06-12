@@ -15,7 +15,7 @@
 // Spec: doc/implementation-plan/rewrite/m29-typescript-bindings.md §A.7;
 //       doc/langdef.md (§Equality); conformance/runner.cc.
 
-import type { CelError, CelValue } from '@cel-wasm/eval';
+import type { CelError, CelType, CelValue } from '@cel-wasm/eval';
 
 import type { ExpectedValue } from './corpus.js';
 
@@ -61,7 +61,7 @@ export function compareValue(
     case 'map':
       return compareMap(got, want.entries);
     case 'type':
-      return 'type matcher is out of value surface';
+      return compareType(got, want.name);
     case 'object':
       return 'object_value matcher is out of scope';
     case 'unrecognized':
@@ -195,6 +195,32 @@ function celObjectsEqual(
     }
   }
   return undefined;
+}
+
+/** True when `got` is a decoded CEL type value (`{kind:'type', name}`). */
+export function isCelType(got: CelValue): got is CelType {
+  return (
+    typeof got === 'object' &&
+    got !== null &&
+    'kind' in got &&
+    (got as { kind: unknown }).kind === 'type'
+  );
+}
+
+/**
+ * Compare a decoded type result to the `type_value` matcher.  Exact
+ * string equality on the spec type name — the runtime emits the same
+ * canonical names the corpus expects ("int", "list", "null_type", a
+ * message FQN, …), mirroring the C++ `CompareType`
+ * (`conformance/runner.cc:462`).  No loose matching.
+ */
+function compareType(got: CelValue, want: string): string | undefined {
+  if (!isCelType(got)) {
+    return mismatch(`type ${want}`, got);
+  }
+  return got.name === want
+    ? undefined
+    : `type mismatch: want=\`${want}\` got=\`${got.name}\``;
 }
 
 function compareInteger(got: CelValue, want: bigint): string | undefined {

@@ -3234,6 +3234,16 @@ Gate: `lint` + `build` + `typecheck` + `test` green — 781 pass / 13 skip
         matrix) and `DescriptorSet.messageType('')` throws
         (`descriptors.test.ts`).  +12 conformance pass (1801 → 1813,
         0 fail), `bindings` 77 → 36.
+  - [x] CEL_TYPE value surface + type_value matcher (conformance backlog
+        #3) — kind 11 decodes to `{ kind: 'type', name }`
+        (`eval/src/types.ts` + `celvalue.ts` span arm; positive scalar +
+        message-FQN and boundary cases in `celvalue.test.ts`,
+        `resolving-codec.test.ts`; web render in `render.test.ts`); the
+        conformance comparator matches `type_value` by exact name
+        (`compare.test.ts` match/mismatch matrix, `runner.test.ts` e2e
+        rows).  Strong-enum residual pinned as `spec_unimpl`
+        (`classify.test.ts`), mirroring the C++ harness's per-row skip.
+        +29 conformance pass (1813 → 1842, 0 fail), `envelope` 59 → 23.
   - [x] browser demo — `web/**/*.test.ts` (84): variables parse, render,
         compile-client transport, dev-server endpoint, and the
         `src/run.test.ts` compile→eval wiring proof. Monaco glue is
