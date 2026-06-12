@@ -7,7 +7,11 @@ import { describe, expect, it } from 'vitest';
 import { ExternrefTable } from './externref.js';
 import type { HostListBacking, HostMapBacking } from './host/aggregates.js';
 import { ProtoMessageBacking } from './proto/backing.js';
-import { encodeCelValue, resolveCelValue } from './resolving-codec.js';
+import {
+  encodeCelValue,
+  internMessageBacking,
+  resolveCelValue,
+} from './resolving-codec.js';
 import type { CodecEnv } from './resolving-codec.js';
 import {
   CEL_VALUE_KIND_OFFSET,
@@ -212,5 +216,31 @@ describe('encodeCelValue — aggregates intern + round-trip', () => {
     const out = resolveCelValue(h.env, 0) as Map<CelValue, CelValue>;
     expect(out.get('a')).toBe(1n);
     expect(out.get('b')).toBe('x');
+  });
+});
+
+// ── internMessageBacking (the CEL_MESSAGE write seam) ───────────────
+
+describe('internMessageBacking — message intern + stamp', () => {
+  it('interns the backing and stamps a CEL_MESSAGE handle', () => {
+    // Mirrors HostCallContext::ReturnProto (eval/host_call_context.cc:549):
+    // kind 10, ref_slot payload pointing at the externref message table.
+    const h = makeHarness();
+    const root = protobuf.Root.fromJSON({
+      nested: {
+        Pt: {
+          fields: { x: { type: 'int32', id: 1 }, y: { type: 'int32', id: 2 } },
+        },
+      },
+    });
+    const Pt = root.lookupType('Pt');
+    const backing = new ProtoMessageBacking(Pt, Pt.create({ x: 3, y: 4 }));
+    internMessageBacking(h.env, 0, backing);
+    expect(h.view.getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(CelKind.MESSAGE);
+    // First intern lands at slot 1 (slot 0 is the null sentinel) and the
+    // table resolves back to the SAME backing object.
+    expect(h.view.getUint32(CEL_VALUE_PAYLOAD_OFFSET, true)).toBe(1);
+    expect(h.refs.message.lookup(1)).toBe(backing);
+    expect(resolveCelValue(h.env, 0)).toEqual({ x: 3n, y: 4n });
   });
 });

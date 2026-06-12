@@ -14,12 +14,15 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import * as protobuf from 'protobufjs';
 import { describe, expect, it } from 'vitest';
 
 import { decodeAbi } from './abi.js';
 import { Engine } from './engine.js';
 import { ExternrefTable } from './externref.js';
 import { buildCelFnImports } from './instance.js';
+import { coerceObjectToMessage } from './proto/backing.js';
+import { DescriptorSet } from './proto/descriptors.js';
 import { encodeCelValue, resolveCelValue } from './resolving-codec.js';
 import type { CodecEnv } from './resolving-codec.js';
 import { CEL_VALUE_KIND_OFFSET, CEL_VALUE_SIZE, CelKind } from './types.js';
@@ -275,7 +278,9 @@ describe('buildCelFnImports — host-fn round-trip', () => {
     };
     const imports = buildCelFnImports(
       env,
-      new Map([['add', { impl, returnsUint: false }]]),
+      new Map([
+        ['add', { impl, returnsUint: false, returnMessageFqn: undefined }],
+      ]),
     );
 
     // Slots: out @0, arg0 @24, arg1 @48.
@@ -305,7 +310,9 @@ describe('buildCelFnImports — host-fn round-trip', () => {
     };
     const imports = buildCelFnImports(
       env,
-      new Map([['greet', { impl, returnsUint: false }]]),
+      new Map([
+        ['greet', { impl, returnsUint: false, returnMessageFqn: undefined }],
+      ]),
     );
     encodeCelValue(env, CEL_VALUE_SIZE, 'world');
     imports.greet?.(0, CEL_VALUE_SIZE);
@@ -329,7 +336,9 @@ describe('buildCelFnImports — host-fn round-trip', () => {
     const impl: HostFunction = (): CelValue => 7n;
     const imports = buildCelFnImports(
       env,
-      new Map([['seven_u', { impl, returnsUint: true }]]),
+      new Map([
+        ['seven_u', { impl, returnsUint: true, returnMessageFqn: undefined }],
+      ]),
     );
     imports.seven_u?.(0);
     expect(env.view().getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(
@@ -349,7 +358,9 @@ describe('buildCelFnImports — host-fn round-trip', () => {
     });
     const imports = buildCelFnImports(
       env,
-      new Map([['bad_u', { impl, returnsUint: true }]]),
+      new Map([
+        ['bad_u', { impl, returnsUint: true, returnMessageFqn: undefined }],
+      ]),
     );
     imports.bad_u?.(0);
     expect(env.view().getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(
@@ -366,11 +377,155 @@ describe('buildCelFnImports — host-fn round-trip', () => {
     });
     const imports = buildCelFnImports(
       env,
-      new Map([['boom', { impl, returnsUint: false }]]),
+      new Map([
+        ['boom', { impl, returnsUint: false, returnMessageFqn: undefined }],
+      ]),
     );
     imports.boom?.(0);
     const out = resolveCelValue(env, 0) as { kind: string; code: number };
     expect(out.kind).toBe('error');
     expect(out.code).toBe(41);
+  });
+});
+
+// ── Message-declared returns (HostCallContext::ReturnProto mirror) ───
+
+const USER_FQN = 'unit.User';
+
+/** An inline protobufjs root with one message type for the return tests. */
+function makeUserRoot(): protobuf.Root {
+  return protobuf.Root.fromJSON({
+    nested: {
+      unit: {
+        nested: {
+          User: {
+            fields: {
+              name: { type: 'string', id: 1 },
+              id: { type: 'int64', id: 2 },
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+describe('buildCelFnImports — proto(<fqn>)-declared returns', () => {
+  it('interns a protobufjs Message return as CEL_MESSAGE', () => {
+    // The TS mirror of HostCallContext::ReturnProto
+    // (eval/host_call_context.cc:549): the message backs an externref
+    // entry and the out slot stamps kind 10 + the ref payload.
+    const { env, refs } = makeCodecHarness();
+    const type = makeUserRoot().lookupType(USER_FQN);
+    const impl: HostFunction = () =>
+      coerceObjectToMessage(type, { name: 'Ada', id: 7n });
+    const imports = buildCelFnImports(
+      env,
+      new Map([
+        ['get_user', { impl, returnsUint: false, returnMessageFqn: USER_FQN }],
+      ]),
+    );
+    imports.get_user?.(0);
+    expect(env.view().getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(
+      CelKind.MESSAGE,
+    );
+    // The externref table holds the backing (slot 1 = first intern).
+    expect(refs.message.lookup(1)).toBeDefined();
+    expect(resolveCelValue(env, 0)).toEqual({ name: 'Ada', id: 7n });
+  });
+
+  it('coerces a plain-object return via the descriptors', () => {
+    // The plain-object arm mirrors the message-typed activation binding
+    // (messageBackingFrom, marshal.ts): the declared FQN + the Engine's
+    // descriptors drive coerceObjectToMessage.
+    const { env } = makeCodecHarness();
+    const descriptors = DescriptorSet.fromRoot(makeUserRoot());
+    const impl: HostFunction = () => ({ name: 'Grace' });
+    const imports = buildCelFnImports(
+      env,
+      new Map([
+        ['get_user', { impl, returnsUint: false, returnMessageFqn: USER_FQN }],
+      ]),
+      descriptors,
+    );
+    imports.get_user?.(0);
+    expect(env.view().getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(
+      CelKind.MESSAGE,
+    );
+    expect(resolveCelValue(env, 0)).toEqual({ name: 'Grace', id: 0n });
+  });
+
+  it('throws on a plain-object return without descriptors', () => {
+    const { env } = makeCodecHarness();
+    const impl: HostFunction = () => ({ name: 'Grace' });
+    const imports = buildCelFnImports(
+      env,
+      new Map([
+        ['get_user', { impl, returnsUint: false, returnMessageFqn: USER_FQN }],
+      ]),
+    );
+    expect(() => imports.get_user?.(0)).toThrow(/needs descriptors/);
+  });
+
+  it('passes null and CelError returns through as values', () => {
+    // §A.4.5: errors are values on the wire; null is a legal message-typed
+    // result (C++: ReturnNull / ReturnError next to ReturnProto).
+    const { env } = makeCodecHarness();
+    const implNull: HostFunction = () => null;
+    const implErr: HostFunction = () => ({
+      kind: 'error',
+      code: 41,
+      message: 'host adapter error',
+    });
+    const imports = buildCelFnImports(
+      env,
+      new Map([
+        [
+          'u_null',
+          { impl: implNull, returnsUint: false, returnMessageFqn: USER_FQN },
+        ],
+        [
+          'u_err',
+          { impl: implErr, returnsUint: false, returnMessageFqn: USER_FQN },
+        ],
+      ]),
+    );
+    imports.u_null?.(0);
+    expect(resolveCelValue(env, 0)).toBeNull();
+    imports.u_err?.(0);
+    expect(resolveCelValue(env, 0)).toMatchObject({ kind: 'error', code: 41 });
+  });
+
+  it('throws on a non-message, non-record return for a message decl', () => {
+    const { env } = makeCodecHarness();
+    const impl: HostFunction = () => 42n;
+    const imports = buildCelFnImports(
+      env,
+      new Map([
+        ['get_user', { impl, returnsUint: false, returnMessageFqn: USER_FQN }],
+      ]),
+    );
+    expect(() => imports.get_user?.(0)).toThrow(
+      /declared to return proto\(unit\.User\).*bigint/,
+    );
+  });
+
+  it('throws on a Message return for a NON-message-declared fn', () => {
+    // The negative contract pinned e2e in host-fns.test.ts: a protobufjs
+    // message returned where the decl says e.g. `int` is host misuse —
+    // a clear throw (surfacing as a CelEvalError TRAP), never a silent
+    // re-intern as a host map.
+    const { env } = makeCodecHarness();
+    const type = makeUserRoot().lookupType(USER_FQN);
+    const impl: HostFunction = () => coerceObjectToMessage(type, {});
+    const imports = buildCelFnImports(
+      env,
+      new Map([
+        ['get_int', { impl, returnsUint: false, returnMessageFqn: undefined }],
+      ]),
+    );
+    expect(() => imports.get_int?.(0)).toThrow(
+      /returned a protobufjs message.*not proto\(<fqn>\)/,
+    );
   });
 });

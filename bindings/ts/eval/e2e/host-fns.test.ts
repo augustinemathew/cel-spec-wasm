@@ -321,20 +321,112 @@ describe('@host message args (ContextProtoArgReadsRepeatedField et al.)', () => 
     });
     expect(instance.eval({ x: msg as unknown as CelInput })).toBe(5n);
   });
+});
 
-  it.skip('a proto(<fqn>) RETURN surfaces as a CEL_MESSAGE (build_customer(n).name)', () => {
-    // Verified blocker: `HostFunction` returns `CelValue`, which has no
-    // protobufjs-Message arm, and `encodeCelValue` re-interns a plain
-    // object as a host MAP (`encodeRecord`, eval/src/resolving-codec.ts)
-    // — so a message-declared return stamps CEL_MAP_HOST, not
-    // CEL_MESSAGE, and a downstream field select rejects it.  The C++
-    // side reaches this via `HostCallContext::ReturnProto`
-    // (host_fn_type_matrix_test.cc ContextProtoReturnPopulatesMultipleFields);
-    // the TS mirror needs a message-return surface on `HostFunction`
-    // (e.g. accepting a protobufjs Message) before this can un-skip.
-    //
-    // expect(await evalHost("build_customer('Ada').single_string", …))
-    //   .toBe('Ada');
+describe('@host message returns (ContextProtoReturnPopulatesMultipleFields)', () => {
+  // A `proto(<fqn>)`-declared RETURN: the impl hands back a protobufjs
+  // Message (it carries its own `$type`), the `cel_fn` trampoline interns
+  // it into the externref message table and stamps a CEL_MESSAGE slot —
+  // the TS mirror of `HostCallContext::ReturnProto`
+  // (eval/host_call_context.cc:549).
+  const tatType =
+    DescriptorSet.fromFileDescriptorSet(FDS_BYTES).messageType(TAT);
+  const buildTat: HostDef = {
+    decl: `proto(${TAT}) @host.build_tat(string s);`,
+    impl: (...args: CelValue[]) =>
+      coerceObjectToMessage(tatType, {
+        single_string: args[0] as string,
+        single_int64: 7,
+      }),
+  };
+  const msgOpts: PlanOpts = { withDescriptors: true };
+
+  it('a proto(<fqn>) RETURN surfaces as a CEL_MESSAGE (build_tat(s).single_string)', async () => {
+    expect(
+      await evalHost("build_tat('Ada').single_string", [buildTat], {}, msgOpts),
+    ).toBe('Ada');
+    // A second field off the same returned message (the multi-field shape
+    // of the C++ ContextProtoReturnPopulatesMultipleFields).
+    expect(
+      await evalHost("build_tat('Ada').single_int64", [buildTat], {}, msgOpts),
+    ).toBe(7n);
+  });
+
+  it('a message return feeds has() (proto3 presence)', async () => {
+    expect(
+      await evalHost(
+        "has(build_tat('x').single_string)",
+        [buildTat],
+        {},
+        msgOpts,
+      ),
+    ).toBe(true);
+    // proto3 scalar presence: an empty string is "unset" (langdef.md
+    // §field selection — has() on a proto3 scalar tests the default).
+    expect(
+      await evalHost(
+        "has(build_tat('').single_string)",
+        [buildTat],
+        {},
+        msgOpts,
+      ),
+    ).toBe(false);
+  });
+
+  it('a message return compares == to a message literal', async () => {
+    expect(
+      await evalHost(
+        `build_tat('x') == ${TAT}{single_string: 'x', single_int64: 7}`,
+        [buildTat],
+        {},
+        msgOpts,
+      ),
+    ).toBe(true);
+    expect(
+      await evalHost(
+        `build_tat('x') == ${TAT}{single_string: 'y', single_int64: 7}`,
+        [buildTat],
+        {},
+        msgOpts,
+      ),
+    ).toBe(false);
+  });
+
+  it('a plain-object return coerces against the declared FQN', async () => {
+    // The plain-object arm mirrors the message-typed activation binding
+    // (`messageBackingFrom`, eval/src/marshal.ts): the decl's FQN + the
+    // Engine's descriptors drive coerceObjectToMessage, so a JS-natural
+    // record works without constructing a protobufjs Message by hand.
+    const objReturn: HostDef = {
+      decl: `proto(${TAT}) @host.obj_tat();`,
+      impl: () => ({ single_string: 'hi there', single_int64: 3n }),
+    };
+    expect(
+      await evalHost('obj_tat().single_string', [objReturn], {}, msgOpts),
+    ).toBe('hi there');
+  });
+
+  it('a Message return on an int-declared fn is host misuse → TRAP', async () => {
+    // The pinned negative contract: returning a protobufjs message where
+    // the decl says `int` throws in the trampoline (never a silent
+    // re-intern as a host map), unwinding through the wasm frame as a
+    // CelEvalError TRAP naming the offending fn.
+    const liar: HostDef = {
+      decl: 'int @host.fake_int();',
+      impl: () => coerceObjectToMessage(tatType, { single_int64: 1 }),
+    };
+    const instance = await planHost('fake_int()', [liar]);
+    let thrown: unknown;
+    try {
+      instance.eval({});
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(CelEvalError);
+    expect((thrown as CelEvalError).code).toBe('TRAP');
+    expect((thrown as CelEvalError).message).toContain(
+      "host fn 'fake_int': the impl returned a protobufjs message",
+    );
   });
 });
 

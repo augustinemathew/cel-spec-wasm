@@ -596,9 +596,10 @@ function isPlainObject(value: CelInput): value is Record<string, CelInput> {
  * `$type` descriptor object.  Returns a plain boolean (not a type
  * predicate) because the protobufjs `Message` type is structurally
  * incompatible with the narrow shape this checks; callers cast at the
- * use site.
+ * use site.  Takes `unknown` so both activation bindings ({@link
+ * CelInput}) and host-fn returns (`HostFnResult`) route through it.
  */
-function isProtobufMessage(value: CelInput): boolean {
+export function isProtobufMessage(value: unknown): boolean {
   return (
     typeof value === 'object' &&
     value !== null &&

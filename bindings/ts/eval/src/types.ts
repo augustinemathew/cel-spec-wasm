@@ -255,10 +255,23 @@ export interface Program {
 // ───────────────────────────────────────────────────────────────────
 // Host functions (§A.5) — `@host` custom functions as JS callbacks.
 // Registered via `Engine.defineFunction`; invoked with already-decoded
-// CelValue arguments, returning a CelValue (errors are returned as a
-// CelError value, never thrown — the wire-format law of §A.4.5).
+// CelValue arguments, returning a HostFnResult (errors are returned as
+// a CelError value, never thrown — the wire-format law of §A.4.5).
 // ───────────────────────────────────────────────────────────────────
-export type HostFunction = (...args: CelValue[]) => CelValue;
+
+/**
+ * What a host function may return: any {@link CelValue}, or — for a
+ * `proto(<fqn>)`-declared return — a protobufjs `Message` carrying its
+ * own reflection type (`$type`), which the `cel_fn` trampoline interns
+ * into the externref message table and stamps as a CEL_MESSAGE slot
+ * (the TS mirror of `HostCallContext::ReturnProto`,
+ * `eval/host_call_context.cc:549`).  A plain object returned for a
+ * `proto(<fqn>)`-declared return coerces against the Engine's
+ * descriptors, exactly like a message-typed activation binding (§A.4.6).
+ */
+export type HostFnResult = CelValue | protobuf.Message;
+
+export type HostFunction = (...args: CelValue[]) => HostFnResult;
 
 // ───────────────────────────────────────────────────────────────────
 // MessageBacking — the thing an externref message slot points at

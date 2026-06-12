@@ -780,11 +780,22 @@ one and integration in WI-1.5 is wiring, not redesign.
   mirror is `HostCallContext::ReturnUint` / the FieldDescriptor-driven
   kind).  (3) `coerceObjectToMessage` was a bare `fromObject`, which
   rejects the JSON-natural `{K: V}` map shape on descriptor-built roots
-  and bigints on 32-bit fields — it now normalizes both.  Still open
+  and bigints on 32-bit fields — it now normalizes both.  ~~Still open
   (skip-pinned in `host-fns.test.ts`): a message-typed host-fn *return*
-  has no TS surface (`HostFunction` returns `CelValue`, which has no
-  protobufjs-Message arm; a plain object re-interns as a host map, not a
-  CEL_MESSAGE).
+  has no TS surface.~~  **Closed 2026-06-12** — `HostFunction` now
+  returns `HostFnResult = CelValue | protobuf.Message`
+  (`eval/src/types.ts`): a `proto(<fqn>)`-declared return (the FQN is
+  parsed off the `.celfn` decl, `celfn-decl.ts` `returnMessageFqn`)
+  interns a `ProtoMessageBacking` into the externref message table and
+  stamps a CEL_MESSAGE slot (`internMessageBacking`,
+  `resolving-codec.ts` — the TS mirror of
+  `HostCallContext::ReturnProto`, `eval/host_call_context.cc:549`); a
+  plain-object return coerces against the declared FQN via the Engine's
+  descriptors, like a message-typed activation binding.  A
+  protobufjs-Message return on a non-message-declared fn is host misuse
+  and throws (→ CelEvalError TRAP) — pinned in `host-fns.test.ts` along
+  with field-select / `has()` / message-equality coverage over the
+  returned message.
 - The `typecheck` gate (`tsc --noEmit` incl tests, added this milestone)
   catches the test-only type-error class the build/lint/vitest gate
   missed — keep it in CI.

@@ -22,6 +22,7 @@
 // Spec: doc/implementation-plan/rewrite/m29-typescript-bindings.md §A.4.4.
 
 import { Root } from 'protobufjs';
+import type { Message } from 'protobufjs';
 
 import { decodeAbi } from './abi.js';
 import { normalizeActivation } from './activation.js';
@@ -41,12 +42,18 @@ import {
 import type { TzAccessorCodec } from './host/stubs.js';
 import {
   CelMarshalError,
+  isProtobufMessage,
   marshalActivation,
   totalActivationBufferBytes,
 } from './marshal.js';
 import type { ActivationArena, MarshalEnv } from './marshal.js';
+import { coerceObjectToMessage, ProtoMessageBacking } from './proto/backing.js';
 import { DescriptorSet } from './proto/descriptors.js';
-import { encodeCelValue, resolveCelValue } from './resolving-codec.js';
+import {
+  encodeCelValue,
+  internMessageBacking,
+  resolveCelValue,
+} from './resolving-codec.js';
 import type { CodecEnv } from './resolving-codec.js';
 import {
   CEL_VALUE_KIND_OFFSET,
@@ -59,6 +66,7 @@ import type {
   CelAbi,
   CelInput,
   CelValue,
+  HostFnResult,
   HostFunction,
   Program,
 } from './types.js';
@@ -72,10 +80,15 @@ const CEL_FN_MODULE = 'cel_fn';
  * `returnsUint` mirrors the C++ `HostCallContext::ReturnUint` — a JS
  * `bigint` return otherwise encodes as CEL_INT, and a uint-declared
  * return must stamp CEL_UINT or downstream uint overloads reject it.
+ * `returnMessageFqn` is the declared `proto(<fqn>)` return's FQN (or
+ * `undefined` for every other return type) — it routes the impl's return
+ * through the CEL_MESSAGE intern path, the TS mirror of the C++
+ * `HostCallContext::ReturnProto` (`eval/host_call_context.cc:549`).
  */
 export interface HostFnRegistration {
   readonly impl: HostFunction;
   readonly returnsUint: boolean;
+  readonly returnMessageFqn: string | undefined;
 }
 
 /**
@@ -587,7 +600,7 @@ function buildImports(
 
   const stubs = makeStubImports({ memory: () => host.memoryOf() });
 
-  const celFn = buildCelFnImports(codecEnv, functions);
+  const celFn = buildCelFnImports(codecEnv, functions, descriptors);
 
   return {
     celHost,
@@ -605,21 +618,43 @@ function buildImports(
  * `eval/host_call_context.h:127`.  A uint-declared return re-stamps the
  * slot kind to CEL_UINT after the encode (a JS `bigint` carries no
  * int/uint distinction, so `encodeCelValue` stamps CEL_INT; the C++
- * mirror is `HostCallContext::ReturnUint`).  Exported for the
- * trampoline-level unit tests (`instance.test.ts`); the compiled-Program
- * path is exercised in `eval/e2e/host-fns.test.ts`.
+ * mirror is `HostCallContext::ReturnUint`).  A `proto(<fqn>)`-declared
+ * return routes through {@link encodeMessageReturn} (the C++ mirror is
+ * `HostCallContext::ReturnProto`); a protobufjs-Message return on any
+ * OTHER declared type is host misuse and throws (surfacing as a
+ * CelEvalError TRAP).  Exported for the trampoline-level unit tests
+ * (`instance.test.ts`); the compiled-Program path is exercised in
+ * `eval/e2e/host-fns.test.ts`.
  */
 export function buildCelFnImports(
   codecEnv: CodecEnv,
   functions: ReadonlyMap<string, HostFnRegistration>,
+  descriptors?: DescriptorSet,
 ): Record<string, (...args: number[]) => void> {
   const imports: Record<string, (...args: number[]) => void> = {};
   for (const [name, fn] of functions) {
     imports[name] = (out: number, ...argSlots: number[]): void => {
       const args = argSlots.map((slot) => resolveCelValue(codecEnv, slot));
       const result = fn.impl(...args);
-      encodeCelValue(codecEnv, out, result);
-      if (fn.returnsUint && typeof result === 'bigint') {
+      if (fn.returnMessageFqn !== undefined) {
+        encodeMessageReturn(
+          codecEnv,
+          out,
+          { name, fqn: fn.returnMessageFqn },
+          result,
+          descriptors,
+        );
+        return;
+      }
+      if (isProtobufMessage(result)) {
+        throw new Error(
+          `host fn '${name}': the impl returned a protobufjs message but ` +
+            `the declaration's return type is not proto(<fqn>)`,
+        );
+      }
+      const value = result as CelValue;
+      encodeCelValue(codecEnv, out, value);
+      if (fn.returnsUint && typeof value === 'bigint') {
         codecEnv
           .view()
           .setUint32(out + CEL_VALUE_KIND_OFFSET, CelKind.UINT, true);
@@ -627,6 +662,113 @@ export function buildCelFnImports(
     };
   }
   return imports;
+}
+
+/**
+ * Encode a `proto(<fqn>)`-declared host-fn return into the out slot —
+ * the TS mirror of `HostCallContext::ReturnProto`
+ * (`eval/host_call_context.cc:549`): intern a {@link ProtoMessageBacking}
+ * into the externref message table and stamp a CEL_MESSAGE handle.
+ *
+ *   - A protobufjs `Message` backs directly (its `$type` carries the
+ *     reflection type; no descriptor lookup needed).
+ *   - A plain object coerces against the DECLARED FQN via the Engine's
+ *     descriptors — the same coercion a message-typed activation binding
+ *     gets (`messageBackingFrom`, `marshal.ts`).  Without descriptors
+ *     this is unsatisfiable and throws.
+ *   - `null` and a CelError record pass through as values (an error is
+ *     returned, never thrown — §A.4.5; C++: `ReturnNull` /
+ *     `ReturnError`).
+ *   - Anything else is host misuse and throws (→ CelEvalError TRAP).
+ */
+function encodeMessageReturn(
+  codecEnv: CodecEnv,
+  out: number,
+  decl: { name: string; fqn: string },
+  result: HostFnResult,
+  descriptors: DescriptorSet | undefined,
+): void {
+  if (isProtobufMessage(result)) {
+    const message = result as Message;
+    internMessageBacking(
+      codecEnv,
+      out,
+      new ProtoMessageBacking(message.$type, message),
+    );
+    return;
+  }
+  if (result === null || isErrorRecord(result)) {
+    // Both are CelValue shapes (null / a CelError record); the
+    // protobufjs-Message arm was excluded above.
+    encodeCelValue(codecEnv, out, result as CelValue);
+    return;
+  }
+  if (isCoercibleRecord(result)) {
+    if (descriptors === undefined) {
+      throw new Error(
+        `host fn '${decl.name}': a plain-object return for the declared ` +
+          `proto(${decl.fqn}) needs descriptors; pass them to ` +
+          `Engine.create({ descriptors }) or return a protobufjs Message`,
+      );
+    }
+    const type = descriptors.messageType(decl.fqn);
+    internMessageBacking(
+      codecEnv,
+      out,
+      new ProtoMessageBacking(type, coerceObjectToMessage(type, result)),
+    );
+    return;
+  }
+  throw new Error(
+    `host fn '${decl.name}': declared to return proto(${decl.fqn}) but the ` +
+      `impl returned a non-message value (${describeReturn(result)})`,
+  );
+}
+
+/** A `{kind: 'error'}` tagged record (the §A.4.5 returned-error shape). */
+function isErrorRecord(value: HostFnResult): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === 'error'
+  );
+}
+
+/**
+ * A plain field-record return, coercible to the declared message type.
+ * Excludes every other object shape a {@link HostFnResult} can be:
+ * arrays, `Uint8Array`, `Map`, protobufjs messages, and the tagged
+ * records (`kind:` timestamp / duration / type / error).
+ */
+function isCoercibleRecord(
+  value: HostFnResult,
+): value is Record<string, CelValue> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof Uint8Array) &&
+    !(value instanceof Map) &&
+    !isProtobufMessage(value) &&
+    !('kind' in value)
+  );
+}
+
+/** A short description of a mis-shaped host-fn return for the throw. */
+function describeReturn(value: HostFnResult): string {
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+  if (value instanceof Uint8Array) {
+    return 'Uint8Array';
+  }
+  if (value instanceof Map) {
+    return 'Map';
+  }
+  if (typeof value === 'object' && value !== null && 'kind' in value) {
+    return `${String((value as { kind: unknown }).kind)} record`;
+  }
+  return typeof value;
 }
 
 /** Adapt the resolving codec to the `ProtoCodec` hook surface. */

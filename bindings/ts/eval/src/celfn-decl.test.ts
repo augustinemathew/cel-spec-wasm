@@ -87,6 +87,30 @@ describe('parseHostFnDecl — overload-id synthesis (the full argkind matrix)', 
       false,
     );
   });
+
+  it('captures the FQN of a proto(<fqn>)-declared return', () => {
+    // The CEL_MESSAGE intern signal (HostCallContext::ReturnProto,
+    // eval/host_call_context.cc:549).  The dotted FQN is captured during
+    // the parse, not reversed from the argkind spelling — an underscored
+    // package segment (`a.b_c.User` → `message_a_b_c_User`) makes the
+    // reversal lossy.
+    expect(
+      parseHostFnDecl('proto(a.b_c.User) @host.get_user(int id);')
+        .returnMessageFqn,
+    ).toBe('a.b_c.User');
+  });
+
+  it.each([
+    // Non-message returns carry no FQN — including aggregate returns
+    // whose ELEMENT is a message (those are list / map returns, not
+    // message returns) and a proto-typed PARAMETER on a scalar return.
+    ['int @host.f();'],
+    ['list<proto(a.B)> @host.f();'],
+    ['map<string, proto(a.B)> @host.f();'],
+    ['string @host.f(proto(a.B) m);'],
+  ])('%s → returnMessageFqn undefined', (decl) => {
+    expect(parseHostFnDecl(decl).returnMessageFqn).toBeUndefined();
+  });
 });
 
 describe('parseHostFnDecl — rejects malformed / out-of-scope decls', () => {
@@ -124,6 +148,7 @@ describe('hostFnDecl — bare-identifier escape hatch', () => {
       name: 'addOne_int',
       overloadId: 'addOne_int',
       returnsUint: false,
+      returnMessageFqn: undefined,
     });
   });
 
@@ -132,6 +157,7 @@ describe('hostFnDecl — bare-identifier escape hatch', () => {
       name: 'addOne',
       overloadId: 'addOne_int',
       returnsUint: false,
+      returnMessageFqn: undefined,
     });
   });
 

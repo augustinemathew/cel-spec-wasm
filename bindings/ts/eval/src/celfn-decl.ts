@@ -31,6 +31,18 @@ export interface HostFnDecl {
    * (no declaration to read the return type from).
    */
   readonly returnsUint: boolean;
+  /**
+   * The declared return type is `proto(<fqn>)` — this is its message
+   * FQN.  The `cel_fn` trampoline interns the impl's return into the
+   * externref message table and stamps a CEL_MESSAGE slot (the C++
+   * mirror is `HostCallContext::ReturnProto`,
+   * `eval/host_call_context.cc:549`); a plain-object return coerces
+   * against this FQN via the Engine's descriptors.  `undefined` for
+   * every non-message return (including a `list<proto(…)>` /
+   * `map<…, proto(…)>` return — those are aggregate returns) and for
+   * the bare-overload-id form.
+   */
+  readonly returnMessageFqn: string | undefined;
 }
 
 /** Thrown by {@link parseHostFnDecl} on a malformed declaration. */
@@ -49,7 +61,12 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function hostFnDecl(decl: string): HostFnDecl {
   const trimmed = decl.trim();
   if (IDENTIFIER_RE.test(trimmed)) {
-    return { name: trimmed, overloadId: trimmed, returnsUint: false };
+    return {
+      name: trimmed,
+      overloadId: trimmed,
+      returnsUint: false,
+      returnMessageFqn: undefined,
+    };
   }
   return parseHostFnDecl(decl);
 }
@@ -64,9 +81,11 @@ export function parseHostFnDecl(decl: string): HostFnDecl {
   const scanner = new Scanner(decl);
   // The return type does not participate in the overload id, but parsing
   // it validates the declaration shape (and rejects e.g. a TS-style
-  // `"my_fn(int): int"` string that is not a `.celfn` decl).  Its one
-  // semantic contribution is the uint-return flag (see HostFnDecl).
-  const returnArgkind = parseArgkind(scanner);
+  // `"my_fn(int): int"` string that is not a `.celfn` decl).  Its two
+  // semantic contributions are the uint-return flag and the
+  // message-return FQN (see HostFnDecl).
+  const returnProto: ProtoFqnCapture = { fqn: undefined };
+  const returnArgkind = parseArgkind(scanner, returnProto);
   scanner.expect('@');
   const backend = scanner.identifier('backend');
   if (backend !== 'host') {
@@ -92,7 +111,18 @@ export function parseHostFnDecl(decl: string): HostFnDecl {
     name,
     overloadId: [name, ...argkinds].join('_'),
     returnsUint: returnArgkind === 'uint',
+    returnMessageFqn: returnProto.fqn,
   };
+}
+
+/**
+ * An out-capture for the message FQN of a TOP-LEVEL `proto(<fqn>)` type.
+ * The argkind spelling flattens dots to underscores (`message_a_b_C`),
+ * which is not reversible when a package segment itself contains an
+ * underscore — so the dotted FQN is captured during the parse instead.
+ */
+interface ProtoFqnCapture {
+  fqn: string | undefined;
 }
 
 /** One parameter: `'this'? type Identifier` (Celfn.g4 `param`). */
@@ -108,8 +138,16 @@ function parseParamArgkind(scanner: Scanner): string {
  * strings `CelfnType::Argkind` emits (function_library.cc:30-69):
  * scalars verbatim, `Duration`/`Timestamp` lowercased, `list<T>` →
  * `list_<T>`, `map<K, V>` → `map_<K>_<V>`, `proto(a.b.C)` → `message_a_b_C`.
+ *
+ * `protoCapture`, when supplied, receives the dotted FQN of a TOP-LEVEL
+ * `proto(<fqn>)` — it is deliberately NOT forwarded into the `list` /
+ * `map` element recursion, because only a top-level `proto(…)` return is
+ * a message return.
  */
-function parseArgkind(scanner: Scanner): string {
+function parseArgkind(
+  scanner: Scanner,
+  protoCapture?: ProtoFqnCapture,
+): string {
   const head = scanner.identifier('type');
   switch (head) {
     case 'bool':
@@ -142,6 +180,9 @@ function parseArgkind(scanner: Scanner): string {
       scanner.expect('(');
       const fqn = scanner.qualifiedIdentifier();
       scanner.expect(')');
+      if (protoCapture !== undefined) {
+        protoCapture.fqn = fqn;
+      }
       return `message_${fqn.replaceAll('.', '_')}`;
     }
     default:

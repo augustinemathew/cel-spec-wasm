@@ -237,6 +237,22 @@ function internHostList(
   writeHostHandle(env.view(), slot, CelKind.LIST_HOST, ref);
 }
 
+/**
+ * Intern `backing` into the externref message table and stamp a
+ * CEL_MESSAGE handle at `slot` — the message-return seam.  Mirrors the
+ * C++ `HostCallContext::ReturnProto` (`eval/host_call_context.cc:549`),
+ * whose `EncodeValueToSlot` interns the owned message into the per-eval
+ * externref table and writes the CEL_MESSAGE kind + ref_slot payload.
+ */
+export function internMessageBacking(
+  env: CodecEnv,
+  slot: number,
+  backing: ProtoMessageBacking,
+): void {
+  const ref = env.refs.message.intern(backing);
+  writeHostHandle(env.view(), slot, CelKind.MESSAGE, ref);
+}
+
 /** Intern `map` as a host map and stamp a CEL_MAP_HOST slot. */
 function internHostMap(
   env: CodecEnv,

@@ -3408,9 +3408,9 @@ each with colocated unit pins.
         proto(TestAllTypes) args (scalar + repeated + map fields read in
         JS), CelError-value returns (absorbed downstream), throwing impl
         → `CelEvalError` TRAP, unregistered fn → plan LinkError,
-        undeclared-fn / `type`-arg compile rejects.  Skip-pinned:
-        message-typed host-fn *return* (no protobufjs-Message arm on
-        `HostFunction`; plain objects re-intern as host maps).
+        undeclared-fn / `type`-arg compile rejects.  ~~Skip-pinned:
+        message-typed host-fn *return*~~ (closed by the
+        message-return section below — the skip is gone).
   - [x] uint kind re-stamp — `eval/src/instance.test.ts`
         (`buildCelFnImports` uint-declared return → CEL_UINT; non-bigint
         gated) + `eval/src/host/proto.test.ts` (uint64 field read +
@@ -3438,6 +3438,43 @@ each with colocated unit pins.
         (abi/cel_abi.proto:52).
   - [x] conformance regression gate — full corpus re-run after the eval
         fixes: pass ≥ baseline, 0 fail (see milestone PR notes).
+
+## Rewrite M29 follow-up — message-typed host-fn returns (2026-06-12)
+
+Closes the last `host-fns.test.ts` skip: a `proto(<fqn>)`-declared
+`@host` return now interns a `ProtoMessageBacking` and stamps a
+CEL_MESSAGE slot — the TS mirror of `HostCallContext::ReturnProto`
+(`eval/host_call_context.cc:549`).  `HostFunction` returns
+`HostFnResult = CelValue | protobuf.Message` (`eval/src/types.ts`).
+
+  - [x] decl return-FQN capture — `eval/src/celfn-decl.test.ts`:
+        `returnMessageFqn` set for a `proto(<fqn>)` return (captured
+        dotted, not reversed from the lossy underscore argkind);
+        undefined for scalar / `list<proto(…)>` / `map<…, proto(…)>`
+        returns, proto-typed *params*, and the bare-overload-id form.
+  - [x] CEL_MESSAGE write seam — `eval/src/resolving-codec.test.ts`
+        (`internMessageBacking`): kind 10 + ref_slot payload, first
+        intern at slot 1, table resolves back to the same backing.
+  - [x] trampoline return routing — `eval/src/instance.test.ts`
+        (`buildCelFnImports` proto-declared returns): protobufjs Message
+        → CEL_MESSAGE intern; plain object → `coerceObjectToMessage`
+        against the declared FQN via descriptors; plain object without
+        descriptors → clear throw; null / CelError returns pass through
+        as values (§A.4.5); non-message scalar on a message decl →
+        throw; Message on a NON-message decl → throw (never a silent
+        host-map re-intern).
+  - [x] `@host` message-return e2e — `eval/e2e/host-fns.test.ts`
+        (the former skip, un-skipped + extended): field selects off the
+        returned message (`build_tat(s).single_string` /
+        `.single_int64`, the C++
+        ContextProtoReturnPopulatesMultipleFields shape), `has()` over
+        the return (set + proto3-default-unset), message equality
+        against a message literal (== true and false), plain-object
+        return coercion, and the negative contract — Message return on
+        an int-declared fn → `CelEvalError` TRAP naming the fn.
+  - [x] conformance regression gate — full corpus re-run: 1920 pass /
+        0 fail (= baseline floor; the corpus has no `@host` rows, so no
+        ratchet).
 
 ## How to update
 

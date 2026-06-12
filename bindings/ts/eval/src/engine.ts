@@ -64,6 +64,10 @@ interface RegisteredFunction {
   /** Declared `uint` return — the trampoline re-stamps CEL_UINT (see
    * `HostFnRegistration`, `instance.ts`). */
   readonly returnsUint: boolean;
+  /** Declared `proto(<fqn>)` return — the trampoline interns the impl's
+   * return as a CEL_MESSAGE (see `HostFnRegistration`, `instance.ts`);
+   * `undefined` for every other return type. */
+  readonly returnMessageFqn: string | undefined;
 }
 
 /**
@@ -113,13 +117,21 @@ export class Engine {
    * identifier is taken verbatim as an already-synthesized overload id
    * (the C++ `Engine::AddFunction(overload_id, …)` form).  The
    * implementation receives already-decoded {@link CelValue} arguments
-   * and returns a {@link CelValue}; a CEL spec error it wants to surface
-   * is a {@link CelError} value, never a thrown exception (§A.4.5).
+   * and returns a `HostFnResult` — a {@link CelValue}, or (for a
+   * `proto(<fqn>)`-declared return) a protobufjs `Message` / plain field
+   * object interned as a CEL_MESSAGE; a CEL spec error it wants to
+   * surface is a {@link CelError} value, never a thrown exception
+   * (§A.4.5).
    * Throws {@link CelFnDeclError} on a malformed `decl`.
    */
   defineFunction(decl: string, impl: HostFunction): void {
-    const { overloadId, returnsUint } = hostFnDecl(decl);
-    this.functions.set(overloadId, { overloadId, impl, returnsUint });
+    const { overloadId, returnsUint, returnMessageFqn } = hostFnDecl(decl);
+    this.functions.set(overloadId, {
+      overloadId,
+      impl,
+      returnsUint,
+      returnMessageFqn,
+    });
   }
 
   /**
@@ -146,7 +158,11 @@ export class Engine {
   async plan(program: Program): Promise<Instance> {
     const fns = new Map<string, HostFnRegistration>();
     for (const [overloadId, fn] of this.functions) {
-      fns.set(overloadId, { impl: fn.impl, returnsUint: fn.returnsUint });
+      fns.set(overloadId, {
+        impl: fn.impl,
+        returnsUint: fn.returnsUint,
+        returnMessageFqn: fn.returnMessageFqn,
+      });
     }
     return instantiateProgram(program, this.descriptors, fns, () =>
       this.runtimeModuleFor(),
