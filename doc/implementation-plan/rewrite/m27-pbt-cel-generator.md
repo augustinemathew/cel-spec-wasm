@@ -11,7 +11,8 @@ C2 proto targets, Slice D corpus persistence + CI) moved to
 `m30-fuzz-full-dialect.md`, which also plans the full-dialect
 grammar, adversarial leaf domains, error/unknown properties, and
 tooling ergonomics on top of this doc's machinery.  Operational
-state lives in `e2e/fuzz/README.md` (notes log + gap list).
+state lives in `e2e/fuzz/README.md` (reference + gap list) and
+`e2e/fuzz/SESSIONS.md` (session journal).
 
 ## Locked design decisions (as of 2026-06-05)
 

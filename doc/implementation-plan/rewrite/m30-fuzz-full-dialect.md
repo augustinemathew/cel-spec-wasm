@@ -1,16 +1,23 @@
 # m30 — Differential fuzzing to the full CEL dialect
 
 Status: in progress — drafted 2026-06-11, executing via the
-autonomous loop (one slice per iteration, top-down).  **M30.A
-(adversarial leaves), M30.B (error-producing arithmetic), M30.C's
-nested-aggregate sub-part, and M30.D's total string-function subset
-shipped 2026-06-11; M30.G's name/activation cleanup landed with the
-reviewability refactor.  M30.D found and fixed the first real
-miscompile — a `split` slot-aliasing bug on computed receivers.**  Supersedes the unshipped remainder of
-m27 (Slice C2 proto targets, Slice D corpus/CI); m27's shipped
-machinery (typed attribute grammar, L1/L2/L3 validation, oracle
-harness, fuzztest properties, divergence miner) is the foundation
-this builds on.  Live status + mining results: `e2e/fuzz/README.md`.
+autonomous loop (one slice per iteration, top-down).  **Shipped
+2026-06-11: M30.A (adversarial leaves), M30.B (error-producing
+arithmetic), M30.C nested-aggregate sub-part, M30.D total
+string-function subset + math_ext + temporal accessors (incl
+`_with_tz`) + conversions + encoders, M30.F (ergonomics + nightly CI),
+M30.G name/activation cleanup.  Found + pinned five miscompiles and
+three over-permissiveness divergences (inventory in
+`e2e/fuzz/COVERAGE.md`).  Open: M30.C proto targets + temporal
+arithmetic, M30.D conversion/two-arg-string remainder, M30.E
+scale/width, and net_ext/optionals (blocked on a type-vocabulary
+extension) — see §5.**  A 2026-06-11 subsystem review
+(`reviews/2026-06-11-pbt-subsystem.md`) drove a docs reorg + the §5
+work queue.  Supersedes the unshipped remainder of m27 (Slice C2 proto
+targets, Slice D corpus/CI); m27's shipped machinery (typed attribute
+grammar, L1/L2/L3 validation, oracle harness, fuzztest properties,
+divergence miner) is the foundation this builds on.  Live status +
+mining results: `e2e/fuzz/README.md` + `SESSIONS.md`.
 
 ## 0. Objective
 
@@ -43,8 +50,8 @@ fuzzing; coverage-guided byte-level fuzzing of the parser (m27
   with the fix.
 - Grammar changes re-run L1/L2/L3 (`//e2e/fuzz:grammar_test`)
   before any mining.  A catalog change that breaks L2 never mines.
-- `e2e/fuzz/README.md` notes log + gap list updated in the same
-  commit as the change it describes.
+- `e2e/fuzz/SESSIONS.md` (session journal) + `README.md` gap list
+  updated in the same commit as the change it describes.
 - Oracle disagreements about *configuration* (budgets, options) are
   resolved in `testdata/cel_cpp_oracle.cc` with a comment, never by
   loosening the comparison.
@@ -195,7 +202,7 @@ claim, not a vibe — the same discipline as the conformance badge.
 A→B→C→D are ordered by bug-yield-per-line; E/F/G interleave when a
 mining session goes dry (no fresh finds for two consecutive
 sweeps).  Each loop iteration ships one slice-step: implement →
-L1/L2/L3 → mine → pin finds → fix or record → notes log → commit.
+L1/L2/L3 → mine → pin finds → fix or record → SESSIONS.md → commit.
 
 ## 4. Reconciliation
 
@@ -205,7 +212,44 @@ L1/L2/L3 → mine → pin finds → fix or record → notes log → commit.
   (done in this commit).
 - m29.D1 (nightly fuzz job) is delivered by M30.F; m29 retains the
   pointer.
+- `testing-checklist.md` gains a "Rewrite M30" section ticking the
+  shipped slices (done 2026-06-11 in the review-driven docs reorg).
+- The session journal moved from the README notes-log to
+  `e2e/fuzz/SESSIONS.md` (2026-06-11); README is now topical reference.
 
 ## 5. Future work
 
-(Collected as slices land.)
+Surfaced by the 2026-06-11 subsystem review
+(`reviews/2026-06-11-pbt-subsystem.md`); ordered by bug-yield:
+
+- **Conversion remainder (M30.D)** — numeric-shaped string leaves
+  (`"42"`, `"3.14"`, `"  3.14  "`, `"+5"`) so `int/double/uint/bool(
+  string)` exercise the *success* parse path, not only both-error;
+  `duration(...)` / `timestamp(...)` parse leaves.
+- **Exact `INT64_MIN` leaf** — unlocks `negate_int64` / `int(double)` /
+  `math.abs(int)` overflow at the two's-complement boundary the catalog
+  currently dodges by one.
+- **`kBothErrored` error-kind comparison** — today "both errored" is
+  unconditional agreement; comparing the cel-cpp error category would
+  close the largest comparator blind spot (wrong-error-kind parity).
+- **list/map/nested `FUZZ_TEST` registrations** — the in-process
+  `bazel test` gate covers only the 6 scalar targets; aggregate codegen
+  is gated only by the nightly sweep.
+- **Two-arg pos/limit string forms** (`indexOf(sub,pos)`, `split(sep,n)`,
+  `replace(old,new,n)`) — `indexOf(sub,pos)` resurfaces a known live
+  codepoint-vs-byte bug.
+- **`divide_double`, `add_list`, temporal `+`/`-` arithmetic** — three
+  untested codegen arms; temporal arith exercises the overflow-error
+  path the oracle is already configured for.
+- **Regex-metacharacter + one large (>10 KiB) string leaf** — validate
+  the `matches()` totality assumption and length-prefix paths.
+- **Multi-entry map literals** — constructors are 1-entry only; width
+  >1 reaches map iteration-order / duplicate-key codegen.
+- **Code structure** — shared `targets.{h,cc}` registry (the mineable
+  target list is hand-synced across `mine_divergences.cc`,
+  `dump_samples.cc`, `fuzz.sh` and has drifted); `grammar_scalars.cc`
+  family split; comparison/math table helpers; L3 walker → real
+  generator; `%i` single-pass substitution.
+- **net_ext (20) + optionals (14)** — blocked on a `shared/type.h`
+  opaque/optional type-vocabulary extension (a compiler change). The
+  largest single coverage hole; schedule the type-vocab work.

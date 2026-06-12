@@ -30,7 +30,7 @@ note) · ⬜ none generated yet.
 | Category | Overloads | Status |
 | --- | ---: | --- |
 | Arithmetic (numeric) | 17 | 🟡 numeric core; temporal/list `+` open |
-| Comparison (`==` `!=` `<` `<=` `>` `>=`) | 57 | 🟡 same-type numeric + string/bytes/bool eq + temporal done; string/bytes ordering open; cross-type ⊘ (dyn-only, out of subset) |
+| Comparison (`==` `!=` `<` `<=` `>` `>=`) | 57 | 🟡 same-type numeric + string/bytes/bool eq + string/bytes ordering + temporal done; cross-type ⊘ (dyn-only, out of subset) |
 | Logical (`&&` `\|\|` `!`) | 3 | ✅ |
 | `size` | 4 | ✅ |
 | `in` | 2 | ✅ |
@@ -47,10 +47,35 @@ note) · ⬜ none generated yet.
 | **optionals** | ~14 | ⬜ blocked — needs `CelType` optional-type support |
 | `type()` | 1 | ⬜ |
 
-The ⬜ rows are the work queue, roughly by bug-yield. They map onto
+The remaining ⬜ / open rows are the work queue, roughly by bug-yield,
+tracked in
 [`m30-fuzz-full-dialect.md`](../../doc/implementation-plan/rewrite/m30-fuzz-full-dialect.md):
-string-rest + conversions → M30.D; timestamp/duration/optionals →
-M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
+the conversion remainder (numeric-shaped string leaves, duration /
+timestamp parse) and the two-arg pos/limit string forms are the
+near-term yield; `net_ext` + `optionals` (34 overloads) are blocked on
+a `shared/type.h` opaque/optional type-vocabulary extension; `type()`
+is unstarted.
+
+---
+
+## PBT-found bugs (the trophy case)
+
+Every divergence this fuzzer surfaced is pinned as a `Pbt*` test in
+`e2e/known_bugs_test.cc`. **LIVE** = the fix shipped and the test is a
+live regression guard; **PINNED** = a `GTEST_SKIP`'d over-permissiveness
+we knowingly carry (delete the skip to fix). Grep `Pbt` in that file
+for the full reproducer + cel-cpp citation + fix recipe on each.
+
+| `Pbt*` test | Status | What it pins | Fix layer |
+| --- | --- | --- | --- |
+| `PbtSplitComputedReceiverSlotAlias` | LIVE | `split` on a computed receiver returned arena-header garbage (output slot aliased the source ptr) | runtime `cel_string_ext_list.cc` `DoSplit` |
+| `PbtTernaryInsideIntSubtract` | LIVE | ternary inside an int subtract read the wrong slot | codegen slot allocation |
+| `PbtExistsOneInTernaryCondBytes` | LIVE | `exists_one` result lived in `comp.result()`'s slot, not accu_var's; ternary cond mis-routed | codegen comprehension locals |
+| `PbtExistsOneInTernaryCondTakesThen` | LIVE | companion: the then-arm direction of the same shape | codegen comprehension locals |
+| `PbtSizeOfExistsOneTernaryBytes` | LIVE | `size(cond ? bytes-ternary : …)` poisoned to kError via the same slot bug | codegen comprehension locals |
+| `PbtStringDoubleScientificForm` | PINNED | `string(double)` emits scientific where cel-cpp emits fixed (our `to_chars` + oracle `%.17g` gap) | runtime `to_chars` |
+| `PbtIntOfDurationOverPermissive` | PINNED | `int(duration)` accepted; cel-cpp rejects (no such overload) | checker + `overload_table.cc` |
+| `PbtSubstringEndEqualsSizeOverPermissive` | PINNED | two-arg `substring(start, size)` returns the tail; cel-cpp errors (its own `SubstringImpl` off-by-one) | runtime (to match cel-cpp) |
 
 ---
 

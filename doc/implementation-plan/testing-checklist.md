@@ -2912,7 +2912,9 @@ flipping any checklist rows):
   - [x] grammar structural validation (L1), per-production checker
         round-trip (L2), generated-expression type agreement with
         cel-cpp (L3) — `e2e/fuzz/grammar_test.cc` over
-        `grammar.{h,cc}` + `grammar_slice_b.{h,cc}`.
+        `grammar.{h,cc}` + the catalogs (renamed 2026-06-11 from
+        `grammar_slice_b/c.{h,cc}` to `grammar_scalars.{h,cc}` +
+        `grammar_aggregates.{h,cc}`).
   - [x] type-driven generator unit coverage
         (`e2e/fuzz/generator_test.cc`).
   - [x] oracle property — generated expressions evaluate equal under
@@ -2920,9 +2922,38 @@ flipping any checklist rows):
         (`e2e/fuzz/cel_oracle_property_test.cc` via
         `oracle_harness.{h,cc}`; divergence mining in
         `mine_divergences.cc`, sample dumper in `dump_samples.cc`).
-  - [ ] remaining Slice C/D scope (additional productions,
-        depth-8 budget) — tracked in the milestone doc's slice
-        sections.
+  - [x] remaining Slice C/D scope (additional productions, depth-8
+        budget) — shipped under Rewrite M30 (below).
+
+## Rewrite M30 — differential fuzzing to the full CEL dialect (A/B/C-nested/D-string/F/G shipped 2026-06-11)
+
+Coverage that shipped extending the M27 machinery to the full static
+subset (design + slice status in
+`doc/implementation-plan/rewrite/m30-fuzz-full-dialect.md`; per-overload
+grid in `e2e/fuzz/COVERAGE.md`; session journal in
+`e2e/fuzz/SESSIONS.md`):
+
+  - [x] adversarial leaf set — INT64/UINT64 boundaries, 2^53±1, ±0.0,
+        denormal, 1e308, embedded-NUL, multi-byte / invalid UTF-8
+        (`grammar_scalars.cc`).
+  - [x] error-producing arithmetic + error-ness as a compared
+        dimension (`GenAndEvalStatus`; `oracle_harness.cc`).
+  - [x] nested aggregates — `list<list<T>>`, `list<map<K,V>>`,
+        `map<string,list<int>>` leaves + constructors + size +
+        container-iter_var comprehensions (`grammar_aggregates.cc`).
+  - [x] string functions (contains/startsWith/.../substring/replace/
+        split/quote), `string.format`, base64 encoders, math_ext (28),
+        temporal accessors incl `_with_tz`, cross-numeric + string/
+        bytes/bool conversions (`grammar_scalars.cc`).
+  - [x] CI-gateable miner (exit code = divergence count) + `scripts/
+        fuzz.sh` runner + nightly `.github/workflows/fuzz.yml`.
+  - [x] every PBT-found divergence pinned in `e2e/known_bugs_test.cc`
+        as a `Pbt*` test (inventory in `COVERAGE.md`).
+  - [ ] open slices (tracked in the milestone doc): conversion
+        remainder (numeric-string leaves, duration/timestamp parse),
+        two-arg pos/limit string forms, temporal arithmetic, list/map
+        `FUZZ_TEST` registrations, net_ext + optionals (blocked on a
+        `shared/type.h` type-vocabulary extension).
 
 ## Expression-depth gate (cleanup-backlog #45 interim fix, 2026-06-10)
 
