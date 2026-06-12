@@ -742,15 +742,22 @@ one and integration in WI-1.5 is wiring, not redesign.
 
 ### Future work (surfaced during execution)
 
-- **Three genuine `@cel-wasm/eval` gaps** surfaced by conformance
+- ~~**Three genuine `@cel-wasm/eval` gaps** surfaced by conformance
   (currently `eval_unimpl` skips): host-bound-aggregate equality
   (`[1,2] == x` / `{..} != x` where `x` is a bound list/map → code 13 no
   matching overload — literal-vs-literal works), and the timestamp
   tz-string accessor (`timestamp(...).getHours('02:00')` → code 18; bare
-  `getHours()` works). Register the missing overloads.
+  `getHours()` works). Register the missing overloads.~~ **Closed
+  2026-06-12** — mixed arena/host aggregate equality landed in the
+  proto-semantics sweep; fixed-offset timezone resolution landed in the
+  parity sweep (see `m29-ts-conformance-backlog.md`).
 - **N-API and emscripten compile backends** behind the existing
-  `CompileBackend` interface (subprocess is v1; emscripten is the
-  conditional-GO spike — protobuf-to-wasm is the ~3–5 day long pole).
+  `CompileBackend` interface — **superseded 2026-06-12**: the subprocess
+  v1 was retired (m30 slice D) for the in-process `compiler.wasm`
+  backend (the C ABI + cel-cpp + Binaryen as a wasm32-wasi
+  cross-compile, not emscripten), which serves Node AND the browser
+  from the same artifact. N-API remains a possible native-perf option;
+  unscheduled.
 - ~~**Host-fn and message-var e2e fixtures** — the `cel_fn.*` and
   message-typed-variable paths are unit-pinned but not yet driven from a
   compiled `@host` / message Program (the CLI backend has no `@host`-decl
