@@ -14,6 +14,11 @@ how to run it, how to extend it. Update it in the same commit as any
 grammar or harness change. The dated session journal lives separately
 in [`SESSIONS.md`](SESSIONS.md) (append there, not here).
 
+> **In-flight refactor:** the folder is being simplified per
+> [`SIMPLIFY.md`](SIMPLIFY.md) (one comparator, one verdict path,
+> catalogs regrouped by family). That doc carries the checklists;
+> file names below may shift as its steps land.
+
 **Function coverage is tracked in [`COVERAGE.md`](COVERAGE.md)** — a
 checklist of all 241 overloads from
 `compiler/codegen/overload_table.cc` and whether the grammar
