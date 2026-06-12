@@ -211,20 +211,50 @@ cc_test(
     ],
 )
 
+# The ONE verdict path: classify a generate→eval-both-sides
+# round-trip, compare payloads, render the outcome.  Every driver
+# (miner, property test) judges through RunOne so they cannot
+# disagree about what a failure is.
+cc_library(
+    name = "verdict",
+    testonly = True,
+    srcs = ["verdict.cc"],
+    hdrs = ["verdict.h"],
+    deps = [
+        ":compare",
+        ":oracle_harness",
+        "//shared:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
+cc_test(
+    name = "verdict_test",
+    size = "medium",
+    srcs = ["verdict_test.cc"],
+    deps = [
+        ":oracle_harness",
+        ":verdict",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/status",
+        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "mine_divergences",
     testonly = True,
     srcs = ["mine_divergences.cc"],
     tags = ["manual"],
     deps = [
-        ":compare",
-        ":oracle_harness",
         ":targets",
-        "//eval:value",
+        ":verdict",
         "//shared:type",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
-        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
     ],
 )
 
@@ -244,12 +274,8 @@ cc_test(
     # cel_oracle_property_test.cc.
     tags = ["manual"],
     deps = [
-        ":oracle_harness",
-        "//eval:value",
+        ":verdict",
         "//shared:type",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/strings:string_view",
-        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
         "@com_google_googletest//:gtest",
         "@fuzztest//fuzztest",
         "@fuzztest//fuzztest:fuzztest_gtest_main",

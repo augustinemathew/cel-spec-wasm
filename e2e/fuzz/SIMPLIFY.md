@@ -1,6 +1,8 @@
 # Simplification plan — `e2e/fuzz/`
 
-Status: in progress — drafted 2026-06-12, no steps executed yet.
+Status: in progress — drafted 2026-06-12; step 1 (verdict
+unification) shipped same day, proven pure by a byte-identical
+fixed-seed RESULT diff across all 13 targets.
 Supersedes the code-structure bullets in `m30-fuzz-full-dialect.md` §5
 and condenses the two architecture reviews
 (`doc/implementation-plan/rewrite/reviews/2026-06-12-pbt-architecture.md`)
@@ -63,29 +65,29 @@ step 1 into `/tmp/fuzz_baseline.txt`.
 
 ## Step 1 — `verdict.{h,cc}`: one judge, thin drivers  **[pure]**
 
-- [ ] Capture the fixed-seed baseline (all 13 targets) to
+- [x] Capture the fixed-seed baseline (all 13 targets) to
       `/tmp/fuzz_baseline.txt`.
-- [ ] `verdict.h`: `VerdictKind` (kAgreed, kBothErrored, kValueDiverged,
+- [x] `verdict.h`: `VerdictKind` (kAgreed, kBothErrored, kValueDiverged,
       kOracleErrorOnly, kOurCapacityReject, kOurUnexpectedReject,
       kOracleRejected, kSourceTooLarge), `struct Verdict {kind, seed,
       depth, source, ours, oracle, detail}`, `IsDivergence()`,
       `IsFailure()`, `Report()`, `RunOne(target, seed, depth)`.
-- [ ] `verdict_test.cc` first (interface → tests → impl): one case per
+- [x] `verdict_test.cc` first (interface → tests → impl): one case per
       VerdictKind via expressions that force each outcome, + Report()
       smoke.
-- [ ] `verdict.cc`: move (not rewrite) the miner's classify/compare/
+- [x] `verdict.cc`: move (not rewrite) the miner's classify/compare/
       render logic; the capacity-vs-unexpected reject split uses the
       `ResourceExhausted` check from the property test.
-- [ ] Port `mine_divergences.cc`: argv → loop → `RunOne` →
+- [x] Port `mine_divergences.cc`: argv → loop → `RunOne` →
       `counters[kind]++` → `Report()` on divergence → same `RESULT`
       line → same exit code (divergences only, for now).
-- [ ] Port `cel_oracle_property_test.cc`: each registered target body
+- [x] Port `cel_oracle_property_test.cc`: each registered target body
       becomes `Verdict v = RunOne(...); EXPECT_FALSE(v.IsFailure()) <<
       v.Report();`.  Delete its 6 hand-rolled comparators.
-- [ ] BUILD: `:verdict` library (testonly); drivers depend on it.
-- [ ] `bazel test //e2e/fuzz:...` green (incl. property test, manual).
-- [ ] Baseline diff: byte-identical `RESULT` lines.
-- [ ] Lint touched files; commit.
+- [x] BUILD: `:verdict` library (testonly); drivers depend on it.
+- [x] `bazel test //e2e/fuzz:...` green (incl. property test, manual).
+- [x] Baseline diff: byte-identical `RESULT` lines.
+- [x] Lint touched files; commit.
 
 ## Step 2 — delete `compare.{h,cc}`: one comparator in the repo
 

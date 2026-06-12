@@ -7,11 +7,12 @@
 //
 // Run as:
 //   bazel run //e2e/fuzz:mine_divergences -- <target> <max_seeds> <depth> [stop_after]
-// `target` ∈ { bool, int, uint, double, string, bytes, list_int,
-//   list_bool, list_double, list_string, map_string_int,
-//   list_list_int, map_string_list_int }.
+// `target` is any name in `targets.cc` (`AllTargets()`).
 // `stop_after` (default 5) caps how many divergences+our-rejects
 // before early exit.
+//
+// All judging happens in `verdict.cc::RunOne` — this file is only
+// the loop, the tallies, and the exit-code contract.
 
 #include <cstdint>
 #include <cstdio>
@@ -20,21 +21,15 @@
 #include <optional>
 #include <string>
 
-#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "cel/expr/value.pb.h"
-#include "e2e/fuzz/compare.h"
-#include "e2e/fuzz/oracle_harness.h"
 #include "e2e/fuzz/targets.h"
-#include "eval/value.h"
+#include "e2e/fuzz/verdict.h"
 #include "shared/type.h"
 
 using ::celwasm::CelType;
-using ::celwasm::fuzz::Compare;
-using ::celwasm::fuzz::CompareResult;
-using ::celwasm::fuzz::GenAndEvalFull;
-using ::celwasm::fuzz::GenAndEvalResult;
-using ::celwasm::fuzz::GenAndEvalStatus;
+using ::celwasm::fuzz::RunOne;
+using ::celwasm::fuzz::Verdict;
+using ::celwasm::fuzz::VerdictKind;
 
 namespace {
 
@@ -45,32 +40,6 @@ CelType ParseTargetOrDie(absl::string_view s) {
     std::exit(2);
   }
   return *t;
-}
-
-// Returns true on divergence (printed to stdout); false otherwise.
-bool CompareAndReport(absl::string_view kind_label, const CelType& target,
-                      uint64_t seed, const GenAndEvalResult& r) {
-  const CompareResult c = Compare(r.ours, r.oracle, target);
-  if (!c.equal) {
-    std::printf("DIVERGE [%s seed=%llu]\n", std::string(kind_label).c_str(),
-                static_cast<unsigned long long>(seed));
-    std::printf("  source = %s\n", r.source.c_str());
-    std::printf("  ours   = %s\n", c.ours.c_str());
-    std::printf("  oracle = %s\n", c.oracle.c_str());
-    std::fflush(stdout);
-  }
-  return !c.equal;
-}
-
-// One-line anomaly report for the non-compared outcomes.
-void PrintAnomaly(absl::string_view tag, absl::string_view target_str,
-                  uint64_t seed, const std::string& err,
-                  const std::string& source) {
-  std::printf("%s [%s seed=%llu] %s\n  source = %s\n", std::string(tag).c_str(),
-              std::string(target_str).c_str(),
-              static_cast<unsigned long long>(seed), err.c_str(),
-              source.c_str());
-  std::fflush(stdout);
 }
 
 // Per-outcome tallies for one mining run.
@@ -101,50 +70,43 @@ void PrintSummary(absl::string_view target_str, int depth, const Counters& c) {
   std::fflush(stdout);
 }
 
-// Mining loop: generate seeds 1..max_seeds, run each through the
-// differential harness, print every anomaly, stop once
-// `stop_after` divergences + our-rejects have been reported.
+// Tally one verdict; print the report for every anomalous outcome
+// (divergences and rejects — agreed/both-errored/too-large are
+// silent).  Returns the updated divergence+reject stop counter.
+void Tally(const Verdict& v, absl::string_view target_str, Counters& c) {
+  switch (v.kind) {
+    case VerdictKind::kAgreed:
+      ++c.agreed;
+      return;
+    case VerdictKind::kValueDiverged:
+    case VerdictKind::kOracleErrorOnly:
+      ++c.diverged;
+      break;
+    case VerdictKind::kOurCapacityReject:
+    case VerdictKind::kOurUnexpectedReject:
+      ++c.our_rejected;
+      break;
+    case VerdictKind::kOracleRejected:
+      ++c.oracle_rejected;
+      break;
+    case VerdictKind::kBothErrored:
+      ++c.both_errored;
+      return;
+    case VerdictKind::kSourceTooLarge:
+      ++c.too_large;
+      return;
+  }
+  std::fputs(v.Report(target_str).c_str(), stdout);
+  std::fflush(stdout);
+}
+
 int RunMine(absl::string_view target_str, const CelType& target,
             uint64_t max_seeds, int depth, int stop_after) {
   Counters c;
-
   for (uint64_t seed = 1; seed <= max_seeds; ++seed) {
-    GenAndEvalResult r;
-    std::string err;
-    GenAndEvalStatus st = GenAndEvalFull(target, seed, depth, r, &err);
-    switch (st) {
-      case GenAndEvalStatus::kOk:
-        if (CompareAndReport(target_str, target, seed, r)) {
-          ++c.diverged;
-        } else {
-          ++c.agreed;
-        }
-        break;
-      case GenAndEvalStatus::kSourceTooLarge:
-        ++c.too_large;
-        break;
-      case GenAndEvalStatus::kOurPipelineRejected:
-        ++c.our_rejected;
-        PrintAnomaly("OUR-REJECT", target_str, seed, err, r.source);
-        break;
-      case GenAndEvalStatus::kOracleRejected:
-        ++c.oracle_rejected;
-        PrintAnomaly("ORACLE-REJECT", target_str, seed, err, r.source);
-        break;
-      case GenAndEvalStatus::kBothErrored:
-        ++c.both_errored;
-        break;
-      case GenAndEvalStatus::kOracleErrorOnly:
-        ++c.diverged;
-        PrintAnomaly("ERROR-DIVERGE (oracle errored, ours is a value)",
-                     target_str, seed, err, r.source);
-        break;
-    }
-    if (c.diverged + c.our_rejected >= stop_after) {
-      break;
-    }
+    Tally(RunOne(target, seed, depth), target_str, c);
+    if (c.diverged + c.our_rejected >= stop_after) break;
   }
-
   PrintSummary(target_str, depth, c);
   // CI-gateable exit code: non-zero iff a value/error divergence was
   // found (our-rejects and both-errored are NOT failures — see
