@@ -219,8 +219,13 @@ void RegisterStringFunctions(GrammarBuilder& b) {
             CelType::String(), CelType::String(), CelType::String());
   b.Binary(CelType::String(), "string_substring_1", "(%0).substring(%1)",
            CelType::String(), CelType::Int());
-  b.Ternary(CelType::String(), "string_substring_2", "(%0).substring(%1, %2)",
-            CelType::String(), CelType::Int(), CelType::Int());
+  // The two-arg substring(start, end) is withheld: cel-cpp errors on
+  // every `end == size()` slice (a SubstringImpl off-by-one — the
+  // end-index check only fires inside the codepoint loop, which the
+  // full-length end never reaches), while we return the value.  The
+  // grammar can't avoid generating end == size, so this production
+  // would diverge nondeterministically.  Pinned as
+  // `PbtSubstringEndEqualsSizeOverPermissive` in known_bugs_test.cc.
   // String → String transforms.  `reverse`/`charAt` are
   // codepoint-handling — the exact territory of the byte-vs-codepoint
   // bug family — and (like `split`) a COMPUTED receiver exercises a
@@ -328,6 +333,42 @@ void RegisterMathExt(GrammarBuilder& b) {
 // tz-string leaf set.  The max-range timestamp
 // (`9999-12-31T23:59:59.999999999Z`) is left out of the leaves
 // until `MaxRangeTimestampConstruction` (known_bugs) is fixed.
+// Timestamp accessors — the no-tz forms and the with-tz forms (the
+// tz is a FIXED valid zone baked into the template; an arbitrary
+// generated string would just be an invalid-tz error, exercising no
+// tz logic).  The with-tz zones rotate across IANA names, fixed
+// offsets, and UTC to cover the cctz lookup + offset paths; both
+// engines share the cctz database.
+void RegisterTimestampAccessors(GrammarBuilder& b) {
+  const CelType ts = CelType::Timestamp();
+  const CelType i = CelType::Int();
+  for (const char* m : {"getFullYear", "getMonth", "getDayOfMonth", "getDate",
+                        "getDayOfWeek", "getDayOfYear", "getHours",
+                        "getMinutes", "getSeconds", "getMilliseconds"}) {
+    b.Unary(i, std::string("ts_") + m, std::string("(%0).") + m + "()", ts);
+  }
+  struct TzAcc {
+    const char* method;
+    const char* tz;
+  };
+  const TzAcc tzs[] = {
+      {"getFullYear", "America/New_York"},
+      {"getMonth", "Australia/Sydney"},
+      {"getDayOfMonth", "Europe/London"},
+      {"getDate", "Asia/Tokyo"},
+      {"getDayOfWeek", "-05:00"},
+      {"getDayOfYear", "+09:30"},
+      {"getHours", "America/Los_Angeles"},
+      {"getMinutes", "UTC"},
+      {"getSeconds", "Europe/Paris"},
+      {"getMilliseconds", "Pacific/Auckland"},
+  };
+  for (const TzAcc& a : tzs) {
+    b.Unary(i, std::string("ts_") + a.method + "_tz",
+            std::string("(%0).") + a.method + "(\"" + a.tz + "\")", ts);
+  }
+}
+
 void RegisterTemporal(GrammarBuilder& b) {
   const CelType ts = CelType::Timestamp();
   const CelType dur = CelType::Duration();
@@ -339,12 +380,7 @@ void RegisterTemporal(GrammarBuilder& b) {
   b.Leaf(dur, "dur_zero", R"(duration("0s"))");
   b.Leaf(dur, "dur_hour", R"(duration("3661s"))");
   b.Leaf(dur, "dur_neg", R"(duration("-90s"))");
-  // Timestamp accessors → Int (no-tz forms).
-  for (const char* m : {"getFullYear", "getMonth", "getDayOfMonth", "getDate",
-                        "getDayOfWeek", "getDayOfYear", "getHours",
-                        "getMinutes", "getSeconds", "getMilliseconds"}) {
-    b.Unary(i, std::string("ts_") + m, std::string("(%0).") + m + "()", ts);
-  }
+  RegisterTimestampAccessors(b);
   // Duration accessors → Int.
   for (const char* m :
        {"getHours", "getMinutes", "getSeconds", "getMilliseconds"}) {

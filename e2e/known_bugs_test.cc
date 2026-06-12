@@ -1142,5 +1142,39 @@ TEST(KnownBugs, PbtIntOfDurationOverPermissive) {
       << (v.ok() ? "a value" : v.status().ToString());
 }
 
+// PBT int (M30 string grammar, 2026-06-11).  Two-arg
+// `<string>.substring(start, end)` with `end == size()` (and
+// `start != end`) returns the tail slice in our pipeline but is a
+// CEL ERROR in cel-cpp.  Oracle-confirmed (SubstringProbe, since
+// removed): `'hello'.substring(0, 5)`, `'hello'.substring(1, 5)`,
+// and the fuzz repro `'false'.substring(1, 5)` all error in cel-cpp
+// with "<start> or <end> is greater than <string>.size()", while
+// `(0, 4)` and `(5, 5)` are values.  Root cause is upstream: in
+// `third_party/cel-cpp/common/values/string_value.cc` SubstringImpl
+// (~line 705) the `size_code_points == end` early-return only runs
+// at the top of the codepoint loop, and the loop exits the moment
+// the string is consumed — so an `end` equal to the full codepoint
+// count is never matched, and the post-loop fallback only accepts
+// `start == end`.  The public `StringValue::Substring` bounds-check
+// (line 773) uses BYTE size with `>`, so `end == size` passes the
+// guard and reaches the buggy slice.  We are the more-permissive
+// (arguably more-correct) side, but conformance scores against
+// cel-cpp.  Found by e2e/fuzz mining the `int` target (substring
+// nested under lastIndexOf).  Two-arg substring is withheld from the
+// fuzz grammar (grammar_scalars.cc) so mining stays clean.  Fix
+// direction (to match the oracle): error when `end == size() &&
+// start != end`; but matching a likely upstream off-by-one is a
+// judgment call — left as a pin.
+TEST(KnownBugs, PbtSubstringEndEqualsSizeOverPermissive) {
+  GTEST_SKIP() << "KNOWN BUG (verified: returns \"alse\", oracle errors): "
+                  "two-arg substring(start, size) over-accepts vs cel-cpp.  "
+                  "See SubstringImpl off-by-one in cel-cpp string_value.cc.";
+  auto v = TryEval(R"("false".substring(1, 5))");
+  EXPECT_FALSE(v.ok())
+      << "substring(start, size) with start != size should error (matching "
+         "cel-cpp), got "
+      << (v.ok() ? "a value" : v.status().ToString());
+}
+
 }  // namespace
 }  // namespace celwasm

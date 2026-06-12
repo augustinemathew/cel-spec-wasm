@@ -37,11 +37,11 @@ note) · ⬜ none generated yet.
 | Ternary `?:` | (macro) | ✅ |
 | Comprehensions (`exists`/`all`/`exists_one`/`filter`/`map`) | (macros) | ✅ over lists; maps predicate-only |
 | Aggregates (list/map literals, nested) | — | ✅ |
-| String functions | ~27 | 🟡 all but `format` + the two-arg pos/limit forms |
+| String functions | ~27 | 🟡 all but the two-arg pos/limit forms; two-arg `substring` withheld (oracle off-by-one, pinned) |
 | Type conversions | ~30 | 🟡 cross-numeric + string(x) + bytes/bool done; numeric-string-leaf + duration/timestamp parse open |
 | **math_ext** | 28 | ✅ |
 | **net_ext** | 20 | ⬜ blocked — needs `CelType` opaque-type support |
-| **timestamp accessors** | 23 | 🟡 no-tz forms done; `_with_tz` open |
+| **timestamp accessors** | 23 | ✅ no-tz + `_with_tz` forms done |
 | **duration accessors** | 7 | ✅ |
 | **encoders (base64)** | 2 | ✅ |
 | **optionals** | ~14 | ⬜ blocked — needs `CelType` optional-type support |
@@ -103,7 +103,12 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
 - [x] `matches` `matches_string`
 - [x] `string_index_of_string` `string_last_index_of_string`
 - [x] `string_replace_string_string`
-- [x] `string_substring_int` `string_substring_int_int`
+- [x] `string_substring_int` (one-arg `substring(start)`)
+- [⊘] `string_substring_int_int` — two-arg `substring(start, end)`
+      WITHHELD from the grammar: cel-cpp errors on every `end ==
+      size()` slice (a SubstringImpl off-by-one), we return the value;
+      the grammar can't avoid `end == size`.  Pinned as
+      `PbtSubstringEndEqualsSizeOverPermissive`.
 - [x] `string_split_string` (`grammar_aggregates.cc`)
 - [ ] `string_index_of_string_int` `string_last_index_of_string_int`
       (two-arg pos forms — resurface `IndexOfPosBoundIsByteNotCodepoint`)
@@ -178,7 +183,13 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
       day_of_month_1_based,day_of_week,day_of_year,hours,minutes,
       seconds,milliseconds}` (via getFullYear/getMonth/getDate/…)
 - [x] `timestamp_to_int64` `timestamp_to_string` (int()/string())
-- [ ] every `_with_tz` / `_tz` variant (needs a tz-string leaf set)
+- [x] every `_with_tz` variant: each accessor gets a production with a
+      fixed valid tz baked into the template (IANA names —
+      `America/New_York`, `Australia/Sydney`, `Europe/London`,
+      `Asia/Tokyo`, … — and offset forms `-05:00`, `+09:30`), so the
+      generated call exercises real cctz tz logic instead of an
+      invalid-tz error.  `RegisterTimestampAccessors` in
+      `grammar_scalars.cc`.
 - Note: max-range timestamp leaf withheld until
   `MaxRangeTimestampConstruction` (known_bugs) is fixed.
 

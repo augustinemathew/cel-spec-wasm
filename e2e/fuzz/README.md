@@ -204,6 +204,34 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — timestamp `_with_tz` accessors + substring boundary bug
+
+- `RegisterTimestampAccessors` (split out of `RegisterTemporal` for the
+  function-size gate): every `getFullYear`/`getMonth`/`getDate`/… now
+  also has a `_with_tz` production with a fixed valid timezone baked
+  into the template — IANA names (`America/New_York`, `Australia/
+  Sydney`, `Europe/London`, `Asia/Tokyo`, …) and offset forms
+  (`-05:00`, `+09:30`). A baked tz exercises real cctz logic instead
+  of the invalid-tz error an arbitrary generated string would yield.
+  COVERAGE.md timestamp block → ✅ (no-tz + with-tz both done).
+- **NEW BUG (oracle-confirmed, pinned):** two-arg
+  `<string>.substring(start, end)` over-accepts the `end == size()`
+  boundary. cel-cpp errors on every `end == size` slice where
+  `start != end` (`'hello'.substring(0,5)`, `(1,5)` both ERROR; `(0,4)`
+  and `(5,5)` are values) — a SubstringImpl off-by-one in
+  `cel-cpp/common/values/string_value.cc` (~L705): the
+  `size_code_points == end` early-return only fires at the top of the
+  codepoint loop, which the full-length `end` never reaches, and the
+  public bounds-check (L773) uses BYTE size with `>` so `end == size`
+  passes through. We return the tail slice. Found mining `int` d5
+  (substring nested under `lastIndexOf`); reduced to
+  `"false".substring(1, 5)` → `"alse"`. Verified via a throwaway
+  `SubstringProbe` in the oracle test (since removed). Pinned
+  `PbtSubstringEndEqualsSizeOverPermissive`; two-arg substring
+  withheld from the grammar (one-arg `substring(start)` stays).
+- Post-fix sweep d6 (seed 777, 300 seeds each): bool/double/uint/
+  string/int all **0 divergences**.
+
 ### 2026-06-11 — string.format (the last bug-rich grammar surface)
 
 - `RegisterStringFormat`: `"<directives>".format([args])` with
