@@ -204,6 +204,25 @@ productions existed.
 
 ## Notes log (newest first; add an entry per session)
 
+### 2026-06-11 — string.format (the last bug-rich grammar surface)
+
+- `RegisterStringFormat`: `"<directives>".format([args])` with
+  directive→type-matched productions — `%d`/`%x`/`%o` int, `%s`
+  string, `%b` bool, `%f`/`%e` double, `%%` escape, `[%d]` literal
+  text, two-arg `%d %s` / `%s=%d`. format's param is an explicit
+  `list(dyn)`, which the static subset admits, so the heterogeneous
+  two-arg lists type-check. Format strings never contain `%0`-`%9`
+  (would collide with the grammar's `%i` placeholders).
+- Mining string at d4 (50 + 200 seeds) = **0 divergences**. Notably
+  `%f`/`%e` of double are clean — format's printf-style double
+  formatting does NOT have the `string(double)` to_chars
+  scientific-vs-fixed bug.
+- The type-MISMATCHED combos (`%f` of int / `%f` of string "NaN")
+  are deliberately NOT generated — cel-cpp errors on them and we
+  don't, already pinned as `FormatFixedRejectsInt` /
+  `FormatFixedAcceptsNanToken`. Same discipline as `int(duration)` /
+  `string(double)`: emit only what the oracle can correctly judge.
+
 ### 2026-06-11 — nightly CI fuzz job (M30.F complete)
 
 - `.github/workflows/fuzz.yml`: a scheduled (nightly) +

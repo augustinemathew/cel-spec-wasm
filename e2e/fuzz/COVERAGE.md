@@ -113,8 +113,12 @@ M30.C; math_ext/net_ext/encoders → new M30.D sub-slices.
       `string_trim` `string_reverse` (`grammar_scalars.cc`)
 - [x] `strings_quote`
 - [x] `list_join` `list_join_string` (`grammar_aggregates.cc`)
-- [ ] `string_format` (the `%`-format mini-language — its own bug
-      surface; needs format-string + typed-arg-list co-generation)
+- [x] `string_format` (`grammar_scalars.cc`: RegisterStringFormat) —
+      directive→type-matched productions (`%d`/`%x`/`%o` int, `%s`
+      string, `%b` bool, `%f`/`%e` double, two-arg combos). The
+      type-MISMATCHED combos (`%f` of int/string) are deliberately
+      absent — cel-cpp errors, we don't; pinned as
+      `FormatFixedRejectsInt` / `FormatFixedAcceptsNanToken`.
 
 ## Type conversions — 🟡 (`grammar_scalars.cc`: RegisterMixedTotalOps + RegisterConversions)
 

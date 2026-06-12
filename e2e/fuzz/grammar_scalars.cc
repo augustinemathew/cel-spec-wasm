@@ -247,6 +247,35 @@ void RegisterStringFunctions(GrammarBuilder& b) {
           CelType::String());
 }
 
+// strings.format — `"<directives>".format([args])`.  format's
+// parameter is an explicit `list(dyn)`, which the static subset
+// admits (RejectDyn permits explicit-dyn params), so heterogeneous
+// arg lists type-check.  Each production pairs a directive with the
+// matching arg type — the type-MISMATCHED combos (`%f` of int /
+// string) are deliberately absent: cel-cpp errors on them, we
+// don't, and that's already pinned (FormatFixedRejectsInt /
+// FormatFixedAcceptsNanToken).  Format strings never contain `%0`-
+// `%9` (which would collide with the grammar's `%i` placeholders).
+void RegisterStringFormat(GrammarBuilder& b) {
+  const CelType s = CelType::String();
+  const CelType i = CelType::Int();
+  // Single-directive, directive matches arg type.
+  b.Unary(s, "fmt_d_int", R"("%d".format([%0]))", i);
+  b.Unary(s, "fmt_x_int", R"("%x".format([%0]))", i);
+  b.Unary(s, "fmt_o_int", R"("%o".format([%0]))", i);
+  b.Unary(s, "fmt_d_uint", R"("%d".format([%0]))", CelType::Uint());
+  b.Unary(s, "fmt_s_string", R"("%s".format([%0]))", s);
+  b.Unary(s, "fmt_b_bool", R"("%b".format([%0]))", CelType::Bool());
+  b.Unary(s, "fmt_f_double", R"("%f".format([%0]))", CelType::Double());
+  b.Unary(s, "fmt_e_double", R"("%e".format([%0]))", CelType::Double());
+  // Surrounding literal text + the `%%` escape.
+  b.Unary(s, "fmt_bracket_int", R"("[%d]".format([%0]))", i);
+  b.Unary(s, "fmt_pct_int", R"("%d%%".format([%0]))", i);
+  // Two-directive, two-arg (the heterogeneous arg list).
+  b.Binary(s, "fmt_d_s", R"("%d %s".format([%0, %1]))", i, s);
+  b.Binary(s, "fmt_s_d", R"("%s=%d".format([%0, %1]))", s, i);
+}
+
 // math extension (`math.*`).  Namespace-qualified functions; the
 // boundary numeric leaves (M30.A) make these bug-rich: abs(INT64_MIN)
 // overflows, bit shifts past 63 error, sqrt of a negative is NaN
@@ -467,6 +496,7 @@ void RegisterScalarProductions(GrammarBuilder& b) {
   RegisterArithmetic(b);
   RegisterFallibleArithmetic(b);
   RegisterStringFunctions(b);
+  RegisterStringFormat(b);
   RegisterMathExt(b);
   RegisterTemporal(b);
   RegisterBoolProducers(b);
