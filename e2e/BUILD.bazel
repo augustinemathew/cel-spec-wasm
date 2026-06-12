@@ -870,6 +870,38 @@ link_mode_e2e_cc_test(
     ],
 )
 
+# The caller-supplied descriptor pool (Compiler/Engine
+# SetDescriptorPool) is used across all eval codepaths, proven with a
+# `celwasm.test.Widget` that exists ONLY in the supplied pool (a
+# DynamicMessage, never a linked cc_proto_library) — bound variable,
+# @host fn, and @component fn.
+link_mode_e2e_cc_test(
+    name = "descriptor_pool_dynamic_test",
+    size = "large",
+    srcs = ["descriptor_pool_dynamic_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":link_mode_e2e_helpers",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:cel_host",  # for Value::Message(proto)
+        "//eval:engine",
+        "//eval:host_call_context",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "//third_party/wasmtime:wasmtime",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # Kernel-correctness pins: arena+arena aggregate equality with
 # message / nested-aggregate elements (cleanup-backlog #40 latent
 # gap), and comprehension-over-poisoned-source error propagation
