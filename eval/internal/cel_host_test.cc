@@ -848,6 +848,136 @@ TEST(Layer2HasFieldTest, UnknownInputShortCircuits) {
   EXPECT_EQ(out.payload.unk, 42u);
 }
 
+// ═══════════ Layer 2 — per-access-site resolved-field cache ═══════════
+//
+// `CelGetFieldImpl` / `CelHasFieldImpl` resolve proto fields through
+// the single-entry cache on `FieldRefEntry::resolved` (keyed by the
+// owning message's `Descriptor*` — see cel_host.h).  These pin the
+// cache contract: a repeated read at the same site hits the cache and
+// stays correct against a mutated message, and a message of a
+// DIFFERENT descriptor arriving at the same site invalidates and
+// re-resolves — the dynamic-pool correctness story (key by Descriptor
+// pointer, never by field name/number alone).
+
+TEST(Layer2FieldCacheTest, RepeatedReadsHitCacheAndStayCorrect) {
+  Layer2Fixture f;
+  HostMsg3 m;
+  m.set_i64(41);
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 3, "i64");
+
+  const CelValue first = f.Get();
+  EXPECT_EQ(first.kind, CEL_INT);
+  EXPECT_EQ(first.payload.i, 41);
+  // First read primed the site cache for HostMsg3's descriptor.
+  EXPECT_EQ(f.field_refs[1].resolved.owner, HostMsg3::descriptor());
+  ASSERT_NE(f.field_refs[1].resolved.field, nullptr);
+  EXPECT_EQ(f.field_refs[1].resolved.read_class, ProtoFieldReadClass::kScalar);
+
+  // Second read takes the cache-hit path and observes fresh data.
+  m.set_i64(42);
+  const CelValue second = f.Get();
+  EXPECT_EQ(second.kind, CEL_INT);
+  EXPECT_EQ(second.payload.i, 42);
+}
+
+TEST(Layer2FieldCacheTest, DescriptorChangeInvalidatesSiteCache) {
+  Layer2Fixture f;
+  // HostMsg3.b (bool) and Customer.name (string) are both field
+  // number 1 — the same site entry resolves to different
+  // FieldDescriptors with different read classes depending on the
+  // bound message's descriptor.
+  HostMsg3 a;
+  a.set_b(true);
+  f.BindMessage(std::make_shared<ProtoBacking>(&a), 1, "b");
+  const CelValue first = f.Get();
+  EXPECT_EQ(first.kind, CEL_BOOL);
+  EXPECT_EQ(first.payload.b, 1u);
+  EXPECT_EQ(f.field_refs[1].resolved.owner, HostMsg3::descriptor());
+
+  // Rebind a Customer at the SAME msg slot + field_ref_id.  The
+  // pointer-identity key must miss and re-resolve field 1 on
+  // Customer's descriptor (the by-number path wins; the stale name
+  // "b" is never consulted).
+  Customer c;
+  c.set_name("Ada");
+  const uint32_t slot = f.refs.Intern(std::make_shared<ProtoBacking>(&c));
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = slot;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+
+  const CelValue second = f.Get();
+  EXPECT_EQ(second.kind, CEL_STRING);
+  EXPECT_EQ(f.mem.ReadSpan(second.payload.s.ptr, second.payload.s.len), "Ada");
+  EXPECT_EQ(f.field_refs[1].resolved.owner, Customer::descriptor());
+  EXPECT_EQ(f.field_refs[1].resolved.read_class, ProtoFieldReadClass::kScalar);
+}
+
+TEST(Layer2FieldCacheTest, HasFieldSharesTheSiteCache) {
+  Layer2Fixture f;
+  HostMsg3 m;
+  m.set_i64(7);
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 3, "i64");
+
+  EXPECT_EQ(f.Has().payload.b, 1);
+  EXPECT_EQ(f.field_refs[1].resolved.owner, HostMsg3::descriptor());
+  // A Get after the Has reuses the same primed entry.
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_INT);
+  EXPECT_EQ(out.payload.i, 7);
+}
+
+TEST(Layer2FieldCacheTest, UnresolvableFieldIsNotCached) {
+  Layer2Fixture f;
+  HostMsg3 m;
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 0, "no_such_field");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_ERROR);
+  EXPECT_EQ(out.payload.err,
+            static_cast<uint32_t>(celwasm::ErrorCode::kFieldNotFound));
+  // Negative resolutions stay uncached — a dynamic pool can gain
+  // extensions between reads.
+  EXPECT_EQ(f.field_refs[1].resolved.owner, nullptr);
+}
+
+// Message-class classification reaches the WKT peels through the
+// sub-field descriptors cached at classification time; pin one
+// wrapper and one timestamp read through the trampoline path
+// (Layer-1 coverage for every WKT shape lives in the
+// ProtoBackingReadFieldTest section + e2e wrapper rows).
+TEST(Layer2FieldCacheTest, WrapperFieldClassifiedReadPeelsInnerScalar) {
+  Layer2Fixture f;
+  ::cel::expr::conformance::proto2::TestAllTypes m;
+  m.mutable_single_int64_wrapper()->set_value(99);
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 105,
+                "single_int64_wrapper");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_INT);
+  EXPECT_EQ(out.payload.i, 99);
+  EXPECT_EQ(f.field_refs[1].resolved.read_class,
+            ProtoFieldReadClass::kMessageWrapper);
+  // The inner `value` field descriptor was cached at classify time.
+  ASSERT_NE(f.field_refs[1].resolved.sub_field1, nullptr);
+  EXPECT_EQ(f.field_refs[1].resolved.sub_field1->number(), 1);
+}
+
+TEST(Layer2FieldCacheTest, TimestampFieldClassifiedReadPeelsSecondsNanos) {
+  Layer2Fixture f;
+  HostMsg3 m;
+  m.mutable_single_timestamp()->set_seconds(1234);
+  m.mutable_single_timestamp()->set_nanos(567);
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 34, "single_timestamp");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_TIMESTAMP);
+  EXPECT_EQ(f.field_refs[1].resolved.read_class,
+            ProtoFieldReadClass::kMessageTimestamp);
+  ASSERT_NE(f.field_refs[1].resolved.sub_field1, nullptr);  // seconds
+  ASSERT_NE(f.field_refs[1].resolved.sub_field2, nullptr);  // nanos
+}
+
 // ═══════════ Layer 2 — cross-backing ═══════════
 
 TEST(Layer2CrossBackingTest, JsonLikeBackingDispatches) {

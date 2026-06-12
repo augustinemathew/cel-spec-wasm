@@ -454,11 +454,77 @@ ABSL_MUST_USE_RESULT absl::Status EncodeUnknownSet(
     absl::Span<const uint32_t> ids, ArenaAllocator& alloc,
     CelValue* absl_nonnull out);
 
+// Precomputed read-dispatch classification for a resolved proto
+// field.  Derived once from the FieldDescriptor (whose shape is
+// immutable) so the per-read path dispatches on this enum instead of
+// re-deriving `is_map()` / `is_repeated()` / WKT `full_name()`
+// string compares on every field read.
+enum class ProtoFieldReadClass : uint8_t {
+  kScalar = 0,        // numeric / bool / enum / string / bytes
+  kMap,               // map<K, V> field
+  kRepeated,          // repeated (non-map) field
+  kMessageWrapper,    // google.protobuf.{Bool,Int32,...,Bytes}Value
+  kMessageAny,        // google.protobuf.Any
+  kMessageTimestamp,  // google.protobuf.Timestamp
+  kMessageDuration,   // google.protobuf.Duration
+  kMessageJson,       // google.protobuf.{Value,Struct,ListValue}
+  kMessagePlain,      // any other singular message
+};
+
+// Single-entry resolved-field cache, keyed by the owning message's
+// `Descriptor*`.  Holds everything `ProtoBacking::ReadField` used to
+// re-derive per read: the resolved `FieldDescriptor*`, the read
+// classification above, and (for WKT wrapper / time fields) the
+// inner sub-field descriptors the peelers dereference.
+//
+// `owner` is the validity key: a hit requires pointer-identity with
+// the incoming message's `GetDescriptor()`, so messages bound from
+// any descriptor pool (generated or dynamic) stay correct — a
+// different pool's same-FQN type is a different `Descriptor*` and
+// re-resolves.  Lifetime: the cached pointers are dereferenced only
+// after a key match, i.e. only while a live message of that exact
+// descriptor is being read; embedders binding messages from
+// short-lived dynamic pools must keep the pool alive for the
+// Instance's lifetime (the same contract `MessageTypeEntry`'s
+// Plan-time `descriptor` already imposes).
+struct ResolvedFieldCache {
+  const google::protobuf::Descriptor* absl_nullable owner = nullptr;
+  const google::protobuf::FieldDescriptor* absl_nullable field = nullptr;
+  ProtoFieldReadClass read_class = ProtoFieldReadClass::kScalar;
+  // kMessageWrapper: the wrapper's inner `value` field (number 1).
+  // kMessageTimestamp / kMessageDuration: `seconds` (number 1).
+  const google::protobuf::FieldDescriptor* absl_nullable sub_field1 = nullptr;
+  // kMessageTimestamp / kMessageDuration: `nanos` (number 2).
+  const google::protobuf::FieldDescriptor* absl_nullable sub_field2 = nullptr;
+};
+
 // field_ref_id → (field_number, field_name).  `field_number == 0`
 // means "resolve by name only".
 struct FieldRefEntry {
   uint32_t field_number = 0;
   std::string field_name;
+
+  // Per-access-site resolved-field cache.  This is the natural seam
+  // for caching proto-read resolution: codegen interns ONE
+  // FieldRefEntry per kSelect site (see `FieldRefRow` in
+  // compiler/codegen/expr_lower.h — rows are appended per select,
+  // never deduplicated), and the entries live on the per-Instance
+  // `CelHostCallbackEnv::field_refs_storage`, so each cache slot is
+  // private to one (Instance, access site) pair.  The site's static
+  // type means the observed `Descriptor*` is stable in practice; a
+  // single entry suffices and a re-bound message from a different
+  // pool simply re-resolves (see `ResolvedFieldCache::owner`).
+  //
+  // The descriptor itself can't be resolved at Plan/bind time —
+  // the concrete `Descriptor*` is only known once a message arrives
+  // through the Activation at Eval time — so the cache fills lazily
+  // on first read and persists across Evals.
+  //
+  // `mutable` because bindings travel as `Span<const FieldRefEntry>`;
+  // safe because an Instance is single-threaded per Eval (the same
+  // assumption `HostExternrefTable` and the activation buffer
+  // already rely on — no locks anywhere on this path).
+  mutable ResolvedFieldCache resolved;
 };
 
 // attribute_id → (variable, qualifiers) path for unknown-pattern match.

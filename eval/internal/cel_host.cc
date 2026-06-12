@@ -207,6 +207,28 @@ celwasm::Value UnpackAnyToValueAnonImpl(
 // Reflection-based on purpose: works for both generated-class
 // messages (via DynamicCastToGenerated downcast) and dynamic
 // messages loaded from a runtime descriptor pool.
+//
+// Split in two so the classified read path (which has already
+// resolved the FQN gate and the seconds/nanos sub-fields once, at
+// cache-fill time) can call the field-level peel directly:
+// `UnpackTimeMessageFields` does the reflection reads only;
+// `UnpackWellKnownTimeMessage` keeps the descriptor-walking gate for
+// callers with no precomputed classification (the Any-unwrap chain).
+std::optional<celwasm::Value> UnpackTimeMessageFields(
+    const google::protobuf::Message& sub,
+    const google::protobuf::FieldDescriptor& seconds_field,
+    const google::protobuf::FieldDescriptor& nanos_field, bool is_timestamp) {
+  const google::protobuf::Reflection* refl = sub.GetReflection();
+  if (refl == nullptr) return std::nullopt;
+  const int64_t s = refl->GetInt64(sub, &seconds_field);
+  const int32_t ns = refl->GetInt32(sub, &nanos_field);
+  if (is_timestamp) {
+    return celwasm::Value::Timestamp(absl::UnixEpoch() + absl::Seconds(s) +
+                                     absl::Nanoseconds(ns));
+  }
+  return celwasm::Value::Duration(absl::Seconds(s) + absl::Nanoseconds(ns));
+}
+
 std::optional<celwasm::Value> UnpackWellKnownTimeMessage(
     const google::protobuf::Message& sub) {
   const google::protobuf::Descriptor* d = sub.GetDescriptor();
@@ -215,18 +237,10 @@ std::optional<celwasm::Value> UnpackWellKnownTimeMessage(
   const bool is_timestamp = (fqn == "google.protobuf.Timestamp");
   const bool is_duration = (fqn == "google.protobuf.Duration");
   if (!is_timestamp && !is_duration) return std::nullopt;
-  const google::protobuf::Reflection* refl = sub.GetReflection();
-  if (refl == nullptr) return std::nullopt;
   const google::protobuf::FieldDescriptor* sf = d->FindFieldByNumber(1);
   const google::protobuf::FieldDescriptor* nf = d->FindFieldByNumber(2);
   if (sf == nullptr || nf == nullptr) return std::nullopt;
-  const int64_t s = refl->GetInt64(sub, sf);
-  const int32_t ns = refl->GetInt32(sub, nf);
-  if (is_timestamp) {
-    return celwasm::Value::Timestamp(absl::UnixEpoch() + absl::Seconds(s) +
-                                     absl::Nanoseconds(ns));
-  }
-  return celwasm::Value::Duration(absl::Seconds(s) + absl::Nanoseconds(ns));
+  return UnpackTimeMessageFields(sub, *sf, *nf, is_timestamp);
 }
 
 // Forward declarations for the JSON-value peel pair — they recurse
@@ -389,18 +403,21 @@ celwasm::Value UnpackWrapperStringOrBytes(
   return celwasm::Value::String(std::move(s));
 }
 
-std::optional<celwasm::Value> UnpackWrapperMessage(
-    const google::protobuf::Message& sub) {
-  const google::protobuf::Descriptor* d = sub.GetDescriptor();
-  if (d == nullptr) return std::nullopt;
-  if (!IsWrapperFqn(d->full_name())) return std::nullopt;
+// Field-level wrapper peel: reads the inner `value` field `vf` of a
+// wrapper message `sub` whose wrapper-ness the caller has already
+// established (either via `UnpackWrapperMessage`'s FQN gate below or
+// via a precomputed `ProtoFieldReadClass::kMessageWrapper`
+// classification).  Split out so the classified read path skips the
+// per-read FQN string compares and `FindFieldByNumber` walk.
+std::optional<celwasm::Value> UnpackWrapperValueField(
+    const google::protobuf::Message& sub,
+    const google::protobuf::FieldDescriptor& value_field) {
   const google::protobuf::Reflection* refl = sub.GetReflection();
   if (refl == nullptr) return std::nullopt;
-  const google::protobuf::FieldDescriptor* vf = d->FindFieldByNumber(1);
-  if (vf == nullptr) return std::nullopt;
+  const google::protobuf::FieldDescriptor* vf = &value_field;
   // Dispatch on the inner `value` field's cpp_type — closed set per
-  // the 9 wrapper definitions.  IsWrapperFqn above gates entry, so
-  // any other cpp_type here is an invariant violation (corrupted
+  // the 9 wrapper definitions.  The wrapper FQN gate precedes entry,
+  // so any other cpp_type here is an invariant violation (corrupted
   // descriptor pool); CHECK at the default arm.
   using FD = google::protobuf::FieldDescriptor;
   switch (vf->cpp_type()) {
@@ -422,11 +439,23 @@ std::optional<celwasm::Value> UnpackWrapperMessage(
       return UnpackWrapperStringOrBytes(*refl, sub, *vf);
     default:
       ABSL_CHECK(false)
-          << "UnpackWrapperMessage: WKT-wrapper FQN claims an unexpected "
+          << "UnpackWrapperValueField: WKT-wrapper FQN claims an unexpected "
              "inner cpp_type "
           << static_cast<int>(vf->cpp_type());
       return std::nullopt;
   }
+}
+
+// Descriptor-gated wrapper peel for callers with no precomputed
+// classification (the Any-unwrap chain, map/list element reads).
+std::optional<celwasm::Value> UnpackWrapperMessage(
+    const google::protobuf::Message& sub) {
+  const google::protobuf::Descriptor* d = sub.GetDescriptor();
+  if (d == nullptr) return std::nullopt;
+  if (!IsWrapperFqn(d->full_name())) return std::nullopt;
+  const google::protobuf::FieldDescriptor* vf = d->FindFieldByNumber(1);
+  if (vf == nullptr) return std::nullopt;
+  return UnpackWrapperValueField(sub, *vf);
 }
 
 // Port of v1 `ReadNumericField` — dispatches on the field's
@@ -461,67 +490,197 @@ std::optional<celwasm::Value> ReadNumericField(
   }
 }
 
+// Precompute the read-dispatch classification for a resolved field
+// into `out` (which must already carry `out->field == &field`).
+// This is the once-per-cache-fill half of the field-read split: all
+// the `is_map()` / `is_repeated()` / WKT `full_name()` string
+// compares and inner-sub-field `FindFieldByNumber` walks happen
+// here; the per-read half (`ReadFieldClassified` below) dispatches
+// on the resulting enum only.
+void ClassifyResolvedField(const google::protobuf::FieldDescriptor& field,
+                           ResolvedFieldCache* absl_nonnull out) {
+  using RC = ProtoFieldReadClass;
+  // `is_map()` first — every map field is also `is_repeated()` per
+  // descriptor.proto.
+  if (field.is_map()) {
+    out->read_class = RC::kMap;
+    return;
+  }
+  if (field.is_repeated()) {
+    out->read_class = RC::kRepeated;
+    return;
+  }
+  if (field.cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+    out->read_class = RC::kScalar;
+    return;
+  }
+  const google::protobuf::Descriptor* mt = field.message_type();
+  if (mt == nullptr) {  // defensive — CPPTYPE_MESSAGE implies non-null
+    out->read_class = RC::kMessagePlain;
+    return;
+  }
+  const absl::string_view fqn = mt->full_name();
+  if (IsWrapperFqn(fqn)) {
+    out->read_class = RC::kMessageWrapper;
+    out->sub_field1 = mt->FindFieldByNumber(1);  // inner `value`
+    return;
+  }
+  if (fqn == "google.protobuf.Any") {
+    out->read_class = RC::kMessageAny;
+    return;
+  }
+  if (fqn == "google.protobuf.Timestamp" || fqn == "google.protobuf.Duration") {
+    out->read_class = fqn == "google.protobuf.Timestamp" ? RC::kMessageTimestamp
+                                                         : RC::kMessageDuration;
+    out->sub_field1 = mt->FindFieldByNumber(1);  // seconds
+    out->sub_field2 = mt->FindFieldByNumber(2);  // nanos
+    return;
+  }
+  if (fqn == "google.protobuf.Value" || fqn == "google.protobuf.Struct" ||
+      fqn == "google.protobuf.ListValue") {
+    out->read_class = RC::kMessageJson;
+    return;
+  }
+  out->read_class = RC::kMessagePlain;
+}
+
 // Read a singular CPPTYPE_MESSAGE field, applying the langdef
 // §"Field Selection" presence rules and the WKT auto-peel chain
 // (Any-unwrap, Timestamp / Duration peel, wrapper peel — see
 // `doc/implementation-plan/rewrite/cel-host-surface.md` for the
-// peel chain spec).  Extracted from `ReadScalarField` so the dispatch
-// ladder there stays under the readability-function-size gate.
+// peel chain spec), dispatching on the precomputed classification
+// in `c` (`c.read_class` is one of the kMessage* arms; `c.field` is
+// the resolved field on `msg`'s descriptor).
 //
 // Presence rules:
 //   - Wrapper-typed unset field           → Null (langdef line 484-486;
 //                                          both proto2 and proto3,
 //                                          exception to default-msg).
-//   - Proto3 generic-message unset field  → Null (langdef §"Field
-//                                          Selection").
-//   - Proto2 generic-message unset field  → default-instance message.
+//   - Any-typed unset field               → Null (cel-cpp parity).
+//   - Generic-message unset field         → default-instance message
+//                                          (BOTH proto2 and proto3 —
+//                                          no implicit-presence null
+//                                          shortcut for message-typed
+//                                          fields, only for scalars;
+//                                          `GetMessage` returns the
+//                                          default-instance reference
+//                                          for an unset field, pinned
+//                                          by conformance row
+//                                          `proto3/empty_field/
+//                                          nested_message`).
 //
-// Peel chain (after presence resolves the field is set OR proto2
-// default-instance):
-//   - Any → UnpackAnyToValue (chains wrapper / WKT-time peels).
-//   - Wrapper → inner scalar (CEL_BOOL/INT/UINT/DOUBLE/STRING/BYTES).
-//   - Timestamp / Duration → CEL_TIMESTAMP / CEL_DURATION.
-//   - Otherwise → HostMessage(ProtoBacking).
+// The WKT peels go through the field-level helpers
+// (`UnpackWrapperValueField` / `UnpackTimeMessageFields`) using the
+// sub-field descriptors cached at classification time — no FQN
+// string compares and no `FindFieldByNumber` on this path.  A
+// classification whose cached sub-fields are missing (corrupted
+// pool) falls back to `HostMessage(ProtoBacking)`, matching the
+// pre-classification behaviour where the gated peelers returned
+// nullopt and the read fell through.
+// kMessageWrapper arm: an unset wrapper field reads as null (langdef
+// §"Dynamic Values" line 484-486; cel-cpp parity); a set one peels
+// the inner `value` field through the descriptor cached at
+// classification time.
+celwasm::Value ReadWrapperMessageArm(
+    const google::protobuf::Reflection& refl,
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const ResolvedFieldCache& c) {
+  if (!refl.HasField(msg, &field)) return celwasm::Value::Null();
+  const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
+  if (c.sub_field1 != nullptr) {
+    if (auto v = UnpackWrapperValueField(sub, *c.sub_field1); v.has_value()) {
+      return *std::move(v);
+    }
+  }
+  return celwasm::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+}
+
+// kMessageAny arm.  Unset Any field → null (langdef + cel-cpp
+// parity).  An Any whose `type_url` is empty has no descriptor to
+// unpack against, but the SET-but-empty case (`Any{}` literal) and
+// the UNSET case must distinguish: corpus row `set_null/single_any`
+// expects null for the unset path, while `dynamic/any/literal_empty`
+// expects an error for the explicit literal.  We rely on HasField
+// (only set when the user explicitly assigned the field) to
+// disambiguate at the read-side.
+celwasm::Value ReadAnyMessageArm(
+    const google::protobuf::Reflection& refl,
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field) {
+  if (!refl.HasField(msg, &field)) return celwasm::Value::Null();
+  const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
+  return UnpackAnyToValue(sub, field.message_type()->file()->pool());
+}
+
+// kMessageTimestamp / kMessageDuration arm: peel (seconds, nanos)
+// through the sub-field descriptors cached at classification time.
+celwasm::Value ReadTimeMessageArm(
+    const google::protobuf::Reflection& refl,
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, const ResolvedFieldCache& c,
+    bool is_timestamp) {
+  const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
+  if (c.sub_field1 != nullptr && c.sub_field2 != nullptr) {
+    if (auto v = UnpackTimeMessageFields(sub, *c.sub_field1, *c.sub_field2,
+                                         is_timestamp);
+        v.has_value()) {
+      return *std::move(v);
+    }
+  }
+  return celwasm::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+}
+
+absl::StatusOr<celwasm::Value> ReadClassifiedMessageField(
+    const google::protobuf::Reflection& refl,
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const ResolvedFieldCache& c) {
+  using RC = ProtoFieldReadClass;
+  switch (c.read_class) {
+    case RC::kMessageWrapper:
+      return ReadWrapperMessageArm(refl, msg, field, c);
+    case RC::kMessageAny:
+      return ReadAnyMessageArm(refl, msg, field);
+    case RC::kMessageTimestamp:
+    case RC::kMessageDuration:
+      return ReadTimeMessageArm(
+          refl, msg, field, c,
+          /*is_timestamp=*/c.read_class == RC::kMessageTimestamp);
+    case RC::kMessageJson: {
+      const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
+      if (auto v = UnpackJsonValueMessage(sub); v.has_value()) {
+        return *std::move(v);
+      }
+      return celwasm::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+    }
+    case RC::kMessagePlain: {
+      const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
+      return celwasm::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+    }
+    case RC::kScalar:
+    case RC::kMap:
+    case RC::kRepeated:
+      break;  // unreachable — caller dispatched those before reflection
+  }
+  ABSL_CHECK(false) << "ReadClassifiedMessageField: non-message read class "
+                    << static_cast<int>(c.read_class) << " on field `"
+                    << field.name() << "`";
+  return absl::InternalError("unreachable");
+}
+
+// Classify-on-the-fly adapter for callers that read a singular
+// CPPTYPE_MESSAGE field without a per-site cache (map / list element
+// reads via `ReadScalarField`).  Same observable behaviour as the
+// classified path; the classification cost is paid per call here.
 absl::StatusOr<celwasm::Value> ReadSingularMessageField(
     const google::protobuf::Reflection& refl,
     const google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field) {
-  const google::protobuf::Descriptor* mt = field.message_type();
-  // WKT wrappers: an unset wrapper field reads as null (langdef
-  // §"Dynamic Values" line 484-486; cel-cpp parity).
-  if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
-      !refl.HasField(msg, &field)) {
-    return celwasm::Value::Null();
-  }
-  // Non-wrapper singular message fields: per langdef §"Messages",
-  // accessing a singular message field returns a value of the field's
-  // type — for an unset field, the default-instance message.  This
-  // applies to BOTH proto2 and proto3 — there's no implicit-presence
-  // null shortcut for message-typed fields, only for scalars.  Pre-
-  // 2026-06-05 we returned null for unset proto3 message fields,
-  // failing conformance row `proto3/empty_field/nested_message`
-  // (`TestAllTypes{}.single_nested_message` → expected default
-  // NestedMessage, got null).  `GetMessage` itself returns the
-  // default-instance reference for an unset field, so we fall through
-  // unconditionally.
-  const google::protobuf::Message& sub = refl.GetMessage(msg, &field);
-  if (mt != nullptr && mt->full_name() == "google.protobuf.Any") {
-    // Unset Any field → null (langdef + cel-cpp parity).  An Any
-    // whose `type_url` is empty has no descriptor to unpack
-    // against, but the SET-but-empty case (`Any{}` literal) and
-    // the UNSET case must distinguish: corpus row
-    // `set_null/single_any` expects null for the unset path,
-    // while `dynamic/any/literal_empty` expects an error for the
-    // explicit literal.  We rely on HasField (only set when the
-    // user explicitly assigned the field) to disambiguate at the
-    // read-side.
-    if (!refl.HasField(msg, &field)) return celwasm::Value::Null();
-    return UnpackAnyToValue(sub, mt->file()->pool());
-  }
-  if (auto v = MaybeUnpackWktMessage(sub); v.has_value()) {
-    return *std::move(v);
-  }
-  return celwasm::Value::HostMessage(std::make_shared<ProtoBacking>(&sub));
+  ResolvedFieldCache local;
+  local.field = &field;
+  ClassifyResolvedField(field, &local);
+  return ReadClassifiedMessageField(refl, msg, field, local);
 }
 
 // Read one singular proto field, returning the matching celwasm::Value.
@@ -591,6 +750,94 @@ const google::protobuf::FieldDescriptor* absl_nullable ResolveFieldDescriptor(
   return refl->FindKnownExtensionByName(name_str);
 }
 
+// Full field-read dispatch on a precomputed classification.  `field`
+// must be resolved on `msg`'s descriptor and match `c` (callers pass
+// `*c.field` after a successful resolve; the reference parameter
+// keeps the non-null contract explicit).  This is the per-read half
+// of the resolve/classify split: no descriptor-pool walks, no FQN
+// string compares — one enum switch, then straight into reflection.
+absl::StatusOr<celwasm::Value> ReadFieldClassified(
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const ResolvedFieldCache& c) {
+  using RC = ProtoFieldReadClass;
+  switch (c.read_class) {
+    // Map fields land as `Value::HostMap(ProtoMap{…})` — the
+    // trampoline interns the backing into the ExternrefTable and
+    // hands a `CEL_MAP_HOST` slot back to wasm.  REPEATED (non-map)
+    // fields land as `Value::HostList(ProtoList{…})` — same intern
+    // path, separate ExternrefTable namespace.
+    case RC::kMap:
+      return celwasm::Value::HostMap(std::make_shared<ProtoMap>(&msg, &field));
+    case RC::kRepeated:
+      return celwasm::Value::HostList(
+          std::make_shared<ProtoList>(&msg, &field));
+    case RC::kScalar:
+      return ReadScalarField(msg, field);
+    case RC::kMessageWrapper:
+    case RC::kMessageAny:
+    case RC::kMessageTimestamp:
+    case RC::kMessageDuration:
+    case RC::kMessageJson:
+    case RC::kMessagePlain: {
+      const google::protobuf::Reflection* refl = msg.GetReflection();
+      if (refl == nullptr) {
+        return absl::InternalError(
+            "ProtoBacking::ReadField: message has no reflection");
+      }
+      return ReadClassifiedMessageField(*refl, msg, field, c);
+    }
+  }
+  ABSL_CHECK(false) << "ReadFieldClassified: unhandled read class "
+                    << static_cast<int>(c.read_class);
+  return absl::InternalError("unreachable");
+}
+
+// Resolve `site`'s field against `msg` through the per-access-site
+// single-entry cache (`FieldRefEntry::resolved` — see the seam
+// rationale on that member in cel_host.h).  Hit: pointer-compare the
+// message's `Descriptor*` against the cached owner, return the cached
+// `FieldDescriptor*`.  Miss: resolve + classify once, overwrite the
+// entry.  Failed resolutions are NOT cached — a dynamic pool can gain
+// extensions between reads, and the not-found path is cold anyway.
+//
+// Mutates `site.resolved` without locks: an Instance is
+// single-threaded per Eval (the `HostExternrefTable` interning on
+// this same path already assumes it).
+const google::protobuf::FieldDescriptor* absl_nullable
+ResolveFieldThroughSiteCache(const google::protobuf::Message& msg,
+                             const FieldRefEntry& site) {
+  const google::protobuf::Descriptor* d = msg.GetDescriptor();
+  if (d == nullptr) return nullptr;
+  ResolvedFieldCache& cache = site.resolved;
+  if (cache.owner == d) return cache.field;
+  const google::protobuf::FieldDescriptor* field = ResolveFieldDescriptor(
+      msg, static_cast<int>(site.field_number), site.field_name);
+  if (field == nullptr) return nullptr;
+  ResolvedFieldCache fresh;
+  fresh.field = field;
+  ClassifyResolvedField(*field, &fresh);
+  fresh.owner = d;
+  cache = fresh;
+  return field;
+}
+
+// has(msg.field) on an already-resolved descriptor — the shared tail
+// of `ProtoBacking::HasField` and the cached trampoline path.
+bool ProtoHasFieldResolved(const google::protobuf::Message& msg,
+                           const google::protobuf::FieldDescriptor& field) {
+  const google::protobuf::Reflection* refl = msg.GetReflection();
+  if (refl == nullptr) return false;
+  if (field.is_repeated()) {
+    return refl->FieldSize(msg, &field) > 0;
+  }
+  // Singular field: proto2 uses explicit presence (HasField
+  // returns true iff the bit is set); proto3 implicit-presence
+  // scalars report HasField based on the default-value comparison.
+  // Reflection's HasField handles both cases correctly.
+  return refl->HasField(msg, &field);
+}
+
 }  // namespace
 
 // Public re-export of the anonymous-namespace Any unpacker so
@@ -643,21 +890,14 @@ absl::StatusOr<celwasm::Value> ProtoBacking::ReadField(
   const google::protobuf::FieldDescriptor* field =
       ResolveFieldDescriptor(*msg_, field_number, field_name);
   if (field == nullptr) return FieldNotFound(field_name);
-
-  // Map fields land here as `Value::HostMap(ProtoMap{…})` — the
-  // trampoline interns the backing into the ExternrefTable and hands
-  // a `CEL_MAP_HOST` slot back to wasm.
-  // REPEATED (non-map) fields land as `Value::HostList(ProtoList{…})`
-  // — same intern path, separate ExternrefTable namespace.
-  // `is_map()` is checked first because every map field is also
-  // `is_repeated()` per descriptor.proto.
-  if (field->is_map()) {
-    return celwasm::Value::HostMap(std::make_shared<ProtoMap>(msg_, field));
-  }
-  if (field->is_repeated()) {
-    return celwasm::Value::HostList(std::make_shared<ProtoList>(msg_, field));
-  }
-  return ReadScalarField(*msg_, *field);
+  // Classify-on-the-fly: this virtual entry point has no per-site
+  // cache slot (the cached path lives in `CelGetFieldImpl`, keyed by
+  // the access site's `FieldRefEntry`), so the classification cost
+  // is paid per call here — same behaviour, one shared dispatch.
+  ResolvedFieldCache local;
+  local.field = field;
+  ClassifyResolvedField(*field, &local);
+  return ReadFieldClassified(*msg_, *field, local);
 }
 
 bool ProtoBacking::HasField(int field_number,
@@ -666,16 +906,7 @@ bool ProtoBacking::HasField(int field_number,
   const google::protobuf::FieldDescriptor* field =
       ResolveFieldDescriptor(*msg_, field_number, field_name);
   if (field == nullptr) return false;
-  const google::protobuf::Reflection* refl = msg_->GetReflection();
-  if (refl == nullptr) return false;
-  if (field->is_repeated()) {
-    return refl->FieldSize(*msg_, field) > 0;
-  }
-  // Singular field: proto2 uses explicit presence (HasField
-  // returns true iff the bit is set); proto3 implicit-presence
-  // scalars report HasField based on the default-value comparison.
-  // Reflection's HasField handles both cases correctly.
-  return refl->HasField(*msg_, field);
+  return ProtoHasFieldResolved(*msg_, *field);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1719,6 +1950,27 @@ absl::Status CelGetFieldImpl(uint32_t out_slot, uint32_t msg_slot,
   if (!prelude_or.ok()) return prelude_or.status();
   if (prelude_or->sentinel_handled) return absl::OkStatus();
 
+  // Proto fast path: backings exposing a real proto message
+  // (`ProtoBacking` / `OwnedProtoBacking` — `message()` non-null)
+  // read through the per-access-site resolved-field cache instead of
+  // re-resolving the FieldDescriptor and re-classifying WKT shapes on
+  // every read.  Same precedent as `CelMessageIsZeroImpl` /
+  // `CelMessageEqImpl`, which already reach proto reflection through
+  // `message()` rather than per-backing virtuals.  Non-proto custom
+  // backings (JSON, …) keep the virtual `ReadField` contract below.
+  if (const google::protobuf::Message* msg = prelude_or->backing->message();
+      msg != nullptr) {
+    const google::protobuf::FieldDescriptor* field =
+        ResolveFieldThroughSiteCache(*msg, *prelude_or->field);
+    if (field == nullptr) {
+      return EncodeFieldResult(FieldNotFound(prelude_or->field->field_name),
+                               out_slot, ctx);
+    }
+    auto v_or = ReadFieldClassified(*msg, *field, prelude_or->field->resolved);
+    if (!v_or.ok()) return v_or.status();
+    return EncodeFieldResult(*v_or, out_slot, ctx);
+  }
+
   // expected_type informational at M2 — ProtoBacking dispatches
   // on descriptor cpp_type, not on this hint.  Pass an arbitrary
   // scalar; real plumb-through arrives with the typed-narrowing
@@ -1738,8 +1990,20 @@ absl::Status CelHasFieldImpl(uint32_t out_slot, uint32_t msg_slot,
   if (!prelude_or.ok()) return prelude_or.status();
   if (prelude_or->sentinel_handled) return absl::OkStatus();
 
-  const bool present = prelude_or->backing->HasField(
-      prelude_or->field->field_number, prelude_or->field->field_name);
+  // Same proto fast path as CelGetFieldImpl: resolve through the
+  // per-access-site cache, then probe presence on the resolved
+  // descriptor.  Unresolvable field → false, matching
+  // `ProtoBacking::HasField`.
+  bool present = false;
+  if (const google::protobuf::Message* msg = prelude_or->backing->message();
+      msg != nullptr) {
+    const google::protobuf::FieldDescriptor* field =
+        ResolveFieldThroughSiteCache(*msg, *prelude_or->field);
+    present = field != nullptr && ProtoHasFieldResolved(*msg, *field);
+  } else {
+    present = prelude_or->backing->HasField(prelude_or->field->field_number,
+                                            prelude_or->field->field_name);
+  }
   CelValue out{};
   out.kind = CEL_BOOL;
   out.payload.b = present ? 1 : 0;
