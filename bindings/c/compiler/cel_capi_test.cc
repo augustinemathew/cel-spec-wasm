@@ -1,4 +1,4 @@
-#include "bindings/c/cel_capi.h"
+#include "bindings/c/compiler/cel_capi.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -293,9 +293,9 @@ TEST(CelCapi, DescriptorSetResolvesMessageType) {
                 static_cast<int>(fds.size())),
             CEL_STATUS_OK);
   char* decl_err = nullptr;
-  ASSERT_EQ(cel_compile_opts_declare_var(opts, "w:celwasm.test.Widget",
-                                         &decl_err),
-            CEL_STATUS_OK);
+  ASSERT_EQ(
+      cel_compile_opts_declare_var(opts, "w:celwasm.test.Widget", &decl_err),
+      CEL_STATUS_OK);
   cel_free(decl_err);
 
   uint8_t* wasm = nullptr;
@@ -314,9 +314,9 @@ TEST(CelCapi, WithoutDescriptorSetMessageTypeFails) {
   CelCompileOpts* opts = cel_compile_opts_new();
   ASSERT_NE(opts, nullptr);
   char* decl_err = nullptr;
-  ASSERT_EQ(cel_compile_opts_declare_var(opts, "w:celwasm.test.Widget",
-                                         &decl_err),
-            CEL_STATUS_OK);
+  ASSERT_EQ(
+      cel_compile_opts_declare_var(opts, "w:celwasm.test.Widget", &decl_err),
+      CEL_STATUS_OK);
   cel_free(decl_err);
 
   uint8_t* wasm = nullptr;
@@ -336,7 +336,8 @@ TEST(CelCapi, MalformedDescriptorSetFails) {
   EXPECT_EQ(cel_compile_opts_set_descriptor_set(opts, garbage, sizeof(garbage)),
             CEL_STATUS_INVALID_ARGUMENT);
   // A null/empty set is a no-op clear, not an error.
-  EXPECT_EQ(cel_compile_opts_set_descriptor_set(opts, nullptr, 0), CEL_STATUS_OK);
+  EXPECT_EQ(cel_compile_opts_set_descriptor_set(opts, nullptr, 0),
+            CEL_STATUS_OK);
   cel_compile_opts_free(opts);
 }
 

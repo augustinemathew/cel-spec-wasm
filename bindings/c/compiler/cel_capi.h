@@ -19,8 +19,8 @@
 // All functions are safe to call with a null library — they perform
 // no global initialization.
 
-#ifndef CELWASM_BINDINGS_C_CEL_CAPI_H_
-#define CELWASM_BINDINGS_C_CEL_CAPI_H_
+#ifndef CELWASM_BINDINGS_C_COMPILER_CEL_CAPI_H_
+#define CELWASM_BINDINGS_C_COMPILER_CEL_CAPI_H_
 
 // C headers (not <cstddef>/<cstdint>): this is a C-compatible ABI
 // header an N-API/emscripten consumer must `#include` from C.
@@ -158,4 +158,4 @@ void cel_free(void* ptr);
 }  // extern "C"
 #endif
 
-#endif  // CELWASM_BINDINGS_C_CEL_CAPI_H_
+#endif  // CELWASM_BINDINGS_C_COMPILER_CEL_CAPI_H_

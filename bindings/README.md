@@ -7,7 +7,7 @@ engine — so evaluation is pure TypeScript and runs identically in Node
 and the browser.
 
 ```
-            bindings/c  (extern "C" over the C++ Compiler)
+            bindings/c/compiler  (extern "C" over the C++ Compiler)
                  │
         ┌────────┴─────────┐
         ▼                  ▼
@@ -28,7 +28,7 @@ and the browser.
 
 | Path                       | What                                                                   |
 | -------------------------- | --------------------------------------------------------------------- |
-| `bindings/c/`              | The C ABI (`extern "C"`) over the C++ `Compiler` — the compile seam.   |
+| `bindings/c/compiler/`     | The C ABI (`extern "C"`) over the C++ `Compiler` — the compile seam.   |
 | `bindings/ts/`             | The npm-workspaces monorepo (see below).                              |
 | `bindings/ts/eval/`        | `@cel-wasm/eval` — pure-TS evaluator + the shared wire-format types.   |
 | `bindings/ts/compiler/`    | `@cel-wasm/compiler` — CEL source → portable `Program`.               |
@@ -41,7 +41,7 @@ the kind / error-code / offset constants, `MessageBacking`,
 are the single source of truth, mirroring `runtime/cel_data.h` and
 `abi/cel_abi.proto` byte-for-byte.
 
-> The C ABI (`bindings/c/`) and the N-API / emscripten backends are
+> The C ABI (`bindings/c/compiler/`) and the N-API / emscripten backends are
 > built by later work items; today only the TypeScript scaffold + the
 > shared types are populated.
 

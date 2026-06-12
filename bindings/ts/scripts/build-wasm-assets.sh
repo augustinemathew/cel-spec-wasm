@@ -3,7 +3,7 @@
 # build, and copy them into the (git-ignored) locations the dev server, the
 # compiler package, and the eval package read:
 #
-#   //bindings/c:compiler_wasm   -> compiler/wasm/compiler.wasm  (the
+#   //bindings/c/compiler:compiler_wasm   -> compiler/wasm/compiler.wasm  (the
 #                                   @cel-wasm/compiler package's own
 #                                   in-process CEL compiler, the default
 #                                   compile backend, ~56 MB) AND
@@ -36,9 +36,9 @@ if [[ "${CEL_SKIP_WASM_BUILD:-}" == "1" ]] || ! command -v bazel >/dev/null 2>&1
 fi
 
 echo "build-wasm-assets: building wasm artifacts via bazel..."
-(cd "${REPO_ROOT}" && bazel build //bindings/c:compiler_wasm //runtime:cel_runtime_wasm)
+(cd "${REPO_ROOT}" && bazel build //bindings/c/compiler:compiler_wasm //runtime:cel_runtime_wasm)
 
-COMPILER_WASM="${REPO_ROOT}/bazel-bin/bindings/c/compiler_wasm.wasm"
+COMPILER_WASM="${REPO_ROOT}/bazel-bin/bindings/c/compiler/compiler_wasm.wasm"
 RUNTIME_WASM="${REPO_ROOT}/bazel-bin/runtime/cel_runtime_wasm.wasm"
 
 # bazel outputs are read-only; copy then chmod so a re-run can overwrite.

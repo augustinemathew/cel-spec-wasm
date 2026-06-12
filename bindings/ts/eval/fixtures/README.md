@@ -54,4 +54,4 @@ The subset (`int_add`, `var_int_add`, `list_map_double`, `map_index`,
 uses to prove (a) import-introspection routing and (b) that a dynamic
 Program evaluates to the **same** `CelValue` as its static twin. Regenerate
 with `bindings/ts/scripts/gen-dynamic-fixtures.mjs` (needs
-`bazel build //bindings/c:compiler_wasm` first).
+`bazel build //bindings/c/compiler:compiler_wasm` first).

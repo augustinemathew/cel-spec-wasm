@@ -5,7 +5,7 @@
 // native-CLI backend, so `compile()` is backend-agnostic.
 //
 // `compiler.wasm` is a wasi-sdk *reactor* exporting the `cew_*` functions
-// (see `bindings/c/compiler_wasm_exports.cc`). This backend provides a
+// (see `bindings/c/compiler/compiler_wasm_exports.cc`). This backend provides a
 // minimal hand-written WASI shim (no `node:wasi`, which is Node-only),
 // runs the C++ static constructors via `__wasm_call_ctors`, marshals the
 // source plus a compile-option records blob (variable / function
@@ -53,7 +53,7 @@ interface CompilerExports {
 }
 
 // Compile-option record kinds for `cew_compile_opts` (one byte each).
-// Mirrors `ApplyOptions` in bindings/c/compiler_wasm_exports.cc: each
+// Mirrors `ApplyOptions` in bindings/c/compiler/compiler_wasm_exports.cc: each
 // record is `[u8 kind][u32 len little-endian][value bytes]`.
 const OPT_KIND_VAR = 'v'.charCodeAt(0); // value: "name:type"
 const OPT_KIND_FN = 'f'.charCodeAt(0); // value: a `.celfn` source

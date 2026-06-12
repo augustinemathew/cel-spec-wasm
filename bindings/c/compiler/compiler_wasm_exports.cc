@@ -3,8 +3,9 @@
 // compile CEL source to a portable `Program` with no native toolchain.
 //
 // The module is a wasi-sdk *reactor* (exports functions + memory, no
-// `_start`).  These `cew_*` ("cel-wasm") functions wrap the `bindings/c`
-// C ABI with signatures that are simple to call from JavaScript — no
+// `_start`).  These `cew_*` ("cel-wasm") functions wrap the
+// `bindings/c/compiler` C ABI with signatures that are simple to call from
+// JavaScript — no
 // `uint8_t**` / `size_t*` / `char**` out-parameters, which are painful to
 // marshal through `WebAssembly.Memory`.  The JS caller:
 //
@@ -18,8 +19,9 @@
 //      len <  0  -> read the NUL-terminated string at cew_error()
 //   4. cew_reset() (or the next compile) releases the stashed result.
 //
-// Exported by name via `-Wl,--export=` in `bindings/c/BUILD.bazel`; the
-// reactor's `_initialize` runs the C++ static constructors (protobuf
+// Exported by name via `-Wl,--export=` in
+// `bindings/c/compiler/BUILD.bazel`; the reactor's `_initialize` runs the
+// C++ static constructors (protobuf
 // descriptor registration etc.) before any `cew_*` call.
 
 #include <cstdint>
@@ -27,7 +29,7 @@
 #include <cstring>
 #include <string>
 
-#include "bindings/c/cel_capi.h"
+#include "bindings/c/compiler/cel_capi.h"
 
 namespace {
 
@@ -98,9 +100,8 @@ bool ApplyOneOption(CelCompileOpts* opts, std::uint8_t kind,
     case 'd':
       // A binary FileDescriptorSet for proto-typed expressions; the C ABI
       // builds a pool over the generated pool from these bytes.
-      if (cel_compile_opts_set_descriptor_set(opts, val,
-                                              static_cast<int>(rlen)) !=
-          CEL_STATUS_OK) {
+      if (cel_compile_opts_set_descriptor_set(
+              opts, val, static_cast<int>(rlen)) != CEL_STATUS_OK) {
         g_error = DupError("compile options: invalid descriptor set");
         return false;
       }

@@ -3248,7 +3248,7 @@ Gate: `lint` + `build` + `typecheck` + `test` green — 781 pass / 13 skip
         compile-client transport, dev-server endpoint, and the
         `src/run.test.ts` compile→eval wiring proof. Monaco glue is
         browser-only (verified via `vite build` + `web/README.md`).
-  - [x] C ABI — `bindings/c/cel_capi_test.cc` (12, bazel): const/var/
+  - [x] C ABI — `bindings/c/compiler/cel_capi_test.cc` (12, bazel): const/var/
         aggregate compile + magic check; bad-expr/undeclared/bad-opt/
         bad-host-fn diagnostics.
 

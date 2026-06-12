@@ -21,7 +21,7 @@
 #
 # Usage:
 #   EMSDK_DIR=/path/to/emsdk BINARYEN_SRC=/path/to/binaryen-version_129 \
-#     bindings/c/emscripten/build_binaryen_probe.sh
+#     bindings/c/compiler/emscripten/build_binaryen_probe.sh
 #
 # Both env vars are required; the script makes no assumption about where the
 # embedder put emsdk or the Binaryen source (the version is pinned in

@@ -53,12 +53,12 @@ jobs:
         run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
 
       - name: Build the wasm artifacts
-        run: bazel build //bindings/c:compiler_wasm //runtime:cel_runtime_wasm
+        run: bazel build //bindings/c/compiler:compiler_wasm //runtime:cel_runtime_wasm
 
       - name: Stage the artifacts under their published names
         run: |
           mkdir -p wasm-dist
-          cp -L bazel-bin/bindings/c/compiler_wasm.wasm wasm-dist/compiler.wasm
+          cp -L bazel-bin/bindings/c/compiler/compiler_wasm.wasm wasm-dist/compiler.wasm
           cp -L bazel-bin/runtime/cel_runtime_wasm.wasm wasm-dist/cel_runtime.wasm
           ls -l wasm-dist
 

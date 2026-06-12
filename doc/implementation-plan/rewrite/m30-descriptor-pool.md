@@ -64,7 +64,7 @@ Two consumers build `CheckOptions::schema`:
   - **The CLI** (`tools/cel/cel.cc:233-247`, `BuildCompileOptions`) sets
     `opts.check.schema = SchemaDescriptorSet{fds_path}` from
     `--descriptor_set` (or `SchemaProtoSource{path}` from `--proto`).
-  - **The C ABI** (`bindings/c/cel_capi.cc:231-237`,
+  - **The C ABI** (`bindings/c/compiler/cel_capi.cc:231-237`,
     `MakeCompilerOptions`) sets `container`, `optimize_level`,
     `link_mode` — and **nothing for schema**. The C ABI has no schema
     surface, so `compiler_wasm_exports.cc` / `cew_compile_opts` cannot
@@ -129,7 +129,7 @@ whichever single pool resolves supplied-then-generated.
 ### 3.2 C ABI surface
 
 ```c
-// bindings/c/cel_capi.h
+// bindings/c/compiler/cel_capi.h
 // Supply a binary-serialized google.protobuf.FileDescriptorSet (the bytes
 // `protoc --descriptor_set_out` emits) describing the message types a
 // proto-typed expression references. Copied into `opts`; the caller may

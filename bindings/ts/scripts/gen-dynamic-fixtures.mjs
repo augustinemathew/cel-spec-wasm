@@ -5,14 +5,14 @@
 // helpers from the `cel` namespace instead of bundling them.  The compiler
 // emits dynamic Programs via `cew_compile_opts(srcPtr, optionsPtr,
 // optionsLen)` with a `link_mode` option record set to DYNAMIC.  This
-// script drives `bazel-bin/bindings/c/compiler_wasm.wasm` from Node (the
+// script drives `bazel-bin/bindings/c/compiler/compiler_wasm.wasm` from Node (the
 // same WASI-shim pattern as `compiler/src/internal/wasm-backend.ts`) and
 // compiles a curated subset of the static fixture manifest in dynamic link
 // mode, writing each to `eval/fixtures/dynamic/<name>.wasm`.
 //
 // The compile-options blob is a sequence of records — `kind` (1 byte) +
 // `len` (u32 LE) + `len` payload bytes — per `cew_compile_opts`'s
-// `ApplyOptions` (`bindings/c/compiler_wasm_exports.cc`).  We emit a `v`
+// `ApplyOptions` (`bindings/c/compiler/compiler_wasm_exports.cc`).  We emit a `v`
 // record per `name:type` var-decl and an `l` (link-mode) record whose
 // single payload byte is 0 = DYNAMIC.
 //
@@ -22,7 +22,7 @@
 // or the curated subset changes; the .wasm files are committed.
 //
 // Usage:  node bindings/ts/scripts/gen-dynamic-fixtures.mjs
-// (run from the repo root, after `bazel build //bindings/c:compiler_wasm`).
+// (run from the repo root, after `bazel build //bindings/c/compiler:compiler_wasm`).
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -32,7 +32,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../..');
 const COMPILER_WASM = resolve(
   REPO_ROOT,
-  'bazel-bin/bindings/c/compiler_wasm.wasm',
+  'bazel-bin/bindings/c/compiler/compiler_wasm.wasm',
 );
 const FIXTURES_DIR = resolve(HERE, '../eval/fixtures');
 const DYNAMIC_DIR = resolve(FIXTURES_DIR, 'dynamic');

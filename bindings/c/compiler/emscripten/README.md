@@ -1,7 +1,7 @@
-# `bindings/c/emscripten` — browser `compiler.wasm` backend (stretch)
+# `bindings/c/compiler/emscripten` — browser `compiler.wasm` backend (stretch)
 
 This dir holds the build for the **emscripten** backend of the TS compiler
-binding: the C ABI (`bindings/c/cel_capi.*`, owned by WI-2.1) + the C++
+binding: the C ABI (`bindings/c/compiler/cel_capi.*`, owned by WI-2.1) + the C++
 `Compiler` + cel-cpp + Binaryen cross-compiled to a `compiler.wasm` so a
 browser can compile CEL→Program with no server round-trip.
 
@@ -35,6 +35,6 @@ curl -sL https://github.com/WebAssembly/binaryen/archive/refs/tags/version_129.t
   | tar xz
 
 EMSDK_DIR="$PWD/emsdk" BINARYEN_SRC="$PWD/binaryen-version_129" \
-  bindings/c/emscripten/build_binaryen_probe.sh
+  bindings/c/compiler/emscripten/build_binaryen_probe.sh
 # => "emitted wasm bytes = 37" / "OK: Binaryen (codegen half) is emscripten-feasible."
 ```

@@ -1,4 +1,4 @@
-#include "bindings/c/cel_capi.h"
+#include "bindings/c/compiler/cel_capi.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -348,7 +348,8 @@ CelStatus cel_compile_opts_set_descriptor_set(CelCompileOpts* opts,
   // Build a pool that resolves the supplied files first, falling back to the
   // generated pool (so well-known types resolve) — the caller-builds-the-
   // fallback contract the compiler expects.
-  auto schema_db = std::make_unique<google::protobuf::SimpleDescriptorDatabase>();
+  auto schema_db =
+      std::make_unique<google::protobuf::SimpleDescriptorDatabase>();
   for (const auto& file : set.file()) {
     if (!schema_db->Add(file)) {
       return CEL_STATUS_INVALID_ARGUMENT;  // duplicate file name

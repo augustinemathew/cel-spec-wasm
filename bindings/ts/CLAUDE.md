@@ -17,10 +17,10 @@ later-milestone work, honest reporting.
 
 ```
 bindings/
-  c/                     extern "C" over the C++ Compiler — the compile seam
+  c/compiler/            extern "C" over the C++ Compiler — the compile seam
   ts/                    the npm-workspaces monorepo (this dir)
     eval/        @cel-wasm/eval        pure-TS evaluator + the shared wire types
-    compiler/    @cel-wasm/compiler    CEL source → portable Program (via bindings/c)
+    compiler/    @cel-wasm/compiler    CEL source → portable Program (via bindings/c/compiler)
     conformance/ @cel-wasm/conformance the corpus harness + monotonic ratchet
     web/         @cel-wasm/web         Monaco compile → download → run demo
 ```
@@ -31,7 +31,7 @@ The dependency direction is **one-directional**, mirroring the C++ side:
   core (instantiate, marshal, host trampolines, decode). It owns the
   **shared wire-format type contracts**.
 - `@cel-wasm/compiler` depends on `@cel-wasm/eval` for the `Program` /
-  `CelAbi` types only, and wraps the C ABI (`bindings/c`) through two
+  `CelAbi` types only, and wraps the C ABI (`bindings/c/compiler`) through two
   interchangeable backends (N-API now, emscripten later).
 - `@cel-wasm/conformance` and `@cel-wasm/web` are leaves that consume
   both.
@@ -212,7 +212,7 @@ the feature.
   `it.skip` a whole suite for "this feature isn't done yet" — skip the
   individual case with a verified blocker reason.
 - **Don't reimplement parse / type-check / codegen in TS.** Those live
-  in the C++ compiler reached through `bindings/c`; the TS compiler
+  in the C++ compiler reached through `bindings/c/compiler`; the TS compiler
   binding is a thin wrapper, and the TS eval binding only re-implements
   the **runtime ABI** (marshal/decode + host trampolines), not the
   language.
