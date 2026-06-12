@@ -46,6 +46,10 @@
 #include "eval/instance.h"
 #include "eval/typed_function.h"
 
+namespace google::protobuf {
+class DescriptorPool;
+}  // namespace google::protobuf
+
 namespace celwasm {
 struct WasmtimeEngineState;
 }  // namespace celwasm
@@ -279,6 +283,25 @@ class Engine::Builder {
     return std::move(*this);
   }
 
+  // Set the descriptor pool eval-time proto operations (message
+  // construction, field reads, type resolution) resolve against — the
+  // eval-side mirror of `Compiler::Builder::SetDescriptorPool`.  The
+  // supplied pool resolves a type first; types it lacks fall back to the
+  // generated pool — but that fallback is the *pool's* property (the caller
+  // layers it over `generated_pool()`), not something the Engine builds.
+  // Unset (the default) resolves against `generated_pool()` alone.
+  //
+  // BORROWED: the pool must outlive the Engine and every Instance it Plans
+  // (descriptors are non-owning pointers into it).  Returns `*this`.
+  Builder& SetDescriptorPool(const google::protobuf::DescriptorPool* pool) & {
+    descriptor_pool_ = pool;
+    return *this;
+  }
+  Builder&& SetDescriptorPool(const google::protobuf::DescriptorPool* pool) && {
+    descriptor_pool_ = pool;
+    return std::move(*this);
+  }
+
   // Allocate the wasm engine + parse `cel_runtime.wasm` into a
   // module.  Returns Internal on wasmtime allocation failure.
   // Single-use: && enforces consumption at the call site (const so
@@ -287,6 +310,7 @@ class Engine::Builder {
 
  private:
   bool jit_perf_map_ = false;
+  const google::protobuf::DescriptorPool* descriptor_pool_ = nullptr;
 };
 
 }  // namespace celwasm

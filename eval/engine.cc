@@ -478,11 +478,13 @@ absl::Status ValidateAbiSlotExtents(const celwasm::abi::CelAbi& abi) {
 // for Eval(); PartialEval rebinds it per-call.  The generated
 // descriptor pool lets `BuildCelHostBindings` resolve
 // `cel.abi.types[]` FQNs to `Descriptor*` for `cel_make_message`
-// lookups; statically-linked cc_proto_library descriptors are
-// reachable through `generated_pool()`, dynamic schemas
-// (SchemaProtoSource) are a follow-up.
-absl::StatusOr<bool> DecodeAbiAndBindHostEnv(celwasm::InstanceImpl* impl,
-                                             const Program& program) {
+// lookups.  `pool` is the engine's descriptor pool (from
+// `Engine::Builder::SetDescriptorPool`); when null it falls back to the
+// process-wide generated pool, through which statically-linked
+// cc_proto_library descriptors are reachable.
+absl::StatusOr<bool> DecodeAbiAndBindHostEnv(
+    celwasm::InstanceImpl* impl, const Program& program,
+    const google::protobuf::DescriptorPool* pool) {
   bool abi_present = false;
   auto abi_or = celwasm::DecodeCelAbiFromWasm(program.wasm_bytes());
   if (abi_or.ok()) {
@@ -498,7 +500,9 @@ absl::StatusOr<bool> DecodeAbiAndBindHostEnv(celwasm::InstanceImpl* impl,
     return abi_or.status();
   }
   celwasm::BuildCelHostBindings(
-      impl->abi, google::protobuf::DescriptorPool::generated_pool(),
+      impl->abi,
+      pool != nullptr ? pool
+                      : google::protobuf::DescriptorPool::generated_pool(),
       impl->host_env);
   return abi_present;
 }
@@ -1082,11 +1086,11 @@ std::string OverloadIdToKebab(absl::string_view overload_id) {
 // Bind one kForeignComponent decl: resolve its (kebab-case) export
 // off the instantiated component, build the per-Plan ComponentFnEnv,
 // and define the `cel_fn.<overload_id>` trampoline on the linker.
-absl::Status BindOneComponentDecl(celwasm::InstanceImpl* impl,
-                                  wasmtime_context_t* ctx,
-                                  const wasmtime_component_instance_t& cinst,
-                                  wasmtime_component_export_index_t* iface_idx,
-                                  const celwasm::CelfnDecl& decl) {
+absl::Status BindOneComponentDecl(
+    celwasm::InstanceImpl* impl, wasmtime_context_t* ctx,
+    const wasmtime_component_instance_t& cinst,
+    wasmtime_component_export_index_t* iface_idx, const celwasm::CelfnDecl& decl,
+    const google::protobuf::DescriptorPool* pool) {
   const std::string export_name = OverloadIdToKebab(decl.overload_id);
   wasmtime_component_export_index_t* exp_idx =
       wasmtime_component_instance_get_export_index(
@@ -1111,7 +1115,12 @@ absl::Status BindOneComponentDecl(celwasm::InstanceImpl* impl,
     env->param_types.push_back(p.type);
   }
   env->return_type = decl.return_type;
-  env->pool = google::protobuf::DescriptorPool::generated_pool();
+  // Message param/return types of an @component function resolve against the
+  // engine's descriptor pool (SetDescriptorPool), falling back to the
+  // generated pool — same contract as the main proto path.
+  env->pool = pool != nullptr
+                  ? pool
+                  : google::protobuf::DescriptorPool::generated_pool();
   env->host_env = &impl->host_env;
   void* env_ptr = env.get();
   impl->component_fn_envs.push_back(env);
@@ -1140,7 +1149,8 @@ absl::Status BindOneComponentDecl(celwasm::InstanceImpl* impl,
 absl::Status BindComponentLibraryDecls(
     celwasm::InstanceImpl* impl, wasmtime_context_t* ctx,
     const celwasm::RegisteredComponent& reg,
-    const wasmtime_component_instance_t& cinst) {
+    const wasmtime_component_instance_t& cinst,
+    const google::protobuf::DescriptorPool* pool) {
   wasmtime_component_export_index_t* iface_idx = nullptr;
   if (!reg.library.wit_interface().empty()) {
     const auto& iface = reg.library.wit_interface();
@@ -1157,7 +1167,7 @@ absl::Status BindComponentLibraryDecls(
     if (decl.backend != celwasm::CelfnDecl::Backend::kForeignComponent) {
       continue;
     }
-    status = BindOneComponentDecl(impl, ctx, cinst, iface_idx, decl);
+    status = BindOneComponentDecl(impl, ctx, cinst, iface_idx, decl, pool);
     if (!status.ok()) break;
   }
   if (iface_idx != nullptr) {
@@ -1177,7 +1187,9 @@ absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
     if (auto s = InstantiateOneComponent(state, ctx, reg, &cinst); !s.ok()) {
       return s;
     }
-    if (auto s = BindComponentLibraryDecls(impl, ctx, reg, cinst); !s.ok()) {
+    if (auto s = BindComponentLibraryDecls(impl, ctx, reg, cinst,
+                                           state->descriptor_pool);
+        !s.ok()) {
       return s;
     }
   }
@@ -1365,7 +1377,8 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   // Decode the cel.abi section off the raw Program bytes first —
   // it needs no wasmtime state, and an early decode lets the
   // link-mode tripwire below fire before any instantiation work.
-  auto abi_present = DecodeAbiAndBindHostEnv(impl.get(), program);
+  auto abi_present =
+      DecodeAbiAndBindHostEnv(impl.get(), program, wasmtime_->descriptor_pool);
   if (!abi_present.ok()) return abi_present.status();
   if (auto s = InitPlanState(wasmtime_.get(), impl.get(), program); !s.ok()) {
     return s;
@@ -1577,6 +1590,7 @@ absl::Status Engine::AddComponent(absl::Span<const uint8_t> component_bytes,
 absl::StatusOr<Engine> Engine::Builder::Build() const&& {
   auto state_or = InitWasmtime(jit_perf_map_);
   if (!state_or.ok()) return state_or.status();
+  (*state_or)->descriptor_pool = descriptor_pool_;
   return Engine(std::move(*state_or));
 }
 
