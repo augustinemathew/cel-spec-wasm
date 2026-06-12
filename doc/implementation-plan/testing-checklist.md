@@ -3222,6 +3222,18 @@ Gate: `lint` + `build` + `typecheck` + `test` green — 781 pass / 13 skip
         `backing.test.ts` wrapper / Value / Struct / ListValue matrix +
         `runner.test.ts` end-to-end construction rows). +91 conformance
         pass (1710 → 1801, 0 fail), `eval_unimpl` 144 → 53.
+  - [x] object-value bindings (conformance backlog #2) — the corpus
+        loader lowers an `object_value` binding to a protobufjs message /
+        time record against the conformance descriptors
+        (`conformance/src/proto-compare.ts::buildBindingInput`, builder
+        threaded through `expectedToInput`; positive + unknown-FQN +
+        no-builder negatives in `corpus.test.ts` / `proto-compare.test.ts`,
+        e2e binding row in `runner.test.ts`).  Marshal fix: a bound
+        protobufjs message backs by its own `$type` (the ABI `types[]`
+        null sentinel no longer mis-resolves; `marshal.test.ts` sentinel
+        matrix) and `DescriptorSet.messageType('')` throws
+        (`descriptors.test.ts`).  +12 conformance pass (1801 → 1813,
+        0 fail), `bindings` 77 → 36.
   - [x] browser demo — `web/**/*.test.ts` (84): variables parse, render,
         compile-client transport, dev-server endpoint, and the
         `src/run.test.ts` compile→eval wiring proof. Monaco glue is

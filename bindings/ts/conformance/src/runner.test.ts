@@ -14,6 +14,7 @@ import { DescriptorSet } from '@cel-wasm/eval/proto';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import type { SimpleTest } from './corpus.js';
+import { buildBoundMessage } from './proto-compare.js';
 import { runRow, type ProtoEnv, type RowResult } from './runner.js';
 import { parseTextproto } from './textproto.js';
 
@@ -249,6 +250,39 @@ describe('runRow — proto descriptor path', () => {
             ),
           },
         },
+      }),
+      engine,
+      proto,
+    );
+    expect(r.outcome).toBe('pass');
+  });
+
+  // A message-typed variable BINDING (proto2/proto3 "singular_bind" rows):
+  // the corpus loader lowers the object_value binding to a protobufjs message
+  // (buildBoundMessage) and the eval binding backs it by its own $type.
+  it.runIf(protoReady)('passes a message-binding field-read row', async () => {
+    if (proto.descriptors === undefined) {
+      throw new Error('descriptors not loaded');
+    }
+    const bound = buildBoundMessage(
+      proto.descriptors,
+      'cel.expr.conformance.proto3.TestAllTypes',
+      parseTextproto('single_int64: -99'),
+    );
+    const r = await runRow(
+      row({
+        expr: 'x.single_int64',
+        typeEnv: [
+          {
+            name: 'x',
+            type: {
+              kind: 'message',
+              fqn: 'cel.expr.conformance.proto3.TestAllTypes',
+            },
+          },
+        ],
+        bindings: new Map([['x', bound]]),
+        matcher: { kind: 'value', value: { kind: 'int', value: -99n } },
       }),
       engine,
       proto,

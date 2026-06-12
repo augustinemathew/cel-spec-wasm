@@ -11,7 +11,12 @@ import { Engine } from '@cel-wasm/eval';
 import { DescriptorSet } from '@cel-wasm/eval/proto';
 
 import type { SkipCategory } from './classify.js';
-import { loadSimpleTestFile, type SimpleTest } from './corpus.js';
+import {
+  loadSimpleTestFile,
+  type MessageBindingBuilder,
+  type SimpleTest,
+} from './corpus.js';
+import { buildBindingInput } from './proto-compare.js';
 import { runRow, type ProtoEnv, type RowResult } from './runner.js';
 import { parseTextproto } from './textproto.js';
 
@@ -81,10 +86,15 @@ function loadProtoSetup(descriptorSetPath: string | undefined): ProtoSetup {
   };
 }
 
-/** Load every corpus row under `corpusDir` (optionally a subset of files). */
+/**
+ * Load every corpus row under `corpusDir` (optionally a subset of files).
+ * `buildMessage`, when given, lowers `object_value` bindings to proto
+ * messages (see {@link MessageBindingBuilder}).
+ */
 export function loadCorpus(
   corpusDir: string,
   files?: readonly string[],
+  buildMessage?: MessageBindingBuilder,
 ): readonly SimpleTest[] {
   const dir = corpusDir.endsWith('/') ? corpusDir : `${corpusDir}/`;
   const wanted = files === undefined ? undefined : new Set(files);
@@ -98,7 +108,7 @@ export function loadCorpus(
       continue;
     }
     const doc = parseTextproto(readFileSync(`${dir}${entry}`, 'utf-8'));
-    rows.push(...loadSimpleTestFile(stem, doc));
+    rows.push(...loadSimpleTestFile(stem, doc, buildMessage));
   }
   return rows;
 }
@@ -110,8 +120,15 @@ export function loadCorpus(
 export async function runCorpus(
   opts: RunCorpusOptions,
 ): Promise<ConformanceReport> {
-  const rows = loadCorpus(opts.corpusDir, opts.files);
   const proto = loadProtoSetup(opts.descriptorSetPath);
+  const descriptors = proto.env.descriptors;
+  // With a descriptor set loaded, object_value bindings lower to protobufjs
+  // messages (the same builder the object_value comparator uses).
+  const buildMessage: MessageBindingBuilder | undefined =
+    descriptors === undefined
+      ? undefined
+      : (fqn, message) => buildBindingInput(descriptors, fqn, message);
+  const rows = loadCorpus(opts.corpusDir, opts.files, buildMessage);
   const engine = await Engine.create(
     proto.descriptorBytes !== undefined
       ? { descriptors: proto.descriptorBytes }

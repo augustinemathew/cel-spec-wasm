@@ -400,6 +400,14 @@ function messageBackingFrom(
   v: VariableEntry,
   bound: CelInput,
 ): ProtoMessageBacking {
+  // A protobufjs message carries its own reflection type (`$type`) — back it
+  // directly; no descriptor lookup is needed (the Program's `types[]` table
+  // only interns message-literal FQNs and may carry just the null sentinel
+  // for a program that constructs no message).
+  if (isProtobufMessage(bound)) {
+    const message = bound as protobuf.Message;
+    return new ProtoMessageBacking(message.$type, message);
+  }
   if (env.descriptors === undefined) {
     throw new CelMarshalError(
       `Activation['${v.name}']: a message-typed variable needs descriptors; ` +
@@ -408,10 +416,6 @@ function messageBackingFrom(
   }
   const typeName = messageTypeNameFor(env, v);
   const type = env.descriptors.messageType(typeName);
-  // A protobufjs message carries a `$type`; a bare object is coerced.
-  if (isProtobufMessage(bound)) {
-    return new ProtoMessageBacking(type, bound as protobuf.Message);
-  }
   if (isPlainObject(bound)) {
     return new ProtoMessageBacking(type, coerceObjectToMessage(type, bound));
   }
@@ -420,11 +424,14 @@ function messageBackingFrom(
 
 /**
  * The fully-qualified message type a message-typed variable declares.
- * The ABI's `types[]` table interns each message literal's FQN; a single
- * message-typed variable maps to the sole declared type when present.
+ * The ABI's `types[]` table interns each message literal's FQN (entry 0 is
+ * the null sentinel with an empty name); a single message-typed variable
+ * maps to the sole declared type when present.
  */
 function messageTypeNameFor(env: MarshalEnv, v: VariableEntry): string {
-  const entry: TypeEntry | undefined = env.types[0];
+  const entry: TypeEntry | undefined = env.types.find(
+    (t) => t.fullyQualifiedName !== '',
+  );
   if (entry === undefined) {
     throw new CelMarshalError(
       `Activation['${v.name}']: no message type declared in the Program's ` +

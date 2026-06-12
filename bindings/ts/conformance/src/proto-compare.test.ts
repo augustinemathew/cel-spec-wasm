@@ -7,10 +7,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import type { CelValue } from '@cel-wasm/eval';
-import type { DescriptorSet } from '@cel-wasm/eval/proto';
+import { messageToObject, type DescriptorSet } from '@cel-wasm/eval/proto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildBindingInput,
+  buildBoundMessage,
   buildExpectedMessage,
   loadDescriptorSet,
   setsWellKnownField,
@@ -77,6 +79,86 @@ describe.skipIf(!hasFds)('buildExpectedMessage', () => {
     expect(() =>
       buildExpectedMessage(descriptors(), PROTO3, body('no_such_field: 1')),
     ).toThrow();
+  });
+});
+
+describe.skipIf(!hasFds)('buildBoundMessage', () => {
+  it('builds a protobufjs message carrying the set field', () => {
+    const msg = buildBoundMessage(
+      descriptors(),
+      PROTO3,
+      body('single_int64: 17'),
+    );
+    // A protobufjs Message instance: carries its reflection type and the
+    // field value verbatim (the Long-typed field is set from "17").
+    expect(msg.$type.fullName.endsWith('TestAllTypes')).toBe(true);
+    expect(
+      String((msg as unknown as Record<string, unknown>).single_int64),
+    ).toBe('17');
+  });
+
+  it('round-trips: the bound message decodes to the expected-object form', () => {
+    const text = 'single_string: "hi" repeated_int32: 1 repeated_int32: 2';
+    const bound = buildBoundMessage(descriptors(), PROTO3, body(text));
+    expect(messageToObject(bound)).toEqual(
+      buildExpectedMessage(descriptors(), PROTO3, body(text)),
+    );
+  });
+
+  it('throws on an unknown FQN', () => {
+    expect(() =>
+      buildBoundMessage(descriptors(), 'no.such.Type', body('f: 1')),
+    ).toThrow(/no\.such\.Type/);
+  });
+
+  it('throws on a field the type does not declare', () => {
+    expect(() =>
+      buildBoundMessage(descriptors(), PROTO3, body('no_such_field: 1')),
+    ).toThrow(/no_such_field/);
+  });
+});
+
+describe.skipIf(!hasFds)('buildBindingInput', () => {
+  it('lowers a google.protobuf.Duration body to the duration record', () => {
+    const v = buildBindingInput(
+      descriptors(),
+      'google.protobuf.Duration',
+      body('seconds: 123 nanos: 321456789'),
+    );
+    expect(v).toEqual({ kind: 'duration', seconds: 123n, nanos: 321456789 });
+  });
+
+  it('lowers a google.protobuf.Timestamp body to the timestamp record', () => {
+    const v = buildBindingInput(
+      descriptors(),
+      'google.protobuf.Timestamp',
+      body('seconds: 1234567890 nanos: 5'),
+    );
+    expect(v).toEqual({
+      kind: 'timestamp',
+      seconds: 1234567890n,
+      nanos: 5,
+    });
+  });
+
+  it('lowers an empty Duration body to the zero record (defaults)', () => {
+    const v = buildBindingInput(
+      descriptors(),
+      'google.protobuf.Duration',
+      body(''),
+    );
+    expect(v).toEqual({ kind: 'duration', seconds: 0n, nanos: 0 });
+  });
+
+  it('binds any other message type as the protobufjs message itself', () => {
+    const v = buildBindingInput(descriptors(), PROTO3, body('single_int64: 1'));
+    expect(typeof v === 'object' && v !== null && '$type' in v).toBe(true);
+  });
+
+  it('throws on an unknown FQN (same contract as buildBoundMessage)', () => {
+    expect(() =>
+      buildBindingInput(descriptors(), 'no.such.Type', body('f: 1')),
+    ).toThrow(/no\.such\.Type/);
   });
 });
 

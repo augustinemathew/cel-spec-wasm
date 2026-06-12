@@ -7,9 +7,11 @@
 //
 // The expected-result model ({@link ExpectedValue}) mirrors the
 // `cel.expr.Value` oneof the harness can compare against (§A.7); kinds
-// the binding does not support (object/struct construction) are still
-// modelled so the classifier can SKIP them with a category rather than
-// the loader dropping the row silently.
+// the binding does not support (e.g. `type` values) are still modelled
+// so the classifier can SKIP them with a category rather than the
+// loader dropping the row silently.  `object` values both compare (the
+// object_value matcher) and bind (via a {@link MessageBindingBuilder}
+// when a descriptor set is loaded).
 //
 // Spec: doc/implementation-plan/rewrite/m29-typescript-bindings.md §A.7;
 //       proto/cel/expr/conformance/test/simple.proto; proto/cel/expr/value.proto.
@@ -107,8 +109,9 @@ export interface SimpleTest {
   readonly bindings: ReadonlyMap<string, CelInput>;
   /**
    * Set when a `bindings` value is out of the harness's marshal scope
-   * (e.g. a proto-message binding) — the classifier SKIPs the row with
-   * this reason rather than the loader aborting the run.
+   * (e.g. a type binding, or a proto-message binding with no descriptor
+   * set / an unknown type) — the classifier SKIPs the row with this
+   * reason rather than the loader aborting the run.
    */
   readonly unsupportedBindingReason: string | undefined;
   readonly matcher: ResultMatcher;
@@ -120,12 +123,28 @@ export class CorpusError extends Error {
 }
 
 /**
+ * Builds a bindable activation input for an `object_value` binding: `fqn`
+ * is the unpacked message type (the `Any` type-url tail), `message` the
+ * parsed textproto body.  Supplied by the harness when a descriptor set is
+ * loaded (it builds the protobufjs message against the descriptors); when
+ * absent, object bindings throw a {@link CorpusError} and the row SKIPs
+ * as an unbindable `bindings` row.
+ */
+export type MessageBindingBuilder = (
+  fqn: string,
+  message: TextprotoMessage,
+) => CelInput;
+
+/**
  * Interpret a parsed `SimpleTestFile` message into its ordered rows.
- * `fileStem` labels each row's origin (the textproto file's base name).
+ * `fileStem` labels each row's origin (the textproto file's base name);
+ * `buildMessage`, when given, lowers `object_value` bindings to proto
+ * messages.
  */
 export function loadSimpleTestFile(
   fileStem: string,
   doc: TextprotoMessage,
+  buildMessage?: MessageBindingBuilder,
 ): readonly SimpleTest[] {
   const rows: SimpleTest[] = [];
   for (const section of fieldValues(doc, 'section')) {
@@ -135,14 +154,14 @@ export function loadSimpleTestFile(
     const sectionName = stringField(section, 'name') ?? '';
     for (const test of fieldValues(section, 'test')) {
       if (test.kind === 'message') {
-        rows.push(interpretTest(fileStem, sectionName, test));
+        rows.push(interpretTest(fileStem, sectionName, test, buildMessage));
       }
     }
   }
   // A few files carry top-level `test` rows outside any section.
   for (const test of fieldValues(doc, 'test')) {
     if (test.kind === 'message') {
-      rows.push(interpretTest(fileStem, '', test));
+      rows.push(interpretTest(fileStem, '', test, buildMessage));
     }
   }
   return rows;
@@ -156,8 +175,9 @@ function interpretTest(
   file: string,
   section: string,
   test: TextprotoMessage,
+  buildMessage: MessageBindingBuilder | undefined,
 ): SimpleTest {
-  const { bindings, unsupportedReason } = interpretBindings(test);
+  const { bindings, unsupportedReason } = interpretBindings(test, buildMessage);
   return {
     file,
     section,
@@ -269,7 +289,10 @@ interface InterpretedBindings {
   readonly unsupportedReason: string | undefined;
 }
 
-function interpretBindings(test: TextprotoMessage): InterpretedBindings {
+function interpretBindings(
+  test: TextprotoMessage,
+  buildMessage: MessageBindingBuilder | undefined,
+): InterpretedBindings {
   const bindings = new Map<string, CelInput>();
   for (const entry of fieldValues(test, 'bindings')) {
     if (entry.kind !== 'message') {
@@ -293,7 +316,10 @@ function interpretBindings(test: TextprotoMessage): InterpretedBindings {
       };
     }
     try {
-      bindings.set(key, expectedToInput(interpretValue(valueMsg)));
+      bindings.set(
+        key,
+        expectedToInput(interpretValue(valueMsg), buildMessage),
+      );
     } catch (err) {
       // A proto-message / type binding the harness can't marshal — defer
       // to the classifier as a SKIP rather than aborting the run.
@@ -455,8 +481,15 @@ function interpretMapValue(map: TextprotoMessage): ExpectedValue {
 // Expected-value → activation input (for bindings).
 // ───────────────────────────────────────────────────────────────────
 
-/** Lower an {@link ExpectedValue} to the JS-natural {@link CelInput}. */
-export function expectedToInput(value: ExpectedValue): CelInput {
+/**
+ * Lower an {@link ExpectedValue} to the JS-natural {@link CelInput}.
+ * `buildMessage` lowers an `object` value (a proto-message binding) to a
+ * protobufjs message; without it, object values throw a {@link CorpusError}.
+ */
+export function expectedToInput(
+  value: ExpectedValue,
+  buildMessage?: MessageBindingBuilder,
+): CelInput {
   switch (value.kind) {
     case 'null':
       return null;
@@ -474,19 +507,43 @@ export function expectedToInput(value: ExpectedValue): CelInput {
     case 'bytes':
       return value.value;
     case 'list':
-      return value.elements.map(expectedToInput);
+      return value.elements.map((e) => expectedToInput(e, buildMessage));
     case 'map': {
       const out = new Map<CelInput, CelInput>();
       for (const entry of value.entries) {
-        out.set(expectedToInput(entry.key), expectedToInput(entry.value));
+        out.set(
+          expectedToInput(entry.key, buildMessage),
+          expectedToInput(entry.value, buildMessage),
+        );
       }
       return out;
     }
-    case 'type':
     case 'object':
+      return objectToInput(value, buildMessage);
+    case 'type':
       throw new CorpusError(`cannot bind a ${value.kind} value`);
     case 'unrecognized':
       throw new CorpusError(`cannot bind: ${value.reason}`);
+  }
+}
+
+// Lower an `object` ExpectedValue (a proto-message binding) through the
+// supplied builder; a builder failure (unknown FQN, an undeclared field in
+// the body) surfaces as a CorpusError naming the type, never a crash.
+function objectToInput(
+  value: Extract<ExpectedValue, { kind: 'object' }>,
+  buildMessage: MessageBindingBuilder | undefined,
+): CelInput {
+  if (buildMessage === undefined) {
+    throw new CorpusError(
+      'cannot bind a object value (no descriptor set loaded)',
+    );
+  }
+  try {
+    return buildMessage(value.fqn, value.message);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new CorpusError(`cannot build message '${value.fqn}': ${reason}`);
   }
 }
 

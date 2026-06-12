@@ -78,6 +78,18 @@ describe('DescriptorSet.fromRoot', () => {
     expect(set.has('test.Color')).toBe(false);
     expect(() => set.messageType('test.Color')).toThrow(/unknown message type/);
   });
+
+  it("throws on the empty name (lookup('') resolves to the root namespace)", () => {
+    const set = DescriptorSet.fromRoot(buildRoot());
+    expect(set.has('')).toBe(false);
+    expect(() => set.messageType('')).toThrow(/unknown message type/);
+  });
+
+  it('treats a namespace name as a non-message (not resolvable)', () => {
+    const set = DescriptorSet.fromRoot(buildRoot());
+    expect(set.has('test')).toBe(false);
+    expect(() => set.messageType('test')).toThrow(/unknown message type/);
+  });
 });
 
 describe('DescriptorSet.fromFileDescriptorSet', () => {

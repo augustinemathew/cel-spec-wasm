@@ -19,7 +19,7 @@
 // Spec: doc/implementation-plan/rewrite/m29-typescript-bindings.md §A.7;
 //       eval/src/proto/backing.ts (messageToObject).
 
-import type { CelValue } from '@cel-wasm/eval';
+import type { CelInput, CelValue } from '@cel-wasm/eval';
 import {
   DescriptorSet,
   isWellKnownWrappable,
@@ -52,10 +52,65 @@ export function buildExpectedMessage(
   fqn: string,
   body: TextprotoMessage,
 ): CelValue {
+  return messageToObject(buildBoundMessage(descriptors, fqn, body));
+}
+
+/**
+ * Build the protobufjs `Message` for a textproto message body against
+ * `descriptors` — the raw message itself (bindable into an activation as a
+ * message-typed variable), as opposed to {@link buildExpectedMessage}'s
+ * decoded-object form (comparable to an eval result).  Both paths share the
+ * one textproto → `fromObject` conversion.  Throws if `fqn` is not in the
+ * descriptor set or the body sets a field the type does not declare.
+ */
+export function buildBoundMessage(
+  descriptors: DescriptorSet,
+  fqn: string,
+  body: TextprotoMessage,
+): protobuf.Message {
   const type = descriptors.messageType(fqn);
-  const obj = textprotoToObject(type, body);
-  const message = type.fromObject(obj);
-  return messageToObject(message);
+  return type.fromObject(textprotoToObject(type, body));
+}
+
+/**
+ * Lower an `object_value` binding to the {@link CelInput} the activation
+ * marshal accepts for the variable's declared type.  The time WKTs lower to
+ * the binding's duration / timestamp records (a `google.protobuf.Duration`
+ * variable declares `repr=DURATION`, not `MESSAGE` — the marshal rejects a
+ * protobufjs message there); every other type binds the protobufjs message
+ * itself.
+ */
+export function buildBindingInput(
+  descriptors: DescriptorSet,
+  fqn: string,
+  body: TextprotoMessage,
+): CelInput {
+  const message = buildBoundMessage(descriptors, fqn, body);
+  if (fqn === 'google.protobuf.Duration') {
+    return timeRecord('duration', message);
+  }
+  if (fqn === 'google.protobuf.Timestamp') {
+    return timeRecord('timestamp', message);
+  }
+  return message;
+}
+
+// The CelInput duration / timestamp record off a built time-WKT message.
+// `seconds` is a protobufjs Long (or number) — stringify for an exact
+// bigint; `nanos` is an int32.
+function timeRecord(
+  kind: 'duration' | 'timestamp',
+  message: protobuf.Message,
+): CelInput {
+  const fields = message as unknown as {
+    seconds?: number | { toString(): string };
+    nanos?: number;
+  };
+  return {
+    kind,
+    seconds: BigInt(fields.seconds?.toString() ?? '0'),
+    nanos: Number(fields.nanos ?? 0),
+  };
 }
 
 /** Load a `DescriptorSet` from a serialized `FileDescriptorSet`. */

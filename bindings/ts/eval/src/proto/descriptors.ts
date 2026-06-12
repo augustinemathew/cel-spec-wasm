@@ -78,18 +78,23 @@ export class DescriptorSet {
     const normalized = normalizeFqn(fqn);
     // `lookup` with a Type filter returns null on a miss (and on a name
     // that resolves to an enum / namespace rather than a message);
-    // `lookupType` would throw, which loses the offending name.
+    // `lookupType` would throw, which loses the offending name.  The
+    // filter does not cover every non-Type resolution — `lookup('')`
+    // returns the root namespace itself — so the instanceof check is
+    // load-bearing for the empty-name case.
     const resolved = this.root.lookup(normalized, [protobuf.Type]);
-    if (resolved === null) {
+    if (!(resolved instanceof protobuf.Type)) {
       throw new Error(`unknown message type '${fqn}' in descriptor set`);
     }
-    return resolved as protobuf.Type;
+    return resolved;
   }
 
   /** Whether {@link messageType} would resolve `fqn` to a message type. */
   has(fqn: string): boolean {
     const normalized = normalizeFqn(fqn);
-    return this.root.lookup(normalized, [protobuf.Type]) !== null;
+    return (
+      this.root.lookup(normalized, [protobuf.Type]) instanceof protobuf.Type
+    );
   }
 }
 

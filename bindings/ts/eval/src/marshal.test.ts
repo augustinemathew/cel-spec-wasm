@@ -259,6 +259,49 @@ describe('marshalActivation — message variables', () => {
       });
     }).toThrow(CelMarshalError);
   });
+
+  // A program that constructs no message literal interns only the null
+  // sentinel ({id: 0, fqn: ''}) in its types table; a bound protobufjs
+  // message must still back by its own `$type`, not the sentinel.
+  it('backs a protobufjs message by its own $type when the types table is the null sentinel', () => {
+    const descriptors = DescriptorSet.fromRoot(TEST_ROOT);
+    const h = makeHarness(descriptors, [{ id: 0, fullyQualifiedName: '' }]);
+    const Person = TEST_ROOT.lookupType('test.Person');
+    const msg = Person.create({ name: 'Ada', age: 36 });
+    marshalActivation(h.env, [variable('p', Repr.MESSAGE, 0)], { p: msg });
+    const backing = h.refs.message.lookup(
+      refAt(h.view, 0),
+    ) as ProtoMessageBacking;
+    expect(backing.typeName).toBe('test.Person');
+    expect(backing.readField('name')).toBe('Ada');
+  });
+
+  it('binds a protobufjs message even without descriptors ($type suffices)', () => {
+    const h = makeHarness(undefined, []);
+    const Person = TEST_ROOT.lookupType('test.Person');
+    const msg = Person.create({ name: 'Grace', age: 45 });
+    marshalActivation(h.env, [variable('p', Repr.MESSAGE, 0)], { p: msg });
+    const backing = h.refs.message.lookup(
+      refAt(h.view, 0),
+    ) as ProtoMessageBacking;
+    expect(backing.readField('age')).toBe(45n);
+  });
+
+  it('skips the null sentinel when resolving a plain object via the types table', () => {
+    const descriptors = DescriptorSet.fromRoot(TEST_ROOT);
+    const h = makeHarness(descriptors, [
+      { id: 0, fullyQualifiedName: '' },
+      { id: 1, fullyQualifiedName: 'test.Person' },
+    ]);
+    marshalActivation(h.env, [variable('p', Repr.MESSAGE, 0)], {
+      p: { name: 'Ada', age: 36 },
+    });
+    const backing = h.refs.message.lookup(
+      refAt(h.view, 0),
+    ) as ProtoMessageBacking;
+    expect(backing.typeName).toBe('test.Person');
+    expect(backing.readField('age')).toBe(36n);
+  });
 });
 
 // ── Errors / boundaries ─────────────────────────────────────────────

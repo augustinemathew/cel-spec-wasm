@@ -9,10 +9,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  CorpusError,
   expectedToInput,
   interpretValue,
   loadSimpleTestFile,
   type ExpectedValue,
+  type MessageBindingBuilder,
 } from './corpus.js';
 import { parseTextproto, type TextprotoMessage } from './textproto.js';
 
@@ -183,6 +185,110 @@ describe('expectedToInput', () => {
 
   it('refuses to bind a type value', () => {
     expect(() => expectedToInput({ kind: 'type', name: 'int' })).toThrow();
+  });
+});
+
+describe('expectedToInput — object (proto-message) bindings', () => {
+  // An `object` ExpectedValue as interpretValue produces it from the
+  // textproto `object_value` Any expansion.
+  function objectValue(): ExpectedValue {
+    return interpretValue(
+      valueMsg('object_value: { [type.googleapis.com/foo.Bar] { f: 1 } }'),
+    );
+  }
+
+  it('lowers an object value through the supplied builder', () => {
+    const built = { f: 1n };
+    let gotFqn: string | undefined;
+    const builder: MessageBindingBuilder = (fqn, message) => {
+      gotFqn = fqn;
+      expect(message.fields.has('f')).toBe(true);
+      return built;
+    };
+    expect(expectedToInput(objectValue(), builder)).toBe(built);
+    expect(gotFqn).toBe('foo.Bar');
+  });
+
+  it('lowers an object value nested in a list through the builder', () => {
+    const obj = objectValue();
+    if (obj.kind !== 'object') {
+      throw new Error('expected an object value');
+    }
+    const v: ExpectedValue = { kind: 'list', elements: [obj] };
+    const builder: MessageBindingBuilder = (fqn) => fqn;
+    expect(expectedToInput(v, builder)).toEqual(['foo.Bar']);
+  });
+
+  it('throws a CorpusError without a builder (no descriptor set)', () => {
+    expect(() => expectedToInput(objectValue())).toThrow(CorpusError);
+    expect(() => expectedToInput(objectValue())).toThrow(
+      /cannot bind a object value/,
+    );
+  });
+
+  it('wraps a builder failure (unknown FQN) in a CorpusError naming the type', () => {
+    const builder: MessageBindingBuilder = (fqn) => {
+      throw new Error(`no such type: ${fqn}`);
+    };
+    expect(() => expectedToInput(objectValue(), builder)).toThrow(CorpusError);
+    expect(() => expectedToInput(objectValue(), builder)).toThrow(
+      /cannot build message 'foo\.Bar': no such type: foo\.Bar/,
+    );
+  });
+});
+
+describe('loadSimpleTestFile — object_value bindings', () => {
+  const ROW = `
+    section: {
+      name: "s"
+      test: {
+        name: "bind_msg"
+        expr: "x.f"
+        type_env: {
+          name: "x"
+          ident: { type: { message_type: "foo.Bar" } }
+        }
+        bindings: {
+          key: "x"
+          value: {
+            value: {
+              object_value: {
+                [type.googleapis.com/foo.Bar] { f: 7 }
+              }
+            }
+          }
+        }
+        value: { int64_value: 7 }
+      }
+    }`;
+
+  it('binds the built message when a builder is supplied', () => {
+    const built = { f: 7n };
+    const rows = loadSimpleTestFile('synthetic', parseTextproto(ROW), () => {
+      return built;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.unsupportedBindingReason).toBeUndefined();
+    expect(rows[0]?.bindings.get('x')).toBe(built);
+  });
+
+  it('marks the row unsupported without a builder', () => {
+    const rows = loadSimpleTestFile('synthetic', parseTextproto(ROW));
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.bindings.get('x')).toBeUndefined();
+    expect(rows[0]?.unsupportedBindingReason).toMatch(
+      /binding 'x': cannot bind a object value/,
+    );
+  });
+
+  it('marks the row unsupported (not a crash) when the builder throws', () => {
+    const rows = loadSimpleTestFile('synthetic', parseTextproto(ROW), () => {
+      throw new Error('foo.Bar is not in the descriptor set');
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.unsupportedBindingReason).toMatch(
+      /binding 'x': cannot build message 'foo\.Bar'/,
+    );
   });
 });
 

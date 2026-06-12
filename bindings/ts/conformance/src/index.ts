@@ -30,6 +30,7 @@ export {
 } from './baseline.js';
 export {
   loadSimpleTestFile,
+  type MessageBindingBuilder,
   type SimpleTest,
   type ExpectedValue,
   type ResultMatcher,
