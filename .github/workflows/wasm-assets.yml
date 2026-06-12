@@ -1,0 +1,79 @@
+# Builds the wasm artifacts the TS bindings + the Pages playground consume
+# (compiler.wasm, cel_runtime.wasm) and publishes them to a single rolling
+# GitHub pre-release tagged `wasm-assets`. They are NOT committed to the
+# repo (they bloat git history); this is the CI side of that policy — the
+# Pages build (pages.yml) downloads them from this release, and a developer
+# builds them locally via `scripts/build-wasm-assets.sh`.
+#
+# Runs when the wasm sources change on master (so the release tracks the
+# code), and on demand. Bootstrap: run this once via "Run workflow" before
+# the first Pages deploy, so the `wasm-assets` release exists for pages.yml
+# to download from.
+name: wasm-assets
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - compiler/**
+      - runtime/**
+      - bindings/c/**
+      - third_party/**
+      - MODULE.bazel
+      - .github/workflows/wasm-assets.yml
+  workflow_dispatch:
+
+# Needs write access to publish the release + its assets.
+permissions:
+  contents: write
+
+concurrency:
+  group: wasm-assets
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch vendored cel-cpp (pinned SHA)
+        run: third_party/fetch_cel_cpp.sh
+
+      - name: Restore bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      - name: Point bazel at the disk cache
+        run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
+
+      - name: Build the wasm artifacts
+        run: bazel build //bindings/c:compiler_wasm //runtime:cel_runtime_wasm
+
+      - name: Stage the artifacts under their published names
+        run: |
+          mkdir -p wasm-dist
+          cp -L bazel-bin/bindings/c/compiler_wasm.wasm wasm-dist/compiler.wasm
+          cp -L bazel-bin/runtime/cel_runtime_wasm.wasm wasm-dist/cel_runtime.wasm
+          ls -l wasm-dist
+
+      # Rolling pre-release: a fixed tag the build overwrites each time, so
+      # pages.yml always downloads the current artifacts.
+      - name: Publish to the wasm-assets rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wasm-assets
+          name: wasm artifacts (rolling)
+          prerelease: true
+          body: >
+            Build-generated wasm artifacts (compiler.wasm, cel_runtime.wasm)
+            for commit ${{ github.sha }}. Rebuilt automatically when the wasm
+            sources change. Not committed to the repo.
+          files: |
+            wasm-dist/compiler.wasm
+            wasm-dist/cel_runtime.wasm

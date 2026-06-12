@@ -37,3 +37,12 @@ bindings/ts/**/*.tsbuildinfo
 
 # macOS Finder metadata.
 .DS_Store
+bindings/ts/web/.vite/*
+
+# Build-generated wasm artifacts — produced from the bazel C++/wasm build
+# (scripts/build-wasm-assets.sh, run by the web package's `predev` hook) and
+# published as GitHub Release assets in CI. Not committed: they bloat git
+# history and git handles large binaries poorly.
+bindings/ts/web/public/compiler.wasm
+bindings/ts/web/public/cel_runtime.wasm
+bindings/ts/eval/runtime/cel_runtime.wasm

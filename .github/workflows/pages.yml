@@ -61,12 +61,31 @@ jobs:
       - name: Install SPA workspace deps
         working-directory: bindings/ts
         run: npm ci
+      # The wasm artifacts are NOT committed; the `wasm-assets` rolling
+      # GitHub Release holds the latest build (published by release.yml).
+      # Download them into the git-ignored locations the SPA reads, so the
+      # pure-Node Pages build needs no bazel/C++ toolchain.
+      - name: Download wasm artifacts from the wasm-assets release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download wasm-assets --repo "$GITHUB_REPOSITORY" \
+            --pattern compiler.wasm \
+            --output bindings/ts/web/public/compiler.wasm --clobber
+          gh release download wasm-assets --repo "$GITHUB_REPOSITORY" \
+            --pattern cel_runtime.wasm \
+            --output bindings/ts/web/public/cel_runtime.wasm --clobber
+          cp bindings/ts/web/public/cel_runtime.wasm \
+            bindings/ts/eval/runtime/cel_runtime.wasm
       - name: Build SPA workspace deps + the playground
         working-directory: bindings/ts
         # The Vite base must match the Pages subpath the SPA is served
         # from (site/playground/ → /cel-spec-wasm/playground/).
+        # CEL_SKIP_WASM_BUILD: the wasm assets were just downloaded; the
+        # web package's `prebuild` hook must not try to bazel-build them.
         env:
           VITE_BASE: /cel-spec-wasm/playground/
+          CEL_SKIP_WASM_BUILD: "1"
         run: |
           npm run build -w @cel-wasm/eval
           npm run build -w @cel-wasm/compiler

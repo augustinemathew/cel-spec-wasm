@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "lint": "eslint . --max-warnings 0 && prettier --check .",
+    "build:wasm": "bash scripts/build-wasm-assets.sh",
     "build": "tsc --build",
     "typecheck": "tsc --noEmit -p eval/tsconfig.json && tsc --noEmit -p compiler/tsconfig.json && tsc --noEmit -p conformance/tsconfig.json && tsc --noEmit -p web/tsconfig.json",
     "test": "vitest run",
