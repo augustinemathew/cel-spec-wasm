@@ -28,6 +28,23 @@ an agent needs to execute it without reading any other work item.
 > physically lives at `bindings/ts/web` (npm-workspace), named
 > `@cel-wasm/web`. Per-WI "Shipped"/"Status" notes are inline below.
 
+> **As of 2026-06-12 (the m30 follow-through; PR #21).** The snapshot
+> above is the as-shipped 2026-06-11 state; the week after moved every
+> number. The subprocess backend was retired for the **in-process
+> `compiler.wasm`** backend (m30 slice D — same artifact serves Node and
+> the browser; the compile boundary is a proto `CompileRequest`, m30
+> slice F). Conformance climbed **1446 → 1920 pass / 0 fail** (WKT
+> construction, object bindings, type_value matcher, embedded-NUL,
+> proto-semantics sweep, parity sweep — ledger in
+> `m29-ts-conformance-backlog.md`); the residual 53-row gap to the C++
+> harness is entirely by-design (Any, optionals, proto2 extension
+> bindings, strong enums). The test suite is **1126 pass / 11 reasoned
+> skips**, including compiled-`@host` and message-variable e2e (which
+> surfaced and fixed the `cel_fn` overload-id linking bug, the
+> uint≥2^63 decode bug, and object-coercion gaps); host fns can return
+> proto messages. The TS gates run in `ci.yml`. Every future-work
+> bullet below is struck or superseded in place.
+
 ---
 
 ## Part A — Design
