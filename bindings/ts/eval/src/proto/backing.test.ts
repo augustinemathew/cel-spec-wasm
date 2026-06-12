@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 import type { CelDuration, CelTimestamp, CelValue } from '../types.js';
 
 import {
+  ProtoFieldRangeError,
   ProtoMessageBacking,
   coerceObjectToMessage,
   messageToObject,
@@ -54,6 +55,16 @@ const ROOT_JSON = {
             val: { type: 'google.protobuf.Value', id: 22 },
             strct: { type: 'google.protobuf.Struct', id: 23 },
             lst: { type: 'google.protobuf.ListValue', id: 24 },
+            fl: { type: 'float', id: 25 },
+            u32w: { type: 'google.protobuf.UInt32Value', id: 26 },
+            u32: { type: 'uint32', id: 27 },
+            users: { rule: 'repeated', type: 'User', id: 28 },
+            tss: {
+              rule: 'repeated',
+              type: 'google.protobuf.Timestamp',
+              id: 29,
+            },
+            mts: { keyType: 'bool', type: 'google.protobuf.Timestamp', id: 30 },
           },
         },
       },
@@ -75,6 +86,7 @@ const ROOT_JSON = {
               },
             },
             Int32Value: { fields: { value: { type: 'int32', id: 1 } } },
+            UInt32Value: { fields: { value: { type: 'uint32', id: 1 } } },
             Int64Value: { fields: { value: { type: 'int64', id: 1 } } },
             UInt64Value: { fields: { value: { type: 'uint64', id: 1 } } },
             DoubleValue: { fields: { value: { type: 'double', id: 1 } } },
@@ -656,5 +668,281 @@ describe('WKT peel helpers (standalone)', () => {
   it('peelWrapper throws on a non-wrapper message', () => {
     const m = msgType().fromObject({});
     expect(() => peelWrapper(m)).toThrow(/not a wrapper/);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// Field presence — langdef §"Field Selection" `has()` semantics, mirroring
+// cel-cpp `ProtoBacking::HasField` (`eval/internal/cel_host.cc`): repeated /
+// map present iff non-empty; proto3 implicit-presence scalars present iff !=
+// default; proto2 (explicit presence) scalars present iff assigned.  Pinned
+// to the conformance corpus's proto2/proto3 `has` sections.
+// ───────────────────────────────────────────────────────────────────
+describe('ProtoMessageBacking.hasField — presence semantics', () => {
+  // proto3.textproto has/repeated_none_implicit + repeated_none_explicit.
+  it('reports a repeated field present iff non-empty', () => {
+    const b = backingOf({});
+    expect(b.hasField('tags')).toBe(false);
+    b.setField('tags', []);
+    expect(b.hasField('tags')).toBe(false);
+    b.setField('tags', ['a']);
+    expect(b.hasField('tags')).toBe(true);
+  });
+
+  // proto3.textproto has/map_none_implicit + map_none_explicit.
+  it('reports a map field present iff non-empty', () => {
+    const b = backingOf({});
+    expect(b.hasField('counts')).toBe(false);
+    b.setField('counts', new Map<CelValue, CelValue>());
+    expect(b.hasField('counts')).toBe(false);
+    b.setField('counts', new Map<CelValue, CelValue>([['x', 1n]]));
+    expect(b.hasField('counts')).toBe(true);
+  });
+
+  // proto3.textproto has/single_set_to_default: a proto3 implicit-presence
+  // scalar explicitly set to its default reads as absent.
+  it('reports a proto3 scalar set to its default as absent', () => {
+    const b = backingOf({});
+    b.setField('i64', 0n);
+    expect(b.hasField('i64')).toBe(false);
+    b.setField('s', '');
+    expect(b.hasField('s')).toBe(false);
+    b.setField('b', false);
+    expect(b.hasField('b')).toBe(false);
+    b.setField('by', new Uint8Array(0));
+    expect(b.hasField('by')).toBe(false);
+  });
+
+  // proto3.textproto has/single_enum_set_zero: enum set to its 0 value.
+  it('reports a proto3 enum set to zero as absent', () => {
+    const b = backingOf({});
+    b.setField('color', 0n);
+    expect(b.hasField('color')).toBe(false);
+    b.setField('color', 1n);
+    expect(b.hasField('color')).toBe(true);
+  });
+
+  // proto2.textproto has/required + optional sections: explicit presence —
+  // a proto2 scalar assigned its default value is still PRESENT.
+  it('reports a proto2 scalar set to its default as present', () => {
+    const { root: r2 } = protobuf.parse(`
+      syntax = "proto2";
+      package t2;
+      message M {
+        optional int32 a = 1;
+        repeated int32 r = 2;
+      }
+    `);
+    r2.resolveAll();
+    const t2 = r2.lookupType('t2.M');
+    const b = new ProtoMessageBacking(t2, t2.create());
+    expect(b.hasField('a')).toBe(false);
+    b.setField('a', 0n);
+    expect(b.hasField('a')).toBe(true);
+    // proto2 repeated: still non-empty semantics (cel-cpp FieldSize > 0).
+    expect(b.hasField('r')).toBe(false);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// Out-of-range narrowing — cel-cpp raises a CEL "range error" when an
+// int64/uint64 CEL value outside the 32-bit domain is assigned to an
+// int32/uint32/enum field or a 32-bit wrapper (`eval/internal/cel_host.cc`
+// CheckInt32Range / CheckUint32Range).  Pinned to enums.textproto
+// legacy_*/assign_standalone_int_too_{big,neg} and dynamic.textproto
+// int32/uint32 field_assign_*_range.
+// ───────────────────────────────────────────────────────────────────
+describe('ProtoMessageBacking.setField — range checks', () => {
+  it('throws ProtoFieldRangeError on an out-of-int32-range enum assignment', () => {
+    const b = backingOf({});
+    expect(() => {
+      b.setField('color', 5000000000n);
+    }).toThrow(ProtoFieldRangeError);
+    expect(() => {
+      b.setField('color', -7000000000n);
+    }).toThrow(/range error/);
+  });
+
+  it('throws on an out-of-range Int32Value wrapper assignment', () => {
+    const b = backingOf({});
+    expect(() => {
+      b.setField('cnt', 12345678900n);
+    }).toThrow(ProtoFieldRangeError);
+    expect(() => {
+      b.setField('cnt', -998877665544332211n);
+    }).toThrow(ProtoFieldRangeError);
+  });
+
+  it('throws on an out-of-range UInt32Value wrapper assignment', () => {
+    const b = backingOf({});
+    expect(() => {
+      b.setField('u32w', 6111222333n);
+    }).toThrow(ProtoFieldRangeError);
+  });
+
+  it('throws on out-of-range plain int32 / uint32 scalar fields', () => {
+    const b = backingOf({});
+    expect(() => {
+      b.setField('i32', 12345678900n);
+    }).toThrow(ProtoFieldRangeError);
+    expect(() => {
+      b.setField('u32', 6111222333n);
+    }).toThrow(ProtoFieldRangeError);
+  });
+
+  it('admits the exact 32-bit boundary values', () => {
+    const b = backingOf({});
+    b.setField('i32', 2147483647n);
+    expect(b.readField('i32')).toBe(2147483647n);
+    b.setField('i32', -2147483648n);
+    expect(b.readField('i32')).toBe(-2147483648n);
+    b.setField('u32', 4294967295n);
+    expect(b.readField('u32')).toBe(4294967295n);
+    b.setField('cnt', -456n);
+    expect(b.readField('cnt')).toBe(-456n);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// Float narrowing — a `float` field carries float32 precision; the decode
+// narrows so construction round-trips match protobuf reflection (cel-cpp
+// `static_cast<float>`).  Pinned to dynamic.textproto float/literal_not_double
+// + field_assign_*_round_to_zero + field_assign_*_range.
+// ───────────────────────────────────────────────────────────────────
+describe('float field narrowing', () => {
+  it('narrows a FloatValue wrapper read to float32 precision', () => {
+    const b = backingOf({});
+    b.setField('fw', 1.333);
+    expect(b.readField('fw')).toBe(Math.fround(1.333));
+    expect(b.readField('fw')).not.toBe(1.333);
+  });
+
+  it('rounds a subnormal-underflow double to zero (1e-50 → 0)', () => {
+    const b = backingOf({});
+    b.setField('fw', 1e-50);
+    expect(b.readField('fw')).toBe(0);
+  });
+
+  it('rounds an over-range double to infinity (1.4e55 → +inf)', () => {
+    const b = backingOf({});
+    b.setField('fw', 1.4e55);
+    expect(b.readField('fw')).toBe(Infinity);
+    b.setField('fw', -9.9e100);
+    expect(b.readField('fw')).toBe(-Infinity);
+  });
+
+  it('narrows a plain float scalar field on read', () => {
+    const b = backingOf({});
+    b.setField('fl', 3.1416);
+    expect(b.readField('fl')).toBe(Math.fround(3.1416));
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// null assignment — assigning `null` to a singular message-typed field
+// CLEARS it (equivalent to unset), except `google.protobuf.Value` which
+// packs an explicit `null_value` (cel-cpp SetScalarField CPPTYPE_MESSAGE
+// CEL_NULL arm).  Pinned to wrappers.textproto */to_null.
+// ───────────────────────────────────────────────────────────────────
+describe('ProtoMessageBacking.setField — null clears message fields', () => {
+  it('clears a wrapper field assigned null (reads back unset)', () => {
+    const b = backingOf({});
+    b.setField('cnt', null);
+    expect(b.hasField('cnt')).toBe(false);
+    expect(b.readField('cnt')).toBeNull();
+  });
+
+  it('leaves the wire bytes identical to an untouched message', () => {
+    const type = msgType();
+    const b = new ProtoMessageBacking(type, type.create());
+    b.setField('nm', null);
+    b.setField('bw', null);
+    expect(Array.from(type.encode(b.raw).finish())).toEqual(
+      Array.from(type.encode(type.create()).finish()),
+    );
+  });
+
+  it('clears a plain nested message field assigned null', () => {
+    const b = backingOf({ user: { id: 1 } });
+    b.setField('user', null);
+    expect(b.hasField('user')).toBe(false);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// Timestamp / Duration packing — a tagged CelTimestamp / CelDuration
+// assigned to a Timestamp / Duration field (singular, repeated element, map
+// value) packs into the WKT message (cel-cpp MaybeSetWktMessageField).
+// Pinned to proto3.textproto literal_wellknown/timestamp + set_null rows.
+// ───────────────────────────────────────────────────────────────────
+describe('ProtoMessageBacking.setField — timestamp/duration packing', () => {
+  const ts = (s: bigint): CelTimestamp => ({
+    kind: 'timestamp',
+    epochSeconds: s,
+    nanos: 0,
+  });
+
+  it('packs a CelTimestamp into a singular Timestamp field', () => {
+    const b = backingOf({});
+    b.setField('ts', {
+      kind: 'timestamp',
+      epochSeconds: 1234567890n,
+      nanos: 0,
+    });
+    expect(b.readField('ts')).toEqual({
+      kind: 'timestamp',
+      epochSeconds: 1234567890n,
+      nanos: 0,
+    });
+  });
+
+  it('packs a CelDuration into a singular Duration field', () => {
+    const b = backingOf({});
+    b.setField('dur', { kind: 'duration', seconds: 7n, nanos: 250 });
+    expect(b.readField('dur')).toEqual({
+      kind: 'duration',
+      seconds: 7n,
+      nanos: 250,
+    });
+  });
+
+  it('packs timestamps through a repeated element', () => {
+    const b = backingOf({});
+    b.setField('tss', [ts(1n), ts(2n)]);
+    expect(b.readField('tss')).toEqual([ts(1n), ts(2n)]);
+  });
+
+  it('packs timestamps through a map value', () => {
+    const b = backingOf({});
+    b.setField('mts', new Map<CelValue, CelValue>([[false, ts(1n)]]));
+    expect(b.readField('mts')).toEqual(
+      new Map<CelValue, CelValue>([[false, ts(1n)]]),
+    );
+  });
+
+  // proto3.textproto set_null/repeated_field_timestamp_null_pruned: a null
+  // element of a message-typed repeated field is pruned, not appended.
+  it('prunes a null element of a repeated message-typed field', () => {
+    const b = backingOf({});
+    b.setField('tss', [ts(1n), null]);
+    expect(b.readField('tss')).toEqual([ts(1n)]);
+    b.setField('users', [null, { id: 5n, name: 'x' }]);
+    expect(b.readField('users')).toEqual([{ id: 5n, name: 'x' }]);
+  });
+
+  // proto3.textproto set_null/map_timestamp_null_pruned: a null value of a
+  // message-typed map field prunes the whole entry.
+  it('prunes a null-valued entry of a message-typed map field', () => {
+    const b = backingOf({});
+    b.setField(
+      'mts',
+      new Map<CelValue, CelValue>([
+        [true, null],
+        [false, ts(1n)],
+      ]),
+    );
+    expect(b.readField('mts')).toEqual(
+      new Map<CelValue, CelValue>([[false, ts(1n)]]),
+    );
   });
 });

@@ -57,6 +57,42 @@ const WKT_STRUCT = 'google.protobuf.Struct';
 const WKT_LIST_VALUE = 'google.protobuf.ListValue';
 const WKT_DYNAMIC = new Set<string>([WKT_VALUE, WKT_STRUCT, WKT_LIST_VALUE]);
 
+// int32 / uint32 wire domains — proto narrows int64/uint64 CEL values into
+// 32-bit fields, and an out-of-domain value is a CEL "range error", not a
+// silent truncation (`eval/internal/cel_host.cc` CheckInt32Range /
+// CheckUint32Range).
+const INT32_MIN = -2147483648n;
+const INT32_MAX = 2147483647n;
+const UINT32_MAX = 4294967295n;
+
+/**
+ * An out-of-range proto field assignment (int32 / uint32 / enum narrowing).
+ * cel-cpp surfaces this as a CEL eval error ("range error"), not a host
+ * trap — the `cel_set_field` trampoline catches this error and poisons the
+ * message slot with CEL_ERROR(OVERFLOW), mirroring `CelSetFieldImpl`'s
+ * kOutOfRange arm (`eval/internal/cel_host.cc`).
+ */
+export class ProtoFieldRangeError extends Error {
+  constructor(fieldName: string, domain: string, value: bigint) {
+    super(`field '${fieldName}' ${domain} range error: ${String(value)}`);
+    this.name = 'ProtoFieldRangeError';
+  }
+}
+
+function checkInt32Range(v: bigint, fieldName: string): bigint {
+  if (v < INT32_MIN || v > INT32_MAX) {
+    throw new ProtoFieldRangeError(fieldName, 'int32', v);
+  }
+  return v;
+}
+
+function checkUint32Range(v: bigint, fieldName: string): bigint {
+  if (v < 0n || v > UINT32_MAX) {
+    throw new ProtoFieldRangeError(fieldName, 'uint32', v);
+  }
+  return v;
+}
+
 /** A `MessageBacking` over a protobufjs `Message` + its `Type`. */
 export class ProtoMessageBacking implements MessageBacking {
   private readonly type: protobuf.Type;
@@ -227,7 +263,7 @@ export function wrapWellKnownValue(
 ): protobuf.Message {
   const name = stripDot(type.fullName);
   if (WKT_WRAPPERS.has(name)) {
-    return type.fromObject({ value: wrapperInner(value) });
+    return type.fromObject({ value: wrapperInner(name, value) });
   }
   if (name === WKT_VALUE) {
     return buildValue(type, value);
@@ -242,9 +278,17 @@ export function wrapWellKnownValue(
 // The inner `value` field of a `*Value` wrapper.  A bigint is normalized to a
 // decimal string (protobufjs accepts a string for 64-bit fields and parses it
 // for 32-bit), a Uint8Array stays as-is (BytesValue); everything else passes
-// through (number / string / bool).
-function wrapperInner(value: CelValue): unknown {
+// through (number / string / bool).  The 32-bit wrappers range-check before
+// narrowing — an out-of-domain value is a CEL range error, not a truncation
+// (`eval/internal/cel_host.cc` SetWrapperInnerValue).
+function wrapperInner(wrapperFqn: string, value: CelValue): unknown {
   if (typeof value === 'bigint') {
+    if (wrapperFqn === 'google.protobuf.Int32Value') {
+      return checkInt32Range(value, wrapperFqn).toString();
+    }
+    if (wrapperFqn === 'google.protobuf.UInt32Value') {
+      return checkUint32Range(value, wrapperFqn).toString();
+    }
     return value.toString();
   }
   return value;
@@ -493,8 +537,14 @@ function decodeScalar(protoType: string, value: unknown): CelValue {
     case 'fixed64':
       return toBigInt(value ?? 0);
     case 'double':
-    case 'float':
       return toNumber(value ?? 0);
+    case 'float':
+      // A float field carries float32 precision: narrow on decode so a
+      // double stored by construction reads back as protobuf reflection
+      // would serve it (e.g. `FloatValue{value: 1.333}` reads 1.333f ≠
+      // 1.333; `1e-50` rounds to 0; `1.4e55` rounds to +inf) — cel-cpp
+      // parity via `static_cast<float>` in `eval/internal/cel_host.cc`.
+      return Math.fround(toNumber(value ?? 0));
     case 'bool':
       return value === true;
     case 'string':
@@ -655,53 +705,240 @@ function decodeMapKey(keyType: string, rawKey: string): CelValue {
 
 function encodeField(field: protobuf.Field, value: CelValue): unknown {
   field.resolve();
-  if (field.map || field.repeated) {
-    // Aggregate construction is the proto-literal path; protobufjs accepts
-    // the JS-natural shapes (Array / object) directly on assignment.
-    return value;
+  if (isMapField(field)) {
+    return encodeMapField(field, value);
   }
+  if (field.repeated) {
+    return encodeRepeatedField(field, value);
+  }
+  return encodeSingular(field, value);
+}
+
+// Encode one singular value against `field`'s (element) type — shared by the
+// singular set path, repeated elements, and map values (the `repeated`/`map`
+// rule is stripped by the callers, mirroring `singularElementDecoder`).
+function encodeSingular(field: protobuf.Field, value: CelValue): unknown {
+  field.resolve();
   if (field.resolvedType instanceof protobuf.Type) {
-    const type = field.resolvedType;
-    // A WKT wrapper / dynamic-value field set from a CEL scalar / map / list
-    // is *wrapped* into the WKT message (doc/langdef.md §"JSON Data
-    // Conversion"); cel-cpp does the same (e.g. `{single_int64_wrapper: -321}`
-    // → `Int64Value{value:-321}`).  An already-message value (a plain object
-    // with `$type`, or another constructed sub-message) falls through to the
-    // object-coercion paths below.
-    if (isWellKnownConstructable(type.fullName) && !isMessageObject(value)) {
-      return wrapWellKnownValue(type, value);
-    }
-    if (value === null) {
-      return null;
-    }
-    if (isPlainObject(value)) {
-      return coerceObjectToMessage(type, value);
-    }
-    return value;
+    return encodeMessageValue(field.resolvedType, value);
   }
-  if (typeof value === 'bigint') {
-    // protobufjs accepts a decimal string for 64-bit fields and a number
-    // for 32-bit; a string is accepted by both, so normalize to string.
-    return value.toString();
+  if (field.resolvedType instanceof protobuf.Enum) {
+    // Enum values narrow to int32 on the wire; an out-of-range assignment is
+    // a CEL range error (`eval/internal/cel_host.cc` SetScalarField
+    // CPPTYPE_ENUM arm), not a truncation.
+    return Number(checkInt32Range(toBigInt(value ?? 0), field.name));
+  }
+  return encodeScalar(field, value);
+}
+
+// Encode a CEL value into a message-typed field/element of `type`:
+//   - `null` clears (leaves the field unset / prunes the element) for every
+//     message type EXCEPT `google.protobuf.Value`, which packs an explicit
+//     `null_value` (cel-cpp `SetScalarField` CPPTYPE_MESSAGE CEL_NULL arm;
+//     corpus `wrappers/*/to_null`, `dynamic/value/*`).
+//   - a WKT wrapper / Value / Struct / ListValue from a non-message CEL
+//     value wraps via {@link wrapWellKnownValue} (langdef §"JSON Data
+//     Conversion").
+//   - a tagged timestamp / duration record packs into the matching WKT
+//     message (cel-cpp `MaybeSetWktMessageField`).
+//   - a plain object coerces through the descriptor; an already-built
+//     protobufjs message assigns verbatim.
+function encodeMessageValue(type: protobuf.Type, value: CelValue): unknown {
+  const name = stripDot(type.fullName);
+  if (value === null && name !== WKT_VALUE) {
+    return null;
+  }
+  if (isWellKnownConstructable(name) && !isMessageObject(value)) {
+    return wrapWellKnownValue(type, value);
+  }
+  if (name === WKT_TIMESTAMP && isCelTimestamp(value)) {
+    return type.fromObject({
+      seconds: value.epochSeconds.toString(),
+      nanos: value.nanos,
+    });
+  }
+  if (name === WKT_DURATION && isCelDuration(value)) {
+    return type.fromObject({
+      seconds: value.seconds.toString(),
+      nanos: value.nanos,
+    });
+  }
+  if (isPlainObject(value)) {
+    return coerceObjectToMessage(type, value);
   }
   return value;
 }
 
+function encodeScalar(field: protobuf.Field, value: CelValue): unknown {
+  if (typeof value === 'bigint') {
+    // 32-bit integer fields range-check before narrowing (cel-cpp
+    // `CheckInt32Range`/`CheckUint32Range`); 64-bit fields normalize to a
+    // decimal string, which protobufjs accepts for Long fields.
+    switch (field.type) {
+      case 'int32':
+      case 'sint32':
+      case 'sfixed32':
+        return Number(checkInt32Range(value, field.name));
+      case 'uint32':
+      case 'fixed32':
+        return Number(checkUint32Range(value, field.name));
+      default:
+        return value.toString();
+    }
+  }
+  return value;
+}
+
+// Encode a CEL list into a repeated field: each element encodes under the
+// element type; a `null` element of a message-typed repeated field is PRUNED
+// (skipped, not appended) — `[timestamp(1), null]` round-trips as
+// `[timestamp(1)]` (cel-cpp `AppendRepeatedFromCelValue` CPPTYPE_MESSAGE
+// CEL_NULL arm; corpus `set_null/repeated_*_null_pruned`).
+function encodeRepeatedField(field: protobuf.Field, value: CelValue): unknown {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  field.resolve();
+  const messageElement = field.resolvedType instanceof protobuf.Type;
+  const out: unknown[] = [];
+  for (const element of value) {
+    if (messageElement && element === null) {
+      continue;
+    }
+    out.push(encodeSingular(field, element));
+  }
+  return out;
+}
+
+// Encode a CEL map into a map field, in whichever shape the descriptor
+// source exposes (a `{K: V}` record for a real `MapField`, an array of
+// `{key, value}` entry objects for the synthetic map-entry `repeated` field —
+// see {@link isMapField}).  A `null` value of a message-typed map field
+// PRUNES the whole entry (cel-cpp `InsertArenaMapEntry`; corpus
+// `set_null/map_*_null_pruned`).
+function encodeMapField(field: protobuf.Field, value: CelValue): unknown {
+  const { valueField, asEntryArray } = mapEncodeShape(field);
+  valueField.resolve();
+  const messageValue = valueField.resolvedType instanceof protobuf.Type;
+  const entries: { key: unknown; value: unknown }[] = [];
+  if (value instanceof Map) {
+    for (const [k, v] of value) {
+      if (messageValue && v === null) {
+        continue;
+      }
+      entries.push({
+        key: encodeMapKey(k),
+        value: encodeSingular(valueField, v),
+      });
+    }
+  }
+  if (asEntryArray) {
+    return entries;
+  }
+  const record: Record<string, unknown> = {};
+  for (const e of entries) {
+    record[stringifyMapKey(e.key)] = e.value;
+  }
+  return record;
+}
+
+// The value sub-field + target shape for a map-field encode.  A `MapField`
+// carries its value type on itself (same trick as `singularElementDecoder`);
+// a synthetic map-entry `repeated` field exposes the entry message's `value`
+// sub-field.
+function mapEncodeShape(field: protobuf.Field): {
+  valueField: protobuf.Field;
+  asEntryArray: boolean;
+} {
+  if (field instanceof protobuf.MapField) {
+    return { valueField: field, asEntryArray: false };
+  }
+  field.resolve();
+  const entry = field.resolvedType;
+  if (!(entry instanceof protobuf.Type) || entry.fields.value === undefined) {
+    throw new Error(`map field '${field.name}' has no entry value type`);
+  }
+  return { valueField: entry.fields.value, asEntryArray: true };
+}
+
+// A CEL map key as the protobufjs-acceptable entry key (bool / string pass
+// through; int/uint keys go through as decimal strings, which protobufjs
+// parses for any integer key type).
+function encodeMapKey(key: CelValue): unknown {
+  if (typeof key === 'bigint') {
+    return key.toString();
+  }
+  return key;
+}
+
+// proto presence, mirroring cel-cpp `ProtoBacking::HasField`
+// (`eval/internal/cel_host.cc`): repeated / map fields are present iff
+// non-empty (`FieldSize > 0`); singular message fields iff set (non-null);
+// explicit-presence scalars (proto2, oneof members, proto3 `optional`) iff
+// assigned; implicit-presence scalars (proto3) iff != the type default —
+// langdef §"Field Selection" `has()` semantics.
 function fieldIsPresent(
   message: protobuf.Message,
   field: protobuf.Field,
 ): boolean {
   const value = fieldsOf(message)[field.name];
   field.resolve();
-  // Message fields: present iff non-null (protobufjs sets unset messages to
-  // null, so an own-property null is still "absent" by proto semantics).
-  if (field.resolvedType instanceof protobuf.Type && !field.repeated) {
+  if (isMapField(field)) {
+    return mapFieldSize(value) > 0;
+  }
+  if (field.repeated) {
+    return Array.isArray(value) && value.length > 0;
+  }
+  if (field.resolvedType instanceof protobuf.Type) {
     return value !== null && value !== undefined;
   }
-  // Everything else: present iff explicitly assigned on the instance.
-  // protobufjs serves unset scalars from the prototype (defaults), so an
-  // own enumerable property is the presence signal.
-  return Object.prototype.hasOwnProperty.call(message, field.name);
+  if (field.hasPresence) {
+    // Explicit presence: protobufjs serves unset scalars from the prototype
+    // (defaults), so an own enumerable property is the assignment signal.
+    return (
+      Object.prototype.hasOwnProperty.call(message, field.name) &&
+      value !== undefined &&
+      value !== null
+    );
+  }
+  // Implicit presence (proto3 scalars / enums): present iff the decoded
+  // value differs from the field's default.
+  return !isDefaultScalar(decodeField(field, value));
+}
+
+// The number of entries a map field's stored value carries — a record for a
+// real `MapField`, an array of entry messages for the synthetic map-entry
+// `repeated` shape (see {@link isMapField}).
+function mapFieldSize(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.length;
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.keys(value).length;
+  }
+  return 0;
+}
+
+// Whether a decoded scalar / enum CelValue is its proto default (the
+// implicit-presence "absent" probe).  Only scalar shapes reach here — the
+// message / repeated / map arms are handled before the decode.
+function isDefaultScalar(value: CelValue): boolean {
+  if (typeof value === 'bigint') {
+    return value === 0n;
+  }
+  if (typeof value === 'number') {
+    return value === 0;
+  }
+  if (typeof value === 'boolean') {
+    return !value;
+  }
+  if (typeof value === 'string') {
+    return value === '';
+  }
+  if (value instanceof Uint8Array) {
+    return value.length === 0;
+  }
+  return value === null;
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -773,6 +1010,24 @@ function isLongLike(value: unknown): value is LongLike {
     'low' in value &&
     'high' in value &&
     typeof (value as { toString: unknown }).toString === 'function'
+  );
+}
+
+function isCelTimestamp(value: CelValue): value is CelTimestamp {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'kind' in value &&
+    (value as { kind: unknown }).kind === 'timestamp'
+  );
+}
+
+function isCelDuration(value: CelValue): value is CelDuration {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'kind' in value &&
+    (value as { kind: unknown }).kind === 'duration'
   );
 }
 

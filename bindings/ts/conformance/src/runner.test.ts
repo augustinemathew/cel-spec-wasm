@@ -171,7 +171,10 @@ describe('runRow — classification', () => {
     expect(r).toMatchObject({ outcome: 'skip', category: 'proto_unimpl' });
   });
 
-  it('skips host-aggregate equality as an eval_unimpl gap', async () => {
+  // Literal-vs-host-bound aggregate equality routes through the mixed
+  // arena/host `cel_list_eq` bridge (corpus comparisons/bound rows) — a
+  // former eval_unimpl gap, now a PASS.
+  it('passes host-aggregate equality (literal vs bound list)', async () => {
     const r = await run(
       row({
         expr: '[1, 2] == x',
@@ -188,7 +191,7 @@ describe('runRow — classification', () => {
         matcher: { kind: 'value', value: { kind: 'bool', value: false } },
       }),
     );
-    expect(r).toMatchObject({ outcome: 'skip', category: 'eval_unimpl' });
+    expect(r).toMatchObject({ outcome: 'pass' });
   });
 });
 
@@ -344,11 +347,12 @@ describe('runRow — proto descriptor path', () => {
     expect(r.outcome).toBe('pass');
   });
 
-  // Out-of-range 32-bit WKT-wrapper assignment is a SEPARATE gap (the binding
-  // wraps but does not narrow-check), classified as a verified eval_unimpl skip
-  // — NOT the scalar-wrapping feature.  dynamic.textproto "field_assign_*_range".
+  // Out-of-range 32-bit WKT-wrapper assignment is a CEL range error (the
+  // binding range-checks before narrowing and poisons the construction) —
+  // satisfies the row's evalError matcher.  dynamic.textproto
+  // "field_assign_*_range".
   it.runIf(protoReady)(
-    'skips an out-of-range 32-bit wrapper assignment',
+    'passes an out-of-range 32-bit wrapper assignment as a range error',
     async () => {
       const r = await runRow(
         row({
@@ -359,7 +363,7 @@ describe('runRow — proto descriptor path', () => {
         engine,
         proto,
       );
-      expect(r).toMatchObject({ outcome: 'skip', category: 'eval_unimpl' });
+      expect(r).toMatchObject({ outcome: 'pass' });
     },
   );
 

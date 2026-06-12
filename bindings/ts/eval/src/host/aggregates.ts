@@ -574,40 +574,66 @@ function mapSize(ctx: AggregateContext, out: number, map: number): void {
 }
 
 // ───────────────────────────────────────────────────────────────────
-// cel_map_eq — (out, a, b): set-equality of two host maps → BOOL
-// (`CelMapEqImpl`, cel_host.cc:2394).  Order-irrelevant; key equality
-// across the numeric ladder.  3VL binary; non-map operands →
-// TYPE_MISMATCH.
+// cel_map_eq — (out, a, b): set-equality of two maps → BOOL
+// (`CelMapEqImpl`, cel_host.cc:2394).  ANY origin pair is admitted —
+// the runtime routes a pair here whenever EITHER operand is host-backed
+// (host+host, host+arena, arena+host; `NormalizedMapEq` snapshots both
+// uniformly) — so both operands decode through the normalizing
+// `ctx.readValue` bridge.  Order-irrelevant; key equality across the
+// numeric ladder.  3VL binary; non-map operands → TYPE_MISMATCH.
 // ───────────────────────────────────────────────────────────────────
 function mapEq(ctx: AggregateContext, out: number, a: number, b: number): void {
   const view = ctx.view();
   if (absorbBinary(view, out, a, b)) return;
-  if (
-    readKind(view, a) !== CelKind.MAP_HOST ||
-    readKind(view, b) !== CelKind.MAP_HOST
-  ) {
+  const ea = readMapOperand(ctx, a);
+  const eb = readMapOperand(ctx, b);
+  if (ea === undefined || eb === undefined) {
     writeError(view, out, CelErrorCode.TYPE_MISMATCH);
     return;
   }
-  const ba = lookupMap(ctx, a);
-  const bb = lookupMap(ctx, b);
-  if (ba === undefined || bb === undefined) {
-    writeError(view, out, CelErrorCode.TYPE_MISMATCH);
-    return;
-  }
-  writeBool(view, out, mapsEqual(ba, bb));
+  writeBool(view, out, mapsEqual(ea, eb));
 }
 
 /**
- * Set-equality of two host maps (`NormalizedMapEq`, cel_host.cc:2375):
+ * Decode a map operand of either origin — MAP_HOST via its backing,
+ * MAP_ARENA via the resolving codec — to (key, value) entry pairs, or
+ * `undefined` for a non-map / unmapped operand.
+ */
+function readMapOperand(
+  ctx: AggregateContext,
+  slot: number,
+): readonly HostMapEntry[] | undefined {
+  const kind = readKind(ctx.view(), slot);
+  if (kind === CelKind.MAP_HOST) {
+    return lookupMap(ctx, slot)?.entries;
+  }
+  if (kind === CelKind.MAP_ARENA) {
+    const decoded = ctx.readValue(slot);
+    if (!(decoded instanceof Map)) {
+      return undefined;
+    }
+    const entries: HostMapEntry[] = [];
+    for (const [key, value] of decoded) {
+      entries.push({ key, value });
+    }
+    return entries;
+  }
+  return undefined;
+}
+
+/**
+ * Set-equality of two maps (`NormalizedMapEq`, cel_host.cc:2375):
  * same size, and every entry of `a` has a key-equal entry in `b` whose
  * value is value-equal.  Key and value equality both use
  * {@link celValueEquals}.
  */
-function mapsEqual(a: HostMapBacking, b: HostMapBacking): boolean {
-  if (a.entries.length !== b.entries.length) return false;
-  for (const ea of a.entries) {
-    const match = b.entries.find((eb) => celValueEquals(ea.key, eb.key));
+function mapsEqual(
+  a: readonly HostMapEntry[],
+  b: readonly HostMapEntry[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (const ea of a) {
+    const match = b.find((eb) => celValueEquals(ea.key, eb.key));
     if (match === undefined || !celValueEquals(ea.value, match.value)) {
       return false;
     }
@@ -774,9 +800,14 @@ function listSize(ctx: AggregateContext, out: number, list: number): void {
 }
 
 // ───────────────────────────────────────────────────────────────────
-// cel_list_eq — (out, a, b): element-wise equality of two host lists →
-// BOOL (`CelListEqImpl`, cel_host.cc:2164).  Equal length + positional
-// element equality.  3VL binary; non-list operands → TYPE_MISMATCH.
+// cel_list_eq — (out, a, b): element-wise equality of two lists → BOOL
+// (`CelListEqImpl`, cel_host.cc:2164).  ANY origin pair is admitted —
+// the runtime routes a pair here whenever EITHER operand is host-backed
+// (host+host, host+arena, arena+host; `cel_runtime.c::cel_list_eq`) —
+// so both operands decode through the normalizing `ctx.readValue`
+// bridge, the same shape as the C++ `ReadListEqElementAt`.  Equal
+// length + positional element equality.  3VL binary; non-list operands
+// → TYPE_MISMATCH.
 // ───────────────────────────────────────────────────────────────────
 function listEq(
   ctx: AggregateContext,
@@ -786,28 +817,41 @@ function listEq(
 ): void {
   const view = ctx.view();
   if (absorbBinary(view, out, a, b)) return;
-  if (
-    readKind(view, a) !== CelKind.LIST_HOST ||
-    readKind(view, b) !== CelKind.LIST_HOST
-  ) {
+  const ea = readListOperand(ctx, a);
+  const eb = readListOperand(ctx, b);
+  if (ea === undefined || eb === undefined) {
     writeError(view, out, CelErrorCode.TYPE_MISMATCH);
     return;
   }
-  const ba = lookupList(ctx, a);
-  const bb = lookupList(ctx, b);
-  if (ba === undefined || bb === undefined) {
-    writeError(view, out, CelErrorCode.TYPE_MISMATCH);
-    return;
-  }
-  writeBool(view, out, listsEqual(ba, bb));
+  writeBool(view, out, listsEqual(ea, eb));
 }
 
-/** Positional element-wise equality of two host lists (`WalkListEq`). */
-function listsEqual(a: HostListBacking, b: HostListBacking): boolean {
-  if (a.elements.length !== b.elements.length) return false;
-  for (let i = 0; i < a.elements.length; i++) {
-    const ea = a.elements[i];
-    const eb = b.elements[i];
+/**
+ * Decode a list operand of either origin — LIST_HOST via its backing,
+ * LIST_ARENA via the resolving codec — to its decoded elements, or
+ * `undefined` for a non-list / unmapped operand.
+ */
+function readListOperand(
+  ctx: AggregateContext,
+  slot: number,
+): readonly CelValue[] | undefined {
+  const kind = readKind(ctx.view(), slot);
+  if (kind === CelKind.LIST_HOST) {
+    return lookupList(ctx, slot)?.elements;
+  }
+  if (kind === CelKind.LIST_ARENA) {
+    const decoded = ctx.readValue(slot);
+    return Array.isArray(decoded) ? decoded : undefined;
+  }
+  return undefined;
+}
+
+/** Positional element-wise equality of two lists (`WalkListEq`). */
+function listsEqual(a: readonly CelValue[], b: readonly CelValue[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const ea = a[i];
+    const eb = b[i];
     if (ea === undefined || eb === undefined) return false;
     if (!celValueEquals(ea, eb)) return false;
   }

@@ -15,7 +15,6 @@ import {
   buildBoundMessage,
   buildExpectedMessage,
   loadDescriptorSet,
-  setsWellKnownField,
 } from './proto-compare.js';
 import { parseTextproto, type TextprotoMessage } from './textproto.js';
 
@@ -159,33 +158,5 @@ describe.skipIf(!hasFds)('buildBindingInput', () => {
     expect(() =>
       buildBindingInput(descriptors(), 'no.such.Type', body('f: 1')),
     ).toThrow(/no\.such\.Type/);
-  });
-});
-
-describe.skipIf(!hasFds)('setsWellKnownField', () => {
-  it('detects a wrapper-typed field', () => {
-    expect(
-      setsWellKnownField(
-        descriptors(),
-        PROTO3,
-        body('single_int64_wrapper: 5'),
-      ),
-    ).toBe(true);
-  });
-
-  it('detects a timestamp-typed field', () => {
-    expect(
-      setsWellKnownField(
-        descriptors(),
-        PROTO3,
-        body('single_timestamp { seconds: 1 }'),
-      ),
-    ).toBe(true);
-  });
-
-  it('is false for a plain scalar field', () => {
-    expect(
-      setsWellKnownField(descriptors(), PROTO3, body('single_int64: 1')),
-    ).toBe(false);
   });
 });

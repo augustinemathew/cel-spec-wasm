@@ -386,10 +386,18 @@ describe('cel_get_field', () => {
     expect(read(h, OUT)).toBe(0n);
   });
 
-  it('reads an unset message field as Null', () => {
+  // langdef §"Field Selection": selecting an unset singular message field
+  // yields the default instance, not null (cel-cpp ReadSingularMessageField
+  // serves reflection's GetMessage default; corpus
+  // proto3/empty_field/nested_message).
+  it('reads an unset message field as the default-instance message', () => {
     internMsg(h, A, {});
     h.tramps.cel_get_field(OUT, A, F_USER, 0);
-    expect(read(h, OUT)).toBeNull();
+    expect(h.mem.view.getUint32(OUT, true)).toBe(CelKind.MESSAGE);
+    // A sub-field read chained through the default instance serves the
+    // sub-field's default (corpus proto3/empty_field/nested_message_subfield).
+    h.tramps.cel_get_field(B, OUT, F_USER_NAME, 0);
+    expect(read(h, B)).toBe('');
   });
 
   it('reads a set nested message as a chainable CEL_MESSAGE slot', () => {
@@ -536,6 +544,23 @@ describe('cel_make_message + cel_set_field', () => {
     h.tramps.cel_get_field(B, OUT, F_S, 0);
     // s was never set → proto3 default empty string.
     expect(read(h, B)).toBe('');
+  });
+
+  // An out-of-range 32-bit narrowing (here: an Int32Value wrapper field set
+  // from an int outside the int32 domain) poisons the MESSAGE slot with
+  // CEL_ERROR(OVERFLOW), so the construction's result carries the range
+  // error — mirrors `CelSetFieldImpl`'s kOutOfRange arm
+  // (`eval/internal/cel_host.cc`; corpus dynamic/int32/field_assign_*_range).
+  it('poisons the message slot on an out-of-range field assignment', () => {
+    h.tramps.cel_make_message(T_MSG, OUT);
+    writeScalarInt(h.mem.view, A, 12345678900n);
+    h.tramps.cel_set_field(OUT, F_CNT, A);
+    expect((read(h, OUT) as { code: number }).code).toBe(CelErrorCode.OVERFLOW);
+    // A later cel_set_field on the poisoned slot is a no-op (the poison
+    // rides out as the construction's value).
+    encodeStringSlot(h, B, 'late');
+    h.tramps.cel_set_field(OUT, F_S, B);
+    expect((read(h, OUT) as { code: number }).code).toBe(CelErrorCode.OVERFLOW);
   });
 
   it('sets a nested User message field via a constructed sub-message', () => {

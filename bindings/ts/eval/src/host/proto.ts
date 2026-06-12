@@ -24,7 +24,12 @@
 import * as protobuf from 'protobufjs';
 
 import type { ExternrefTable } from '../externref.js';
-import { ProtoMessageBacking, isWellKnownWrappable } from '../proto/backing.js';
+import {
+  ProtoFieldRangeError,
+  ProtoMessageBacking,
+  isWellKnownConstructable,
+  isWellKnownWrappable,
+} from '../proto/backing.js';
 import type { DescriptorSet } from '../proto/descriptors.js';
 import { CelErrorCode, CelKind } from '../types.js';
 import type { CelValue, FieldEntry, TypeEntry } from '../types.js';
@@ -193,13 +198,16 @@ function rawField(
 // ───────────────────────────────────────────────────────────────────
 
 /**
- * Read the singular message-typed field `field` off `backing` and, if
- * set, intern a fresh `ProtoMessageBacking` over the nested message so
- * `out` carries a CEL_MESSAGE slot — `req.user.id` chains through a
- * second `cel_get_field`.  An unset message field → CEL_NULL (proto
- * presence, `backing.test.ts` "unset message field as null").  Returns
- * `false` when `field` is not a non-WKT singular message (the caller
- * then falls back to the decoded-value path).
+ * Read the singular message-typed field `field` off `backing` and intern a
+ * fresh `ProtoMessageBacking` over the nested message so `out` carries a
+ * CEL_MESSAGE slot — `req.user.id` chains through a second `cel_get_field`.
+ * An UNSET field reads as the DEFAULT-INSTANCE message, not null — langdef
+ * §"Field Selection" / cel-cpp `ReadSingularMessageField` (reflection's
+ * `GetMessage` serves the default instance; corpus
+ * `proto3/empty_field/nested_message`) — except `google.protobuf.Any` and
+ * the JSON WKTs (`Value` / `Struct` / `ListValue`), whose unset read stays
+ * CEL_NULL.  Returns `false` when `field` is not a non-WKT singular message
+ * (the caller then falls back to the decoded-value path).
  */
 function tryWriteNestedMessage(
   ctx: ProtoContext,
@@ -222,7 +230,14 @@ function tryWriteNestedMessage(
   }
   const value = rawField(backing, field);
   if (value === null || value === undefined) {
-    ctx.codec.writeValue(out, null);
+    if (isNullOnUnset(nestedType.fullName)) {
+      ctx.codec.writeValue(out, null);
+      return true;
+    }
+    const slot = ctx.refs.message.intern(
+      new ProtoMessageBacking(nestedType, nestedType.create()),
+    );
+    ctx.codec.writeMessageSlot(out, slot);
     return true;
   }
   const nested =
@@ -234,6 +249,15 @@ function tryWriteNestedMessage(
   );
   ctx.codec.writeMessageSlot(out, slot);
   return true;
+}
+
+// Message types whose UNSET singular field reads as CEL_NULL rather than the
+// default instance: `Any` (no descriptor to unpack against; cel-cpp returns
+// null for the unset path) and the JSON WKTs (`Value` / `Struct` /
+// `ListValue` — an unset `Value` is JSON null).
+function isNullOnUnset(fqn: string): boolean {
+  const name = fqn.startsWith('.') ? fqn.slice(1) : fqn;
+  return name === 'google.protobuf.Any' || isWellKnownConstructable(name);
 }
 
 /**
@@ -387,7 +411,21 @@ export function celSetField(
     }
     return;
   }
-  backing.setField(fieldKey(entry), ctx.codec.readValue(value));
+  try {
+    backing.setField(fieldKey(entry), ctx.codec.readValue(value));
+  } catch (err) {
+    if (err instanceof ProtoFieldRangeError) {
+      // An out-of-range narrowing (int32 / uint32 / enum) is a CEL eval
+      // error, not a host trap: poison the MESSAGE slot itself with
+      // CEL_ERROR(OVERFLOW) so the construction's result slot carries the
+      // error out — mirrors `CelSetFieldImpl`'s kOutOfRange arm
+      // (`eval/internal/cel_host.cc`).  Subsequent `cel_set_field` calls on
+      // the poisoned slot no-op (resolveBacking sees a non-MESSAGE kind).
+      ctx.codec.writeError(msg, CelErrorCode.OVERFLOW);
+      return;
+    }
+    throw err;
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────

@@ -3279,6 +3279,58 @@ instead of a NUL-terminated source + records blob.
         skips flip to PASS (skip predicate + category deleted; baseline
         1842 → 1851, 0 fail).
 
+## Rewrite M29 follow-up — eval_unimpl proto-semantics sweep (2026-06-12)
+
+50 of 53 `eval_unimpl` conformance skips closed in `@cel-wasm/eval`
+(`bindings/ts/eval/src/proto/backing.ts`, `host/proto.ts`,
+`host/aggregates.ts`), each mirroring its `eval/internal/cel_host.cc`
+seam; conformance 1851 → **1902 pass / 552 skip / 0 fail**, `.baseline`
+ratcheted to 1902.
+
+  - [x] proto field-presence (langdef §"Field Selection" `has()`) —
+        `backing.test.ts` presence matrix: repeated/map non-empty,
+        proto3 scalar/enum set-to-default absent, proto2 explicit
+        presence (a `protobuf.parse` proto2 fixture), bool/bytes/string
+        defaults.  Corpus proto2/proto3 `has` sections (10 rows).
+  - [x] null assignment + null-pruning — `backing.test.ts`: null clears
+        wrapper / nested-message fields (wire bytes equal an untouched
+        message); null element of a repeated message field pruned; null
+        value of a message-typed map field prunes the entry; `Value`
+        still packs `null_value`.  Corpus `wrappers/*/to_null` (9) +
+        `set_null/*_null_pruned` (8).
+  - [x] timestamp/duration packing into WKT fields —
+        `backing.test.ts`: CelTimestamp/CelDuration round-trip through
+        singular / repeated-element / map-value assignment.  Corpus
+        `literal_wellknown/timestamp` (2).
+  - [x] int32/uint32/enum range checks — `backing.test.ts`
+        (`ProtoFieldRangeError` on enum / Int32Value / UInt32Value /
+        plain int32+uint32, exact 32-bit boundary admits) +
+        `host/proto.test.ts` (OVERFLOW poison of the message slot, late
+        set on a poisoned slot is a no-op) + `runner.test.ts` (range
+        row satisfies the evalError matcher).  Corpus enum range (4) +
+        wrapper range (4).
+  - [x] float32 narrowing on decode — `backing.test.ts`: FloatValue
+        read narrows (`Math.fround`), 1e-50 → 0, 1.4e55 → +inf, plain
+        `float` field narrows.  Corpus `dynamic/float` (5).
+  - [x] unset nested-message reads as default instance —
+        `host/proto.test.ts`: `cel_get_field` on an unset message field
+        writes a chainable CEL_MESSAGE default instance (sub-field read
+        serves the sub-default); Any / JSON WKTs stay null.  Corpus
+        `empty_field/nested_message*` + `parse/nest|repeat` (6).
+  - [x] mixed arena/host list+map equality — `aggregates.test.ts`:
+        `cel_list_eq` / `cel_map_eq` admit any origin pair (arena
+        operand decoded via the resolving codec; host/arena swapped
+        orders, timestamp elements, set-equality, TYPE_MISMATCH
+        negatives).  Corpus `set_null` read-back equality (8) +
+        `comparisons/bound` host-aggregate equality (2, adjacent
+        unlock; `runner.test.ts` pin flipped skip → pass).
+  - [x] runner predicates removed in the same commit — has(/null-prune/
+        unset-nested/range/FloatValue/WKT-mismatch/host-aggregate
+        predicates deleted from `conformance/src/runner.ts` (+
+        `setsWellKnownField` retired from `proto-compare.ts`); the 3
+        residual `eval_unimpl` predicates (NaN message equality ×2, tz
+        accessor ×1) stay with verified reasons.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

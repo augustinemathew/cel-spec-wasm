@@ -11,6 +11,11 @@ import { describe, expect, it } from 'vitest';
 
 import { ExternrefTable } from '../externref.js';
 import {
+  ARENA_HEADER_COUNT_OFFSET,
+  ARENA_HEADER_DATA_OFFSET,
+  ARENA_HEADER_SIZE,
+  ARENA_LIST_ELEMENT_STRIDE,
+  ARENA_MAP_ENTRY_STRIDE,
   CEL_VALUE_KIND_OFFSET,
   CEL_VALUE_PAYLOAD_OFFSET,
   CEL_VALUE_SIZE,
@@ -213,6 +218,39 @@ function makeHarness(): Harness {
         }
         return m;
       }
+      case CelKind.LIST_ARENA: {
+        const headerPtr = view.getUint32(p, true);
+        const count = view.getUint32(
+          headerPtr + ARENA_HEADER_COUNT_OFFSET,
+          true,
+        );
+        const elems = view.getUint32(
+          headerPtr + ARENA_HEADER_DATA_OFFSET,
+          true,
+        );
+        const out: CelValue[] = [];
+        for (let i = 0; i < count; i++) {
+          out.push(readValue(elems + i * ARENA_LIST_ELEMENT_STRIDE));
+        }
+        return out;
+      }
+      case CelKind.MAP_ARENA: {
+        const headerPtr = view.getUint32(p, true);
+        const count = view.getUint32(
+          headerPtr + ARENA_HEADER_COUNT_OFFSET,
+          true,
+        );
+        const entries = view.getUint32(
+          headerPtr + ARENA_HEADER_DATA_OFFSET,
+          true,
+        );
+        const m = new Map<CelValue, CelValue>();
+        for (let i = 0; i < count; i++) {
+          const off = entries + i * ARENA_MAP_ENTRY_STRIDE;
+          m.set(readValue(off), readValue(off + CEL_VALUE_SIZE));
+        }
+        return m;
+      }
       case CelKind.ERROR:
         return { kind: 'error', code: view.getUint32(p, true), message: '' };
       case CelKind.TIMESTAMP:
@@ -293,6 +331,56 @@ function putMapHost(h: Harness, n: number, refSlot: number): void {
   const view = h.ctx.view();
   view.setUint32(h.slot(n) + CEL_VALUE_KIND_OFFSET, CelKind.MAP_HOST, true);
   view.setUint32(h.slot(n) + CEL_VALUE_PAYLOAD_OFFSET, refSlot, true);
+}
+
+/**
+ * Materialise `elements` as an arena LIST_ARENA (16-byte header + a 24-byte
+ * CelValue run, `cel_data.h:90-102`) and stamp the CelValue into slot `n` —
+ * the literal-list operand shape the mixed arena/host equality bridge reads.
+ */
+function putArenaList(
+  h: Harness,
+  n: number,
+  elements: readonly CelValue[],
+): void {
+  const view = h.ctx.view();
+  const headerPtr = h.ctx.arenaAlloc(ARENA_HEADER_SIZE);
+  const elemsPtr = h.ctx.arenaAlloc(
+    Math.max(elements.length * ARENA_LIST_ELEMENT_STRIDE, 1),
+  );
+  view.setUint32(headerPtr + ARENA_HEADER_COUNT_OFFSET, elements.length, true);
+  view.setUint32(headerPtr + ARENA_HEADER_DATA_OFFSET, elemsPtr, true);
+  elements.forEach((e, i) => {
+    h.ctx.writeValue(elemsPtr + i * ARENA_LIST_ELEMENT_STRIDE, e);
+  });
+  view.setUint32(h.slot(n) + CEL_VALUE_KIND_OFFSET, CelKind.LIST_ARENA, true);
+  view.setUint32(h.slot(n) + CEL_VALUE_PAYLOAD_OFFSET, headerPtr, true);
+}
+
+/**
+ * Materialise `entries` as an arena MAP_ARENA (16-byte header + 48-byte
+ * key/value entry run, `cel_data.h:64-83`) and stamp the CelValue into
+ * slot `n`.
+ */
+function putArenaMap(
+  h: Harness,
+  n: number,
+  entries: readonly [CelValue, CelValue][],
+): void {
+  const view = h.ctx.view();
+  const headerPtr = h.ctx.arenaAlloc(ARENA_HEADER_SIZE);
+  const entriesPtr = h.ctx.arenaAlloc(
+    Math.max(entries.length * ARENA_MAP_ENTRY_STRIDE, 1),
+  );
+  view.setUint32(headerPtr + ARENA_HEADER_COUNT_OFFSET, entries.length, true);
+  view.setUint32(headerPtr + ARENA_HEADER_DATA_OFFSET, entriesPtr, true);
+  entries.forEach(([k, v], i) => {
+    const off = entriesPtr + i * ARENA_MAP_ENTRY_STRIDE;
+    h.ctx.writeValue(off, k);
+    h.ctx.writeValue(off + CEL_VALUE_SIZE, v);
+  });
+  view.setUint32(h.slot(n) + CEL_VALUE_KIND_OFFSET, CelKind.MAP_ARENA, true);
+  view.setUint32(h.slot(n) + CEL_VALUE_PAYLOAD_OFFSET, headerPtr, true);
 }
 
 /** Stamp a poison CelValue (ERROR with `code`, or UNKNOWN) into slot `n`. */
@@ -924,5 +1012,103 @@ describe('cel_list_iter_open', () => {
     expect(() =>
       trampolines(h).cel_list_iter_open?.(h.slot(OUT), h.slot(LIST)),
     ).toThrow(/range/);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// Mixed arena/host equality — the runtime routes a pair to the host
+// trampoline whenever EITHER operand is host-backed
+// (`cel_runtime.c::cel_list_eq`), so the bridge must compare across
+// origins (cel-cpp `CelListEqImpl` / `NormalizedMapEq` admit any pair).
+// Pinned to the corpus comparisons/bound rows (`[1, 2] == x`) and the
+// proto field read-back vs literal rows (set_null/*_null_pruned).
+// ───────────────────────────────────────────────────────────────────
+describe('cel_list_eq — mixed arena/host operands', () => {
+  const OUT = 0;
+  const A = 1;
+  const B = 2;
+
+  it('compares a host list against an arena list', () => {
+    const h = makeHarness();
+    putListHost(h, A, h.internList({ elements: [1n, 2n] }));
+    putArenaList(h, B, [1n, 2n]);
+    trampolines(h).cel_list_eq?.(h.slot(OUT), h.slot(A), h.slot(B));
+    expect(h.get(OUT)).toBe(true);
+  });
+
+  it('compares an arena list against a host list (order swapped)', () => {
+    const h = makeHarness();
+    putArenaList(h, A, [1n, 2n]);
+    putListHost(h, B, h.internList({ elements: [3n, 4n] }));
+    trampolines(h).cel_list_eq?.(h.slot(OUT), h.slot(A), h.slot(B));
+    expect(h.get(OUT)).toBe(false);
+  });
+
+  it('compares timestamp elements across origins', () => {
+    const h = makeHarness();
+    const ts: CelValue = { kind: 'timestamp', epochSeconds: 1n, nanos: 0 };
+    putListHost(h, A, h.internList({ elements: [ts] }));
+    putArenaList(h, B, [ts]);
+    trampolines(h).cel_list_eq?.(h.slot(OUT), h.slot(A), h.slot(B));
+    expect(h.get(OUT)).toBe(true);
+  });
+
+  it('errors TYPE_MISMATCH for a non-list operand', () => {
+    const h = makeHarness();
+    putListHost(h, A, h.internList({ elements: [] }));
+    h.put(B, 7n);
+    trampolines(h).cel_list_eq?.(h.slot(OUT), h.slot(A), h.slot(B));
+    expectError(h, OUT, CelErrorCode.TYPE_MISMATCH);
+  });
+});
+
+describe('cel_map_eq — mixed arena/host operands', () => {
+  const OUT = 0;
+  const A = 1;
+  const B = 2;
+
+  it('compares a host map against an arena map (set equality)', () => {
+    const h = makeHarness();
+    putMapHost(
+      h,
+      A,
+      h.internMap({
+        entries: [
+          { key: 'a', value: 1n },
+          { key: 'b', value: 2n },
+        ],
+      }),
+    );
+    putArenaMap(h, B, [
+      ['b', 2n],
+      ['a', 1n],
+    ]);
+    trampolines(h).cel_map_eq?.(h.slot(OUT), h.slot(A), h.slot(B));
+    expect(h.get(OUT)).toBe(true);
+  });
+
+  it('compares timestamp values across origins', () => {
+    const h = makeHarness();
+    const ts: CelValue = { kind: 'timestamp', epochSeconds: 1n, nanos: 0 };
+    putArenaMap(h, A, [[false, ts]]);
+    putMapHost(h, B, h.internMap({ entries: [{ key: false, value: ts }] }));
+    trampolines(h).cel_map_eq?.(h.slot(OUT), h.slot(A), h.slot(B));
+    expect(h.get(OUT)).toBe(true);
+  });
+
+  it('is false when an arena-side value differs', () => {
+    const h = makeHarness();
+    putMapHost(h, A, h.internMap({ entries: [{ key: 'a', value: 1n }] }));
+    putArenaMap(h, B, [['a', 9n]]);
+    trampolines(h).cel_map_eq?.(h.slot(OUT), h.slot(A), h.slot(B));
+    expect(h.get(OUT)).toBe(false);
+  });
+
+  it('errors TYPE_MISMATCH for a non-map operand', () => {
+    const h = makeHarness();
+    putMapHost(h, A, h.internMap({ entries: [] }));
+    h.put(B, 'not-a-map');
+    trampolines(h).cel_map_eq?.(h.slot(OUT), h.slot(A), h.slot(B));
+    expectError(h, OUT, CelErrorCode.TYPE_MISMATCH);
   });
 });

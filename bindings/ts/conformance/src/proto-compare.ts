@@ -20,25 +20,10 @@
 //       eval/src/proto/backing.ts (messageToObject).
 
 import type { CelInput, CelValue } from '@cel-wasm/eval';
-import {
-  DescriptorSet,
-  isWellKnownWrappable,
-  messageToObject,
-} from '@cel-wasm/eval/proto';
+import { DescriptorSet, messageToObject } from '@cel-wasm/eval/proto';
 import * as protobuf from 'protobufjs';
 
 import type { TextprotoMessage, TextprotoValue } from './textproto.js';
-
-// `google.protobuf.Value` / `Struct` / `ListValue` are WKTs the binding
-// constructs via JSON mapping, not via `isWellKnownWrappable` (which covers
-// only the time + numeric/scalar wrappers).  Constructing a message field of
-// any of these from a CEL value is the unimplemented binding path; list them
-// here so the harness recognises the gap.
-const JSON_WKT_NAMES: ReadonlySet<string> = new Set([
-  'google.protobuf.Value',
-  'google.protobuf.Struct',
-  'google.protobuf.ListValue',
-]);
 
 /**
  * Build the decoded-object form of an `object_value` matcher's expected
@@ -116,47 +101,6 @@ function timeRecord(
 /** Load a `DescriptorSet` from a serialized `FileDescriptorSet`. */
 export function loadDescriptorSet(fdsBytes: Uint8Array): DescriptorSet {
   return DescriptorSet.fromFileDescriptorSet(fdsBytes);
-}
-
-/**
- * True iff the expected `object_value` body (top-level) sets a field whose
- * declared type is a well-known message — a wrapper / time WKT
- * ({@link isWellKnownWrappable}) or a JSON-mapped WKT (`Value` / `Struct` /
- * `ListValue`).  Constructing such a field from a CEL value is the
- * unimplemented binding path (`cel_set_field` does not wrap the scalar into
- * the WKT message), so a row that sets one is a verified eval gap, not a
- * harness/compiler bug.
- */
-export function setsWellKnownField(
-  descriptors: DescriptorSet,
-  fqn: string,
-  body: TextprotoMessage,
-): boolean {
-  let type: protobuf.Type;
-  try {
-    type = descriptors.messageType(fqn);
-  } catch {
-    return false;
-  }
-  for (const fieldName of body.fields.keys()) {
-    const field = type.fields[fieldName];
-    if (field === undefined) {
-      continue;
-    }
-    field.resolve();
-    const rt = field.resolvedType;
-    if (rt instanceof protobuf.Type) {
-      const name = stripDot(rt.fullName);
-      if (isWellKnownWrappable(name) || JSON_WKT_NAMES.has(name)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function stripDot(name: string): string {
-  return name.startsWith('.') ? name.slice(1) : name;
 }
 
 // ───────────────────────────────────────────────────────────────────

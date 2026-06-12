@@ -16,9 +16,51 @@ change to refresh the numbers.
 
 | Implementation | Corpus | pass | skip | fail |
 | --- | --- | ---: | ---: | ---: |
-| **TS bindings** (`@cel-wasm/*`) | 2454 rows | **1842** | 612 | **0** |
+| **TS bindings** (`@cel-wasm/*`) | 2454 rows | **1902** | 552 | **0** |
 | **C++** (`conformance/.baseline`, dynamic mode) | 2454 rows | **1973** | — | 0 |
 
+> Update 2026-06-12 (c): the **`eval_unimpl` proto-semantics sweep** shipped —
+> 50 of the 53 remaining `eval_unimpl` rows closed (+51 PASS with one
+> adjacent unlock, 1851 → 1902, **0 fail**; `.baseline` ratcheted to 1902).
+> Clusters closed, all in `@cel-wasm/eval` (`proto/backing.ts`,
+> `host/proto.ts`, `host/aggregates.ts`), each mirroring the named cel-cpp
+> seam in `eval/internal/cel_host.cc`:
+>
+>   - **proto field-presence** (10 rows): `hasField` now implements langdef
+>     §"Field Selection" — repeated/map present iff non-empty (`FieldSize >
+>     0`), proto3 implicit-presence scalars present iff != default, proto2 /
+>     oneof / optional explicit presence via own-property assignment
+>     (protobufjs `field.hasPresence` selects the regime).
+>   - **null handling** (8 set_null + 9 wrapper to_null rows): `null` on a
+>     singular message-typed field clears it (except `google.protobuf.Value`
+>     → `null_value`); a `null` element of a repeated message field is
+>     pruned; a `null` value of a message-typed map field prunes the entry.
+>   - **timestamp/duration packing** (2 rows + the set_null prerequisites):
+>     a tagged CelTimestamp / CelDuration packs into the WKT message on
+>     singular / repeated / map-value assignment (`MaybeSetWktMessageField`
+>     mirror).
+>   - **range checks** (8 rows): int32/uint32/enum narrowing range-checks
+>     (`CheckInt32Range` / `CheckUint32Range`); an out-of-range assignment
+>     throws `ProtoFieldRangeError`, which `cel_set_field` converts to a
+>     CEL_ERROR(OVERFLOW) poison of the message slot (the `kOutOfRange` arm).
+>   - **float narrowing** (5 rows): `float`-typed fields narrow to float32
+>     on decode (`Math.fround`), so `FloatValue{value: 1.333} == 1.333` is
+>     false and `1e-50` rounds to zero, matching `static_cast<float>`.
+>   - **unset-nested-message reads** (6 rows): `cel_get_field` on an unset
+>     non-WKT singular message field serves the interned default instance
+>     (chainable, `NestedTestAllTypes{}.child…`), not null; `Any` and the
+>     JSON WKTs stay null-on-unset.
+>   - **mixed arena/host aggregate equality** (8 set_null rows + the 2
+>     `comparisons/bound` host-aggregate rows, an adjacent unlock):
+>     `cel_list_eq` / `cel_map_eq` now admit any origin pair via the
+>     resolving codec, mirroring `CelListEqImpl` / `NormalizedMapEq` — the
+>     runtime routes a pair there whenever either operand is host-backed.
+>
+> Remaining `eval_unimpl` (3 rows, predicates left in `runner.ts`): proto
+> message equality over a NaN field (2, `comparisons`) and the timestamp
+> timezone-string accessor overload (1, `timestamps`) — not proto-backing
+> work, deferred to a later sweep.
+>
 > Update 2026-06-12 (b): backlog item #3 (**type_value matcher**) shipped —
 > CEL_TYPE (kind 11) joined the eval binding's value surface as
 > `{ kind: 'type', name }` (`types.ts` + the `celvalue.ts` span-read arm +
