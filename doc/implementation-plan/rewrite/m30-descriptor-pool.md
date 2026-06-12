@@ -1,7 +1,11 @@
 # M30 — descriptor-pool plumbing through the C++ compiler APIs
 
-Status: in progress — drafted 2026-06-11. Slice A (C++ core + public API)
-implemented 2026-06-11 (uncommitted).
+Status: **shipped 2026-06-12.** All slices (A–F) landed on
+`m30-descriptor-pool`: pool-first descriptor plumbing (A), the C-ABI
+descriptor-set path (B), TS `descriptorSetBytes` (C), the CLI compile
+backend retired for the in-process wasm backend (D), the C ABI
+relocated to `bindings/c/compiler/` (E), and the proto `CompileRequest`
+wire format (F).
 
 > **Plan-vs-execution delta (2026-06-11).** The original §3 below designed
 > a *bytes-based schema variant* inside the frontend (`SchemaDescriptorSetBytes`
@@ -287,7 +291,7 @@ it with the oracle where a value is in question.
     > (Resolved in slice F: the proto `CompileRequest` landed the
     > length-delimited source, the 9 rows PASS, and the `embedded_nul`
     > category is gone.)
-  - **E — relocate the C ABI.** `bindings/c/` → `bindings/c/compiler/`
+  - **E — relocate the C ABI. ✅ DONE.** `bindings/c/` → `bindings/c/compiler/`
     (it is the *compiler* C ABI; leaves room for a future
     `bindings/c/eval`).  Move sources + BUILD targets + fix the
     `//bindings/c:...` label references across the tree.
