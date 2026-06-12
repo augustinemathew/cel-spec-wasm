@@ -89,6 +89,16 @@ absl::string_view AbiModuleName(AbiModule m);
 //                     the void-returning majority (every `_at_*` kernel
 //                     and every host trampoline writes through an
 //                     out-slot in linear memory).
+//
+// The i32-only signature shape is LOAD-BEARING, not incidental: it is
+// what licenses registering host trampolines through wasmtime's
+// unchecked (raw, unboxed) call ABI, which has no safe story for
+// GC'd reference types (see benchmark/ANALYSIS.md, candidate P0).
+// Values cross the boundary through linear-memory CelValue slots and
+// host-side handle-table indices — never as wasm reference types.
+// Extending this schema with a non-i32 parameter type is therefore an
+// ABI-design event, not a field addition: it must revisit the
+// unchecked registration in eval/internal/cel_host_wasmtime.cc.
 
 // Current ABI version.  Bumped on any change to the helper
 // catalogues below.  The cel.abi custom section in every emitted

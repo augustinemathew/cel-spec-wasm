@@ -79,6 +79,29 @@ unwind, the price of the sandbox boundary.  It explains every
 short-expression loss; ratios cross 1.0 as soon as the body does
 ~10+ ops of real work.
 
+## Post-cutover re-profile (2026-06-12) — the story moved
+
+All 21 cel_host trampolines now register through the unchecked ABI
+(`UncheckedHostThunk`, compile-time i32 proof).  Measured (5-rep
+medians, static, same load): `mega100` 19,680 → **13,585 ns (−31%)**,
+`select_depth16` −29%, single proto reads −17..−24%.  Gap to cel-cpp
+on `mega100`: 2.2× → **1.4×**.
+
+Fresh `mega100` flame (~85 ns/access now):
+
+| ns/access | bucket | next fix |
+|---:|---|---|
+| ~23 | field/dispatch machinery (incl. outlined fragments) | context/view work below + P3 |
+| ~14 | malloc/copy — incl. a `shared_ptr<HostMessageBacking>` intern per chain hop | P2 |
+| ~8 + WKT checks | reflection metadata + `UnpackWellKnownTime/WrapperMessage` per read | **P1 (next)** |
+| ~5 | `wasmtime_sharedmemory_data/_size` + `Size()` re-fetch per memory access | per-Eval base/size cache — REQUIRES the grow test (size grows monotonically; a stale cached size under-bounds new arena pages) |
+| ~2.5 | wasmtime call ABI | done — was ~29% |
+
+Priority after this data: **P1** (cache `FieldDescriptor*` + WKT/wrapper
+classification per field — pure host-side, no safety story), then the
+grow test + per-Eval base/size caching, then P2 (copies + backing
+intern), then P3.
+
 ## Corpus dedupe (applied 2026-06-11, after the published run)
 
 The 296-cell corpus had exactly three true duplicates, all `proto.yaml`
@@ -157,10 +180,21 @@ Three regimes fall out of the table:
 **P0 — switch host trampolines off the untyped wasmtime C-API path.**
 Every `cel_host.*` call boxes each param/result through
 `wasmtime_val_t`; ~29% of on-CPU time is pure calling-convention
-overhead.  Register via the unchecked/typed ABI
-(`wasmtime_func_new_unchecked`-style raw u64 array) instead.  Benefits
-every host crossing — proto reads, map lookups, string ops — and
-shrinks the per-Eval floor.
+overhead.  Register via `wasmtime_linker_define_func_unchecked`
+(raw `wasmtime_val_raw_t` array) instead.  Benefits every host
+crossing — proto reads, map lookups, string ops — and shrinks the
+per-Eval floor.
+
+> Measured ceiling (2026-06-11, `//benchmark/boundary:wasmtime_call_bench`
+> — a minimal 4×i32→i32 import called from a wasm loop): boxed
+> ~82 ns/call CPU vs unchecked ~7 ns/call — **~12×**; and for the
+> host→wasm entry (P5), `wasmtime_func_call` ~123 ns vs
+> `wasmtime_func_call_unchecked` ~27 ns — **~4.7×**.  Our cel_host
+> signatures are all-i32 (no externref), so the unchecked path is
+> safe.  Production change sites: `DefineHostFunc`
+> (eval/internal/cel_host_wasmtime.cc) + the trampoline arg unpack,
+> and the `$eval` / `cel_malloc` invocations in instance.cc /
+> WasmtimeArenaAllocator.
 
 **P1 — cache `FieldDescriptor*`/`Reflection*` per access site.**
 `ProtoBacking::ReadField` re-resolves the field by number on every

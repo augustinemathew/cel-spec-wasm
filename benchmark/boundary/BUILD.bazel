@@ -1,0 +1,25 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Wasm↔host call-boundary microbenches: the same logical call through
+# wasmtime's boxed vs unchecked ABIs, both directions.  Quantifies the
+# ceiling on the "typed/unchecked wasmtime calls" optimization
+# candidate (benchmark/ANALYSIS.md P0/P5) before any production glue
+# changes, and stays afterwards as the regression pin for the
+# boundary cost.
+#
+# `manual`-tagged; run explicitly, always -c opt:
+#   bazel run -c opt //benchmark/boundary:wasmtime_call_bench
+cc_binary(
+    name = "wasmtime_call_bench",
+    srcs = ["wasmtime_call_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//third_party/wasmtime",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark",
+    ],
+)
