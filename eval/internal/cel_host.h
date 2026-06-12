@@ -573,6 +573,28 @@ struct FieldRefEntry {
   mutable ResolvedFieldCache resolved;
 };
 
+// One hop of a batched select-chain path (`cel_get_field_path`).
+// `field_ref_id` indexes `CelHostBindings::field_refs` — the SAME
+// per-hop FieldRefEntry rows the unbatched per-hop `cel_get_field`
+// calls would reference, so each hop reuses that row's per-site
+// `ResolvedFieldCache` untouched.  `attribute_id` is the hop's
+// OPERAND attribute id (the value the unbatched call for that hop
+// would have passed), consulted per hop by the unknown-pattern
+// matcher so partial-eval semantics are byte-identical to the
+// per-hop path.  Wire source: `cel.abi.paths[].hops[]`.
+struct PathHopEntry {
+  uint32_t field_ref_id = 0;
+  uint32_t attribute_id = 0;
+};
+
+// path_ref_id → ordered hop list, innermost (root-adjacent) hop
+// first.  Index 0 of the table is the reserved sentinel (empty hop
+// list); codegen never emits it, and the trampoline maps an empty /
+// out-of-range path to field-not-found.
+struct PathRefEntry {
+  std::vector<PathHopEntry> hops;
+};
+
 // attribute_id → (variable, qualifiers) path for unknown-pattern match.
 // Populated when unknown-pattern matching is in scope; empty otherwise.
 struct AttributeEntry {
@@ -602,6 +624,11 @@ struct CelHostBindings {
   // sentinel; rows [1..N] are the ids `cel_make_message` calls
   // reference.
   absl::Span<const MessageTypeEntry> message_types;
+  // path_ref_id → batched select-chain hop lists.  Index 0 is the
+  // sentinel; rows [1..N] are the ids `cel_get_field_path` calls
+  // reference.  Declared last so existing positional aggregate
+  // initialisers keep compiling (empty span default).
+  absl::Span<const PathRefEntry> path_refs;
 };
 
 // Per-eval context; bundled to stay under the 6-param lint gate.
@@ -640,6 +667,35 @@ ABSL_MUST_USE_RESULT absl::Status CelHasFieldImpl(uint32_t out_slot,
                                                   uint32_t field_ref_id,
                                                   uint32_t attribute_id,
                                                   const TrampolineContext& ctx);
+
+// Batched select-chain read — ONE host crossing for a contiguous
+// message-typed kSelect chain (`cel_host.cel_get_field_path`).
+// Resolves `path_ref_id` against `ctx.bindings.path_refs` and walks
+// the hops entirely host-side: each intermediate hop stays a raw
+// `Reflection::GetMessage` step (no CelValue encode, no externref
+// intern, no wasm re-entry); only the FINAL hop's value is encoded
+// at `out_slot`, through the same encode tail `CelGetFieldImpl`
+// uses, so the result bytes are identical to N chained
+// `cel_get_field` calls.  Per-hop semantics parity:
+//   - 3VL absorption / non-message operand checks at entry match
+//     `RunFieldPrelude`;
+//   - per hop, field-ref resolution failure → kFieldNotFound, an
+//     unknown-pattern kFull match on (operand attr ⊕ field name) →
+//     CEL_UNKNOWN carrying that hop's attribute id — both before
+//     the read, in `RunFieldPrelude`'s order;
+//   - if a mid-chain hop's runtime read class is not kMessagePlain
+//     (dynamic-pool divergence from the static types codegen
+//     batched on), the full classified read runs and the next
+//     unbatched hop's prelude verdict is applied: a CEL_ERROR
+//     result propagates, any other non-message result poisons
+//     kTypeMismatch.  Backings created on that divergence path are
+//     interned (pinning them until Reset, exactly as the unbatched
+//     encode would).
+// Non-OK Status only on infrastructure failure.  ABI + eligibility
+// rules: `doc/implementation-plan/rewrite/wat-traces.md` §71.
+ABSL_MUST_USE_RESULT absl::Status CelGetFieldPathImpl(
+    uint32_t out_slot, uint32_t msg_slot, uint32_t path_ref_id,
+    const TrampolineContext& ctx);
 
 // Layer-2 entry point for the kHost arm of map indexing.
 // Reads the map slot's `ref_slot`, dereferences via

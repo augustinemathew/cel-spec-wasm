@@ -94,6 +94,11 @@ struct CelHostCallbackEnv {
   // Storage for bindings spans.  `bindings` references these.
   std::vector<FieldRefEntry> field_refs_storage;
   std::vector<AttributeEntry> attrs_storage;
+  // Batched select-chain paths (`cel.abi.paths[]`), consumed by the
+  // `cel_get_field_path` trampoline.  Hop field_ref_ids index
+  // `field_refs_storage`, so each hop shares that row's per-site
+  // resolved-field cache with the unbatched path.
+  std::vector<PathRefEntry> path_refs_storage;
   // type_id → resolved descriptor lookup, populated by
   // `BuildCelHostBindings` from `cel.abi.types[]` + the embedder-
   // supplied descriptor pool.  The trampoline reads this at

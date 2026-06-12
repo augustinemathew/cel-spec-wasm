@@ -147,6 +147,20 @@ void BuildCelHostBindings(const celwasm::abi::CelAbi& abi,
         AttributeEntry{a.variable(), std::move(qualifiers)});
   }
 
+  // Batched select-chain paths.  Hop field_ref_ids index
+  // `field_refs_storage`; the trampoline bounds-checks per hop, so a
+  // malformed wire id degrades to a clean field-not-found.
+  out.path_refs_storage.clear();
+  out.path_refs_storage.reserve(static_cast<size_t>(abi.paths_size()));
+  for (const celwasm::abi::PathEntry& p : abi.paths()) {
+    PathRefEntry entry;
+    entry.hops.reserve(static_cast<size_t>(p.hops_size()));
+    for (const celwasm::abi::PathHop& h : p.hops()) {
+      entry.hops.push_back(PathHopEntry{h.field_ref_id(), h.attribute_id()});
+    }
+    out.path_refs_storage.push_back(std::move(entry));
+  }
+
   // Resolve `cel.abi.types[]` FQNs against the descriptor pool.
   // A null pool (kept here for legacy callers) leaves every entry's
   // descriptor as nullptr; the trampoline surfaces those as a clean
@@ -172,6 +186,7 @@ void BuildCelHostBindings(const celwasm::abi::CelAbi& abi,
       absl::MakeConstSpan(out.attrs_storage),
       /*unknown_patterns=*/{},
       absl::MakeConstSpan(out.message_types_storage),
+      absl::MakeConstSpan(out.path_refs_storage),
   };
 }
 
@@ -368,6 +383,8 @@ namespace {
 constexpr HostTrampoline kHostTrampolines[] = {
     {"cel_get_field", &UncheckedHostThunk<CelGetFieldImpl>::Call,
      UncheckedHostThunk<CelGetFieldImpl>::kNumArgs},
+    {"cel_get_field_path", &UncheckedHostThunk<CelGetFieldPathImpl>::Call,
+     UncheckedHostThunk<CelGetFieldPathImpl>::kNumArgs},
     {"cel_has_field", &UncheckedHostThunk<CelHasFieldImpl>::Call,
      UncheckedHostThunk<CelHasFieldImpl>::kNumArgs},
     {"cel_map_lookup", &UncheckedHostThunk<CelMapLookupImpl>::Call,

@@ -656,6 +656,15 @@ absl::Status RegisterCelHostThreeArgTrampolines(wasmtime_linker_t* linker,
       !st.ok()) {
     return st;
   }
+  // `cel_host.cel_get_field_path(out_slot, msg_slot, path_ref_id)` —
+  // the batched proto select-chain read.  Stubs interpret the third
+  // arg as `path_ref_id`, NOT the CelHostThreeArgStub-default
+  // "key_or_index_slot".  See `wat/71_get_field_path.wat`.
+  if (auto st = RegisterOptionalThreeArg(
+          linker, "cel_get_field_path", input.cel_host_cel_get_field_path_stub);
+      !st.ok()) {
+    return st;
+  }
   // `cel_host.cel_wkt_unwrap_wrapper(out_slot, msg_slot,
   // wrapper_kind)`.  Same 3-i32-in / void-out shape as the
   // cel_map_lookup / cel_list_at trampolines above.  Stubs interpret the third arg as

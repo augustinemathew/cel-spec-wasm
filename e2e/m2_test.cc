@@ -405,6 +405,53 @@ TEST_F(SelectE2ETest, SelectThreeHopSelfRecursive) {
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
+// Depth-16 chain — the batched `cel_get_field_path` lowering covers
+// the whole contiguous message run in one host crossing (see
+// rewrite/wat-traces.md §71); the result must match the per-hop
+// semantics exactly.
+TEST_F(SelectE2ETest, SelectDepth16ChainBatchedSingleCrossing) {
+  auto c = CompilerWithHostMsg3Var();
+  ASSERT_THAT(c, IsOk());
+  std::string expr = "h";
+  for (int i = 0; i < 15; ++i) expr += ".inner";
+  expr += ".i64";
+  auto instance = CompilePlan(*c, expr);
+  HostMsg3 msg;
+  HostMsg3* cur = &msg;
+  for (int i = 0; i < 15; ++i) cur = cur->mutable_inner();
+  cur->set_i64(7);
+  Activation a;
+  a.Bind("h", Value::Message(msg));
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 7);
+}
+
+// proto3 default semantics through a batched chain: every unset
+// intermediate hop walks the default instance and the leaf returns
+// its default — identical to the per-hop lowering (langdef §"Field
+// Selection").
+TEST_F(SelectE2ETest, SelectChainUnsetIntermediatesReturnLeafDefault) {
+  auto c = CompilerWithHostMsg3Var();
+  ASSERT_THAT(c, IsOk());
+  auto instance = CompilePlan(*c, "h.inner.inner.inner.i64");
+  HostMsg3 msg;  // nothing set anywhere along the chain
+  Activation a;
+  a.Bind("h", Value::Message(msg));
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 0);
+}
+
+// String leaf off a deep batched chain — span payloads cross the
+// boundary through the arena exactly as the unbatched final hop's.
+TEST_F(SelectE2ETest, SelectDeepChainStringLeaf) {
+  auto c = CompilerWithHostMsg3Var();
+  ASSERT_THAT(c, IsOk());
+  auto instance = CompilePlan(*c, "h.inner.inner.inner.s");
+  HostMsg3 msg;
+  msg.mutable_inner()->mutable_inner()->mutable_inner()->set_s("deep");
+  Activation a;
+  a.Bind("h", Value::Message(msg));
+  EXPECT_EQ(*EvalOk(instance, a).AsString(), "deep");
+}
+
 // ──────────────────────────────────────────────────────────────
 //  has() — test-only select dispatch (Slice M2.D)
 //
@@ -459,6 +506,30 @@ TEST_F(HasE2ETest, NestedMessageUnsetReturnsFalse) {
   Activation a;
   a.Bind("c", Value::Message(msg));
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), false);
+}
+
+// Deep has(): the test_only outermost select keeps cel_has_field
+// while its >= 2-hop operand chain batches into one
+// cel_get_field_path crossing.  Presence semantics must be identical
+// to the per-hop lowering: set → true, unset (default-instance walk
+// at every hop) → false.
+TEST_F(HasE2ETest, DeepChainHasSetAndUnset) {
+  auto c = CompilerWithHostMsg3Var();
+  ASSERT_THAT(c, IsOk());
+  auto instance = CompilePlan(*c, "has(h.inner.inner.inner)");
+  HostMsg3 set_msg;
+  (void)set_msg.mutable_inner()->mutable_inner()->mutable_inner();
+  {
+    Activation a;
+    a.Bind("h", Value::Message(set_msg));
+    EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+  }
+  HostMsg3 unset_msg;  // chain of default instances
+  {
+    Activation a;
+    a.Bind("h", Value::Message(unset_msg));
+    EXPECT_EQ(*EvalOk(instance, a).AsBool(), false);
+  }
 }
 
 // Two-hop has: has(c.billing_address.city).  The first hop reads

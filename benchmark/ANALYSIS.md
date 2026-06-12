@@ -135,6 +135,48 @@ sampled frames (of 6,118) to **1** (of 4,499); `ReadCelValue` /
 order: CelGetFieldImpl dispatch/prelude, ProtoMap::Get +
 GetMetadata reflection, MapKeysEqual/memcmp, EncodeFieldResult.
 
+## P3 (batched select chains) — `cel_get_field_path` (2026-06-12)
+
+The "P3 — batch select chains into one crossing" candidate below is
+done.  Codegen now collapses every contiguous message-typed kSelect
+chain (>= 2 hops, non-test_only, intermediates statically
+`kMessagePlain` — optional / map / WKT intermediates keep the per-hop
+lowering) into ONE `cel_host.cel_get_field_path(out_slot, msg_slot,
+path_ref_id)` crossing; the interned `cel.abi.paths[]` row carries
+per-hop `(field_ref_id, attribute_id)` pairs, and the trampoline
+walks `Reflection::GetMessage` hop-to-hop in C++ — no intermediate
+CelValue encode, externref intern, or wasm re-entry.  Per-hop
+partial-eval unknown semantics are byte-identical (each hop keeps the
+attribute id its unbatched call would have passed).  Design surface:
+`rewrite/wat/71_get_field_path.wat` + `rewrite/wat-traces.md` §71.
+
+Measured (interleaved A/B vs the post-view-cache binary, 3-rep
+medians @ 2 s, static, two rounds):
+
+| cell | before (r1/r2) | after (r1/r2) | delta |
+|---|---|---|---|
+| `select_depth16` | 759 / 763 ns | 257 / 257 ns | **−66%** |
+| `policy.authz_deep8` | 1034 / 1016 ns | 599 / 601 ns | **−42%** |
+| `policy.mega100` | 7785 / 7775 ns | 6699 / 6651 ns | **−14%** |
+| `select_depth1` | 111 / 110 ns | 114 / 114 ns | +3 ns (single select untouched; code-layout shift) |
+| `proto.metadata_b` | 321 / 314 ns | 322 / 320 ns | parity |
+| `proto.tags_at2` | 264 / 263 ns | 265 / 273 ns | parity (r2 cv 3.8%) |
+
+Same-minute head-to-head: `select_depth16` celwasm-static **256 ns**
+vs cel-cpp **623 ns** — the depth sweep flipped from 1.3× slower to
+**2.4× faster** (per-hop cost is now a C++ reflection walk, not a
+boundary crossing); `mega100` 6,664 vs 9,965 ns (1.5× faster).
+Result labels identical across baseline/new binaries.
+
+Fresh `depth16` flame: the per-hop trampoline stack is gone;
+remaining order is `CelGetFieldPathImpl` + `Reflection::GetMessage`
++ `MatchesAnyUnknownPattern` (the per-hop empty-pattern-set probe —
+a future micro-win: hoist the `unknown_patterns.empty()` check above
+the hop loop) + per-Eval entry costs (`MarshalActivation`,
+wasmtime `Func::call`, `RegisteredType` churn → still P5).
+`mega100`'s flame is now dominated by its ~59 non-chain crossings
+(map lookups, list indexes, single reads) — also P5 territory.
+
 ## Corpus dedupe (applied 2026-06-11, after the published run)
 
 The 296-cell corpus had exactly three true duplicates, all `proto.yaml`
@@ -241,11 +283,13 @@ build an owning `Value::String(std::string)` (malloc + copy + free per
 read).  The bound message outlives the Eval — return views (or
 arena-back the transient in the existing eval arena).
 
-**P3 — batch select chains into one crossing.**  Depth sweep is linear
+**P3 — batch select chains into one crossing.**  ~~Depth sweep is linear
 at ~104 ns/hop because codegen emits one `cel_get_field` trampoline per
 hop (`select_depth16` = 1.7 µs).  Emit a single path-read host call
 carrying the field-number path; N crossings become 1.  Biggest lever
-for deep-nested policy shapes (`authz_deep8`, `mega100`).
+for deep-nested policy shapes (`authz_deep8`, `mega100`).~~ — done
+2026-06-12 (`cel_host.cel_get_field_path`; see "P3 (batched select
+chains)" above: depth16 −66%, authz_deep8 −42%, mega100 −14%).
 
 **P4 — arena aggregate-literal hoisting.**  Orthogonal to proto:
 `size.map100` at 134 µs (0.03× cel-cpp) rebuilds the literal per Eval

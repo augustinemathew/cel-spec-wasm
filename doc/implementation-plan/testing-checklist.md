@@ -3203,6 +3203,49 @@ logic ops carry the oracle-confirmed UNKNOWN-over-ERROR precedence
         `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest`
         (unknown-over-error, both orders, both ops).
 
+## Batched select chains — `cel_host.cel_get_field_path` (2026-06-12)
+
+Contiguous message-typed kSelect chains (>= 2 hops) lower to ONE host
+crossing; the `cel.abi.paths[]` row carries per-hop
+`(field_ref_id, attribute_id)` pairs so partial-eval unknown
+semantics stay byte-identical to the per-hop calls.  Eligibility
+rules + exclusions (optional / map / WKT intermediates, test_only):
+`rewrite/wat-traces.md` §71.  Conformance held 1973/0 per mode.
+
+  - [x] WAT-first ABI lock — `rewrite/wat/71_get_field_path.wat`,
+        run end-to-end via
+        `tools/wat_runner/wat_runner_test.cc::WatRunnerSelectPathTest`
+        (3 × i32 ABI round-trip, ONE crossing for a 3-hop chain).
+  - [x] codegen — `compiler/codegen/expr_lower_test.cc::
+        ExprLowerSelectTest`: chain batched (2-hop + 4-hop shapes,
+        path row hop order + per-hop attribute ids, no per-hop
+        cel_get_field emitted); single select NOT batched; has()
+        keeps cel_has_field while its operand chain batches; map
+        intermediate breaks the chain; map FINAL hop batches.
+  - [x] abi emit/parse — `abi/cel_abi_emit_test.cc`: paths[] dense
+        ids + sentinel, hop round-trip through proto parse, empty +
+        sentinel-only tables omitted (chain-free programs stay
+        wire-identical).
+  - [x] trampoline — `eval/internal/cel_host_test.cc::
+        CelGetFieldPathTest` (18 cases): batched-vs-per-hop parity
+        harness (RunBatchedPath vs RunUnbatchedChain over
+        identically-bound fixtures) across depth 2/4/16, string leaf,
+        unset-intermediate default walk, missing field mid-chain,
+        unknown-pattern prefix match (minted id parity), runtime
+        divergence arms (map mid-chain → kTypeMismatch; Any mid-chain
+        unpack-and-continue; unset Any → kTypeMismatch), non-proto
+        custom-backing virtual walk, 3VL entry absorption,
+        non-message operand, sentinel/OOR/empty path ids, OOR hop
+        field id, invalid externref slot, final-hop aggregate
+        encodes (map / message).
+  - [x] e2e, both link modes — `e2e/m2_test.cc` (depth-16 chain,
+        unset-intermediate leaf default, deep string leaf, deep
+        has() set/unset) + `e2e/m2_partial_eval_test.cc`
+        (exact-leaf-path unknown on a batched chain, sibling-leaf
+        pattern stays concrete; the pre-existing
+        ParentPathUnknown/WildcardMidPath cases now exercise the
+        batched path).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

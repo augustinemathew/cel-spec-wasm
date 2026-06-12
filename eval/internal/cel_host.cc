@@ -2083,6 +2083,235 @@ absl::Status CelHasFieldImpl(uint32_t out_slot, uint32_t msg_slot,
 }
 
 // ══════════════════════════════════════════════════════════════════
+// CelGetFieldPathImpl — batched select-chain read.
+// ══════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Resolve `path_ref_id` against `bindings.path_refs`.  Returns
+// nullptr on the sentinel (0), OOR, or an empty hop list — the
+// caller writes CEL_ERR_FIELD_NOT_FOUND (mirrors ResolveFieldRef's
+// open-set wire-data discipline; codegen never emits these).
+const PathRefEntry* absl_nullable ResolvePathRef(
+    const CelHostBindings& bindings, uint32_t path_ref_id) {
+  if (path_ref_id == 0) return nullptr;  // sentinel
+  if (path_ref_id >= bindings.path_refs.size()) return nullptr;
+  const PathRefEntry* path = &bindings.path_refs[path_ref_id];
+  if (path->hops.empty()) return nullptr;
+  return path;
+}
+
+// Mutable state of the batched walk.  `backing` is always valid for
+// the current hop; `msg` is its raw proto (nullptr → non-proto
+// custom backing, virtual ReadField path).  After a kMessagePlain
+// reflection step only `msg` advances — the sub-message is owned by
+// its parent, whose lifetime is pinned by the root's Activation
+// binding or by an interned backing (divergence path below).
+struct PathWalkState {
+  const HostMessageBacking* absl_nullable backing = nullptr;
+  const google::protobuf::Message* absl_nullable msg = nullptr;
+};
+
+// Advance the walk through `v`, the value an intermediate hop
+// produced on a non-kMessagePlain (divergence) read.  Applies the
+// verdict the NEXT unbatched hop's prelude would have applied to the
+// encoded value: kError propagates verbatim, any other non-message
+// kind poisons kTypeMismatch.  A message result is INTERNED before
+// continuing — the unbatched encode would have interned it too, and
+// the intern is what pins Any-unpack clones / Layer-1 sub-backings
+// until the externref table's per-Eval Reset.  Returns true when the
+// walk continues; false when out_slot has been finalised.
+absl::StatusOr<bool> AdvancePathWalk(const celwasm::Value& v, PathWalkState& st,
+                                     uint32_t out_slot,
+                                     const TrampolineContext& ctx) {
+  using K = celwasm::Value::Kind;
+  if (v.kind() == K::kError) {
+    if (auto s = EncodeFieldResult(v, out_slot, ctx); !s.ok()) return s;
+    return false;
+  }
+  if (v.kind() != K::kMessage) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    return false;
+  }
+  auto backing_or = v.SharedMessageBacking();
+  if (!backing_or.ok()) return backing_or.status();
+  std::shared_ptr<const HostMessageBacking> backing = *std::move(backing_or);
+  st.backing = backing.get();
+  st.msg = st.backing->message();
+  ctx.refs.Intern(std::move(backing));  // lifetime pin until Reset
+  return true;
+}
+
+// FINAL hop of the proto fast path — exactly CelGetFieldImpl's tail
+// (aggregate fast-encode, else classified read + encode), so the
+// batched result bytes are identical to the last unbatched call's.
+absl::Status FinishProtoPathFinalHop(
+    const FieldRefEntry& fre, const google::protobuf::FieldDescriptor& field,
+    const PathWalkState& st, uint32_t out_slot, const TrampolineContext& ctx) {
+  if (auto fast = TryEncodeAggregateFieldFast(*st.msg, field, fre.resolved,
+                                              out_slot, ctx);
+      fast.has_value()) {
+    return *fast;
+  }
+  auto v_or = ReadFieldClassified(*st.msg, field, fre.resolved);
+  if (!v_or.ok()) return v_or.status();
+  return EncodeFieldResult(*v_or, out_slot, ctx);
+}
+
+// One proto-fast-path hop.  Returns true when the walk is finished
+// (out_slot written — final hop, field-not-found, or a divergence
+// verdict); false to continue with the advanced state.
+absl::StatusOr<bool> RunProtoPathHop(const FieldRefEntry& fre, bool is_last,
+                                     PathWalkState& st, uint32_t out_slot,
+                                     const TrampolineContext& ctx) {
+  const google::protobuf::FieldDescriptor* field =
+      ResolveFieldThroughSiteCache(*st.msg, fre);
+  if (field == nullptr) {
+    if (auto s =
+            EncodeFieldResult(FieldNotFound(fre.field_name), out_slot, ctx);
+        !s.ok()) {
+      return s;
+    }
+    return true;
+  }
+  if (is_last) {
+    if (auto s = FinishProtoPathFinalHop(fre, *field, st, out_slot, ctx);
+        !s.ok()) {
+      return s;
+    }
+    return true;
+  }
+  if (fre.resolved.read_class == ProtoFieldReadClass::kMessagePlain) {
+    // The common batched step: stay in proto reflection, zero
+    // marshalling.  Sub-message lifetime: owned by *st.msg, whose
+    // owner chain is already pinned (see PathWalkState).
+    const google::protobuf::Reflection* refl = st.msg->GetReflection();
+    if (refl == nullptr) {
+      return absl::InternalError(
+          "CelGetFieldPathImpl: message has no reflection");
+    }
+    st.msg = &refl->GetMessage(*st.msg, field);
+    return false;
+  }
+  // Runtime divergence: the static types said plain message but the
+  // live descriptor disagrees (wrapper / Any / time / json / map /
+  // repeated / scalar).  Run the full classified read and apply the
+  // next-hop prelude verdict.
+  auto v_or = ReadFieldClassified(*st.msg, *field, fre.resolved);
+  if (!v_or.ok()) return v_or.status();
+  auto cont_or = AdvancePathWalk(*v_or, st, out_slot, ctx);
+  if (!cont_or.ok()) return cont_or.status();
+  return !*cont_or;
+}
+
+// One virtual-path hop (non-proto custom backing — JSON-like
+// embedder backings).  Same contract as RunProtoPathHop.
+absl::StatusOr<bool> RunVirtualPathHop(const FieldRefEntry& fre, bool is_last,
+                                       PathWalkState& st, uint32_t out_slot,
+                                       const TrampolineContext& ctx) {
+  auto v_or = st.backing->ReadField(static_cast<int>(fre.field_number),
+                                    fre.field_name, celwasm::CelType::Int());
+  if (!v_or.ok()) return v_or.status();
+  if (is_last) {
+    if (auto s = EncodeFieldResult(*v_or, out_slot, ctx); !s.ok()) return s;
+    return true;
+  }
+  auto cont_or = AdvancePathWalk(*v_or, st, out_slot, ctx);
+  if (!cont_or.ok()) return cont_or.status();
+  return !*cont_or;
+}
+
+// Entry prelude for the batched walk — same order as
+// RunFieldPrelude's steps 1-3 plus path resolution.
+// `sentinel_handled == true` → out_slot already populated.
+struct PathDispatchPrelude {
+  bool sentinel_handled = false;
+  CelValue msg_cv{};
+  const PathRefEntry* absl_nullable path = nullptr;
+};
+
+PathDispatchPrelude RunPathPrelude(uint32_t out_slot, uint32_t msg_slot,
+                                   uint32_t path_ref_id,
+                                   const TrampolineContext& ctx) {
+  PathDispatchPrelude p;
+  p.msg_cv = ctx.mem.ReadCelValue(msg_slot);
+  if (p.msg_cv.kind == CEL_UNKNOWN || p.msg_cv.kind == CEL_ERROR) {
+    ctx.mem.WriteCelValue(out_slot, p.msg_cv);
+    p.sentinel_handled = true;
+    return p;
+  }
+  if (p.msg_cv.kind != CEL_MESSAGE) {
+    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+    p.sentinel_handled = true;
+    return p;
+  }
+  p.path = ResolvePathRef(ctx.bindings, path_ref_id);
+  if (p.path == nullptr) {
+    WriteWireError(CEL_ERR_FIELD_NOT_FOUND, out_slot, ctx.mem);
+    p.sentinel_handled = true;
+  }
+  return p;
+}
+
+// Mint the 1-element UnknownSet a kFull pattern match produces —
+// carries the hop's OPERAND attribute id, exactly as the unbatched
+// per-hop call would (RunFieldPrelude step 5).
+absl::Status MintHopUnknown(uint32_t attribute_id, uint32_t out_slot,
+                            const TrampolineContext& ctx) {
+  CelValue unk{};
+  const uint32_t ids[] = {attribute_id};
+  if (auto s = EncodeUnknownSet(ids, ctx.alloc, &unk); !s.ok()) return s;
+  ctx.mem.WriteCelValue(out_slot, unk);
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::Status CelGetFieldPathImpl(uint32_t out_slot, uint32_t msg_slot,
+                                 uint32_t path_ref_id,
+                                 const TrampolineContext& ctx) {
+  const PathDispatchPrelude prelude =
+      RunPathPrelude(out_slot, msg_slot, path_ref_id, ctx);
+  if (prelude.sentinel_handled) return absl::OkStatus();
+
+  PathWalkState st;
+  for (size_t i = 0; i < prelude.path->hops.size(); ++i) {
+    const PathHopEntry& hop = prelude.path->hops[i];
+    // Per-hop prelude order parity (RunFieldPrelude steps 4-6):
+    // field-ref resolution and the unknown-pattern match come BEFORE
+    // the first hop's externref dereference.
+    const FieldRefEntry* fre = ResolveFieldRef(ctx.bindings, hop.field_ref_id);
+    if (fre == nullptr) {
+      WriteWireError(CEL_ERR_FIELD_NOT_FOUND, out_slot, ctx.mem);
+      return absl::OkStatus();
+    }
+    if (MatchesAnyUnknownPattern(ctx.bindings, hop.attribute_id,
+                                 fre->field_name)) {
+      return MintHopUnknown(hop.attribute_id, out_slot, ctx);
+    }
+    if (i == 0) {
+      st.backing = ctx.refs.Lookup(prelude.msg_cv.payload.msg_slot);
+      if (st.backing == nullptr) {
+        WriteWireError(CEL_ERR_HOST_ADAPTER_ERROR, out_slot, ctx.mem);
+        return absl::OkStatus();
+      }
+      st.msg = st.backing->message();
+    }
+    const bool is_last = i + 1 == prelude.path->hops.size();
+    auto done_or = st.msg != nullptr
+                       ? RunProtoPathHop(*fre, is_last, st, out_slot, ctx)
+                       : RunVirtualPathHop(*fre, is_last, st, out_slot, ctx);
+    if (!done_or.ok()) return done_or.status();
+    if (*done_or) return absl::OkStatus();
+  }
+  // Unreachable: the final iteration's is_last arm always finishes.
+  ABSL_CHECK(false) << "CelGetFieldPathImpl: walk fell off the hop list "
+                       "(path_ref_id="
+                    << path_ref_id << ")";
+  return absl::InternalError("unreachable");
+}
+
+// ══════════════════════════════════════════════════════════════════
 // Aggregate-op kHost trampolines.
 //
 // The seven dispatchers in `cel_runtime.c` (`cel_list_size` /

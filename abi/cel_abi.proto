@@ -173,6 +173,46 @@ message AttributeEntry {
   repeated string qualifiers = 3;
 }
 
+// One hop of a batched select-chain path (see PathEntry).
+//
+//   field_ref_id  index into `CelAbi.fields[]` — the SAME FieldEntry
+//                 row an unbatched `cel_get_field` call for this hop
+//                 would reference.  Codegen interns one FieldEntry
+//                 per hop (never deduplicated), so the eval side's
+//                 per-access-site resolved-field cache keys stay
+//                 1:1 with hops.
+//   attribute_id  index into `CelAbi.attributes[]` for this hop's
+//                 OPERAND attribute — exactly the attribute_id the
+//                 unbatched per-hop `cel_get_field` call would have
+//                 passed.  Per-hop because the ids differ along the
+//                 chain (every prefix has its own attribute row);
+//                 the trampoline's unknown-pattern match — and the
+//                 id a minted UnknownSet carries — is therefore
+//                 byte-identical to the per-hop path.
+message PathHop {
+  uint32 field_ref_id = 1;
+  uint32 attribute_id = 2;
+}
+
+// One row of the select-path intern table.  Populated by codegen
+// when a contiguous message-typed kSelect chain is lowered to a
+// single `cel_host.cel_get_field_path(out_slot, msg_slot,
+// path_ref_id)` call; consumed by the trampoline, which walks the
+// hops host-side and writes only the final hop's value.  See
+// `doc/implementation-plan/rewrite/wat-traces.md` §71 for the
+// batching eligibility rules and the per-byte contract.
+//
+//   id    dense intern index in [1, N]; 0 is the reserved sentinel
+//         (paths[0] is an empty placeholder row, mirroring
+//         FieldEntry/AttributeEntry/TypeEntry).
+//   hops  ordered innermost (root-adjacent) hop first; always
+//         length >= 2 when emitted by codegen (single selects keep
+//         the plain `cel_get_field` call).
+message PathEntry {
+  uint32 id = 1;
+  repeated PathHop hops = 2;
+}
+
 // One row of the message-type intern table.  Populated when
 // ResolvePass first encounters a `kStructExpr` with a non-empty
 // message_name; consumed by `Engine::Plan` to resolve
@@ -256,7 +296,13 @@ message CelAbi {
   // Bumping policy (mirrors the constant's docstring):
   //   - Helper renamed / removed / arity changed / return shape
   //     changed / namespace renamed   →  bump
-  //   - Helper added (additive)        →  no bump (older modules
+  //   - Helper added that emitted modules import unconditionally
+  //     (every `cel_host` row today — the compiler installs the
+  //     full import set, no lazy tracking)  →  bump (a new module
+  //     on an older engine would otherwise die in an opaque
+  //     wasmtime "unknown import" link error)
+  //   - Helper added that no module imports unless it uses it
+  //     (none today)                   →  no bump (older modules
   //                                       still load; they don't
   //                                       reference the new helper)
   uint32 runtime_abi_version = 6;
@@ -272,4 +318,13 @@ message CelAbi {
   // enum values skip validation (open-set wire data).  See
   // doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
   LinkMode link_mode = 7;
+
+  // Select-path intern table — one row per batched select chain
+  // (`cel_host.cel_get_field_path` call site).  Index 0 is the
+  // reserved sentinel.  Empty on programs with no batched chains;
+  // engines older than the field ignore it (proto3 unknown field),
+  // but such engines also lack the trampoline — the
+  // runtime_abi_version gate (v3) rejects the pairing cleanly
+  // before the link error could surface.
+  repeated PathEntry paths = 8;
 }

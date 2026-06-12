@@ -51,6 +51,18 @@ inline constexpr absl::string_view kCelHostGetFieldInternalName =
 inline constexpr absl::string_view kCelHostHasFieldInternalName =
     "cel_has_field";
 
+// cel_host.cel_get_field_path trampoline (Layer 3) — the batched
+// select-chain read.  Three-arg `(out_slot, msg_slot, path_ref_id)`;
+// `path_ref_id` indexes `cel.abi.paths[]`, whose row carries the
+// per-hop (field_ref_id, attribute_id) pairs.  Emitted by the
+// kSelect arm when a contiguous message-typed select chain of >= 2
+// hops is detected; the host walks the hops in C++ and writes only
+// the final hop's CelValue.  ABI + eligibility rules locked by
+// `doc/implementation-plan/rewrite/wat/71_get_field_path.wat` and
+// `rewrite/wat-traces.md` §71.
+inline constexpr absl::string_view kCelHostGetFieldPathInternalName =
+    "cel_get_field_path";
+
 // cel_host.cel_make_message trampoline (Layer 3).  Two-arg
 // `(type_id, out_slot)` — the host resolves type_id against the
 // per-Instance `cel.abi.types[]` lookup table, allocates a default
@@ -185,6 +197,28 @@ struct FieldRefRow {
   std::string owner_fqn;      // FQN of the owning message type, or ""
 };
 
+// One hop of a batched select-chain path.  `field_ref_id` indexes
+// the FieldRefRow table above (codegen interns one row per hop,
+// exactly as the unbatched per-hop calls would); `attribute_id` is
+// the hop's OPERAND attribute id — the value the unbatched
+// `cel_get_field` call for that hop would have passed as its fourth
+// argument.  Mirrors `celwasm.abi.PathHop` on the wire.
+struct PathHopRow {
+  uint32_t field_ref_id = 0;
+  uint32_t attribute_id = 0;
+};
+
+// One row of the select-path intern table, one per batched select
+// chain emitted by `LowerToEvalFunction`.  Index 0 is the reserved
+// sentinel (mirrors FieldRefRow); rows [1..N] are the ids the
+// emitted `cel_get_field_path` calls reference.  Hops are ordered
+// innermost (root-adjacent) first and are always >= 2 long when
+// emitted (single selects keep the plain `cel_get_field` call).
+// `BuildCelAbi` serialises this vector into `cel.abi.paths[]`.
+struct PathRefRow {
+  std::vector<PathHopRow> hops;
+};
+
 struct LoweringOptions {
   // Vestigial knob retained for source compatibility — the arena
   // lives in the wasi-libc dlmalloc heap and is sized at runtime,
@@ -203,6 +237,13 @@ struct LoweredFunction {
   // sentinel and `field_refs[1..N]` are the referenced rows.
   // Consumed by `BuildCelAbi`.
   std::vector<FieldRefRow> field_refs;
+
+  // Select-path intern table populated when the kSelect arm batches
+  // a contiguous message-typed chain into one `cel_get_field_path`
+  // call.  Same sentinel discipline as `field_refs`: row 0 is the
+  // reserved empty row, rows [1..N] are referenced path ids.
+  // Consumed by `BuildCelAbi`.
+  std::vector<PathRefRow> path_refs;
 };
 
 // Adds a nullary `$eval` function named `func_name` to `mod`.  The

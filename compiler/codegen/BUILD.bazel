@@ -236,6 +236,7 @@ cc_test(
         ":module",
         ":resolve_pass",
         "//testdata:e2e_fixture_cc_proto",
+        "//testdata:host_fixture_proto3_cc_proto",
         "//compiler/frontend:parse_and_check",
         "@binaryen//:binaryen",
         "@com_google_absl//absl/status",
