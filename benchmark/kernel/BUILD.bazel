@@ -1,0 +1,25 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Runtime kernel microbenches.  Links the NATIVE //runtime:cel_runtime
+# cc_library and calls kernels directly — bypasses wasmtime entirely, so
+# these numbers are raw kernel cost, not eval cost.  Their job is
+# regression LOCALISATION: when an eval-level number in
+# //benchmark/eval moves, the matching kernel BM says whether the
+# kernel or the trampoline/codegen layer is at fault.
+#
+# `manual`-tagged; run explicitly, always -c opt:
+#   bazel run -c opt //benchmark/kernel:kernel_bench
+cc_binary(
+    name = "kernel_bench",
+    srcs = ["kernel_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//runtime:cel_convert_double_format",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)

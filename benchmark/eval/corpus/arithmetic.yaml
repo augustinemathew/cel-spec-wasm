@@ -554,3 +554,53 @@ cells:
       b: { type: double, value: 2.0 }
     expected: { type: double, value: 1.5 }
     tags: [phase2, bench-shape]
+
+  # ── 1000-term mixed polynomial (the legacy bench/in_operator_bench.cc
+  #    long-arith shape) ──
+  # Term i is `var[i%10] * var[(i*7+3)%10]` summed over i in [0, 1000):
+  # the (i*7+3)%10 stride hits every var with no two adjacent terms
+  # identical, so a trivial CSE pass can't collapse the expression on
+  # either side (Binaryen on ours, the tree-walking evaluator on
+  # cel-cpp's).  1000 multiplications + 999 additions over 10 distinct
+  # int inputs bound to the first 10 primes — small enough that the
+  # int64 sum cannot overflow (each term <= 29*29; total 200000).
+  # Expected value computed offline: the term pattern repeats every 10
+  # terms, each block summing to 2000; 100 blocks = 200000.
+  - id: polyMix1000Terms
+    source: "a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g + a*d + b*a + c*h + d*e + e*b + f*i + g*f + h*c + i*j + j*g"
+    activation:
+      a: { type: int, value: 2 }
+      b: { type: int, value: 3 }
+      c: { type: int, value: 5 }
+      d: { type: int, value: 7 }
+      e: { type: int, value: 11 }
+      f: { type: int, value: 13 }
+      g: { type: int, value: 17 }
+      h: { type: int, value: 19 }
+      i: { type: int, value: 23 }
+      j: { type: int, value: 29 }
+    expected: { type: int, value: 200000 }
+    tags: [phase2, bench-shape]
+
+  # ── abc-abc 6-term shape, var/lit adjacency pair ──
+  # `a + b + c + a + b + c` with vars bound vs the literal twin
+  # `1 + 2 + 3 + 1 + 2 + 3`: identical call-graph shape, two activation
+  # forms — the pair isolates activation-marshaling cost.  These were
+  # hand-coded registrations in celwasm_bench.cc
+  # (BM_arith_intAdd_AbcAbcShape_{Vars,Lit}Today) before the corpus
+  # could express var/lit adjacency; the move renames them to
+  # BM_arith_abcAbcShape{Vars,Lit} and gives cel-cpp the pair for free
+  # (see OPERATORS.md).
+  - id: abcAbcShapeVars
+    source: "a + b + c + a + b + c"
+    activation:
+      a: { type: int, value: 1 }
+      b: { type: int, value: 2 }
+      c: { type: int, value: 3 }
+    expected: { type: int, value: 12 }
+    tags: [phase2, bench-shape]
+
+  - id: abcAbcShapeLit
+    source: "1 + 2 + 3 + 1 + 2 + 3"
+    expected: { type: int, value: 12 }
+    tags: [phase2, bench-shape, const-only]

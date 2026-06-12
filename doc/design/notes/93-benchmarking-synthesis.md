@@ -1,5 +1,13 @@
 # 93-benchmarking-synthesis — cross-component lens
 
+> **2026-06-11 restructure:** the two-tree split (bench/ vs
+> benchmark/) described below was dissolved; bench/ no longer exists.
+> Kernel localisation lives at //benchmark/kernel, component-boundary
+> at //benchmark/component, Compile/Plan at //benchmark/compiler, and
+> the comparative eval corpus at benchmark/eval. bench/README.md is
+> archived at doc/implementation-plan/rewrite/archive/bench-tree-readme.md.
+> Section references to bench/* below are historical.
+
 Lens pass over all per-component notes in this directory, synthesizing
 the raw material for the new benchmarking design doc. Primary source:
 `benchmarking.md`; bench-relevant facts also drawn from

@@ -1,0 +1,251 @@
+# Proto-message read surface — bench-shape cells.
+#
+# Per-op / per-field-kind / per-nesting proto reads: every cell binds
+# ONE message variable (`m` = celwasm.testdata.HostMsg3, `c` =
+# celwasm.testdata.Customer) via the loader's `{ type: message,
+# message_type, textproto }` activation form and reduces to a scalar
+# result (the parity hook — message-typed results aren't expressible
+# in `expected:`).
+#
+# Both bench mains parse the textproto against the generated
+# descriptor pool at registration time (`kDescriptorsLinked` keeps the
+# fixture descriptors linked in); the loader stores it as an opaque
+# string.
+#
+# Cell-id system (each family isolates one axis):
+#   read_* / cust_*    — per-field-kind singular reads (which CEL kind
+#                        costs what through the field trampoline?)
+#   select_depth*      — nesting-depth sweep (per-hop cost of a select
+#                        chain)
+#   rep_* / tags_at2   — repeated-field indexing (cel_host.cel_list_at)
+#   map_* / metadata_b — proto map lookup (cel_host.cel_map_lookup) per
+#                        key kind
+#   pair_*_arena       — arena-literal halves of the arena-vs-proto
+#                        twins; the proto halves are metadata_b and
+#                        tags_at2 (deduped 2026-06-11 — see ANALYSIS.md) for the
+#                        same operation (the dispatch-crossover pair
+#                        from the legacy bench/pipeline_bench.cc
+#                        BM_Eval_{ListAt,MapLookup}_{Arena,Proto})
+#   construct_name     — message construction + immediate select
+#   reads{1,5,10}      — read-width sweep: N distinct singular reads
+#                        off one bound message, `+`-combined to one int
+#
+# Surface `proto` maps to BM prefix `proto` (cell id `read_i64` →
+# `BM_proto_read_i64`).
+
+schema_version: 1
+surface: proto
+
+cells:
+
+
+  - id: read_s
+    source: 'm.s'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 's: "hello"' }
+    expected: { type: string, value: "hello" }
+    tags: [phase2, bench-shape]
+
+  - id: read_b
+    source: 'm.b'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'b: true' }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: read_f64
+    source: 'm.f64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'f64: 3.5' }
+    expected: { type: double, value: 3.5 }
+    tags: [phase2, bench-shape]
+
+  - id: read_u64
+    source: 'm.u64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'u64: 42' }
+    expected: { type: uint, value: 42 }
+    tags: [phase2, bench-shape]
+
+  # ── Customer equivalents (the e2e-fixture domain shape) ──
+  - id: cust_name
+    source: 'c.name'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'name: "Ada"' }
+    expected: { type: string, value: "Ada" }
+    tags: [phase2, bench-shape]
+
+  - id: cust_age
+    source: 'c.age'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'age: 38' }
+    expected: { type: int, value: 38 }
+    tags: [phase2, bench-shape]
+
+  - id: cust_is_premium
+    source: 'c.is_premium'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'is_premium: true' }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # ── nesting-depth sweep: per-hop cost of a select chain ──
+  - id: select_depth1
+    source: 'm.i64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'i64: 7' }
+    expected: { type: int, value: 7 }
+    tags: [phase2, bench-shape]
+
+  - id: select_depth2
+    source: 'm.inner.i64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'inner { i64: 7 }' }
+    expected: { type: int, value: 7 }
+    tags: [phase2, bench-shape]
+
+  - id: select_depth4
+    source: 'm.inner.inner.inner.i64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'inner { inner { inner { i64: 7 } } }' }
+    expected: { type: int, value: 7 }
+    tags: [phase2, bench-shape]
+
+  - id: select_depth8
+    source: 'm.inner.inner.inner.inner.inner.inner.inner.i64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'inner { inner { inner { inner { inner { inner { inner { i64: 7 } } } } } } }' }
+    expected: { type: int, value: 7 }
+    tags: [phase2, bench-shape]
+
+  - id: select_depth16
+    source: 'm.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.i64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'inner { inner { inner { inner { inner { inner { inner { inner { inner { inner { inner { inner { inner { inner { inner { i64: 7 } } } } } } } } } } } } } } }' }
+    expected: { type: int, value: 7 }
+    tags: [phase2, bench-shape]
+
+  # ── repeated-field indexing ──
+  - id: rep_i32_at0
+    source: 'm.rep_i32[0]'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'rep_i32: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]' }
+    expected: { type: int, value: 10 }
+    tags: [phase2, bench-shape]
+
+  - id: rep_i32_at9
+    source: 'm.rep_i32[9]'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'rep_i32: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]' }
+    expected: { type: int, value: 19 }
+    tags: [phase2, bench-shape]
+
+  - id: rep_msg_at1_s
+    source: 'm.rep_msg[1].s'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'rep_msg { s: "zero" } rep_msg { s: "one" } rep_msg { s: "two" }' }
+    expected: { type: string, value: "one" }
+    tags: [phase2, bench-shape]
+
+  # The exact legacy bench/pipeline_bench.cc BM_Eval_ListAt_Proto shape
+  # (5 tags alpha..epsilon, index 2).
+  - id: tags_at2
+    source: 'c.tags[2]'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'tags: ["alpha", "beta", "gamma", "delta", "epsilon"]' }
+    expected: { type: string, value: "gamma" }
+    tags: [phase2, bench-shape]
+
+  # ── proto map lookups, per key kind ──
+  - id: map_str_i32
+    source: 'm.str_to_i32["b"]'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'str_to_i32 { key: "a" value: 1 } str_to_i32 { key: "b" value: 2 } str_to_i32 { key: "c" value: 3 }' }
+    expected: { type: int, value: 2 }
+    tags: [phase2, bench-shape]
+
+  - id: map_i64_str
+    source: 'm.i64_to_str[2]'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'i64_to_str { key: 1 value: "one" } i64_to_str { key: 2 value: "two" } i64_to_str { key: 3 value: "three" }' }
+    expected: { type: string, value: "two" }
+    tags: [phase2, bench-shape]
+
+  - id: map_str_msg_i64
+    source: 'm.str_to_msg["k"].i64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'str_to_msg { key: "k" value { i64: 42 } } str_to_msg { key: "x" value { i64: 1 } }' }
+    expected: { type: int, value: 42 }
+    tags: [phase2, bench-shape]
+
+  # The exact legacy bench/pipeline_bench.cc BM_Eval_MapLookup_Proto
+  # shape (3 metadata entries a/b/c).
+  - id: metadata_b
+    source: 'c.metadata["b"]'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'metadata { key: "a" value: "1" } metadata { key: "b" value: "2" } metadata { key: "c" value: "3" }' }
+    expected: { type: string, value: "2" }
+    tags: [phase2, bench-shape]
+
+  # ── arena-vs-proto dispatch-crossover pairs ──
+  # Same operation (index a list / look up a map by key) on an arena
+  # literal vs the equivalent proto-backed field: arena origins ride
+  # the pure-wasm fast path, proto origins the host trampoline.  The
+  # proto twins repeat the tags_at2 / metadata_b shapes under pair_*
+  # ids so the pairing is discoverable by id prefix.
+  - id: pair_list_arena
+    source: '[10, 20, 30, 40, 50][2]'
+    expected: { type: int, value: 30 }
+    tags: [phase2, bench-shape, const-only]
+
+
+  - id: pair_map_arena
+    source: '{"a": 1, "b": 2, "c": 3}["b"]'
+    expected: { type: int, value: 2 }
+    tags: [phase2, bench-shape, const-only]
+
+
+  # ── message construction + immediate select ──
+  # The legacy bench/pipeline_bench.cc kStructExpr shape, select-
+  # reduced so the result stays scalar.
+  - id: construct_name
+    source: 'celwasm.testdata.Customer{name: "Ada"}.name'
+    expected: { type: string, value: "Ada" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+
+  - id: reads5
+    source: 'm.i32 + m.i64 + m.si32 + m.si64 + m.sfx32'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'i32: 1 i64: 2 si32: 3 si64: 4 sfx32: 5 sfx64: 6' }
+    expected: { type: int, value: 15 }
+    tags: [phase2, bench-shape]
+
+  - id: reads10
+    source: 'm.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'i32: 1 i64: 2 si32: 3 si64: 4 sfx32: 5 sfx64: 6' }
+    expected: { type: int, value: 31 }
+    tags: [phase2, bench-shape]

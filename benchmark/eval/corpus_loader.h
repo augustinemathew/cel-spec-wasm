@@ -11,21 +11,44 @@
 // corpus drive both binaries (the cel-cpp binary cannot link any
 // first-party `//eval/...` target — see DESIGN.md §5.1, §8).
 //
+// Activation entry forms the loader accepts:
+//
+//   * Scalar:    `a: { type: int, value: 42 }` (int|uint|double|bool|
+//     string|bytes|null).
+//   * List (explicit):  `xs: { type: list, elem: int, values: [1, 2, 3] }`
+//     — `elem` is any scalar kind; `values` items parse per the elem
+//     kind with the same rules as a scalar `value`.
+//   * List (generated): `xs: { type: list, elem: int, gen: { range: N } }`
+//     expands to `[0 .. N-1]`;
+//     `perms: { type: list, elem: string,
+//               gen: { template: "perm%07d", count: N } }`
+//     expands the single %d-family directive (`%d` or `%0<width>d`,
+//     zero-padded) with the index `[0 .. N-1]`.  Generated lists are
+//     expanded EAGERLY at load time — a `range: 1000000` cell
+//     materialises one million literals; bench startup memory is an
+//     accepted cost (the bound-list benches need lists that big).
+//   * Message:   `c: { type: message,
+//                      message_type: "celwasm.testdata.Customer",
+//                      textproto: 'name: "Ada"' }`
+//     — the loader stores `message_type` + the raw textproto TEXT and
+//     validates only that both are non-empty.  It does NOT parse the
+//     textproto (that would need a protobuf dep and break comparator
+//     neutrality); each bench main parses it at registration time.
+//
 // Current limitations (documented up front so callers don't have to
 // rediscover them):
 //
-//   * **Activation values are scalar-only today.**  `CelValueLiteral`
-//     models lists and maps recursively, but `LoadCorpus` only parses
-//     scalar `activation` entries (the current corpus YAMLs ship only
-//     scalars).  When the corpus grows list/map activations, the
-//     YAML→literal conversion must be extended; the literal struct
-//     itself is already shaped for it.
+//   * **Map activations are not supported.**  `CelValueLiteral` models
+//     maps, but `LoadCorpus` rejects `type: map` activation entries.
+//     List elements are scalar-only (no list-of-list / list-of-message).
 //
 //   * **Source-variable check is a heuristic, not a CEL parser.**
 //     The validator that asserts every variable in `source` is bound
 //     in `activation` (and vice versa) does a simple identifier scan,
 //     skipping a small allowlist of CEL literals and reserved words
-//     (`true`, `false`, `null`, `in`).  It is good enough for the
+//     (`true`, `false`, `null`, `in`) plus any identifier immediately
+//     preceded by `.` (a field selection like `c.name` must not
+//     demand a binding for `name`).  It is good enough for the
 //     short arithmetic / comparison expressions in the phase-1
 //     corpus, but it will misclassify identifiers that double as
 //     function or macro names (e.g. `size`, `has`, `matches`).
@@ -61,20 +84,22 @@ struct CelValueLiteral {
     kNull,
     kList,
     kMap,
+    kMessage,
   };
 
   Kind kind = Kind::kNull;
 
   // Exactly one of the payload fields below is meaningful per `kind`:
-  //   kInt    -> int_value
-  //   kUint   -> uint_value
-  //   kDouble -> double_value
-  //   kBool   -> bool_value
-  //   kString -> string_value
-  //   kBytes  -> string_value  (raw bytes; UTF-8 not assumed)
-  //   kNull   -> (none)
-  //   kList   -> list_value
-  //   kMap    -> map_value  (insertion-ordered key/value pairs)
+  //   kInt     -> int_value
+  //   kUint    -> uint_value
+  //   kDouble  -> double_value
+  //   kBool    -> bool_value
+  //   kString  -> string_value
+  //   kBytes   -> string_value  (raw bytes; UTF-8 not assumed)
+  //   kNull    -> (none)
+  //   kList    -> list_value (+ list_elem_kind)
+  //   kMap     -> map_value  (insertion-ordered key/value pairs)
+  //   kMessage -> string_value (raw textproto text) + message_type
   std::int64_t int_value = 0;
   std::uint64_t uint_value = 0;
   double double_value = 0.0;
@@ -82,6 +107,17 @@ struct CelValueLiteral {
   std::string string_value;
   std::vector<CelValueLiteral> list_value;
   std::vector<std::pair<CelValueLiteral, CelValueLiteral>> map_value;
+
+  // kMessage only: the fully-qualified proto message type name the
+  // textproto in `string_value` parses as (e.g.
+  // "celwasm.testdata.Customer").
+  std::string message_type;
+
+  // kList only: the scalar kind of every element, stamped by the
+  // loader from the YAML `elem` field.  Lets a backend derive the
+  // declared `list<T>` type without inspecting elements (which an
+  // explicit empty `values` list doesn't have).
+  Kind list_elem_kind = Kind::kNull;
 };
 
 // A single named activation entry: the variable name as it appears
@@ -115,6 +151,14 @@ struct Cell {
 //     (these break `--benchmark_filter` regex usage).
 //   * Duplicate `(surface, id)` pair across all files.
 //   * Unknown `expected.type` / activation entry type.
+//   * Malformed list entry: missing or non-scalar `elem`; both or
+//     neither of `values` / `gen`; `gen` with both or neither of
+//     `range` / (`template` + `count`); `range` / `count` < 1; a
+//     `values` item that fails the elem-kind parse; a `template`
+//     without exactly one %d-family directive.
+//   * Malformed message entry: missing or empty `message_type` /
+//     `textproto`.  (Textproto VALIDITY is checked by the bench
+//     mains at registration — the loader has no protobuf dep.)
 //   * Variable mentioned in `source` is not in `activation`
 //     (unless the cell carries the `skip-source-check` tag).
 //   * Variable mentioned in `activation` is not in `source`.

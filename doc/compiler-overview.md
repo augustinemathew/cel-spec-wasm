@@ -67,9 +67,8 @@ conformance/    — harness that runs the cel-spec conformance corpus
                   against the pipeline.  See conformance/README.md.
 e2e/            — full-pipeline integration tests (wasmtime-driven),
                   plus manual-tagged gates like optimize_test.
-bench/          — Google Benchmark microbenches (kernel + pipeline).
-                  See bench/README.md.
-benchmark/      — cross-implementation comparison harness (vs cel-cpp).
+benchmark/      — comparative benchmark corpus + compiler/kernel/component
+                  tiers; see benchmark/README.md.
 testdata/       — shared proto fixtures.
 spec/           — cel-spec heritage: the .textproto conformance corpus
                   under spec/tests/.
@@ -110,8 +109,8 @@ each call site around them, not around `Compile()` alone.
        │                                 of each call.
 ```
 
-The benches under `bench/` are structured around these boundaries —
-re-read `bench/README.md` if you need a perf number anchored to a
+The benches under `benchmark/` are structured around these boundaries —
+re-read `benchmark/README.md` if you need a perf number anchored to a
 specific layer.
 
 ## Quickstart
@@ -399,7 +398,7 @@ been done yet.
 ### 7. How big are the artifacts?
 
 Measured numbers as of 2026-05-15, darwin-arm64, `-c opt` build.
-Reproduce via `bazel run -c opt //bench:program_size_main`.
+Reproduce via `bazel run -c opt //benchmark/compiler:program_size_main`.
 
 > **These are `LinkMode::kDynamic` numbers** — the small expr module
 > that imports the shared runtime.  Under the default
@@ -590,7 +589,9 @@ The main knobs:
     the emitted EXPR module before serialization.  0 = no-op (byte-
     identical output, preserves codegen golden tests).  2 = canonical
     pipeline; ~2-3× the Compile cost but cuts Eval time roughly in
-    half on chain-heavy bodies (see `bench/README.md` for the table).
+    half on chain-heavy bodies (see
+    `doc/implementation-plan/rewrite/archive/bench-tree-readme.md` for
+    the table).
     Recommended production setting is 2 on the request path;
     Compile cost amortises across many Eval calls.
   - **`link_mode`** (default `kStatic`) — whether the runtime helpers
@@ -675,7 +676,8 @@ discipline.
 
 ## Perf
 
-`bench/README.md` has the full table.  Headline numbers as of
+`doc/implementation-plan/rewrite/archive/bench-tree-readme.md` has the
+full table.  Headline numbers as of
 2026-05-15, darwin-arm64, `-c opt` build:
 
   - Kernel microbench leaves (`cel_int_add_at_vv`, `cel_int_eq_at_vv`,

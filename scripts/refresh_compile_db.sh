@@ -34,8 +34,8 @@ cd "$(git rev-parse --show-toplevel)"
 # third_party/cel-cpp loads an undeclared repo).  Two forms: space-joined
 # for `bazel build` command lines, `+`-joined for aquery/query union
 # strings (Q3).
-PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //bench/... //benchmark/... //testdata/... //spec/..."
-PROJ_UNION="//compiler/... + //eval/... + //shared/... + //abi/... + //runtime/... + //tools/... + //conformance/... + //e2e/... + //bench/... + //benchmark/... + //testdata/... + //spec/..."
+PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //benchmark/... //testdata/... //spec/..."
+PROJ_UNION="//compiler/... + //eval/... + //shared/... + //abi/... + //runtime/... + //tools/... + //conformance/... + //e2e/... + + //benchmark/... + //testdata/... + //spec/..."
 
 if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   echo "warning: hedron_compile_commands is not declared in MODULE.bazel." >&2
@@ -45,7 +45,7 @@ if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   # for the project packages and reformats it as compile_commands.json. This
   # works without any MODULE.bazel changes but is noticeably slower.
   #
-  # `manual`-tagged targets (e.g. //bench:kernel_bench,
+  # `manual`-tagged targets (e.g. //benchmark/eval:celwasm_bench,
   # //conformance:run_conformance, the wasmtime-gated
   # //eval:instance_test, …) are excluded by `:all` /
   # `...` wildcard expansion at the build/test level.  aquery's

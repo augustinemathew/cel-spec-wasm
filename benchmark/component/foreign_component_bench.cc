@@ -32,8 +32,8 @@
 // `cel_runtime.wasm`; bench itself under `bazel run -c opt`.
 //
 // `manual`-tagged — invoke explicitly:
-//   bazel run -c opt //bench:foreign_component_bench
-//   bazel run -c opt //bench:foreign_component_bench -- \
+//   bazel run -c opt //benchmark/component:foreign_component_bench
+//   bazel run -c opt //benchmark/component:foreign_component_bench -- \
 //       --benchmark_filter=BM_Eval_ForeignComponent \
 //       --benchmark_repetitions=5 --benchmark_report_aggregates_only=true
 
@@ -90,9 +90,8 @@ const std::vector<uint8_t>& DemoComponentBytes() {
     ABSL_CHECK(!path.empty()) << "demo_component.wasm not in runfiles";
     std::ifstream f(path, std::ios::binary);
     ABSL_CHECK(f.is_open()) << "open " << path;
-    return new std::vector<uint8_t>(
-        (std::istreambuf_iterator<char>(f)),
-        std::istreambuf_iterator<char>());
+    return new std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
+                                    std::istreambuf_iterator<char>());
   }();
   return *bytes;
 }
@@ -111,25 +110,25 @@ CelfnType Prim(CelfnType::Kind k) {
 constexpr absl::string_view kDemoWitInterface = "cel:customfn/fns@0.1.0";
 
 FunctionLibrary BuildAddLib() {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .SetWitInterface(kDemoWitInterface)
-          .AddForeignComponent(
-              "add", Prim(CelfnType::Kind::kInt),
-              {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-               CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .SetWitInterface(kDemoWitInterface)
+                    .AddForeignComponent(
+                        "add", Prim(CelfnType::Kind::kInt),
+                        {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
+                         CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
 
 FunctionLibrary BuildLenLib() {
-  auto lib_or = FunctionLibrary::Builder()
-                    .SetWitInterface(kDemoWitInterface)
-                    .AddForeignComponent(
-                        "len", Prim(CelfnType::Kind::kInt),
-                        {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .SetWitInterface(kDemoWitInterface)
+          .AddForeignComponent(
+              "len", Prim(CelfnType::Kind::kInt),
+              {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
+          .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -156,9 +155,9 @@ FunctionLibrary BuildLenLibAsHost() {
   return *std::move(lib_or);
 }
 
-Program CompileOrDie(absl::string_view src, const FunctionLibrary& lib,
-                     absl::Span<const std::pair<absl::string_view, CelType>>
-                         vars) {
+Program CompileOrDie(
+    absl::string_view src, const FunctionLibrary& lib,
+    absl::Span<const std::pair<absl::string_view, CelType>> vars) {
   Compiler::Builder b;
   for (const auto& [name, ty] : vars) {
     b.DeclareVariable(std::string(name), ty);
@@ -194,9 +193,8 @@ Instance PlanOrDie(Engine& engine, const Program& prog) {
 
 void BM_Eval_ForeignComponent_AddIntInt(benchmark::State& state) {
   auto lib = BuildAddLib();
-  Program prog = CompileOrDie(
-      "add(a, b)", lib,
-      {{"a", CelType::Int()}, {"b", CelType::Int()}});
+  Program prog = CompileOrDie("add(a, b)", lib,
+                              {{"a", CelType::Int()}, {"b", CelType::Int()}});
   auto engine = NewEngine();
   ABSL_CHECK_OK(engine->AddComponent(DemoComponentBytes(), lib));
   Instance inst = PlanOrDie(*engine, prog);
@@ -213,13 +211,13 @@ BENCHMARK(BM_Eval_ForeignComponent_AddIntInt);
 
 void BM_Eval_HostFn_AddIntInt(benchmark::State& state) {
   auto lib = BuildAddLibAsHost();
-  Program prog = CompileOrDie(
-      "add(a, b)", lib,
-      {{"a", CelType::Int()}, {"b", CelType::Int()}});
+  Program prog = CompileOrDie("add(a, b)", lib,
+                              {{"a", CelType::Int()}, {"b", CelType::Int()}});
   auto engine = NewEngine();
   ABSL_CHECK_OK(engine->AddTypedFunction(
-      "add_int_int",
-      [](int64_t a, int64_t b) -> absl::StatusOr<int64_t> { return a + b; }));
+      "add_int_int", [](int64_t a, int64_t b) -> absl::StatusOr<int64_t> {
+        return a + b;
+      }));
   Instance inst = PlanOrDie(*engine, prog);
   Activation act;
   act.Bind("a", Value::Int(7));

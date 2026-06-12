@@ -4,7 +4,7 @@
 // the hot loop and the arena pre-reset so the timed window is just the
 // kernel call.
 //
-// Coverage (matches the milestone scope listed in `bench/README.md`):
+// Coverage (one BM per runtime kernel family):
 //
 //   - Arithmetic     — cel_int_add / mul / div, cel_double_add.
 //   - Comparison     — cel_int_eq, cel_numeric_eq (cross-type ladder),

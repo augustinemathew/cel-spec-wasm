@@ -95,9 +95,18 @@ extend the corpus, the published numbers can only honestly say
 
 ## 2. Non-goals
 
-- **Not** a replacement for `bench/`.  That tree's kernel µbenches
-  + pipeline shape probes remain for celwasm-vs-itself regression
-  localisation.
+- **Not** a replacement for celwasm-vs-itself regression localisation.
+  The kernel µbenches and pipeline shape probes that role needs live in
+  the non-comparative tiers of this same tree: `benchmark/kernel/`,
+  `benchmark/compiler/`, `benchmark/component/`.
+
+  > Plan-vs-execution delta (2026-06-11): at design time those probes
+  > lived in a separate top-level `bench/` tree.  `bench/` was
+  > dissolved on 2026-06-11 — eval-shape benches became corpus cells
+  > here, Compile/Plan benches moved to `benchmark/compiler/`, the
+  > kernel µbenches to `benchmark/kernel/`, the component-boundary
+  > bench to `benchmark/component/`.  Mentions of `bench/` elsewhere in
+  > this doc are historical.
 - **Not** a custom benchmarking framework.  **Google Benchmark**
   does iteration scaling, variance reporting, JSON output, and
   `tools/compare.py` for diffing runs.  We use it.  We do not
@@ -777,6 +786,18 @@ from publishing numbers.
 
 ~200 LOC Python script.  Post-run only — no build coupling.
 
+> As-shipped (2026-06-11): `benchmark/eval/report.py` implements this
+> section, generalised to N comparators (`--json name=path` repeated;
+> shipped columns: celwasm-dynamic, celwasm-static, cel-cpp, with
+> `--baseline cel-cpp`).  Results land under `benchmark/eval/results/`
+> (`<date>-<host>.{md,csv}` committed, `raw/` gitignored) and
+> `--update-readme` rewrites the marker-delimited Results section of
+> `benchmark/README.md`; `benchmark/eval/run.sh` drives the whole
+> run→report→publish cycle.  The interim `report.sh` prototype was
+> removed the same day.  Parity tagging (§12.2) is implemented off the
+> `result=` labels both mains stamp, not a separate parity_check
+> binary.
+
 ### 12.1  Input
 
 Two Google Benchmark JSON files (one per comparator).  Optional:
@@ -1088,10 +1109,12 @@ CI integration after Phase 1 is stable.
 
 ## 20. References
 
-- `bench/README.md` — as-shipped celwasm-vs-self numbers + accounting
-  for CEL_LOG_DISABLED / opt-level / LTO.
-- `bench/in_operator_cel_cpp_bench.cc` — proven cel-cpp standalone-TU
-  pattern.
+- `doc/implementation-plan/rewrite/archive/bench-tree-readme.md` —
+  archived `bench/` README: as-shipped celwasm-vs-self numbers +
+  accounting for CEL_LOG_DISABLED / opt-level / LTO.
+- `benchmark/eval/celcpp_bench.cc` — the proven cel-cpp standalone-TU
+  pattern (originally established by `bench/in_operator_cel_cpp_bench.cc`,
+  deleted with the `bench/` tree).
 - cel-cpp: `third_party/cel-cpp/runtime/` (vendored via
   `third_party/fetch_cel_cpp.sh`).
 - Google Benchmark: https://github.com/google/benchmark — the

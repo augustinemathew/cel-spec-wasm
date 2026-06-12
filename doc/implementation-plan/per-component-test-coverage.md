@@ -91,7 +91,7 @@ exercises the slice's surface runs green.
 | `//eval:instance_test` | `Instance::Eval`, `Instance::PartialEval`, decoder, activation marshal, full Compile→Plan→Eval | Any change to compile / engine / instance / value / activation |
 | `//eval:engine_test` | `Engine::Plan`, runtime instantiation, linker wiring | Any change to engine, host imports, runtime exports |
 | `//eval:cel_host_test` | Layer-1 `ProtoBacking`, Layer-2 trampolines (`CelGetFieldImpl`, `CelHasFieldImpl`, `CelMapLookupImpl`) | Any cel_host change |
-| `//bench:cel_pipeline_bench` | Pipeline-stage perf bench | Major pipeline change (regression catch) |
+| `//benchmark/compiler:stage_bench` | Pipeline-stage perf bench (per-stage + cold/warm-start) | Major pipeline change (regression catch) |
 | `//e2e:m<N>_test` | The milestone's e2e suite | Every feature in milestone N |
 | `//e2e:eval_test` | Cross-cutting eval shapes (legacy compiler) | Compatibility check | <!-- FLAG: no `eval_test` target exists under e2e/ (only m<N>_test + optimize_test + program_roundtrip_test + known_bugs_test); this row may be stale — verify before relying on it as a gate. -->
 | `//runtime:cel_runtime_wasm_test` | wasm32-cross-compiled runtime, exercised under wasmtime | Any runtime primitive change |

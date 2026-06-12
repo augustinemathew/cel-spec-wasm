@@ -1,5 +1,13 @@
 # benchmarking — design notes (undefined)
 
+> **2026-06-11 restructure:** the two-tree split (bench/ vs
+> benchmark/) described below was dissolved; bench/ no longer exists.
+> Kernel localisation lives at //benchmark/kernel, component-boundary
+> at //benchmark/component, Compile/Plan at //benchmark/compiler, and
+> the comparative eval corpus at benchmark/eval. bench/README.md is
+> archived at doc/implementation-plan/rewrite/archive/bench-tree-readme.md.
+> Section references to bench/* below are historical.
+
 ## 1. Verified architecture
 
 ### 1.1 The two-directory split
@@ -85,11 +93,11 @@ registers one Google Benchmark per cell → JSON outputs →
   `CompilerOptions::link_mode` defaults to `kStatic`
   (celwasm_bench.cc:47-58; compiler/compiler.h:145).  Engine is a
   process-static singleton; `CELWASM_BENCH_PERFMAP=1` enables
-  wasmtime's perf-map for profiler symbolication (:70-83).  Two
-  hand-coded extra cells (`BM_arith_intAdd_AbcAbcShape_{VarsToday,
-  LitToday}`) isolate activation-marshal cost on an identical
-  call-graph shape; YAML can't express the pairing yet (:301-349,
-  386-390).
+  wasmtime's perf-map for profiler symbolication (:70-83).  The
+  activation-marshal isolation pair that used to be hand-coded here
+  (`BM_arith_intAdd_AbcAbcShape_{VarsToday,LitToday}`) moved into the
+  corpus as `arith.abcAbcShape{Vars,Lit}` once the loader could
+  express var/lit adjacency; the registration functions are gone.
 - **`celcpp_bench`**: same corpus, same BM names, same result-label
   format; `linkstatic = True`, zero first-party deps except the
   neutral loader (BUILD:92-136).  cel-cpp configured with

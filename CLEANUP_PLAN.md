@@ -192,7 +192,9 @@ refs purged per Method §6.
   compiler-overview.md vs user-guide/index.md overlap (one owns
   "orientation", the other owns "embedder how-to"); README quickstart
   vs getting-started.md (README teases, getting-started owns);
-  bench/README vs benchmark/README (state the split or merge). Add
+  bench/README vs benchmark/README — RESOLVED: bench/ dissolved into
+  benchmark/ 2026-06-11, old README archived at
+  doc/implementation-plan/rewrite/archive/bench-tree-readme.md. Add
   missing per-dir READMEs: tools/, e2e/, testdata/, spec/, scripts/
   (one-screen, purpose + how to run).
 - [ ] **U31 Checklist-doc re-home.** testing-checklist,
@@ -205,7 +207,8 @@ refs purged per Method §6.
 - [ ] **U32 DEVREL_BRIEF.md.** Verified facts only: what/who,
   differentiators with code/test/bench pointers, 2–4 hero examples
   (from `examples/`, already CI-gated), reproducible numbers
-  (bench/README baselines + m28-bench-results, with exact commands),
+  (archived bench-tree-readme.md baselines + m28-bench-results, with
+  exact commands),
   honest status, anti-claims list (e.g. "string-returning @component
   fns trap", "no `cel run` yet", "error messages don't cross the wasm
   boundary", "expression source is semi-trusted until backlog #16").

@@ -1,0 +1,160 @@
+# Composite-policy surface — realistic authz/admission shapes.
+#
+# Each cell is a plausible policy combining the axes the `proto`
+# surface measures in isolation (singular reads, deep selects, proto
+# map lookups, arena literals, ternary chains, in-list membership).
+# Where the proto surface answers "what does ONE proto read cost",
+# this surface answers "do the costs compose linearly when a real
+# policy stacks them" — every cell carries a `# why:` line naming the
+# specific question it answers (DESIGN.md §6.4 discipline).
+#
+# All results are scalar (string verdicts / bools / ints) so the
+# `result=` parity hook works unchanged.  Messages bind via textproto:
+# `c` = celwasm.testdata.Customer, `m` = celwasm.testdata.HostMsg3.
+#
+# Surface `policies` maps to BM prefix `policy` (cell id `authz_basic`
+# → `BM_policy_authz_basic`).
+
+schema_version: 1
+surface: policies
+
+cells:
+
+  # ── ternary chains over proto-read conditions ──
+
+  # why: does nesting one ternary inside another (2 proto-read
+  # conditions, one a comparison, one a bare bool select) cost more
+  # than the sum of the standalone ternary + read cells?
+  - id: ternary2
+    source: 'c.age > 30 ? (c.is_premium ? "gold" : "silver") : "basic"'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'age: 38 is_premium: true' }
+    expected: { type: string, value: "gold" }
+    tags: [phase2, bench-shape]
+
+  # why: per-arm cost of a 5-deep ternary cascade that re-reads one
+  # proto field per condition (the routing-table policy shape).
+  - id: ternary5
+    source: 'c.age > 60 ? "a" : c.age > 50 ? "b" : c.age > 40 ? "c" : c.age > 30 ? "d" : c.age > 20 ? "e" : "f"'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'age: 38' }
+    expected: { type: string, value: "d" }
+    tags: [phase2, bench-shape]
+
+  # why: bare proto-bool select as the ternary condition — the closest
+  # composite shape to celwasm's known ternary-ident-cond bug
+  # (ternary.intVarCond); pins whether that bug extends from bound
+  # bool idents to bool field selects.
+  - id: premium_gate
+    source: 'c.is_premium ? c.age : 0'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'age: 38 is_premium: true' }
+    expected: { type: int, value: 38 }
+    tags: [phase2, bench-shape]
+
+  # ── mixed arena + proto ──
+
+  # why: proto string read feeding an arena literal-list membership
+  # scan — the host-trampoline → pure-wasm handoff in one expression.
+  - id: str_in_list
+    source: 'm.s in ["alpha", "beta", "gamma", "delta"]'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 's: "gamma"' }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # why: arena map-literal lookup feeding a comparison against a proto
+  # field read (config-table-against-request shape) — the reverse
+  # handoff of str_in_list.
+  - id: arena_map_gate
+    source: 'c.age >= {"us": 21, "de": 18}["us"]'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'age: 38' }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # ── multi-read policies ──
+
+  # why: the canonical small authz policy — 3 proto reads + 1 in-list
+  # + 1 ternary producing a string verdict; the headline "what does a
+  # realistic allow/deny check cost end-to-end" number.
+  - id: authz_basic
+    source: '(c.is_premium && c.age >= 18 && c.name in ["Ada", "Grace", "Linus"]) ? "allow" : "deny"'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'name: "Ada" age: 38 is_premium: true' }
+    expected: { type: string, value: "allow" }
+    tags: [phase2, bench-shape]
+
+  # why: authz_basic with depth-2/3 selects in every condition — how
+  # much does select depth add to a whole policy (vs the isolated
+  # proto.select_depth* sweep)?
+  - id: authz_deep
+    source: '(m.inner.b && m.inner.i64 >= 18 && m.inner.inner.s in ["Ada", "Grace"]) ? "allow" : "deny"'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'inner { b: true i64: 21 inner { s: "Grace" } }' }
+    expected: { type: string, value: "allow" }
+    tags: [phase2, bench-shape]
+
+  # why: the authz_deep shape with every condition behind an 8-deep
+  # select chain — does per-policy cost scale with (reads x depth), or
+  # do repeated walks down the same spine amortise?
+  - id: authz_deep8
+    source: '(m.inner.inner.inner.inner.inner.inner.inner.b && m.inner.inner.inner.inner.inner.inner.inner.i64 >= 18 && m.inner.inner.inner.inner.inner.inner.inner.s in ["Ada", "Grace"]) ? "allow" : "deny"'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'inner { inner { inner { inner { inner { inner { inner { b: true i64: 21 s: "Grace" } } } } } } }' }
+    expected: { type: string, value: "allow" }
+    tags: [phase2, bench-shape]
+
+  # why: three proto-map lookups + int arithmetic + comparison — the
+  # rate-limit/quota-check shape; do repeated map-lookup trampolines
+  # compose at the sum of their isolated costs?
+  - id: quota_check
+    source: 'm.str_to_i32["used"] + m.str_to_i32["pending"] < m.str_to_i32["limit"]'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'str_to_i32 { key: "used" value: 70 } str_to_i32 { key: "pending" value: 25 } str_to_i32 { key: "limit" value: 100 }' }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # why: ternary chain whose three conditions hit three different read
+  # kinds (uint compare on balance_cents, bare bool select, proto-map
+  # lookup + string ==) — the tier-routing policy shape.
+  - id: tier_route
+    source: 'c.balance_cents >= 100000u ? "platinum" : (c.is_premium ? "gold" : (c.metadata["tier"] == "legacy" ? "silver" : "bronze"))'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'balance_cents: 5000 is_premium: false metadata { key: "tier" value: "legacy" }' }
+    expected: { type: string, value: "silver" }
+    tags: [phase2, bench-shape]
+
+  # why: two proto reads of different scalar kinds (double, uint)
+  # joined by && — does mixing payload kinds in one policy add
+  # marshal cost over the single-kind read cells?
+  - id: risk_score
+    source: 'c.credit_score >= 700.0 && c.balance_cents > 1000u'
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer",
+           textproto: 'credit_score: 712.5 balance_cents: 5000' }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # why: the worst realistic shape in one cell — a 25-arm nested
+  # ternary whose every condition mixes a depth-1..8 select chain, a
+  # proto-map lookup, and a repeated-field index, arranged so EVERY
+  # condition evaluates (the true arm is last).  159 proto accesses
+  # per Eval.  This is the policy-engine stress number.
+  - id: mega100
+    source: '(m.i64 + m.str_to_i32["q1"] + m.rep_i32[1]) == -1 ? "deny" : ((m.inner.i64 + m.str_to_i32["q2"] + m.rep_i32[2]) == -1 ? "deny" : ((m.inner.inner.i64 + m.str_to_i32["q0"] + m.rep_i32[3]) == -1 ? "deny" : ((m.inner.inner.inner.i64 + m.str_to_i32["q1"] + m.rep_i32[4]) == -1 ? "deny" : ((m.inner.inner.inner.inner.i64 + m.str_to_i32["q2"] + m.rep_i32[5]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q0"] + m.rep_i32[6]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q1"] + m.rep_i32[7]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q2"] + m.rep_i32[8]) == -1 ? "deny" : ((m.i64 + m.str_to_i32["q0"] + m.rep_i32[9]) == -1 ? "deny" : ((m.inner.i64 + m.str_to_i32["q1"] + m.rep_i32[0]) == -1 ? "deny" : ((m.inner.inner.i64 + m.str_to_i32["q2"] + m.rep_i32[1]) == -1 ? "deny" : ((m.inner.inner.inner.i64 + m.str_to_i32["q0"] + m.rep_i32[2]) == -1 ? "deny" : ((m.inner.inner.inner.inner.i64 + m.str_to_i32["q1"] + m.rep_i32[3]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q2"] + m.rep_i32[4]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q0"] + m.rep_i32[5]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q1"] + m.rep_i32[6]) == -1 ? "deny" : ((m.i64 + m.str_to_i32["q2"] + m.rep_i32[7]) == -1 ? "deny" : ((m.inner.i64 + m.str_to_i32["q0"] + m.rep_i32[8]) == -1 ? "deny" : ((m.inner.inner.i64 + m.str_to_i32["q1"] + m.rep_i32[9]) == -1 ? "deny" : ((m.inner.inner.inner.i64 + m.str_to_i32["q2"] + m.rep_i32[0]) == -1 ? "deny" : ((m.inner.inner.inner.inner.i64 + m.str_to_i32["q0"] + m.rep_i32[1]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q1"] + m.rep_i32[2]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q2"] + m.rep_i32[3]) == -1 ? "deny" : ((m.inner.inner.inner.inner.inner.inner.inner.i64 + m.str_to_i32["q0"] + m.rep_i32[4]) == -1 ? "deny" : ((m.i64 + m.str_to_i32["q1"] + m.rep_i32[5]) == 30 ? "allow" : "deny"))))))))))))))))))))))))'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'i64: 5 inner { i64: 5 inner { i64: 5 inner { i64: 5 inner { i64: 5 inner { i64: 5 inner { i64: 5 inner { i64: 5 inner { i64: 5 } } } } } } } } str_to_i32 { key: "q0" value: 10 } str_to_i32 { key: "q1" value: 20 } str_to_i32 { key: "q2" value: 30 } rep_i32: 0 rep_i32: 1 rep_i32: 2 rep_i32: 3 rep_i32: 4 rep_i32: 5 rep_i32: 6 rep_i32: 7 rep_i32: 8 rep_i32: 9' }
+    expected: { type: string, value: "allow" }
+    tags: [phase2, bench-shape]

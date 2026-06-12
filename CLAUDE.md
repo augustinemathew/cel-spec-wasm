@@ -20,7 +20,7 @@ This repo is a CEL → WebAssembly AOT compiler.  Its source is organised by
     round-trips `ir::Repr` — moving it here rides on relocating `Repr`
     to `shared/`).
   - `runtime/` — `cel_runtime.c` → `cel_runtime.wasm` (language-agnostic kernel).
-  - `tools/` (cel CLI, wat_runner), `conformance/`, `e2e/`, `bench/`,
+  - `tools/` (cel CLI, wat_runner), `conformance/`, `e2e/`, `benchmark/`,
     `testdata/` — leaf binaries/tests.
   - `spec/` — cel-spec heritage (the `.textproto` conformance corpus under
     `spec/tests/`).  `proto/` STAYS at repo root for now (the move is deferred
@@ -635,7 +635,7 @@ bare FAIL with no test documenting it.
 
     ```
     //compiler/... //eval/... //shared/... //abi/... //runtime/... \
-    //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/...
+    //tools/... //conformance/... //e2e/... //benchmark/... //testdata/... //spec/...
     ```
 
     `//...` is fine for `rdeps` / `visible` query universes now too.
@@ -708,8 +708,10 @@ runs at the **highest available optimization level** — anything less is
 a noisy / pessimised baseline that doesn't represent what an embedder
 ships.  The three layers and their flags:
 
-  - **Bazel config.**  Always `bazel run -c opt //bench:<target>`; the
-    fastbuild inner-loop config is for dev cycles, not measurement.
+  - **Bazel config.**  Always `bazel run -c opt //benchmark/<pkg>:<target>`
+    (or drive everything via `benchmark/eval/run.sh` /
+    `benchmark/compiler/run.sh`); the fastbuild inner-loop config is for
+    dev cycles, not measurement.
   - **wasm32-wasi cross-compile (`cel_runtime.wasm`).**  `-O3 -flto`
     via the wasi-sdk toolchain (`opt_feature`,
     `third_party/wasi_sdk/cc_toolchain_config.bzl:199`) and explicit
@@ -728,13 +730,20 @@ ships.  The three layers and their flags:
     unoptimized expr module — fine for tests, **never for benches**.
     The canonical seam is the `kBenchOptimizeLevel` constant + a
     `CompileOrDie` that always sets `opts.optimize_level =
-    kBenchOptimizeLevel`; see `bench/in_operator_bench.cc` for the
+    kBenchOptimizeLevel`; see `benchmark/eval/celwasm_bench.cc` for the
     pattern.
 
 When a bench reports a number, it's the production-config number.
 Comparison benches (e.g. `BM_*_Opt2` paired with the unoptimized
-variant in `pipeline_bench.cc`) are an explicit deviation — they
-exist so a reviewer can read the optimization delta in one table.
+variant in `benchmark/compiler/pipeline_bench.cc`) are an explicit
+deviation — they exist so a reviewer can read the optimization delta
+in one table.
+
+Eval-comparison results are **auto-published**: `benchmark/eval/run.sh`
+archives dated tables under `benchmark/eval/results/` and regenerates
+the Results section of `benchmark/README.md` via
+`benchmark/eval/report.py`.  Never hand-edit published numbers — re-run
+the harness.
 
 ## Dev-loop performance (read before you wonder why it's slow)
 
@@ -748,7 +757,7 @@ So:
     conformance or anything else under `-c opt` in the inner loop: `opt`
     is a *separate* build tree that shares nothing with fastbuild, so
     switching recompiles cel-cpp (~10 min).  `-c opt` is for
-    `//bench/...` and CI only.  The conformance gate
+    `//benchmark/...` and CI only.  The conformance gate
     (`scripts/check_conformance_monotonic.sh`) deliberately runs
     fastbuild — pass count is identical to opt (verified 1774==1774).
   - **Don't `bazel test $PROJ` in the inner loop.**  Build/test

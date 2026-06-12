@@ -579,3 +579,18 @@ touched only usage-text strings in this file).  Both want the standard
 split treatment — `RunEval` into parse-flags / compile / eval-and-print
 helpers, `main` into a subcommand dispatch table — next time the CLI
 gains a feature (e.g. `cel run`).
+
+## benchmark/eval/celcpp_bench.cc — clang-tidy blocked by stale compile-DB execroot (2026-06-11)
+
+`compile_commands.json` entries carry `directory:` pointing at a bazel
+output base that is no longer populated (`…/ef202993…/execroot/_main`;
+the live base differs), so relative `external/...` include paths
+resolve nowhere and this TU's lint AST degrades
+(`benchmark/benchmark.h` not found → clang-diagnostic-error, plus
+recovery-AST false positives suppressed inline with explained
+NOLINTs).  Affects the gate only for this standalone cel-cpp TU.
+Fix: make `scripts/refresh_compile_db.sh` stamp the *live*
+`bazel info execution_root` into every entry (and re-run it after
+output-base churn); then delete the two degraded-AST NOLINTs in this
+file (misc-unused-parameters on PrepareCellRuntime,
+bugprone-branch-clone in ValueFromLiteral).

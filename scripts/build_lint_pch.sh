@@ -15,7 +15,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 # Project-package set (exec-doc §1.0) — space-joined for build command lines.
 # `//...` is unusable (vendored third_party/cel-cpp loads an undeclared repo).
-PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //bench/... //benchmark/... //testdata/... //spec/..."
+PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //benchmark/... //testdata/... //spec/..."
 
 PCH_HEADER="scripts/lint_pch.h"
 PCH_OUT=".lint-cache/lint_pch.h.pch"
@@ -89,7 +89,7 @@ with open('compile_commands.json') as f:
 # generates many tiny TUs that don't depend on absl (e.g. proto-only
 # emitters); skip those.
 PROJ_DIRS = ('compiler/', 'eval/', 'common/', 'abi/', 'runtime/',
-             'tools/', 'conformance/', 'e2e/', 'bench/', 'testdata/')
+             'tools/', 'conformance/', 'e2e/', 'benchmark/', 'testdata/')
 candidates = []
 for e in db:
     f = e.get('file', '')

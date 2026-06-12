@@ -30,3 +30,7 @@ bindings/ts/node_modules/
 
 # macOS Finder metadata.
 .DS_Store
+
+# Raw Google Benchmark JSONs from benchmark runs — the committed
+# artifacts are the joined .md/.csv next to them (see benchmark/eval/run.sh).
+benchmark/eval/results/raw/

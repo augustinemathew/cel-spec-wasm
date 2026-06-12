@@ -65,7 +65,7 @@ _cc_globs=(
   'tools/**/*.cc' 'tools/**/*.h' 'tools/**/*.c'
   'conformance/**/*.cc' 'conformance/**/*.h' 'conformance/**/*.c'
   'e2e/**/*.cc' 'e2e/**/*.h' 'e2e/**/*.c'
-  'bench/**/*.cc' 'bench/**/*.h' 'bench/**/*.c'
+  'benchmark/**/*.cc' 'benchmark/**/*.h' 'benchmark/**/*.c'
   'testdata/**/*.cc' 'testdata/**/*.h' 'testdata/**/*.c'
 )
 

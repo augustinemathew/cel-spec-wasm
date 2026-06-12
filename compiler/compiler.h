@@ -93,7 +93,8 @@ struct CompilerOptions {
   //   2 — balanced (canonical `wasm-opt -O2` pipeline); ~2-3×
   //       Compile cost vs level 0, -50% Eval on chain-heavy bodies
   //       (e.g. 20-term comparison chain: 11.2 us → 5.4 us per Eval
-  //       on darwin-arm64, see bench/README.md).  Short
+  //       on darwin-arm64, see
+  //       doc/implementation-plan/rewrite/archive/bench-tree-readme.md).  Short
   //       bodies (3-term arith) are a wash on Eval but still pay
   //       the Compile penalty.
   //   3 — aggressive; some passes have superlinear cost.  Rarely

@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -49,17 +50,351 @@ absl::StatusOr<CelValueLiteral::Kind> KindFromString(absl::string_view name) {
   if (name == "null") return CelValueLiteral::Kind::kNull;
   if (name == "list") return CelValueLiteral::Kind::kList;
   if (name == "map") return CelValueLiteral::Kind::kMap;
+  if (name == "message") return CelValueLiteral::Kind::kMessage;
   return absl::InvalidArgumentError(absl::StrCat("unknown type: ", name));
 }
 
-// Parses a YAML `{ type: int, value: 42 }`-shaped node into a
-// CelValueLiteral.  Scalar-only; list/map are flagged for the
-// caller to extend (per loader header doc).
+// Display name for error messages.  Mirrors `KindFromString`.
+absl::string_view KindName(CelValueLiteral::Kind kind) {
+  switch (kind) {
+    case CelValueLiteral::Kind::kInt:
+      return "int";
+    case CelValueLiteral::Kind::kUint:
+      return "uint";
+    case CelValueLiteral::Kind::kDouble:
+      return "double";
+    case CelValueLiteral::Kind::kBool:
+      return "bool";
+    case CelValueLiteral::Kind::kString:
+      return "string";
+    case CelValueLiteral::Kind::kBytes:
+      return "bytes";
+    case CelValueLiteral::Kind::kNull:
+      return "null";
+    case CelValueLiteral::Kind::kList:
+      return "list";
+    case CelValueLiteral::Kind::kMap:
+      return "map";
+    case CelValueLiteral::Kind::kMessage:
+      return "message";
+  }
+  ABSL_CHECK(false) << "KindName: unhandled kind " << static_cast<int>(kind);
+  return "";
+}
+
+// True for the kinds a list `elem` may name (and the kinds a scalar
+// `value:` field carries).  `null` is excluded: a `values` item has
+// no payload to parse as null, and no corpus cell needs `list<null>`.
+bool IsScalarKind(CelValueLiteral::Kind kind) {
+  switch (kind) {
+    case CelValueLiteral::Kind::kInt:
+    case CelValueLiteral::Kind::kUint:
+    case CelValueLiteral::Kind::kDouble:
+    case CelValueLiteral::Kind::kBool:
+    case CelValueLiteral::Kind::kString:
+    case CelValueLiteral::Kind::kBytes:
+      return true;
+    case CelValueLiteral::Kind::kNull:
+    case CelValueLiteral::Kind::kList:
+    case CelValueLiteral::Kind::kMap:
+    case CelValueLiteral::Kind::kMessage:
+      return false;
+  }
+  ABSL_CHECK(false) << "IsScalarKind: unhandled kind "
+                    << static_cast<int>(kind);
+  return false;
+}
+
+// Parses a single YAML scalar node as `kind`, writing the matching
+// payload field of `*out`.  Shared by the scalar `value:` path and
+// list `values:` items so both obey identical parsing rules.
+// yaml-cpp signals a failed conversion by throwing; convert that to
+// a ctx-tagged InvalidArgument.
+absl::Status ParseScalarPayload(CelValueLiteral::Kind kind, const YAML::Node& v,
+                                absl::string_view ctx, CelValueLiteral* out) {
+  out->kind = kind;
+  try {
+    switch (kind) {
+      case CelValueLiteral::Kind::kInt:
+        out->int_value = v.as<std::int64_t>();
+        return absl::OkStatus();
+      case CelValueLiteral::Kind::kUint:
+        out->uint_value = v.as<std::uint64_t>();
+        return absl::OkStatus();
+      case CelValueLiteral::Kind::kDouble:
+        out->double_value = v.as<double>();
+        return absl::OkStatus();
+      case CelValueLiteral::Kind::kBool:
+        out->bool_value = v.as<bool>();
+        return absl::OkStatus();
+      case CelValueLiteral::Kind::kString:
+      case CelValueLiteral::Kind::kBytes:
+        out->string_value = v.as<std::string>();
+        return absl::OkStatus();
+      case CelValueLiteral::Kind::kNull:
+      case CelValueLiteral::Kind::kList:
+      case CelValueLiteral::Kind::kMap:
+      case CelValueLiteral::Kind::kMessage:
+        break;  // non-scalar; falls through to the CHECK below.
+    }
+  } catch (const YAML::Exception& e) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        ctx, ": value does not parse as ", KindName(kind), ": ", e.what()));
+  }
+  ABSL_CHECK(false) << "ParseScalarPayload: non-scalar kind " << KindName(kind);
+  return absl::OkStatus();
+}
+
+// The single %d-family directive of a string-list `template`.
+struct TemplateDirective {
+  size_t pos = 0;    // byte offset of '%'
+  size_t len = 0;    // directive length, '%'..'d' inclusive
+  size_t width = 0;  // zero-pad width; 0 for plain `%d`
+};
+
+// Locates the exactly-one `%d` / `%0<width>d` directive in `tmpl`.
+// Any other use of '%', zero directives, or more than one directive
+// is an error — runtime-format StrFormat is deliberately avoided
+// (see header doc), so the substitution must stay this simple.
+absl::StatusOr<TemplateDirective> FindTemplateDirective(absl::string_view tmpl,
+                                                        absl::string_view ctx) {
+  TemplateDirective out;
+  bool found = false;
+  for (size_t i = 0; i < tmpl.size(); ++i) {
+    if (tmpl[i] != '%') continue;
+    size_t j = i + 1;
+    while (j < tmpl.size() &&
+           (std::isdigit(static_cast<unsigned char>(tmpl[j])) != 0)) {
+      ++j;
+    }
+    if (j >= tmpl.size() || tmpl[j] != 'd') {
+      return absl::InvalidArgumentError(absl::StrCat(
+          ctx, ": gen.template `", tmpl,
+          "` contains an unsupported directive (only %d / %0<width>d)"));
+    }
+    if (found) {
+      return absl::InvalidArgumentError(
+          absl::StrCat(ctx, ": gen.template `", tmpl,
+                       "` must contain exactly one %d-family directive"));
+    }
+    found = true;
+    out.pos = i;
+    out.len = j - i + 1;
+    const absl::string_view digits = tmpl.substr(i + 1, j - i - 1);
+    if (!digits.empty()) {
+      // Bounded width keeps the expansion sane (and from_chars in
+      // range); a 64-digit pad covers any plausible corpus.
+      constexpr size_t kMaxWidth = 64;
+      auto [ptr, ec] = std::from_chars(
+          digits.data(), digits.data() + digits.size(), out.width);
+      if (ec != std::errc() || ptr != digits.data() + digits.size() ||
+          out.width > kMaxWidth) {
+        return absl::InvalidArgumentError(
+            absl::StrCat(ctx, ": gen.template `", tmpl, "` directive width `",
+                         digits, "` is out of range (max ", kMaxWidth, ")"));
+      }
+    }
+    i = j;
+  }
+  if (!found) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": gen.template `", tmpl,
+                     "` must contain exactly one %d-family directive"));
+  }
+  return out;
+}
+
+// Renders `tmpl` with `index` substituted at the directive, zero-
+// padded to the directive's width.
+std::string ExpandTemplateAt(absl::string_view tmpl, const TemplateDirective& d,
+                             std::int64_t index) {
+  std::string digits = std::to_string(index);
+  if (digits.size() < d.width) {
+    digits.insert(0, d.width - digits.size(), '0');
+  }
+  return absl::StrCat(tmpl.substr(0, d.pos), digits,
+                      tmpl.substr(d.pos + d.len));
+}
+
+// Reads an integer field of a `gen:` map (range / count) and checks
+// it is >= 1.
+absl::StatusOr<std::int64_t> ParseGenCount(const YAML::Node& v,
+                                           absl::string_view field,
+                                           absl::string_view ctx) {
+  std::int64_t n = 0;
+  try {
+    n = v.as<std::int64_t>();
+  } catch (const YAML::Exception& e) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        ctx, ": gen.", field, " does not parse as int: ", e.what()));
+  }
+  if (n < 1) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": gen.", field, " must be >= 1, got ", n));
+  }
+  return n;
+}
+
+// Expands `gen: { range: N }` to the int literals [0 .. N-1].
+absl::Status ExpandGenRange(const YAML::Node& v, absl::string_view ctx,
+                            CelValueLiteral* out) {
+  if (out->list_elem_kind != CelValueLiteral::Kind::kInt) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": gen.range requires elem `int`, got `",
+                     KindName(out->list_elem_kind), "`"));
+  }
+  auto n_or = ParseGenCount(v, "range", ctx);
+  if (!n_or.ok()) return n_or.status();
+  out->list_value.reserve(static_cast<size_t>(*n_or));
+  for (std::int64_t i = 0; i < *n_or; ++i) {
+    CelValueLiteral e;
+    e.kind = CelValueLiteral::Kind::kInt;
+    e.int_value = i;
+    out->list_value.push_back(std::move(e));
+  }
+  return absl::OkStatus();
+}
+
+// Expands `gen: { template: "...%07d...", count: N }` to N string
+// literals with the index substituted (zero-padded to the stated
+// width).
+absl::Status ExpandGenTemplate(const YAML::Node& gen, absl::string_view ctx,
+                               CelValueLiteral* out) {
+  if (out->list_elem_kind != CelValueLiteral::Kind::kString) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": gen.template requires elem `string`, got `",
+                     KindName(out->list_elem_kind), "`"));
+  }
+  if (!gen["count"]) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": gen.template requires a `count` field"));
+  }
+  auto count_or = ParseGenCount(gen["count"], "count", ctx);
+  if (!count_or.ok()) return count_or.status();
+  const auto tmpl = gen["template"].as<std::string>();
+  auto dir_or = FindTemplateDirective(tmpl, ctx);
+  if (!dir_or.ok()) return dir_or.status();
+  out->list_value.reserve(static_cast<size_t>(*count_or));
+  for (std::int64_t i = 0; i < *count_or; ++i) {
+    CelValueLiteral e;
+    e.kind = CelValueLiteral::Kind::kString;
+    e.string_value = ExpandTemplateAt(tmpl, *dir_or, i);
+    out->list_value.push_back(std::move(e));
+  }
+  return absl::OkStatus();
+}
+
+// Dispatches a list literal's `gen:` block to the range / template
+// expander.  Exactly one of the two forms must be present.
+absl::Status ExpandGenList(const YAML::Node& gen, absl::string_view ctx,
+                           CelValueLiteral* out) {
+  if (!gen.IsMap()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": `gen` must be a mapping"));
+  }
+  const bool has_range = static_cast<bool>(gen["range"]);
+  const bool has_template = static_cast<bool>(gen["template"]);
+  if (has_range == has_template) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        ctx, ": `gen` requires exactly one of `range` / `template`"));
+  }
+  if (has_range) return ExpandGenRange(gen["range"], ctx, out);
+  return ExpandGenTemplate(gen, ctx, out);
+}
+
+// Parses an explicit `values:` sequence — each item is a plain YAML
+// scalar parsed per the elem kind (same rules as a scalar `value`).
+absl::Status ParseExplicitListValues(const YAML::Node& values,
+                                     absl::string_view ctx,
+                                     CelValueLiteral* out) {
+  if (!values.IsSequence()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": `values` must be a sequence"));
+  }
+  out->list_value.reserve(values.size());
+  for (const auto& item : values) {
+    CelValueLiteral e;
+    if (auto s = ParseScalarPayload(out->list_elem_kind, item, ctx, &e);
+        !s.ok()) {
+      return s;
+    }
+    out->list_value.push_back(std::move(e));
+  }
+  return absl::OkStatus();
+}
+
+// Parses `{ type: list, elem: <scalar>, values: [...] | gen: {...} }`.
+// Generated forms are expanded eagerly here (see header doc).
+absl::StatusOr<CelValueLiteral> ParseListLiteral(const YAML::Node& n,
+                                                 absl::string_view ctx) {
+  CelValueLiteral lit;
+  lit.kind = CelValueLiteral::Kind::kList;
+  if (!n["elem"]) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": list literal requires an `elem` field"));
+  }
+  auto elem_or = KindFromString(n["elem"].as<std::string>());
+  if (!elem_or.ok()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": list `elem`: ", elem_or.status().message()));
+  }
+  if (!IsScalarKind(*elem_or)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        ctx,
+        ": list `elem` must be a scalar kind (int|uint|double|bool|"
+        "string|bytes), got `",
+        KindName(*elem_or), "`"));
+  }
+  lit.list_elem_kind = *elem_or;
+  const bool has_values = static_cast<bool>(n["values"]);
+  const bool has_gen = static_cast<bool>(n["gen"]);
+  if (has_values == has_gen) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        ctx, ": list literal requires exactly one of `values` / `gen`"));
+  }
+  absl::Status s = has_values ? ParseExplicitListValues(n["values"], ctx, &lit)
+                              : ExpandGenList(n["gen"], ctx, &lit);
+  if (!s.ok()) return s;
+  return lit;
+}
+
+// Parses `{ type: message, message_type: "...", textproto: '...' }`.
+// The textproto stays an opaque string here — VALIDITY is checked by
+// the bench mains at registration (the loader has no protobuf dep,
+// by design — see header doc).
+absl::StatusOr<CelValueLiteral> ParseMessageLiteral(const YAML::Node& n,
+                                                    absl::string_view ctx) {
+  CelValueLiteral lit;
+  lit.kind = CelValueLiteral::Kind::kMessage;
+  if (!n["message_type"]) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": message literal requires a `message_type` field"));
+  }
+  lit.message_type = n["message_type"].as<std::string>();
+  if (lit.message_type.empty()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": message `message_type` must be non-empty"));
+  }
+  if (!n["textproto"]) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": message literal requires a `textproto` field"));
+  }
+  lit.string_value = n["textproto"].as<std::string>();
+  if (lit.string_value.empty()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(ctx, ": message `textproto` must be non-empty"));
+  }
+  return lit;
+}
+
+// Parses a YAML `{ type: ..., ... }`-shaped node into a
+// CelValueLiteral.  Scalars carry `value:`; lists carry `elem` +
+// (`values` | `gen`); messages carry `message_type` + `textproto`.
 absl::StatusOr<CelValueLiteral> ParseLiteral(const YAML::Node& n,
                                              absl::string_view ctx) {
   if (!n.IsMap() || !n["type"]) {
     return absl::InvalidArgumentError(
-        absl::StrCat(ctx, ": expected { type, value } mapping"));
+        absl::StrCat(ctx, ": expected { type, ... } mapping"));
   }
   auto kind_or = KindFromString(n["type"].as<std::string>());
   if (!kind_or.ok()) {
@@ -68,39 +403,33 @@ absl::StatusOr<CelValueLiteral> ParseLiteral(const YAML::Node& n,
   }
   CelValueLiteral lit;
   lit.kind = *kind_or;
-  // `null` carries no `value:` field; every other kind requires one.
-  if (lit.kind == CelValueLiteral::Kind::kNull) return lit;
-
+  switch (lit.kind) {
+    case CelValueLiteral::Kind::kNull:
+      // `null` carries no `value:` field.
+      return lit;
+    case CelValueLiteral::Kind::kList:
+      return ParseListLiteral(n, ctx);
+    case CelValueLiteral::Kind::kMessage:
+      return ParseMessageLiteral(n, ctx);
+    case CelValueLiteral::Kind::kMap:
+      // Header doc calls this out as a deferred extension; refuse
+      // loudly rather than silently producing an empty map.
+      return absl::UnimplementedError(
+          absl::StrCat(ctx, ": map activation literals not yet supported"));
+    case CelValueLiteral::Kind::kInt:
+    case CelValueLiteral::Kind::kUint:
+    case CelValueLiteral::Kind::kDouble:
+    case CelValueLiteral::Kind::kBool:
+    case CelValueLiteral::Kind::kString:
+    case CelValueLiteral::Kind::kBytes:
+      break;  // scalar path below.
+  }
   if (!n["value"]) {
     return absl::InvalidArgumentError(
         absl::StrCat(ctx, ": missing `value` field"));
   }
-  const YAML::Node& v = n["value"];
-  switch (lit.kind) {
-    case CelValueLiteral::Kind::kInt:
-      lit.int_value = v.as<std::int64_t>();
-      break;
-    case CelValueLiteral::Kind::kUint:
-      lit.uint_value = v.as<std::uint64_t>();
-      break;
-    case CelValueLiteral::Kind::kDouble:
-      lit.double_value = v.as<double>();
-      break;
-    case CelValueLiteral::Kind::kBool:
-      lit.bool_value = v.as<bool>();
-      break;
-    case CelValueLiteral::Kind::kString:
-    case CelValueLiteral::Kind::kBytes:
-      lit.string_value = v.as<std::string>();
-      break;
-    case CelValueLiteral::Kind::kList:
-    case CelValueLiteral::Kind::kMap:
-      // Header doc calls this out as a deferred extension; refuse
-      // loudly rather than silently producing an empty list/map.
-      return absl::UnimplementedError(absl::StrCat(
-          ctx, ": list/map activation literals not yet supported"));
-    case CelValueLiteral::Kind::kNull:
-      break;  // unreachable; handled above.
+  if (auto s = ParseScalarPayload(lit.kind, n["value"], ctx, &lit); !s.ok()) {
+    return s;
   }
   return lit;
 }
@@ -127,9 +456,12 @@ bool IsReservedIdent(absl::string_view name) {
 // that isn't reserved.  An identifier is `[A-Za-z_][A-Za-z0-9_]*`
 // and must NOT start immediately after an alphanumeric character —
 // a letter glued to a digit is a literal suffix (`1u`, `0x2A`,
-// `2.5e3`), not a variable.  Skips quoted strings (single/double).
-// Treats anything else as punctuation.  Good enough for the current
-// corpus shape — see header doc.
+// `2.5e3`), not a variable.  An identifier immediately preceded by
+// `.` is a field selection (`c.name`) — consumed but not emitted, so
+// the validator doesn't demand a binding for the field name.  Skips
+// quoted strings (single/double).  Treats anything else as
+// punctuation.  Good enough for the current corpus shape — see
+// header doc.
 std::set<std::string> ScanIdents(absl::string_view source) {
   std::set<std::string> out;
   size_t i = 0;
@@ -156,6 +488,7 @@ std::set<std::string> ScanIdents(absl::string_view source) {
     }
     if (((std::isalpha(static_cast<unsigned char>(c)) != 0) || c == '_') &&
         !after_alnum) {
+      const bool after_dot = i > 0 && source[i - 1] == '.';
       size_t start = i;
       while (i < n) {
         char k = source[i];
@@ -166,7 +499,7 @@ std::set<std::string> ScanIdents(absl::string_view source) {
         }
       }
       std::string tok(source.substr(start, i - start));
-      if (!IsReservedIdent(tok)) {
+      if (!after_dot && !IsReservedIdent(tok)) {
         out.insert(std::move(tok));
       }
       continue;
@@ -438,6 +771,11 @@ std::string CanonicalForm(const CelValueLiteral& v) {
       return FormatList(v.list_value);
     case CelValueLiteral::Kind::kMap:
       return FormatMap(v.map_value);
+    case CelValueLiteral::Kind::kMessage:
+      // `<message_type>{<textproto>}` — distinct shape from every
+      // scalar/aggregate form, byte-stable because the textproto is
+      // stored verbatim.
+      return absl::StrCat(v.message_type, "{", v.string_value, "}");
   }
   return "<unknown-kind>";  // unreachable; switch covers all enum values.
 }

@@ -395,7 +395,7 @@ Repo layout, organised by lifecycle role (the cel-cpp convention):
   - `bazel/` — first-party Starlark and the catalogue generator
     (`gen_runtime_catalogue`).
   - `tools/` (the `cel` CLI, `wat_runner`), `conformance/`, `e2e/`,
-    `bench/` + `benchmark/`, `testdata/`, `examples/` — leaf binaries
+    `benchmark/`, `testdata/`, `examples/` — leaf binaries
     and tests.
   - `spec/` — the vendored cel-spec conformance corpus;
     `third_party/` — cel-cpp (fetched on demand), Binaryen, wasmtime,

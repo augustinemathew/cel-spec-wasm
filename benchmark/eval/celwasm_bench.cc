@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,7 +42,12 @@
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
+#include "google/protobuf/descriptor.h"
+#include "google/protobuf/message.h"
+#include "google/protobuf/text_format.h"
 #include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 
 namespace celwasm {
 
@@ -63,6 +70,19 @@ using ::celbench::ActivationEntry;
 using ::celbench::Cell;
 using ::celbench::CelValueLiteral;
 using ::celbench::LoadCorpus;
+
+// Force generated-pool registration of the proto fixtures that
+// message-typed corpus cells may name.  The cells look their types up
+// in the generated DescriptorPool by full name at registration time;
+// without an explicit reference the linker can drop the generated
+// registration objects (same pattern as `bench/pipeline_bench.cc`).
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::HostMsg3>();
+      return 0;
+    }();
 
 // Single engine across all benches; engine construction is amortised
 // in real use and shouldn't be double-charged here.
@@ -101,13 +121,12 @@ Instance PlanOrDie(const Program& p) {
   return *std::move(i);
 }
 
-// Map a corpus literal's `kind` to the matching `CelType` used at
-// variable-declaration time.  Aggregates (`kList`, `kMap`) and `kNull`
-// are not used in any current corpus-cell activation, so they CHECK —
-// extending to those types requires deciding on a concrete element
-// type for lists (CelType::List takes an element type) and is deferred
-// until a cell needs it.
-CelType TypeForKind(CelValueLiteral::Kind kind) {
+// Map a scalar corpus-literal kind to the matching `CelType`.  Used
+// directly for scalar activations and for the element type of a
+// bound list.  Non-scalar kinds CHECK — the loader only stamps
+// scalar kinds into `list_elem_kind`, and scalar activations never
+// carry an aggregate kind.
+CelType ScalarTypeForKind(CelValueLiteral::Kind kind) {
   switch (kind) {
     case CelValueLiteral::Kind::kInt:
       return CelType::Int();
@@ -124,16 +143,87 @@ CelType TypeForKind(CelValueLiteral::Kind kind) {
     case CelValueLiteral::Kind::kNull:
     case CelValueLiteral::Kind::kList:
     case CelValueLiteral::Kind::kMap:
+    case CelValueLiteral::Kind::kMessage:
       break;
   }
-  ABSL_CHECK(false) << "TypeForKind: unsupported literal kind for activation; "
-                       "extend when a cell needs it";
+  ABSL_CHECK(false) << "ScalarTypeForKind: non-scalar literal kind "
+                    << static_cast<int>(kind);
   return CelType::Int();
 }
 
+// Map a corpus literal to the `CelType` used at variable-declaration
+// time.  `kNull` and `kMap` are not used in any current corpus-cell
+// activation, so they CHECK — extending to maps requires a key/value
+// type pair and is deferred until a cell needs it.
+CelType TypeForLiteral(const CelValueLiteral& lit) {
+  switch (lit.kind) {
+    case CelValueLiteral::Kind::kInt:
+    case CelValueLiteral::Kind::kUint:
+    case CelValueLiteral::Kind::kDouble:
+    case CelValueLiteral::Kind::kBool:
+    case CelValueLiteral::Kind::kString:
+    case CelValueLiteral::Kind::kBytes:
+      return ScalarTypeForKind(lit.kind);
+    case CelValueLiteral::Kind::kList:
+      // The loader stamps `list_elem_kind` for every kList literal,
+      // so the declared `list<T>` is derivable even for empty lists.
+      return CelType::List(ScalarTypeForKind(lit.list_elem_kind));
+    case CelValueLiteral::Kind::kMessage:
+      return CelType::Message(lit.message_type);
+    case CelValueLiteral::Kind::kNull:
+    case CelValueLiteral::Kind::kMap:
+      break;
+  }
+  ABSL_CHECK(false) << "TypeForLiteral: unsupported literal kind for "
+                       "activation; extend when a cell needs it";
+  return CelType::Int();
+}
+
+// Owns every proto message parsed for a message-typed activation
+// entry.  `Value::Message` is non-owning — the parsed message must
+// outlive the Instance/Activation that reference it, and bench
+// registrations live for the whole process — so the holder is a
+// deliberately-leaked process-lifetime singleton (same idiom as
+// `GlobalEngine` above).
+std::vector<std::unique_ptr<google::protobuf::Message>>&
+LeakedActivationMessages() {
+  static auto* holder =
+      new std::vector<std::unique_ptr<google::protobuf::Message>>();
+  return *holder;
+}
+
+// Parse a kMessage literal's textproto into a generated-pool message
+// instance and wrap it as a (non-owning) `Value::Message`.  Crashes
+// naming `ctx` (the BM name) on an unknown type or malformed
+// textproto — the loader validated only that both strings are
+// non-empty; validity is this binary's job.
+Value MessageValueFromLiteral(const CelValueLiteral& lit,
+                              absl::string_view ctx) {
+  const google::protobuf::Descriptor* desc =
+      google::protobuf::DescriptorPool::generated_pool()->FindMessageTypeByName(
+          lit.message_type);
+  ABSL_CHECK(desc != nullptr)
+      << ctx << ": message type `" << lit.message_type
+      << "` not in the generated descriptor pool; link its cc_proto and "
+         "add it to kDescriptorsLinked";
+  const google::protobuf::Message* prototype =
+      google::protobuf::MessageFactory::generated_factory()->GetPrototype(desc);
+  ABSL_CHECK(prototype != nullptr)
+      << ctx << ": no generated prototype for `" << lit.message_type << "`";
+  std::unique_ptr<google::protobuf::Message> msg(prototype->New());
+  ABSL_CHECK(google::protobuf::TextFormat::ParseFromString(lit.string_value,
+                                                           msg.get()))
+      << ctx << ": textproto for `" << lit.message_type
+      << "` failed to parse: " << lit.string_value;
+  Value v = Value::Message(*msg);
+  LeakedActivationMessages().push_back(std::move(msg));
+  return v;
+}
+
 // Convert a corpus literal to an eval-side `Value`.  Mirrors
-// `TypeForKind` in covered range.
-Value ValueFromLiteral(const CelValueLiteral& lit) {
+// `TypeForLiteral` in covered range.  `ctx` names the BM cell for
+// crash messages.
+Value ValueFromLiteral(const CelValueLiteral& lit, absl::string_view ctx) {
   switch (lit.kind) {
     case CelValueLiteral::Kind::kInt:
       return Value::Int(lit.int_value);
@@ -149,11 +239,21 @@ Value ValueFromLiteral(const CelValueLiteral& lit) {
       return Value::Bytes(lit.string_value);
     case CelValueLiteral::Kind::kNull:
       return Value::Null();
-    case CelValueLiteral::Kind::kList:
+    case CelValueLiteral::Kind::kList: {
+      std::vector<Value> elems;
+      elems.reserve(lit.list_value.size());
+      for (const CelValueLiteral& e : lit.list_value) {
+        elems.push_back(ValueFromLiteral(e, ctx));
+      }
+      return Value::List(std::move(elems));
+    }
+    case CelValueLiteral::Kind::kMessage:
+      return MessageValueFromLiteral(lit, ctx);
     case CelValueLiteral::Kind::kMap:
       break;
   }
-  ABSL_CHECK(false) << "ValueFromLiteral: list/map activation values not yet "
+  ABSL_CHECK(false) << ctx
+                    << ": ValueFromLiteral: map activation values not yet "
                        "supported; extend when a cell needs them";
   return Value::Null();
 }
@@ -195,9 +295,12 @@ absl::string_view BmPrefixForSurface(absl::string_view surface) {
           {"conversions", "conv"},
           {"index", "idx"},
           {"lists", "in_list"},
+          {"literals", "lit"},
           {"logic", "logic"},
           {"long_strings", "str"},
           {"maps", "map"},
+          {"policies", "policy"},
+          {"proto", "proto"},
           {"size", "size"},
           {"strings", "str"},
           {"ternary", "ternary"},
@@ -231,20 +334,58 @@ Instance PrepareInstance(absl::string_view source,
                          const std::vector<ActivationEntry>& act_entries) {
   Compiler::Builder b;
   for (const ActivationEntry& e : act_entries) {
-    b.DeclareVariable(e.name, TypeForKind(e.value.kind));
+    b.DeclareVariable(e.name, TypeForLiteral(e.value));
   }
   auto compiler = std::move(b).Build();
   ABSL_CHECK_OK(compiler);
   return PlanOrDie(CompileOrDie(*std::move(compiler), source));
 }
 
-// Bind every corpus activation entry into a fresh Activation.
-Activation BuildActivation(const std::vector<ActivationEntry>& act_entries) {
+// Bind every corpus activation entry into a fresh Activation.  `ctx`
+// names the BM cell for crash messages.
+Activation BuildActivation(const std::vector<ActivationEntry>& act_entries,
+                           absl::string_view ctx) {
   Activation act;
   for (const ActivationEntry& e : act_entries) {
-    act.Bind(e.name, ValueFromLiteral(e.value));
+    act.Bind(e.name, ValueFromLiteral(e.value, ctx));
   }
   return act;
+}
+
+// Single-entry per-cell runtime cache.  Under --benchmark_repetitions
+// Google Benchmark re-invokes the bench function once per repetition;
+// without this cache every repetition re-pays Compile (Binaryen -O2
+// over the whole module — dominant in static link mode, where the
+// runtime is linked into every cell's module) + Plan + activation
+// build.  Repetitions of one cell run back-to-back, so a single slot
+// keyed by BM name gets a (reps-1)/reps hit rate while keeping exactly
+// one Instance alive at a time.
+struct CellRuntime {
+  std::string key;
+  Instance inst;
+  Activation act;
+};
+
+std::optional<CellRuntime>& CachedCellRuntime() {
+  static auto* slot = new std::optional<CellRuntime>();
+  return *slot;
+}
+
+// Returns the cached runtime for `bm_name`, (re)building it on miss.
+// Hoisted out of the registration lambda so the lambda body stays a
+// two-liner (and the clang-analyzer leak suppression on
+// RegisterBenchmark keeps anchoring to the call site).
+CellRuntime& EnsureCellRuntime(const std::string& bm_name,
+                               const std::string& source,
+                               const std::vector<ActivationEntry>& entries) {
+  auto& slot = CachedCellRuntime();
+  if (!slot.has_value() || slot->key != bm_name) {
+    slot.reset();
+    Instance inst = PrepareInstance(source, entries);
+    Activation act = BuildActivation(entries, bm_name);
+    slot.emplace(CellRuntime{bm_name, std::move(inst), std::move(act)});
+  }
+  return *slot;
 }
 
 // The actual bench-loop body — separated so RegisterCorpusCell stays
@@ -289,63 +430,12 @@ void RegisterCorpusCell(const Cell& cell) {
   // sees the unowned pointer as a leak.  False positive — suppressed
   // at the call site in every TU that registers cells.
   // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-  benchmark::RegisterBenchmark(bm_name, [source = std::move(source),
+  benchmark::RegisterBenchmark(bm_name, [bm_name, source = std::move(source),
                                          act_entries = std::move(act_entries)](
                                             benchmark::State& state) {
-    Instance inst = PrepareInstance(source, act_entries);
-    Activation act = BuildActivation(act_entries);
-    RunCorpusBench(state, inst, act);
+    CellRuntime& rt = EnsureCellRuntime(bm_name, source, act_entries);
+    RunCorpusBench(state, rt.inst, rt.act);
   })->Unit(benchmark::kNanosecond);
-}
-
-// Register the abc-abc 6-term `a + b + c + a + b + c` cell with `a..c`
-// bound in activation (variable cell — the companion to the literal
-// cell below; the pair isolates activation-marshaling cost on an
-// identical call-graph shape).
-void RegisterAbcAbcVarsToday() {
-  // Google Benchmark's RegisterBenchmark allocates the cell heap-side
-  // via `new`; the framework owns the lifetime, but clang-analyzer
-  // sees the unowned pointer as a leak.  False positive — suppressed
-  // at the call site in every TU that registers cells.
-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-  benchmark::RegisterBenchmark("BM_arith_intAdd_AbcAbcShape_VarsToday",
-                               [](benchmark::State& state) {
-                                 Compiler::Builder b;
-                                 b.DeclareVariable("a", CelType::Int());
-                                 b.DeclareVariable("b", CelType::Int());
-                                 b.DeclareVariable("c", CelType::Int());
-                                 auto c = std::move(b).Build();
-                                 ABSL_CHECK_OK(c);
-                                 Instance inst = PlanOrDie(CompileOrDie(
-                                     *std::move(c), "a + b + c + a + b + c"));
-                                 Activation act;
-                                 act.Bind("a", Value::Int(1));
-                                 act.Bind("b", Value::Int(2));
-                                 act.Bind("c", Value::Int(3));
-                                 RunCorpusBench(state, inst, act);
-                               })
-      ->Unit(benchmark::kNanosecond);
-}
-
-// `1 + 2 + 3 + 1 + 2 + 3` — same call-graph shape as the var cell
-// above, with literals.
-void RegisterAbcAbcLitToday() {
-  // Google Benchmark's RegisterBenchmark allocates the cell heap-side
-  // via `new`; the framework owns the lifetime, but clang-analyzer
-  // sees the unowned pointer as a leak.  False positive — suppressed
-  // at the call site in every TU that registers cells.
-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-  benchmark::RegisterBenchmark("BM_arith_intAdd_AbcAbcShape_LitToday",
-                               [](benchmark::State& state) {
-                                 Compiler::Builder b;
-                                 auto c = std::move(b).Build();
-                                 ABSL_CHECK_OK(c);
-                                 Instance inst = PlanOrDie(CompileOrDie(
-                                     *std::move(c), "1 + 2 + 3 + 1 + 2 + 3"));
-                                 Activation act;
-                                 RunCorpusBench(state, inst, act);
-                               })
-      ->Unit(benchmark::kNanosecond);
 }
 
 // Cell-bearing YAML files under benchmark/eval/corpus/.  The bench
@@ -359,9 +449,12 @@ constexpr const char* kCorpusFiles[] = {
     "benchmark/eval/corpus/conversions.yaml",
     "benchmark/eval/corpus/index.yaml",
     "benchmark/eval/corpus/lists.yaml",
+    "benchmark/eval/corpus/literals.yaml",
     "benchmark/eval/corpus/logic.yaml",
     "benchmark/eval/corpus/long_strings.yaml",
     "benchmark/eval/corpus/maps.yaml",
+    "benchmark/eval/corpus/policies.yaml",
+    "benchmark/eval/corpus/proto.yaml",
     "benchmark/eval/corpus/size.yaml",
     "benchmark/eval/corpus/strings.yaml",
     "benchmark/eval/corpus/ternary.yaml",
@@ -382,12 +475,6 @@ void RegisterAll() {
   for (const Cell& cell : *cells) {
     RegisterCorpusCell(cell);
   }
-
-  // Hand-coded cells the YAML loader can't represent yet (the vars/lit
-  // pair needs a way to express "same shape, two activation forms"
-  // adjacently).
-  RegisterAbcAbcVarsToday();
-  RegisterAbcAbcLitToday();
 }
 
 }  // namespace

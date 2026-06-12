@@ -441,7 +441,7 @@ Mandated by CLAUDE.md:
 | `tools/` | `cel` CLI (`tools/cel/`), `wat_runner` (`tools/wat_runner/`) | binaries |
 | `conformance/` | harness (runner + binding marshal) | binary |
 | `e2e/` | per-milestone e2e tests (m2_test … m18_test, plus host_fn_*, foreign_component_*, fuzz/, known_bugs_test) | tests |
-| `bench/` | kernel / pipeline / in-operator / foreign-component benches | binaries |
+| `benchmark/` | eval corpus + compiler / kernel / component bench tiers | binaries |
 | `testdata/` | shared proto fixtures + `cel_cpp_oracle_test.cc` | data |
 | `spec/tests/` | upstream conformance corpus (textproto) | data |
 | `bindings/` | language bindings — currently `ts/` only (TypeScript shim, in-design) | future |
@@ -508,7 +508,7 @@ Per `per-component-test-coverage.md §2`:
 | `//eval:instance_test` | Full Compile→Plan→Eval |
 | `//eval:engine_test` | Engine::Plan, runtime instantiation |
 | `//eval:cel_host_test` | Layer 1 + 2 trampolines |
-| `//bench:cel_pipeline_bench` | Regression catch |
+| `//benchmark/compiler:stage_bench` | Regression catch |
 | `//e2e:m<N>_test` | Per-milestone e2e |
 | `//e2e:eval_test` | Cross-cutting (flagged stale; see doc) |
 | `//runtime:cel_runtime_wasm_test` | wasm32 cross-compile under wasmtime |

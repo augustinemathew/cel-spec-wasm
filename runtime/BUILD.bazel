@@ -85,7 +85,8 @@ genrule(
 # `fprintf`s to stderr.  Useful for the dead-code audit (see
 # `cel_log.h`); fatal to per-Eval performance once kernels start
 # stacking.  Keep CEL_LOG live for dbg/fastbuild; disable it for opt
-# benches + opt-built deploys.  See bench/README.md baseline note.
+# benches + opt-built deploys.  Baseline accounting:
+# doc/implementation-plan/rewrite/archive/bench-tree-readme.md.
 config_setting(
     name = "opt_mode",
     values = {"compilation_mode": "opt"},

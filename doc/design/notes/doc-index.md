@@ -37,7 +37,7 @@ This is a working artifact of the design rebuild; it graduates into the
 | `conformance/` | conformance/README.md **[live, auto-regen]**; rw/conformance-unlock-plan.md **[hist]** |
 | `e2e/`, test discipline anywhere | implementation-plan/testing-checklist.md **[live]**; implementation-plan/per-component-test-coverage.md **[live]** (manual-target catalog + closeout gate); rw/feature-pipeline-checklist.md **[live]**; implementation-plan/known-issues-findings.md **[live]** |
 | `testdata/cel_cpp_oracle*` | CLAUDE.md §oracle **[live]** |
-| `bench/`, `benchmark/` | bench/README.md **[live]**; benchmark/DESIGN.md **[live-plan]**; rw/m28-bench-results.md **[live]**; rw/wasi/POST_MIGRATION_BENCH.md **[hist]** |
+| `benchmark/` | benchmark/README.md **[live]**; bench/README.md **[archived]** at rw/archive/bench-tree-readme.md (bench/ dissolved into benchmark/ 2026-06-11); benchmark/DESIGN.md **[live-plan]**; rw/m28-bench-results.md **[live]**; rw/wasi/POST_MIGRATION_BENCH.md **[hist]** |
 | `tools/cel/` | tools/cel/README.md **[live]**; rw/cel-cli-design.md **[plan]** (`cel run`, unbuilt) |
 | `tools/wat_runner/` | CLAUDE.md §WAT-first **[live]**; rw/wat-traces.md **[live-ref]** |
 | `examples/` | examples/README.md **[live]**; user-guide/getting-started.md **[live]** |

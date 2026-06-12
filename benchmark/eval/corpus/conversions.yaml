@@ -53,6 +53,16 @@ cells:
     expected: { type: int, value: 1704067200 }
     tags: [phase2, bench-shape, const-only, skip-source-check]
 
+  # Nested const-only conversion pair (the legacy
+  # bench/pipeline_bench.cc BM_Eval_IntFromString shape): int(string(123))
+  # chains two conversions with no activation, isolating the
+  # back-to-back conversion-kernel cost from the var-bound
+  # intFromString cell above.
+  - id: intFromStringNested
+    source: 'int(string(123))'
+    expected: { type: int, value: 123 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   # ── uint(_) ──
   - id: uintFromInt
     source: 'uint(i)'

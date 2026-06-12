@@ -392,7 +392,7 @@ all of them target the per-call boundary cost:
   header-only replacement and strip the import surface.
 
 If you have a workload where any of these would matter, the
-[bench harness](../../bench/foreign_component_bench.cc) is the
+[bench harness](../../benchmark/component/foreign_component_bench.cc) is the
 right place to add a row and measure.
 
 ## 9. Where to look next

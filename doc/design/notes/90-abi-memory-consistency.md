@@ -187,7 +187,7 @@ code; the new design docs can state them once and cite this section.
    moved to the BSS struct `g_arena` (`cel_arena.c:19-27`); bytes
    8..12 are dead.  **Code settles it for runtime-kernel** — and
    surfaces a live bench bug neither note flagged:
-   `bench/kernel_bench.cc:388-396, 457-459, 470-472, 490-492` read
+   `benchmark/kernel/kernel_bench.cc:388-396, 457-459, 470-472, 490-492` read
    and write `cel_mem_base() + 8` with the comment "arena_alloc reads
    the cursor from bytes 8..12" — false since the WASI migration.
    The rewind stores are no-ops on `g_arena.cursor`, so

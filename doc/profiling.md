@@ -50,19 +50,21 @@ harnesses, always under `-c opt`:
   benchmark/eval/run.sh smoke    # min_time=0.1s, fast turnaround
   ```
 
-- **`bench/`** — Google Benchmark microbenches for "how fast is this one
-  thing." `kernel_bench` times the runtime-kernel ops in isolation
-  (arith / compare / convert / string / 3VL / aggregates); `pipeline_bench`
-  times `Compile` / `Plan` / `Eval` separately — and crucially it
-  **pre-stages the compiler, program, and instance outside the timed
-  loop**, so the Eval numbers are steady-state Eval cost with no compile
-  or plan bleeding in. That pre-staging is the pattern to copy when you
-  write your own bench: stage everything you can outside `for (auto _ :
-  state)` so you measure only the phase you care about.
+- **`benchmark/`** — Google Benchmark microbenches for "how fast is this
+  one thing." `//benchmark/kernel:kernel_bench` times the runtime-kernel
+  ops in isolation (arith / compare / convert / string / 3VL /
+  aggregates); `//benchmark/compiler:pipeline_bench` times `Compile` /
+  `Plan` (eval-level profiling now goes through
+  `bazel-bin/benchmark/eval/celwasm_bench`, which **pre-stages the
+  compiler, program, and instance outside the timed loop**, so the Eval
+  numbers are steady-state Eval cost with no compile or plan bleeding
+  in). That pre-staging is the pattern to copy when you write your own
+  bench: stage everything you can outside `for (auto _ : state)` so you
+  measure only the phase you care about.
 
   ```bash
-  bazel run -c opt //bench:kernel_bench
-  bazel run -c opt //bench:pipeline_bench
+  bazel run -c opt //benchmark/kernel:kernel_bench
+  bazel run -c opt //benchmark/compiler:pipeline_bench
   ```
 
 **Production config is not optional for a real number** (see
@@ -127,7 +129,8 @@ ordinary native tools apply. Build `-c opt` but keep frame pointers for
 readable stacks:
 
 ```bash
-bazel build -c opt --copt=-fno-omit-frame-pointer //bench:pipeline_bench
+bazel build -c opt --copt=-fno-omit-frame-pointer //benchmark/eval:celwasm_bench
+bazel build -c opt --copt=-fno-omit-frame-pointer //benchmark/compiler:pipeline_bench
 ```
 
 - **macOS** — `samply record -- <bench>` (same tool as §3, so one
@@ -143,7 +146,7 @@ bazel build -c opt --copt=-fno-omit-frame-pointer //bench:pipeline_bench
   allocation.
 
 **Isolating Plan from Eval** is the whole game on the C++ side. Use the
-`pipeline_bench` pattern: Plan once outside the loop, Eval inside it, so
+`celwasm_bench` pattern: Plan once outside the loop, Eval inside it, so
 the profile attributes time to the phase you mean. If Plan-time Cranelift
 dominates a compile-heavy workload, that's a different investigation
 (module size, the per-Plan re-parse seam noted in

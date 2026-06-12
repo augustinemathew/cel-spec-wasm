@@ -106,3 +106,137 @@ cells:
     source: 'size([1,2,3] + [4,5])'
     expected: { type: int, value: 5 }
     tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  # ── BOUND int lists `x in xs` — the legacy bench/in_operator_bench.cc
+  #    activation-bound shape ──
+  # The list is bound through the activation as list<int> [0 .. N-1]
+  # (the production shape: build the permission set once, query many
+  # times) so the parser's 100k-codepoint cap on literal sources does
+  # not apply and the sweep reaches 1M elements.  `x` is bound to N-2
+  # (second-to-last): the scan walks the whole list before hitting —
+  # worst case, matching the literal cells above.
+  - id: bound100
+    source: 'x in xs'
+    activation:
+      x: { type: int, value: 98 }
+      xs: { type: list, elem: int, gen: { range: 100 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bound1000
+    source: 'x in xs'
+    activation:
+      x: { type: int, value: 998 }
+      xs: { type: list, elem: int, gen: { range: 1000 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bound10000
+    source: 'x in xs'
+    activation:
+      x: { type: int, value: 9998 }
+      xs: { type: list, elem: int, gen: { range: 10000 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bound100000
+    source: 'x in xs'
+    activation:
+      x: { type: int, value: 99998 }
+      xs: { type: list, elem: int, gen: { range: 100000 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bound1000000
+    source: 'x in xs'
+    activation:
+      x: { type: int, value: 999998 }
+      xs: { type: list, elem: int, gen: { range: 1000000 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # 1M early-exit / not-present companions: first element (scan stops
+  # at index 0) and an absent needle (-1, outside [0, 999999] — full
+  # scan, returns false).  The three 1M cells bracket the scan cost:
+  # first ≈ fixed overhead, worst ≈ full hit scan, miss ≈ full no-hit
+  # scan.
+  - id: bound1000000_first
+    source: 'x in xs'
+    activation:
+      x: { type: int, value: 0 }
+      xs: { type: list, elem: int, gen: { range: 1000000 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: bound1000000_miss
+    source: 'x in xs'
+    activation:
+      x: { type: int, value: -1 }
+      xs: { type: list, elem: int, gen: { range: 1000000 } }
+    expected: { type: bool, value: false }
+    tags: [phase2, bench-shape]
+
+  # ── BOUND IAM-permission string lists `perm in perms` ──
+  # Each generated permission is exactly 50 bytes: the 43-byte
+  # GCP-IAM-shaped prefix "cloudkms.cryptoKeyVersions.useToSignBytes.v"
+  # (a real permission + the version-suffix convention) + 7 zero-padded
+  # index digits, mirroring the legacy bench/in_operator_bench.cc
+  # MakeIamPermissions fixed-length discipline so every entry has the
+  # same strcmp cost.  `perm` is bound to the LAST generated element
+  # (index N-1) — worst-case full scan.
+  # NOTE: the legacy bench capped this shape at N=1000 — at N=10000 the
+  # bound-string scan exhausted the per-Eval arena ("arena OOM in
+  # CelMapLookupImpl"); do not extend the sweep without fixing that.
+  - id: iam100
+    source: 'perm in perms'
+    activation:
+      perm: { type: string, value: "cloudkms.cryptoKeyVersions.useToSignBytes.v0000099" }
+      perms: { type: list, elem: string,
+               gen: { template: "cloudkms.cryptoKeyVersions.useToSignBytes.v%07d", count: 100 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: iam1000
+    source: 'perm in perms'
+    activation:
+      perm: { type: string, value: "cloudkms.cryptoKeyVersions.useToSignBytes.v0000999" }
+      perms: { type: list, elem: string,
+               gen: { template: "cloudkms.cryptoKeyVersions.useToSignBytes.v%07d", count: 1000 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  # 1k early-exit / not-present companions.  The miss needle keeps the
+  # 50-byte length (index 9999999 is outside [0, 999]) so the per-entry
+  # compare cost is identical to the hit cells.
+  - id: iam1000_first
+    source: 'perm in perms'
+    activation:
+      perm: { type: string, value: "cloudkms.cryptoKeyVersions.useToSignBytes.v0000000" }
+      perms: { type: list, elem: string,
+               gen: { template: "cloudkms.cryptoKeyVersions.useToSignBytes.v%07d", count: 1000 } }
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape]
+
+  - id: iam1000_miss
+    source: 'perm in perms'
+    activation:
+      perm: { type: string, value: "cloudkms.cryptoKeyVersions.useToSignBytes.v9999999" }
+      perms: { type: list, elem: string,
+               gen: { template: "cloudkms.cryptoKeyVersions.useToSignBytes.v%07d", count: 1000 } }
+    expected: { type: bool, value: false }
+    tags: [phase2, bench-shape]
+
+  # ── literal-list early-exit / not-present variants ──
+  # Same 100-element literal list as `100_lit` above with a first-
+  # element needle (early exit) and an absent needle (full scan →
+  # false), so the literal path has the same scan-cost bracket as the
+  # bound path.
+  - id: "100_lit_first"
+    source: '"alice0" in ["alice0","bob0","carol0","dave0","eve0","frank0","grace0","heidi0","ivan0","judy0","kevin0","luna0","mia0","noah0","olivia0","peter0","quinn0","ruth0","sara0","tom0","alice1","bob1","carol1","dave1","eve1","frank1","grace1","heidi1","ivan1","judy1","kevin1","luna1","mia1","noah1","olivia1","peter1","quinn1","ruth1","sara1","tom1","alice2","bob2","carol2","dave2","eve2","frank2","grace2","heidi2","ivan2","judy2","kevin2","luna2","mia2","noah2","olivia2","peter2","quinn2","ruth2","sara2","tom2","alice3","bob3","carol3","dave3","eve3","frank3","grace3","heidi3","ivan3","judy3","kevin3","luna3","mia3","noah3","olivia3","peter3","quinn3","ruth3","sara3","tom3","alice4","bob4","carol4","dave4","eve4","frank4","grace4","heidi4","ivan4","judy4","kevin4","luna4","mia4","noah4","olivia4","peter4","quinn4","ruth4","sara4","tom4"]'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: "100_lit_miss"
+    source: '"nobody" in ["alice0","bob0","carol0","dave0","eve0","frank0","grace0","heidi0","ivan0","judy0","kevin0","luna0","mia0","noah0","olivia0","peter0","quinn0","ruth0","sara0","tom0","alice1","bob1","carol1","dave1","eve1","frank1","grace1","heidi1","ivan1","judy1","kevin1","luna1","mia1","noah1","olivia1","peter1","quinn1","ruth1","sara1","tom1","alice2","bob2","carol2","dave2","eve2","frank2","grace2","heidi2","ivan2","judy2","kevin2","luna2","mia2","noah2","olivia2","peter2","quinn2","ruth2","sara2","tom2","alice3","bob3","carol3","dave3","eve3","frank3","grace3","heidi3","ivan3","judy3","kevin3","luna3","mia3","noah3","olivia3","peter3","quinn3","ruth3","sara3","tom3","alice4","bob4","carol4","dave4","eve4","frank4","grace4","heidi4","ivan4","judy4","kevin4","luna4","mia4","noah4","olivia4","peter4","quinn4","ruth4","sara4","tom4"]'
+    expected: { type: bool, value: false }
+    tags: [phase2, bench-shape, const-only]

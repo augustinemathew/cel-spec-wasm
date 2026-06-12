@@ -10,7 +10,7 @@ this repo (vendored cel-cpp's tools/testdata loads an undeclared
 `@com_github_google_flatbuffers`, so `//...` fails to *load*).  Use:
 
   //compiler/... //eval/... //shared/... //abi/... //runtime/... \
-  //tools/... //conformance/... //e2e/... //bench/... //testdata/... //spec/...
+  //tools/... //conformance/... //e2e/... //benchmark/... //testdata/... //spec/...
 -->
 
 ## Summary

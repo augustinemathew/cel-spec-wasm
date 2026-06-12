@@ -58,6 +58,21 @@ cells:
     expected: { type: int, value: 2024 }
     tags: [phase2, bench-shape, const-only, skip-source-check]
 
+  # 2024-06-15 is a Saturday; CEL getDayOfWeek is 0-based from Sunday
+  # (langdef "Standard Definitions"), so Saturday = 6.  Verified against
+  # both comparators' result labels at smoke time.
+  - id: tsGetDayOfWeekUtc
+    source: 'timestamp("2024-06-15T10:30:45Z").getDayOfWeek()'
+    expected: { type: int, value: 6 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  # Year-boundary accessor: the proto timestamp max (9999-12-31) is the
+  # largest year the civil-time decomposition has to handle.
+  - id: tsGetFullYearUtcMax
+    source: 'timestamp("9999-12-31T23:59:59Z").getFullYear()'
+    expected: { type: int, value: 9999 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: tsGetFullYearTz
     source: 'timestamp("2024-06-15T10:30:45Z").getFullYear("America/New_York")'
     expected: { type: int, value: 2024 }

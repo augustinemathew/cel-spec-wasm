@@ -367,6 +367,450 @@ cells:
               StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("only")));
 }
 
+// ---------- list activation entries -----------------------------------------
+
+TEST(CorpusLoader, LoadsExplicitIntList) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: explicitInt
+    source: "1 in xs"
+    activation:
+      xs: { type: list, elem: int, values: [1, 2, 3] }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  ASSERT_EQ(cells->size(), 1u);
+  ASSERT_EQ((*cells)[0].activation.size(), 1u);
+  const CelValueLiteral& xs = (*cells)[0].activation[0].value;
+  EXPECT_EQ(xs.kind, CelValueLiteral::Kind::kList);
+  EXPECT_EQ(xs.list_elem_kind, CelValueLiteral::Kind::kInt);
+  ASSERT_EQ(xs.list_value.size(), 3u);
+  EXPECT_EQ(xs.list_value[0].kind, CelValueLiteral::Kind::kInt);
+  EXPECT_EQ(xs.list_value[0].int_value, 1);
+  EXPECT_EQ(xs.list_value[1].int_value, 2);
+  EXPECT_EQ(xs.list_value[2].int_value, 3);
+}
+
+TEST(CorpusLoader, LoadsExplicitStringList) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: explicitStr
+    source: "\"a\" in xs"
+    activation:
+      xs: { type: list, elem: string, values: ["a", "b"] }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  const CelValueLiteral& xs = (*cells)[0].activation[0].value;
+  EXPECT_EQ(xs.kind, CelValueLiteral::Kind::kList);
+  EXPECT_EQ(xs.list_elem_kind, CelValueLiteral::Kind::kString);
+  ASSERT_EQ(xs.list_value.size(), 2u);
+  EXPECT_EQ(xs.list_value[0].kind, CelValueLiteral::Kind::kString);
+  EXPECT_EQ(xs.list_value[0].string_value, "a");
+  EXPECT_EQ(xs.list_value[1].string_value, "b");
+}
+
+TEST(CorpusLoader, LoadsGenRangeList) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: genRange
+    source: "1 in xs"
+    activation:
+      xs: { type: list, elem: int, gen: { range: 1000 } }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  const CelValueLiteral& xs = (*cells)[0].activation[0].value;
+  EXPECT_EQ(xs.kind, CelValueLiteral::Kind::kList);
+  EXPECT_EQ(xs.list_elem_kind, CelValueLiteral::Kind::kInt);
+  ASSERT_EQ(xs.list_value.size(), 1000u);
+  EXPECT_EQ(xs.list_value.front().kind, CelValueLiteral::Kind::kInt);
+  EXPECT_EQ(xs.list_value.front().int_value, 0);
+  EXPECT_EQ(xs.list_value.back().int_value, 999);
+}
+
+TEST(CorpusLoader, LoadsGenTemplateListWithZeroPad) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: genTemplate
+    source: "\"x\" in perms"
+    activation:
+      perms:
+        type: list
+        elem: string
+        gen: { template: "aaaa.bbbb.cccc.perm%07d", count: 1000 }
+    expected: { type: bool, value: false }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  const CelValueLiteral& perms = (*cells)[0].activation[0].value;
+  EXPECT_EQ(perms.kind, CelValueLiteral::Kind::kList);
+  EXPECT_EQ(perms.list_elem_kind, CelValueLiteral::Kind::kString);
+  ASSERT_EQ(perms.list_value.size(), 1000u);
+  EXPECT_EQ(perms.list_value.front().kind, CelValueLiteral::Kind::kString);
+  EXPECT_EQ(perms.list_value.front().string_value,
+            "aaaa.bbbb.cccc.perm0000000");
+  EXPECT_EQ(perms.list_value.back().string_value, "aaaa.bbbb.cccc.perm0000999");
+}
+
+// Boundary: a 1-element range expands to exactly [0].
+TEST(CorpusLoader, GenRangeOneExpandsToSingleZero) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: rangeOne
+    source: "0 in xs"
+    activation:
+      xs: { type: list, elem: int, gen: { range: 1 } }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  const CelValueLiteral& xs = (*cells)[0].activation[0].value;
+  ASSERT_EQ(xs.list_value.size(), 1u);
+  EXPECT_EQ(xs.list_value[0].int_value, 0);
+}
+
+// Boundary: a plain `%d` directive (no zero-pad width) substitutes the
+// bare index.
+TEST(CorpusLoader, GenTemplatePlainPercentD) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: plainD
+    source: "\"x\" in xs"
+    activation:
+      xs: { type: list, elem: string, gen: { template: "p%d", count: 3 } }
+    expected: { type: bool, value: false }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  const CelValueLiteral& xs = (*cells)[0].activation[0].value;
+  ASSERT_EQ(xs.list_value.size(), 3u);
+  EXPECT_EQ(xs.list_value[0].string_value, "p0");
+  EXPECT_EQ(xs.list_value[1].string_value, "p1");
+  EXPECT_EQ(xs.list_value[2].string_value, "p2");
+}
+
+// Boundary: template count of 1 expands to a single entry.
+TEST(CorpusLoader, GenTemplateCountOne) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: countOne
+    source: "\"p0\" in xs"
+    activation:
+      xs: { type: list, elem: string, gen: { template: "p%d", count: 1 } }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  const CelValueLiteral& xs = (*cells)[0].activation[0].value;
+  ASSERT_EQ(xs.list_value.size(), 1u);
+  EXPECT_EQ(xs.list_value[0].string_value, "p0");
+}
+
+// Boundary: an explicit empty `values` list is legal — the declared
+// list<T> type is still derivable from the stamped `list_elem_kind`.
+TEST(CorpusLoader, EmptyExplicitValuesListIsAllowed) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: emptyList
+    source: "1 in xs"
+    activation:
+      xs: { type: list, elem: int, values: [] }
+    expected: { type: bool, value: false }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  const CelValueLiteral& xs = (*cells)[0].activation[0].value;
+  EXPECT_EQ(xs.kind, CelValueLiteral::Kind::kList);
+  EXPECT_EQ(xs.list_elem_kind, CelValueLiteral::Kind::kInt);
+  EXPECT_TRUE(xs.list_value.empty());
+}
+
+TEST(CorpusLoader, RejectsListWithoutElem) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: noElem
+    source: "1 in xs"
+    activation:
+      xs: { type: list, values: [1] }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(LoadCorpus(paths).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("elem")));
+}
+
+TEST(CorpusLoader, RejectsListWithBothValuesAndGen) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: bothForms
+    source: "1 in xs"
+    activation:
+      xs: { type: list, elem: int, values: [1], gen: { range: 3 } }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(LoadCorpus(paths).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("exactly one of `values` / `gen`")));
+}
+
+TEST(CorpusLoader, RejectsGenWithBothRangeAndTemplate) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: bothGens
+    source: "1 in xs"
+    activation:
+      xs:
+        type: list
+        elem: int
+        gen: { range: 3, template: "p%d", count: 3 }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(LoadCorpus(paths).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("exactly one of `range` / `template`")));
+}
+
+TEST(CorpusLoader, RejectsGenRangeZero) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: rangeZero
+    source: "1 in xs"
+    activation:
+      xs: { type: list, elem: int, gen: { range: 0 } }
+    expected: { type: bool, value: false }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(LoadCorpus(paths).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr(">= 1")));
+}
+
+TEST(CorpusLoader, RejectsGenTemplateWithoutCount) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: noCount
+    source: "\"x\" in xs"
+    activation:
+      xs: { type: list, elem: string, gen: { template: "p%d" } }
+    expected: { type: bool, value: false }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(LoadCorpus(paths).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("count")));
+}
+
+TEST(CorpusLoader, RejectsGenTemplateWithAbsurdWidth) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: hugeWidth
+    source: "\"x\" in xs"
+    activation:
+      xs:
+        type: list
+        elem: string
+        gen: { template: "p%999999999999999999999d", count: 1 }
+    expected: { type: bool, value: false }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(LoadCorpus(paths).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("width")));
+}
+
+TEST(CorpusLoader, RejectsListElemList) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: nestedList
+    source: "1 in xs"
+    activation:
+      xs: { type: list, elem: list, values: [] }
+    expected: { type: bool, value: false }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(
+      LoadCorpus(paths).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("scalar")));
+}
+
+TEST(CorpusLoader, RejectsValuesItemThatFailsElemKindParse) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: boundlist
+cells:
+  - id: badItem
+    source: "1 in xs"
+    activation:
+      xs: { type: list, elem: int, values: [1, notanint] }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("boundlist.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(LoadCorpus(paths).status(),
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("int")));
+}
+
+// ---------- message activation entries --------------------------------------
+
+TEST(CorpusLoader, MessageEntryRoundTripsTypeAndTextproto) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: policy
+cells:
+  - id: msgVar
+    source: "c.name == \"Ada\""
+    activation:
+      c:
+        type: message
+        message_type: "celwasm.testdata.Customer"
+        textproto: 'name: "Ada"'
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("policy.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  auto cells = LoadCorpus(paths);
+  ASSERT_THAT(cells.status(), IsOk());
+  ASSERT_EQ((*cells)[0].activation.size(), 1u);
+  const CelValueLiteral& c = (*cells)[0].activation[0].value;
+  EXPECT_EQ(c.kind, CelValueLiteral::Kind::kMessage);
+  EXPECT_EQ(c.message_type, "celwasm.testdata.Customer");
+  EXPECT_EQ(c.string_value, "name: \"Ada\"");
+}
+
+TEST(CorpusLoader, RejectsMessageMissingMessageType) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: policy
+cells:
+  - id: noType
+    source: "c.name == \"Ada\""
+    activation:
+      c: { type: message, textproto: 'name: "Ada"' }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("policy.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(
+      LoadCorpus(paths).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("message_type")));
+}
+
+TEST(CorpusLoader, RejectsMessageMissingTextproto) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: policy
+cells:
+  - id: noText
+    source: "c.name == \"Ada\""
+    activation:
+      c: { type: message, message_type: "celwasm.testdata.Customer" }
+    expected: { type: bool, value: true }
+)YAML";
+  std::string path = WriteTempYaml("policy.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(
+      LoadCorpus(paths).status(),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("textproto")));
+}
+
+// ---------- field-selection identifiers in the source scan ------------------
+
+// `c.name` is a field selection — the scan must not demand a binding
+// for `name`.  Bound `c` only; the cell validates cleanly.  (Scalar
+// binding on purpose: isolates the scanner change from message
+// parsing.)
+TEST(CorpusLoader, FieldSelectionIdentifierDoesNotRequireBinding) {
+  const char* kYaml = R"YAML(
+schema_version: 1
+surface: fieldsel
+cells:
+  - id: dotField
+    source: "c.name == \"x\""
+    activation:
+      c: { type: string, value: "ignored" }
+    expected: { type: bool, value: false }
+)YAML";
+  std::string path = WriteTempYaml("fieldsel.yaml", kYaml);
+
+  std::vector<std::string> paths = {path};
+  EXPECT_THAT(LoadCorpus(paths).status(), IsOk());
+}
+
 // ---------- CanonicalForm ---------------------------------------------------
 
 TEST(CanonicalForm, IntIsDecimal) {
@@ -433,6 +877,27 @@ TEST(CanonicalForm, BytesPrefixed) {
   EXPECT_EQ(CanonicalForm(v), "b\"abc\"");
 }
 
+TEST(CanonicalForm, ListRendersBracketedElements) {
+  CelValueLiteral v;
+  v.kind = CelValueLiteral::Kind::kList;
+  v.list_elem_kind = CelValueLiteral::Kind::kInt;
+  for (int i = 1; i <= 3; ++i) {
+    CelValueLiteral e;
+    e.kind = CelValueLiteral::Kind::kInt;
+    e.int_value = i;
+    v.list_value.push_back(e);
+  }
+  EXPECT_EQ(CanonicalForm(v), "[1, 2, 3]");
+}
+
+TEST(CanonicalForm, MessageRendersTypeBracedTextproto) {
+  CelValueLiteral v;
+  v.kind = CelValueLiteral::Kind::kMessage;
+  v.message_type = "celwasm.testdata.Customer";
+  v.string_value = "name: \"Ada\"";
+  EXPECT_EQ(CanonicalForm(v), "celwasm.testdata.Customer{name: \"Ada\"}");
+}
+
 TEST(CanonicalForm, StableAcrossInvocations) {
   CelValueLiteral v;
   v.kind = CelValueLiteral::Kind::kDouble;
@@ -469,14 +934,15 @@ TEST(CorpusLoader, LoadsAllCommittedSurfaces) {
       CorpusPath("arithmetic.yaml"),     CorpusPath("comparisons.yaml"),
       CorpusPath("comprehensions.yaml"), CorpusPath("conversions.yaml"),
       CorpusPath("index.yaml"),          CorpusPath("lists.yaml"),
-      CorpusPath("logic.yaml"),          CorpusPath("long_strings.yaml"),
-      CorpusPath("maps.yaml"),           CorpusPath("size.yaml"),
-      CorpusPath("strings.yaml"),        CorpusPath("ternary.yaml"),
-      CorpusPath("time.yaml"),
+      CorpusPath("literals.yaml"),       CorpusPath("logic.yaml"),
+      CorpusPath("long_strings.yaml"),   CorpusPath("maps.yaml"),
+      CorpusPath("policies.yaml"),       CorpusPath("proto.yaml"),
+      CorpusPath("size.yaml"),           CorpusPath("strings.yaml"),
+      CorpusPath("ternary.yaml"),        CorpusPath("time.yaml"),
   };
   auto cells = LoadCorpus(paths);
   ASSERT_THAT(cells.status(), IsOk());
-  // 13 surfaces; well over 150 cells once the operator×type grid
+  // 16 surfaces; well over 150 cells once the operator×type grid
   // landed.  Lower bound only, so corpus growth doesn't churn this.
   EXPECT_GE(cells->size(), 150u);
 }

@@ -1,3 +1,14 @@
+# ARCHIVED — `bench/` tree README (final state, 2026-06-11)
+
+> The top-level `bench/` tree was dissolved on 2026-06-11.  Eval-level
+> benches now live as corpus cells under `benchmark/eval/corpus/`;
+> Compile/Plan benches were ported to `benchmark/compiler/`; the kernel
+> microbenches moved to `benchmark/kernel/`; the foreign-component
+> bench moved to `benchmark/component/`.  This file is preserved
+> verbatim below because it carries dated baseline tables
+> (2026-05-14/15/18) and the build-configuration rationale those
+> baselines were measured under.
+
 # `bench` — performance benchmarks
 
 Two Google Benchmark binaries, both `manual`-tagged so they stay out of

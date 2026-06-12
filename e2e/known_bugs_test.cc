@@ -596,7 +596,9 @@ TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
 // to list(int) (the static subset does NOT reject it).  Verify-first.
 
 // ══════════════════════════════════════════════════════════════════
-// CLASS: large-input ceilings surfaced by `bench/in_operator_bench.cc`.
+// CLASS: large-input ceilings surfaced by the in-operator benches
+// (now `benchmark/eval` corpus lists cells +
+// `benchmark/compiler/in_operator_compile_bench.cc`).
 // Each is paired with a backlog entry in
 // `doc/implementation-plan/cleanup-backlog.md` (#15 / #16 / #17).
 // ══════════════════════════════════════════════════════════════════
@@ -641,7 +643,8 @@ std::string MakeIntListInSource(int n) {
 // `DefaultParserOptions()` in
 // `compiler/frontend/parse_and_check.cc:1079` doesn't override the
 // default.  `CompilerOptions` exposes no knob to raise it.
-// Surfaced by `bench/in_operator_bench.cc` — a literal
+// Surfaced by the in-operator compile benches (now
+// `benchmark/compiler/in_operator_compile_bench.cc`) — a literal
 // `[0..999_999]` source (~7.9 MB) is rejected at parse.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, ParserSourceCodepointLimitNotConfigurable) {
@@ -810,8 +813,9 @@ TEST(KnownBugs, BoundStringListInScanArenaOomAt10K) {
 //
 // Source: `a_0*a_{(0*7+3)%10} + a_1*a_{(1*7+3)%10} + ...` repeated
 // `kTerms` times over 10 int vars `a..j` bound to the first 10
-// primes.  Same shape as `bench/in_operator_bench.cc`'s
-// `BM_Eval_LongArith_*Terms`.
+// primes.  Same shape as the `benchmark/eval` corpus long-arith
+// cells (formerly `bench/in_operator_bench.cc`'s
+// `BM_Eval_LongArith_*Terms`).
 //
 // Both tests below share the same expression-building helper inline
 // (no shared header — these two tests are the only callers) so the
@@ -937,7 +941,8 @@ TEST(KnownBugs, DeepArithChainFormerSegvBoundaryRejectedAtCompile) {
       << v.status();
 }
 
-// Headline bench case (`bench/in_operator_bench.cc`'s
+// Headline bench case (the `benchmark/eval` corpus long-arith cell,
+// formerly `bench/in_operator_bench.cc`'s
 // `BM_Eval_LongArith_10kTerms`, kTerms=1000): a 1000-term chain must
 // stay comfortably inside the depth gate, compiling AND evaluating
 // to its value in both link modes.

@@ -1972,10 +1972,12 @@ header — it's exercised indirectly by every runtime test.
 
 ### Bench (post-M10) — first baseline shipped 2026-05-14
 
-Two `manual`-tagged Google Benchmark binaries under
-`bench/`.  Out of the default test suite — run explicitly
-via `bazel run -c opt //bench:{kernel,pipeline}_bench`.
-Baseline numbers captured in `bench/README.md`.
+`manual`-tagged Google Benchmark binaries, now under
+`benchmark/`.  Out of the default test suite — run explicitly
+via `bazel run -c opt //benchmark/kernel:kernel_bench` /
+`//benchmark/compiler:pipeline_bench`.  The 2026-05 baseline
+numbers are archived in
+`doc/implementation-plan/rewrite/archive/bench-tree-readme.md`.
 
   - [x] `kernel_bench.cc` — runtime kernel microbenches covering
         arithmetic (`cel_int_add` / `_mul` / `_div`, `cel_double_add`),

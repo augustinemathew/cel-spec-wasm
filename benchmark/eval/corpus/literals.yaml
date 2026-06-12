@@ -1,0 +1,45 @@
+# Literal surface — bench-shape cells.
+#
+# Five const-only cells, one per scalar literal kind the legacy
+# bench/cel_pipeline_bench.cc swept (int / bool / double / string /
+# null).  Each cell is the bare literal: the floor of the whole eval
+# pipeline — $eval dispatch + one rodata CelValue decode and nothing
+# else.  Any per-kind spread here is decode/marshal cost, not operator
+# cost.
+#
+# The null cell's `expected: { type: null }` has no scalar payload;
+# both bench mains label a null result identically
+# (`result=<non-numeric>`), so the parity diff stays mechanical.
+#
+# Surface `literals` maps to BM prefix `lit` (cell id `int` →
+# `BM_lit_int`).
+
+schema_version: 1
+surface: literals
+
+cells:
+
+  - id: int
+    source: '42'
+    expected: { type: int, value: 42 }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: bool
+    source: 'true'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: double
+    source: '3.14'
+    expected: { type: double, value: 3.14 }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: string
+    source: '"hello"'
+    expected: { type: string, value: "hello" }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: "null"
+    source: 'null'
+    expected: { type: null }
+    tags: [phase2, bench-shape, const-only]

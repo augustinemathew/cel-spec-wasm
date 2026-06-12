@@ -92,7 +92,7 @@ git ls-files 'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c' \
               'common/**/*.cc' 'common/**/*.h' \
               'abi/**/*.cc' 'abi/**/*.h' 'runtime/**/*.cc' 'runtime/**/*.h' 'runtime/**/*.c' \
               'tools/**/*.cc' 'tools/**/*.h' 'conformance/**/*.cc' 'conformance/**/*.h' \
-              'e2e/**/*.cc' 'e2e/**/*.h' 'bench/**/*.cc' 'bench/**/*.h' \
+              'e2e/**/*.cc' 'e2e/**/*.h' 'benchmark/**/*.cc' 'benchmark/**/*.h' \
               'testdata/**/*.cc' 'testdata/**/*.h' 2>/dev/null \
   | xargs -I{} grep -hoE '\b[A-Za-z_][A-Za-z0-9_]+\b' {} 2>/dev/null \
   | sort -u > "$src_corpus"

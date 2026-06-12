@@ -63,8 +63,7 @@ Working on the compiler itself:
 | [`implementation-plan/per-component-test-coverage.md`](implementation-plan/per-component-test-coverage.md) | Per-component required test scenarios + the milestone-closeout gate. |
 | [`implementation-plan/rewrite/feature-pipeline-checklist.md`](implementation-plan/rewrite/feature-pipeline-checklist.md) | Which files/tests/ABI to touch (in order) when adding a feature. |
 | [`../conformance/README.md`](../conformance/README.md) | Conformance harness + the **live** pass/skip/fail headline; how to run both link modes. |
-| [`../benchmark/README.md`](../benchmark/README.md) | The comparative eval-perf harness (corpus + three-way celwasm/cel-cpp report). |
-| [`../bench/README.md`](../bench/README.md) | Lower-level microbenches (kernel ops, pipeline-shape probes). |
+| [`../benchmark/README.md`](../benchmark/README.md) | Comparative + regression-localisation benchmarks (eval corpus, compiler, kernel, component tiers). |
 
 Transverse working docs under
 [`implementation-plan/`](implementation-plan/):

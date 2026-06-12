@@ -14,9 +14,15 @@ file (or add a new file + the surface to
 `celwasm_bench.cc::kCorpusFiles` + `BmPrefixForSurface` — in BOTH
 bench mains).
 
-**Core-operator grid filled 2026-06-09.**  Thirteen surfaces, 229
-cells: arithmetic, comparisons, comprehensions, conversions, index,
-lists, logic, long_strings, maps, size, strings, ternary, time.
+**Core-operator grid filled 2026-06-09.**  Sixteen surfaces (was
+thirteen until 2026-06-11): arithmetic, comparisons, comprehensions,
+conversions, index, lists, **literals**, logic, long_strings, maps,
+**policies**, **proto**, size, strings, ternary, time.  The 2026-06-11
+expansion absorbed the legacy `bench/` eval benches into the corpus
+(bound-list `in` sweeps, IAM-permission lists, the 1000-term mixed
+polynomial, the literal-kind floor sweep, `int(string(123))`) and
+added the proto-read + composite-policy tiers the new
+message-activation loader unlocked.
 Every operator family × admitted-type combination below is either
 covered (cell id given) or excluded with a per-cell reason tag in
 the YAML + a row in §"Exclusions" here.  Extension libraries
@@ -31,14 +37,20 @@ silent gaps):
 | `celwasm-skip-*` | cell cannot run through celwasm today; celcpp_bench still runs it.  Suffix names the reason (`-rodata`, `-het-eq`, `-ternary-ident-cond`, `-map-dot-field`, `-arena-overflow`). |
 | `celcpp-skip-*` | cell rejected by cel-cpp's checker as configured; celwasm_bench may still run it.  Cells carrying BOTH prefixes run nowhere and exist as documented grid exclusions. |
 
-**Loader gap (documented in `corpus_loader.h`):** activation values
-are scalar-only (int/uint/double/bool/string/bytes).  Cells needing a
-timestamp/duration/list/map/message-typed *activation binding* instead
-construct the operand in-source from literals (`timestamp("…")`,
-`[1,2,3]`, `{…}`) and — where the result type is itself unexpressible —
+**Loader schema (documented in `corpus_loader.h`):** activation
+values cover scalars (int/uint/double/bool/string/bytes), `list<T>`
+of any scalar elem (explicit `values:` or generated
+`gen: {range: N}` / `gen: {template: "…%07d", count: N}`), and proto
+messages (`{type: message, message_type, textproto}` — parsed against
+the generated descriptor pool by each bench main at registration).
+Still missing: map-typed activations and timestamp/duration bindings.
+Cells needing those construct the operand in-source from literals
+(`timestamp("…")`, `{…}`) and — where the result type is itself
+unexpressible in `expected:` (timestamp, duration, message, map) —
 reduce it to a scalar via `int(…)` / `.getSeconds()` / `size(…)` /
-`== <literal>`.  The reduce is identical work on both comparators, so
-the pairing stays honest; the cell comment names the wrap.
+`.field` / `== <literal>`.  The reduce is identical work on both
+comparators, so the pairing stays honest; the cell comment names the
+wrap.
 
 A cell is "covered" when:
 1. It appears in a corpus `.yaml` file.
@@ -76,6 +88,23 @@ Length sweep `{2, 10, 50, 250, 1000}` per intAdd/intMul/intSub/
 doubleAdd, var + const variants.  `*1000TermsConst` cells are
 `celwasm-skip-rodata` (1000 literal CelValues = 24 KB rodata vs the
 8 KB low-memory window).
+
+Composite-shape cells (2026-06-11, absorbed from the legacy
+`bench/` tree):
+
+| cell id | expression | question it answers |
+|---|---|---|
+| arith.polyMix1000Terms | `a*d + b*a + … (1000 terms)` over 10 prime-bound vars | the legacy in_operator_bench long-arith headline: 1000 muls + 999 adds of CSE-resistant mixed terms — what does AOT straight-lining buy on compute-heavy arithmetic? |
+| arith.abcAbcShapeVars | `a + b + c + a + b + c` (a=1,b=2,c=3) | activation-marshal cost on a fixed 6-term call graph (var half of the pair) |
+| arith.abcAbcShapeLit | `1 + 2 + 3 + 1 + 2 + 3` | const twin of abcAbcShapeVars; the var−lit delta isolates the variable path |
+
+**Rename note:** abcAbcShape{Vars,Lit} were hand-coded
+registrations in `celwasm_bench.cc`
+(`BM_arith_intAdd_AbcAbcShape_{Vars,Lit}Today`) from before the
+corpus could express a var/lit adjacency pair.  They are corpus
+cells now — BM names changed to
+`BM_arith_abcAbcShape{Vars,Lit}` (corpus naming wins), and
+cel-cpp gained the pair for free.
 
 ## Non-numeric `+` / `-` overloads
 
@@ -148,16 +177,29 @@ Surfaces: `lists.yaml` (BM prefix `in_list`), `maps.yaml` (`map`).
 | range kind     | elem/key types covered | cell ids | status |
 |----------------|------------------------|----------|--------|
 | list<string>   | length sweep {5,20,100,1000}, var + literal needle | lists.{5,20,100,1000}(_lit) | ✓ ({1000,1000_lit} ◐ `celwasm-skip-rodata`) |
+| list<string> literal, early-exit/miss | 100 elems, first-element + absent needle | lists.100_lit_first, lists.100_lit_miss | ✓ |
+| list<int> BOUND (`x in xs`, activation-bound list) | length sweep {100, 1k, 10k, 100k, 1M}, x = N−2 worst case | lists.bound{100,1000,10000,100000,1000000} | ✓ |
+| list<int> BOUND, 1M early-exit/miss | x = 0 (first) / x = −1 (absent) | lists.bound1000000_first, lists.bound1000000_miss | ✓ |
+| list<string> BOUND, IAM-permission shape | 50-byte generated permissions, {100, 1000}, needle = last | lists.iam{100,1000} | ✓ |
+| list<string> BOUND, IAM early-exit/miss | needle = first / absent (both 50 bytes) | lists.iam1000_first, lists.iam1000_miss | ✓ |
 | list<int>      | 20 elems, worst-case scan | lists.int20 | ✓ |
 | list<uint>     | "                       | lists.uint20 | ✓ |
 | list<double>   | "                       | lists.double20 | ✓ |
 | list<bool>     | "                       | lists.bool20 | ✓ |
 | list<bytes>    | —                       | — | ✗ excluded: bytes list literals add no kernel path beyond string (same memcmp scan); revisit if the kernel ever specializes |
-| list<message>  | —                       | — | ✗ excluded: needs proto descriptor + message activation (see §Proto-message exclusion) |
+| list<message>  | —                       | — | ✗ excluded: message-ELEMENT lists are still outside the loader schema (list elems are scalar-only); message ACTIVATIONS landed — see §Proto-message reads |
 | map<string,V>  | 10 keys, var + const    | maps.inString, maps.inStringConst | ✓ |
 | map<int,V>     | 10 keys                 | maps.inInt | ✓ |
 | map<uint,V>    | 10 keys                 | maps.inUint | ✓ |
 | map<bool,V>    | 2 keys                  | maps.inBool | ✓ |
+
+The bound cells mirror the legacy `bench/in_operator_bench.cc`
+shapes (BM_Eval_In_IntList_Bound_WorstCase, BM_Eval_In_1M_*,
+BM_Eval_In_IamPermissions_Bound_Last) — the production "build the
+permission set once, query many times" path the literal cells
+can't reach (parser 100k-codepoint cap).  The IAM bound sweep
+stops at 1000 deliberately: the legacy bench measured an arena
+OOM at N=10000 on the bound-string scan (note in lists.yaml).
 
 ---
 
@@ -181,7 +223,8 @@ Surface: `index.yaml` (BM prefix `idx`).
 |-------|----------|--------|
 | map.field sugar (string key) | maps.dotField | ◐ `celwasm-skip-map-dot-field` (cleanup-backlog #9: Select routes through the message-field trampoline → type_mismatch error) |
 | `has(map.field)` | maps.hasKey | ◐ same gap (e2e/known_bugs_test.cc::HasOnMapPresentKey) |
-| message.field / `has(msg.field)` | — | ✗ excluded — see §Proto-message exclusion |
+| message.field | proto.read_*, proto.cust_*, proto.select_depth{1,2,4} | ✓ — see §Proto-message reads |
+| `has(msg.field)` | — | ✗ TODO: no cell yet; the message-activation plumbing exists now (proto surface), add when the published table wants presence-test numbers |
 
 ---
 
@@ -239,7 +282,7 @@ Surface: `conversions.yaml` (BM prefix `conv`).
 | int       | n/a | ✓ uintFromInt | ✓ doubleFromInt | ✓ stringFromInt | n/a | ✗¹ | ✗¹ |
 | uint      | ✓ intFromUint | n/a | ✓ doubleFromUint | ✓ stringFromUint | n/a | n/a | n/a |
 | double    | ✓ intFromDouble | ✓ uintFromDouble | n/a | ✓ stringFromDouble | n/a | n/a | n/a |
-| string    | ✓ intFromString | ✓ uintFromString | ✓ doubleFromString | n/a | ✓ bytesFromString | ✓ timestampRoundTrip² | ✓ durationRoundTrip² |
+| string    | ✓ intFromString, intFromStringNested³ | ✓ uintFromString | ✓ doubleFromString | n/a | ✓ bytesFromString | ✓ timestampRoundTrip² | ✓ durationRoundTrip² |
 | bool      | n/a | n/a | n/a | ✓ stringFromBool | n/a | n/a | n/a |
 | bytes     | n/a | n/a | n/a | ✓ stringFromBytes | n/a | n/a | n/a |
 | timestamp | ✓ intFromTimestamp | n/a | n/a | ✓ stringFromTimestamp | n/a | n/a | n/a |
@@ -252,6 +295,11 @@ configured; the epoch path is covered from the timestamp side by
 intFromTimestamp.  Revisit if the published table needs them.
 ² Parse + format round-trip (`string(timestamp(s))`) — result type
 otherwise unexpressible in the scalar-only expected schema.
+³ intFromStringNested is the const-only nested form
+`int(string(123))` (the legacy bench/pipeline_bench.cc
+BM_Eval_IntFromString shape): two chained conversion kernels, no
+activation — pairs with the var-bound intFromString to isolate the
+back-to-back-conversion cost.
 
 `bool(string)` / `string(bool)`: string→bool excluded (same
 non-uniform-support bucket¹); bool→string covered (stringFromBool).
@@ -267,33 +315,103 @@ Surface: `time.yaml` (BM prefix `time`).  Arithmetic rows are in the
 
 | accessor | UTC | named tz | cell ids |
 |----------|-----|----------|----------|
-| `getFullYear` | ✓ | ✓ | time.tsGetFullYearUtc, time.tsGetFullYearTz |
+| `getFullYear` | ✓ (+ year-9999 boundary: tsGetFullYearUtcMax) | ✓ | time.tsGetFullYearUtc, time.tsGetFullYearUtcMax, time.tsGetFullYearTz |
 | `getHours`    | ✓ | ✓ | time.tsGetHoursUtc, time.tsGetHoursTz |
 | `getSeconds`  | ✓ | ✓ | time.tsGetSecondsUtc, time.tsGetSecondsTz |
+| `getDayOfWeek` | ✓ | ✗ | time.tsGetDayOfWeekUtc (2024-06-15 = Saturday → 6; 0-based from Sunday) |
 | duration `getHours` / `getSeconds` | ✓ | n/a | time.durGetHours, time.durGetSeconds |
-| `getDate`/`getDayOfMonth`/`getDayOfWeek`/`getDayOfYear`/`getMilliseconds`/`getMinutes`/`getMonth` | ✗ | ✗ | TODO: not yet covered — same kernel family as the three covered accessors (one trampoline per accessor); add when the published table wants the full accessor sweep |
+| `getDate`/`getDayOfMonth`/`getDayOfYear`/`getMilliseconds`/`getMinutes`/`getMonth` (+ `getDayOfWeek` tz) | ✗ | ✗ | TODO: not yet covered — same kernel family as the covered accessors (one trampoline per accessor); add when the published table wants the full accessor sweep |
 
 ---
 
-## Proto-message exclusion (applies to several grids above)
+## Literal floor sweep
 
-Cells needing a proto message — `msg.field` selection,
-`has(msg.field)`, `msg in [msg]`, message equality — are **excluded
-from this corpus** (not tagged, not present) because BOTH halves of
-the pairing lack the plumbing:
+Surface: `literals.yaml` (BM prefix `lit`).  Five const-only cells —
+the bare literal per scalar kind (the legacy
+`bench/cel_pipeline_bench.cc` input sweep).  Each cell is the floor
+of the whole pipeline: $eval dispatch + one CelValue decode and
+nothing else; per-kind spread here is decode/marshal cost.
 
-  - `corpus_loader.h`'s activation schema has no message literal and
-    no descriptor reference;
-  - `celcpp_bench` deliberately links zero first-party targets and
-    resolves types from the generated descriptor pool only — our
-    `testdata` fixture protos are not in its pool, and linking them
-    in would start the first-party-symbol-clash problem its header
-    documents.
+| cell id | expression | question it answers |
+|---|---|---|
+| lit.int | `42` | int decode floor |
+| lit.bool | `true` | bool decode floor |
+| lit.double | `3.14` | double decode floor |
+| lit.string | `"hello"` | string (rodata + variable-length payload) decode floor |
+| lit.null | `null` | null decode floor (`expected: {type: null}`; both mains label it `result=<non-numeric>`) |
 
-When a proto surface lands it needs: loader schema bump (message
-literal + descriptor path), TypeForKind/ValueFromLiteral extension in
-BOTH bench mains, and a shared fixture proto target both binaries can
-link.  Until then this section is the documented gap.
+---
+
+## Proto-message reads
+
+Surface: `proto.yaml` (BM prefix `proto`).  **The proto-message
+exclusion that used to live here is closed (2026-06-11):** the
+loader gained the `{type: message, message_type, textproto}`
+activation form, both bench mains parse the textproto against the
+generated descriptor pool (`//testdata` fixture cc_protos are
+linked into BOTH binaries via `kDescriptorsLinked` — celcpp_bench
+stays first-party-free; cc_proto targets carry none of the
+clashing `cel::` symbols).  Fixtures: `m` =
+celwasm.testdata.HostMsg3, `c` = celwasm.testdata.Customer.  Every
+cell reduces to a scalar (the parity hook).
+
+| cell id | expression | question it answers |
+|---|---|---|
+| proto.read_s | `m.s` | string singular read (variable-length payload marshal) |
+| proto.read_b | `m.b` | bool singular read |
+| proto.read_f64 | `m.f64` | double singular read |
+| proto.read_u64 | `m.u64` | uint64 singular read |
+| proto.cust_name | `c.name` | Customer-domain string read (e2e-fixture twin of read_s) |
+| proto.cust_age | `c.age` | int32→CEL-int read (sign-extending load) |
+| proto.cust_is_premium | `c.is_premium` | Customer bool read |
+| proto.select_depth1 | `m.i64` | depth-1 baseline for the nesting sweep |
+| proto.select_depth2 | `m.inner.i64` | +1 nested-message hop cost |
+| proto.select_depth4 | `m.inner.inner.inner.i64` | +3 hops — is per-hop cost linear? |
+| proto.select_depth8 | `m.inner…(x7).i64` | deep-nesting tail of the per-hop sweep |
+| proto.select_depth16 | `m.inner…(x15).i64` | pathological nesting — per-hop cost still linear at depth 16? |
+| proto.rep_i32_at0 | `m.rep_i32[0]` | repeated-scalar index, first element |
+| proto.rep_i32_at9 | `m.rep_i32[9]` | repeated-scalar index, last of 10 (index-position sensitivity) |
+| proto.rep_msg_at1_s | `m.rep_msg[1].s` | repeated-MESSAGE index + select (list_at returning a message) |
+| proto.tags_at2 | `c.tags[2]` | the exact legacy BM_Eval_ListAt_Proto shape (5 tags) |
+| proto.map_str_i32 | `m.str_to_i32["b"]` | proto map lookup, string key |
+| proto.map_i64_str | `m.i64_to_str[2]` | proto map lookup, int key |
+| proto.map_str_msg_i64 | `m.str_to_msg["k"].i64` | map lookup returning a message + select |
+| proto.metadata_b | `c.metadata["b"]` | the exact legacy BM_Eval_MapLookup_Proto shape |
+| proto.pair_list_arena | `[10, 20, 30, 40, 50][2]` | arena half of the list-index dispatch-crossover pair |
+| proto.pair_map_arena | `{"a": 1, "b": 2, "c": 3}["b"]` | arena half of the map-lookup crossover pair |
+| proto.construct_name | `celwasm.testdata.Customer{name: "Ada"}.name` | message construction + immediate select (scalar-reduced kStructExpr) |
+| proto.reads5 | `m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32` | 5 reads off one bound message — per-read slope |
+| proto.reads10 | 10 int reads `+`-combined | 10 reads (6 distinct int fields + 4 repeats; host-call reads are CSE-opaque) |
+
+Still outside the schema: message-ELEMENT lists (`msg in [msg]`,
+list<message> activations), map-typed activations, message-typed
+`expected:` (cells select-reduce instead), `has(msg.field)` cells
+(plumbing exists; not yet written).
+
+---
+
+## Composite policies
+
+Surface: `policies.yaml` (BM prefix `policy`).  Realistic
+authz/admission shapes combining the axes the proto surface
+measures in isolation; answers "do the per-op costs compose
+linearly in a real policy?".  Every cell carries a `# why:` line in
+the YAML (DESIGN.md §6.4).
+
+| cell id | expression (abbrev.) | question it answers |
+|---|---|---|
+| policy.ternary2 | `c.age > 30 ? (c.is_premium ? "gold" : "silver") : "basic"` | 2-deep ternary nesting over proto-read conditions |
+| policy.ternary5 | `c.age > 60 ? "a" : … : "f"` (5 arms) | per-arm cost of a ternary cascade re-reading one proto field |
+| policy.premium_gate | `c.is_premium ? c.age : 0` | bare proto-bool select as ternary condition (does the ternary-ident-cond bug extend to selects?) |
+| policy.str_in_list | `m.s in ["alpha", …]` | proto read feeding an arena literal-list scan (trampoline→wasm handoff) |
+| policy.arena_map_gate | `c.age >= {"us": 21, "de": 18}["us"]` | arena map-literal lookup vs proto field (wasm→trampoline handoff) |
+| policy.authz_basic | `(c.is_premium && c.age >= 18 && c.name in […]) ? "allow" : "deny"` | the headline 3-read + in-list + ternary allow/deny cost |
+| policy.authz_deep | same, depth-2/3 selects on `m.inner…` | what select depth adds to a whole policy |
+| policy.mega100 | 25-arm nested ternary, every condition = depth-1..8 select + map lookup + repeated index; 159 proto accesses/Eval | the policy-engine stress number |
+| policy.authz_deep8 | authz with every condition behind an 8-deep chain | does (reads x depth) compose, or do same-spine walks amortise? |
+| policy.quota_check | `m.str_to_i32["used"] + …["pending"] < …["limit"]` | 3 proto-map lookups + arithmetic + comparison (quota shape) |
+| policy.tier_route | `c.balance_cents >= 100000u ? … : (… c.metadata["tier"] …)` | ternary chain across uint compare / bool select / map lookup |
+| policy.risk_score | `c.credit_score >= 700.0 && c.balance_cents > 1000u` | mixing payload kinds (double + uint) in one policy |
 
 ---
 
@@ -303,6 +421,15 @@ link.  Until then this section is the documented gap.
 |------|--------|
 | cmp.intEqDouble | heterogeneous `==`: celwasm checker rejects (`celwasm-skip-het-eq`); cel-cpp checker rejects too — equality stays homogeneous at check time even with `enable_cross_numeric_comparisons` (`celcpp-skip-het-eq-check`).  Kept in YAML as the documented grid row. |
 | cmp.nullEqInt | same: `1 == null` rejected by both checkers as configured. |
+
+Bench shapes that are NOT corpus-representable (no cell exists, by
+design — this list is the accountability record):
+
+| shape | why not representable | where it IS covered |
+|-------|----------------------|---------------------|
+| error-path evals (div-by-zero, modulo-by-zero, map key miss, list index out of range) | both bench mains `ABSL_CHECK_OK` the Eval result and stamp a value label — the harness requires Ok results, and an error-result `expected:` form doesn't exist | kernel-level only: `//benchmark/kernel` + the runtime/e2e error-path tests pin semantics; eval-corpus rows would need a harness extension (error-kind labels) first |
+| 10 000-element LITERAL int list eval | known celwasm fault: compile + Plan succeed but Eval traps in wasmtime (`store.rs:2440 assertion failed: fault.is_none()`, noted in the legacy bench) — a corpus cell would crash celwasm_bench at registration | compile-side cost covered by `//benchmark/compiler:in_operator_compile_bench`; the eval-side BOUND path covers N=10000+ (lists.bound10000…) |
+| unknown-merge / partial-eval shapes (3VL with unknowns, comprehension over unknown range) | the corpus activation schema has no unknown-attribute bindings; PartialEval is a different API surface than `Instance::Eval(Activation)` | partial-eval component tests; out of the eval corpus's scope by design |
 
 ## celwasm-skipped cells (celcpp-only, ◐)
 

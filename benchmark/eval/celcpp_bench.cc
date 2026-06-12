@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,10 +49,14 @@
 #include "compiler/standard_library.h"
 #include "google/protobuf/arena.h"
 #include "google/protobuf/descriptor.h"
+#include "google/protobuf/message.h"
+#include "google/protobuf/text_format.h"
 #include "runtime/activation.h"
 #include "runtime/runtime.h"
 #include "runtime/runtime_options.h"
 #include "runtime/standard_runtime_builder_factory.h"
+#include "testdata/e2e_fixture.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 
 namespace celwasm_bench_celcpp_proto {
 namespace {
@@ -60,6 +65,20 @@ using ::celbench::ActivationEntry;
 using ::celbench::Cell;
 using ::celbench::CelValueLiteral;
 using ::celbench::LoadCorpus;
+
+// Force generated-pool registration of the proto fixtures that
+// message-typed corpus cells may name.  Mirrors
+// `celwasm_bench.cc::kDescriptorsLinked` — both binaries resolve
+// `message_type` in the generated DescriptorPool by full name, and
+// without an explicit reference the linker can drop the generated
+// registration objects.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
+      google::protobuf::LinkMessageReflection<celwasm::testdata::HostMsg3>();
+      return 0;
+    }();
 
 std::unique_ptr<const cel::Runtime> BuildRuntimeOrDie() {
   const google::protobuf::DescriptorPool* pool =
@@ -152,11 +171,11 @@ void SetResultLabel(benchmark::State& state, const cel::Value& v) {
   }
 }
 
-// Map a corpus literal's `kind` to cel-cpp's `cel::Type` used at
-// variable-declaration time.  Aggregates and `kNull` are not used by
-// any current corpus-cell activation; extending requires picking a
-// concrete element type for lists and a key/value pair for maps.
-cel::Type TypeForKind(CelValueLiteral::Kind kind) {
+// Map a scalar corpus-literal kind to cel-cpp's `cel::Type`.  Used
+// directly for scalar activations and for the element type of a
+// bound list.  Non-scalar kinds CHECK — the loader only stamps
+// scalar kinds into `list_elem_kind`.
+cel::Type ScalarTypeForKind(CelValueLiteral::Kind kind) {
   switch (kind) {
     case CelValueLiteral::Kind::kInt:
       return cel::IntType();
@@ -173,17 +192,104 @@ cel::Type TypeForKind(CelValueLiteral::Kind kind) {
     case CelValueLiteral::Kind::kNull:
     case CelValueLiteral::Kind::kList:
     case CelValueLiteral::Kind::kMap:
+    case CelValueLiteral::Kind::kMessage:
       break;
   }
-  ABSL_CHECK(false) << "TypeForKind: unsupported literal kind for activation; "
-                       "extend when a cell needs it";
+  ABSL_CHECK(false) << "ScalarTypeForKind: non-scalar literal kind "
+                    << static_cast<int>(kind);
   return cel::IntType();
 }
 
-// Convert a corpus literal to a cel-cpp `cel::Value`.  `arena` is the
-// allocation home for string/bytes payloads.
+// Look up a corpus `message_type` in the generated descriptor pool.
+// Crashes naming `ctx` (the BM name) when the type isn't linked in.
+const google::protobuf::Descriptor* FindMessageDescriptorOrDie(
+    absl::string_view message_type, absl::string_view ctx) {
+  const google::protobuf::Descriptor* desc =
+      google::protobuf::DescriptorPool::generated_pool()->FindMessageTypeByName(
+          message_type);
+  ABSL_CHECK(desc != nullptr)
+      << ctx << ": message type `" << message_type
+      << "` not in the generated descriptor pool; link its cc_proto and "
+         "add it to kDescriptorsLinked";
+  return desc;
+}
+
+// Map a corpus literal to the `cel::Type` used at variable-declaration
+// time.  `kNull` and `kMap` are not used by any current corpus-cell
+// activation; extending to maps requires a key/value type pair.
+cel::Type TypeForLiteral(const CelValueLiteral& lit,
+                         google::protobuf::Arena* arena,
+                         absl::string_view ctx) {
+  switch (lit.kind) {
+    case CelValueLiteral::Kind::kInt:
+    case CelValueLiteral::Kind::kUint:
+    case CelValueLiteral::Kind::kDouble:
+    case CelValueLiteral::Kind::kBool:
+    case CelValueLiteral::Kind::kString:
+    case CelValueLiteral::Kind::kBytes:
+      return ScalarTypeForKind(lit.kind);
+    case CelValueLiteral::Kind::kList:
+      return cel::ListType(arena, ScalarTypeForKind(lit.list_elem_kind));
+    case CelValueLiteral::Kind::kMessage:
+      // cel::MessageType(descriptor) — common/types/message_type.h.
+      return cel::MessageType(
+          FindMessageDescriptorOrDie(lit.message_type, ctx));
+    case CelValueLiteral::Kind::kNull:
+    case CelValueLiteral::Kind::kMap:
+      break;
+  }
+  ABSL_CHECK(false) << ctx
+                    << ": TypeForLiteral: unsupported literal kind for "
+                       "activation; extend when a cell needs it";
+  return cel::IntType();
+}
+
 cel::Value ValueFromLiteral(const CelValueLiteral& lit,
-                            google::protobuf::Arena* arena) {
+                            google::protobuf::Arena* arena,
+                            absl::string_view ctx);
+
+// Build a `cel::ListValue` from a kList literal's (scalar) elements.
+// Lives in `arena`, which the bench lambda keeps alive across the
+// whole timed region.
+cel::Value ListValueFromLiteral(const CelValueLiteral& lit,
+                                google::protobuf::Arena* arena,
+                                absl::string_view ctx) {
+  auto builder = cel::NewListValueBuilder(arena);
+  builder->Reserve(lit.list_value.size());
+  for (const CelValueLiteral& e : lit.list_value) {
+    builder->UnsafeAdd(ValueFromLiteral(e, arena, ctx));
+  }
+  return {std::move(*builder).Build()};
+}
+
+// Parse a kMessage literal's textproto into an arena-allocated
+// generated-pool message and wrap it via `cel::Value::WrapMessage`
+// (common/value.h) — borrowed, arena-owned, alive for the bench.
+cel::Value MessageValueFromLiteral(const CelValueLiteral& lit,
+                                   google::protobuf::Arena* arena,
+                                   absl::string_view ctx) {
+  const google::protobuf::Descriptor* desc =
+      FindMessageDescriptorOrDie(lit.message_type, ctx);
+  google::protobuf::MessageFactory* factory =
+      google::protobuf::MessageFactory::generated_factory();
+  const google::protobuf::Message* prototype = factory->GetPrototype(desc);
+  ABSL_CHECK(prototype != nullptr)
+      << ctx << ": no generated prototype for `" << lit.message_type << "`";
+  google::protobuf::Message* msg = prototype->New(arena);
+  ABSL_CHECK(
+      google::protobuf::TextFormat::ParseFromString(lit.string_value, msg))
+      << ctx << ": textproto for `" << lit.message_type
+      << "` failed to parse: " << lit.string_value;
+  return cel::Value::WrapMessage(
+      msg, google::protobuf::DescriptorPool::generated_pool(), factory, arena);
+}
+
+// Convert a corpus literal to a cel-cpp `cel::Value`.  `arena` is the
+// allocation home for string/bytes/list/message payloads; `ctx` names
+// the BM cell for crash messages.
+cel::Value ValueFromLiteral(const CelValueLiteral& lit,
+                            google::protobuf::Arena* arena,
+                            absl::string_view ctx) {
   switch (lit.kind) {
     case CelValueLiteral::Kind::kInt:
       return {cel::IntValue(lit.int_value)};
@@ -208,10 +314,14 @@ cel::Value ValueFromLiteral(const CelValueLiteral& lit,
     case CelValueLiteral::Kind::kNull:
       return {cel::NullValue()};
     case CelValueLiteral::Kind::kList:
+      return ListValueFromLiteral(lit, arena, ctx);
+    case CelValueLiteral::Kind::kMessage:
+      return MessageValueFromLiteral(lit, arena, ctx);
     case CelValueLiteral::Kind::kMap:
       break;
   }
-  ABSL_CHECK(false) << "ValueFromLiteral: list/map activation values not yet "
+  ABSL_CHECK(false) << ctx
+                    << ": ValueFromLiteral: map activation values not yet "
                        "supported; extend when a cell needs them";
   return {cel::NullValue()};
 }
@@ -228,9 +338,12 @@ absl::string_view BmPrefixForSurface(absl::string_view surface) {
           {"conversions", "conv"},
           {"index", "idx"},
           {"lists", "in_list"},
+          {"literals", "lit"},
           {"logic", "logic"},
           {"long_strings", "str"},
           {"maps", "map"},
+          {"policies", "policy"},
+          {"proto", "proto"},
           {"size", "size"},
           {"strings", "str"},
           {"ternary", "ternary"},
@@ -253,9 +366,58 @@ bool HasTagWithPrefix(const Cell& cell, absl::string_view prefix) {
                      });
 }
 
+// Single-entry per-cell runtime cache.  Mirrors
+// `celwasm_bench.cc::CachedCellRuntime`: under --benchmark_repetitions
+// Google Benchmark re-invokes the bench function once per repetition,
+// and rebuilding parse + check + CreateProgram (plus the arena-backed
+// activation) per repetition dominates wall clock.  Repetitions of one
+// cell run back-to-back, so a single slot keyed by BM name gets a
+// (reps-1)/reps hit rate while keeping one program alive at a time.
+// The arena lives behind a unique_ptr because google::protobuf::Arena
+// is neither movable nor copyable.
+struct CellRuntime {
+  std::string key;
+  std::unique_ptr<google::protobuf::Arena> arena;
+  std::unique_ptr<cel::Program> program;
+  cel::Activation act;
+};
+
+std::optional<CellRuntime>& CachedCellRuntime() {
+  static auto* slot = new std::optional<CellRuntime>();
+  return *slot;
+}
+
+// (Re)fills the cache slot for one cell: declares the typed variables,
+// compiles + plans the program, and binds the activation in place.
+// `source` feeds CompilePlanOrDie below; the misc-unused-parameters
+// suppression is for the lint environment only, where this TU's AST
+// degrades (benchmark.h unresolvable — the same pre-existing
+// compile-DB gap as the branch-clone note in ValueFromLiteral) and
+// the CompilePlanOrDie call goes unparsed.
+// NOLINTNEXTLINE(misc-unused-parameters)
+void PrepareCellRuntime(const std::string& bm_name, const std::string& source,
+                        const std::vector<ActivationEntry>& act_entries) {
+  auto& slot = CachedCellRuntime();
+  slot.reset();
+  slot.emplace();
+  slot->key = bm_name;
+  slot->arena = std::make_unique<google::protobuf::Arena>();
+  std::vector<TypedVar> vars;
+  vars.reserve(act_entries.size());
+  for (const ActivationEntry& e : act_entries) {
+    vars.push_back(
+        {e.name, TypeForLiteral(e.value, slot->arena.get(), bm_name)});
+  }
+  slot->program = CompilePlanOrDie(source, vars);
+  for (const ActivationEntry& e : act_entries) {
+    slot->act.InsertOrAssignValue(
+        e.name, ValueFromLiteral(e.value, slot->arena.get(), bm_name));
+  }
+}
+
 // Register one corpus cell as a Google Benchmark.  Compiler + Program
-// are built once, captured into the bench lambda; only Evaluate runs
-// in the timed region.
+// are built once per cell (cached across repetitions); only Evaluate
+// runs in the timed region.
 void RegisterCorpusCell(const Cell& cell) {
   // celwasm-skip-* tags are celwasm-only constraints — cel-cpp runs
   // those cells.  celcpp-skip-* tags mark the (rare) cells cel-cpp's
@@ -270,29 +432,24 @@ void RegisterCorpusCell(const Cell& cell) {
   std::string source = cell.source;
   std::vector<ActivationEntry> act_entries = cell.activation;
 
-  benchmark::RegisterBenchmark(bm_name, [source = std::move(source),
+  benchmark::RegisterBenchmark(bm_name, [bm_name, source = std::move(source),
                                          act_entries = std::move(act_entries)](
                                             benchmark::State& state) {
-    google::protobuf::Arena arena;
-    std::vector<TypedVar> vars;
-    vars.reserve(act_entries.size());
-    for (const ActivationEntry& e : act_entries) {
-      vars.push_back({e.name, TypeForKind(e.value.kind)});
+    auto& slot = CachedCellRuntime();
+    if (!slot.has_value() || slot->key != bm_name) {
+      PrepareCellRuntime(bm_name, source, act_entries);
     }
-    auto program = CompilePlanOrDie(source, vars);
-
-    cel::Activation act;
-    for (const ActivationEntry& e : act_entries) {
-      act.InsertOrAssignValue(e.name, ValueFromLiteral(e.value, &arena));
-    }
+    google::protobuf::Arena* arena = slot->arena.get();
+    cel::Program& program = *slot->program;
+    const cel::Activation& act = slot->act;
 
     {
-      auto v = program->Evaluate(&arena, act);
+      auto v = program.Evaluate(arena, act);
       ABSL_CHECK_OK(v);
       SetResultLabel(state, *v);
     }
     for (auto _ : state) {
-      auto v = program->Evaluate(&arena, act);
+      auto v = program.Evaluate(arena, act);
       ABSL_CHECK_OK(v);
       benchmark::DoNotOptimize(v);
     }
@@ -309,9 +466,12 @@ constexpr const char* kCorpusFiles[] = {
     "benchmark/eval/corpus/conversions.yaml",
     "benchmark/eval/corpus/index.yaml",
     "benchmark/eval/corpus/lists.yaml",
+    "benchmark/eval/corpus/literals.yaml",
     "benchmark/eval/corpus/logic.yaml",
     "benchmark/eval/corpus/long_strings.yaml",
     "benchmark/eval/corpus/maps.yaml",
+    "benchmark/eval/corpus/policies.yaml",
+    "benchmark/eval/corpus/proto.yaml",
     "benchmark/eval/corpus/size.yaml",
     "benchmark/eval/corpus/strings.yaml",
     "benchmark/eval/corpus/ternary.yaml",

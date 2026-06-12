@@ -1,9 +1,9 @@
 // program_size_main — prints expr-module byte sizes across a
 // representative expression matrix at optimize_level 0 and 2.  Used
-// to populate the "Program size" table in `README.md`
-// and `bench/README.md`; not a benchmark per se.
+// to populate the "Program size" table in `README.md`; not a
+// benchmark per se.
 //
-// Manual; run with `bazel run -c opt //bench:program_size_main`.
+// Manual; run with `bazel run -c opt //benchmark/compiler:program_size_main`.
 
 #include <cstdio>
 #include <string>
@@ -14,13 +14,13 @@
 #include "absl/strings/string_view.h"
 #include "cel/expr/checked.pb.h"
 #include "common/ast_proto.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
-#include "compiler/program.h"
-#include "shared/type.h"
-#include "eval/value.h"
 #include "compiler/frontend/parse_and_check.h"
+#include "compiler/program.h"
+#include "eval/activation.h"
+#include "eval/value.h"
 #include "runtime/cel_data.h"
+#include "shared/type.h"
 
 namespace {
 
@@ -121,10 +121,8 @@ int main() {
 
   std::printf("\n");
   std::printf("In-memory C++ object sizes (sizeof):\n");
-  std::printf("  celwasm::Value         %zu B\n",
-              sizeof(celwasm::Value));
-  std::printf("  celwasm::Activation    %zu B\n",
-              sizeof(celwasm::Activation));
+  std::printf("  celwasm::Value         %zu B\n", sizeof(celwasm::Value));
+  std::printf("  celwasm::Activation    %zu B\n", sizeof(celwasm::Activation));
   std::printf(
       "  celwasm::Program       %zu B (plus the wasm bytes vector data)\n",
       sizeof(celwasm::Program));

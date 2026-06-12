@@ -1,0 +1,108 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Bench targets are `manual`-tagged so they don't run in CI by default
+# (the default `bazel test` run skips them).  Run explicitly when
+# you want numbers — and ALWAYS pass `-c opt`; debug builds blow the
+# timing numbers up by ~10x and are useless as a baseline:
+#
+#   bazel run -c opt //benchmark/compiler:pipeline_bench
+#   bazel run -c opt //benchmark/compiler:stage_bench
+#   bazel run -c opt //benchmark/compiler:in_operator_compile_bench
+#
+# Or run all three with JSON output via benchmark/compiler/run.sh.
+
+# Compile-phase and Plan-phase wall-clock benches.  Measures the
+# public Compiler::Compile + Engine::Plan surface with proper caching
+# boundaries (Compiler shared across iterations of a Compile bench;
+# Program pre-compiled for a Plan-only bench).  One representative
+# expression per AST kind.  Eval steady state lives in
+# //benchmark/eval.
+cc_binary(
+    name = "pipeline_bench",
+    srcs = ["pipeline_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:cel_host",  # registers the proto descriptor surface
+        "//eval:engine",
+        "//eval:instance",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+# Per-stage decomposition of the compile pipeline (Compiler::Builder,
+# Engine::Builder, per-source Compile, per-Plan) plus composite
+# cold-start rows (truly-cold / warm-engine / warm-program) over five
+# scalar-literal inputs.
+cc_binary(
+    name = "stage_bench",
+    srcs = ["stage_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:engine",
+        "//eval:instance",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+# Compile/Plan cost of large-list `in`-operator expressions with the
+# list inline in the source:
+#   - `x in [0..N-1]` for N in {100, 1000, 10000}.
+#   - `perm in [<GCP IAM permissions, 50 bytes each>]` for N in
+#     {10, 100, 1000}.
+# Times Compile and Plan per shape so the wall-clock split (parse +
+# codegen vs link) is visible as the literal grows.
+cc_binary(
+    name = "in_operator_compile_bench",
+    srcs = ["in_operator_compile_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:engine",
+        "//eval:instance",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+# Reports the wasm byte size of representative compiled programs at
+# optimize_level 0 vs 2.  Used to populate the "Program size" table
+# in the repo README.  Not a benchmark (no timing); just a
+# size reporter.  Run with:
+#   bazel run -c opt //benchmark/compiler:program_size_main
+cc_binary(
+    name = "program_size_main",
+    srcs = ["program_size_main.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/frontend:parse_and_check",
+        "//eval:activation",
+        "//eval:value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "@cel-cpp//common:ast_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+        "@com_google_cel_spec//proto/cel/expr:checked_cc_proto",
+    ],
+)

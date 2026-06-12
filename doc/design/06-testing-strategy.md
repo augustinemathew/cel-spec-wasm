@@ -301,7 +301,7 @@ touches only what changed; the exhaustive pass is explicit.
    wasmtime-instantiating eval tests, the wasm-cross runtime test,
    wat_runner, the four host/foreign-fn e2e matrices, the CLI smoke +
    activation matrix, `run_conformance`, the PBT mining property, and
-   all of `//bench/...`.
+   all of `//benchmark/...`.
 3. **`scripts/check_conformance_monotonic.sh`** — §2.4. Wired into
    `.githooks/pre-push`, which then runs
    `scripts/regen_conformance_readme.sh --check --from-log` so the

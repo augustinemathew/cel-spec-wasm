@@ -1,5 +1,13 @@
 # Benchmarking design
 
+> **2026-06-11 restructure:** the two-tree split (bench/ vs
+> benchmark/) described below was dissolved; bench/ no longer exists.
+> Kernel localisation lives at //benchmark/kernel, component-boundary
+> at //benchmark/component, Compile/Plan at //benchmark/compiler, and
+> the comparative eval corpus at benchmark/eval. bench/README.md is
+> archived at doc/implementation-plan/rewrite/archive/bench-tree-readme.md.
+> Section references to bench/* below are historical.
+
 Status: current — authored 2026-06-10 from the design-rebuild notes
 (doc/design/notes/). Supersedes: benchmark/DESIGN.md (as design
 authority; that file gets a status banner),
@@ -11,7 +19,7 @@ repository: what we measure, under what configuration a number counts
 as a baseline, how the comparative harness works, what an honest
 published table must contain, and which performance facts follow from
 the architecture itself. The operator manual for running individual
-benches remains `bench/README.md`.
+benches is now `benchmark/README.md`.
 
 ---
 
@@ -52,16 +60,21 @@ verified). Two pieces of unregistered material are part of the story:
 > `bazel query 'kind(cc_binary, //bench:all)'` (expect 6, no
 > `cel_pipeline_bench`); the same commit that decides must fix both
 > docs citing the dead target.
+> *Resolved 2026-06-11: the orphaned TU is superseded by
+> `//benchmark/compiler:stage_bench`.*
 
 - `bench/foreign_component/` is a deliberately out-of-bazel probe set
   (cargo / wasm-tools / wac driven) kept as the empirical backing for
   the component boundary-cost numbers
   (bench/foreign_component/README.md); it is deleted when superseded,
-  not promoted into the build.
+  not promoted into the build. *(Deleted 2026-06-11; findings remain
+  recorded in rw/m23-foreign-fn-component-abi.md, and the production
+  bench is `//benchmark/component:foreign_component_bench`.)*
 
-`benchmark/compiler/` is a TODO only — comparative Compile/Plan
-benches are specified but unbuilt (benchmark/compiler/TODO.md). No
-doc may imply compile-side comparison exists today.
+`benchmark/compiler/` was a TODO only at authoring time; as of the
+2026-06-11 restructure it hosts the ported Compile/Plan/cold-start
+benches (`pipeline_bench`, `stage_bench`,
+`in_operator_compile_bench`, `program_size_main`).
 
 <!-- diagram-wanted: the two trees side by side, with the four host
      cache boundaries (Compiler / Program / Instance / Eval) as
@@ -118,16 +131,18 @@ Engine sharing: one process-static `GlobalEngine()` everywhere
 because `AddComponent` is per-Plan and shared Engine state interferes
 across Plans (foreign_component_bench.cc).
 
-Two special benches isolate costs nothing else can see:
+Two shapes that used to need hand-coded benches are corpus cells now:
 
-- The hand-coded `BM_arith_intAdd_AbcAbcShape_{VarsToday,LitToday}`
-  pair in celwasm_bench isolates activation-marshal cost on an
-  identical call-graph shape (the YAML schema cannot express the
-  pairing yet).
-- `in_operator_bench` carries the large-N shapes (1M-int bound list at
-  first/last/absent positions; 1K 50-byte IAM-permission strings) at
-  all three boundaries, in LITERAL-source vs activation-BOUND
-  flavours.
+- The activation-marshal isolation pair lives in arithmetic.yaml as
+  `arith.abcAbcShape{Vars,Lit}` (formerly the hand-coded
+  `BM_arith_intAdd_AbcAbcShape_{VarsToday,LitToday}` registrations in
+  celwasm_bench — the corpus can express var/lit adjacency as two
+  cells, and cel-cpp gained the pair for free).
+- The large-N eval shapes (1M-int bound list at first/last/absent
+  positions; 1K 50-byte IAM-permission strings, bound) live in
+  lists.yaml as `in_list.bound*` / `in_list.iam*`.  The
+  Compile/Plan-boundary timings for the LITERAL-source flavours stay
+  in `//benchmark/compiler:in_operator_compile_bench`.
 
 **kernel_bench arena-rewind caveat.** The allocating kernel benches
 rewind the arena cursor by poking the word at `cel_mem_base()+8`
@@ -138,7 +153,7 @@ OOM/poison paths instead of the kernel (register row R59).
 
 > **Open question (V34):** fix kernel_bench's dead cursor pokes
 > (replace with `arena_reset()` per iteration + re-staging, or a real
-> rewind API), re-run `bazel run -c opt //bench:kernel_bench`, and
+> rewind API), re-run `bazel run -c opt //benchmark/kernel:kernel_bench`, and
 > diff against the published numbers. Until then, allocating
 > kernel_bench rows are not production-shape.
 
@@ -425,7 +440,7 @@ rows into OOM-path timings (§2). Both rotted invisibly because
 manual-tagged bench binaries are never built in any test sweep.
 
 > **Open question (V37):** does flipping `CELWASM_M7B_SHIPPED` even
-> compile? `bazel build -c opt //bench:kernel_bench
+> compile? `bazel build -c opt //benchmark/kernel:kernel_bench
 > --copt=-DCELWASM_M7B_SHIPPED` (expected: failure on the drifted
 > kernel names) settles delete-vs-fix.
 
@@ -482,5 +497,7 @@ on disk as dated artifacts with status banners:
 - `doc/implementation-plan/rewrite/m28-bench-results.md` remains the
   published-results exemplar (not superseded — it is a dated results
   artifact), with the §6.2 reproducibility caveat.
-- `bench/README.md` remains the live operator manual for the
-  localisation tree.
+- `bench/README.md` was the live operator manual for the localisation
+  tree until the 2026-06-11 restructure; it is archived at
+  `doc/implementation-plan/rewrite/archive/bench-tree-readme.md`, and
+  `benchmark/README.md` is the live operator manual.

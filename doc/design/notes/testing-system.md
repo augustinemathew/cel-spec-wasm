@@ -27,7 +27,7 @@ class:
    (tools/wat_runner/BUILD.bazel:32-35), `//tools/cel:cel_smoke_test`
    (tools/cel/BUILD.bazel:127), `//tools/cel:activation_matrix_test`
    (:138-140), `//conformance:run_conformance`
-   (conformance/BUILD.bazel:165), all of `//bench/...`, and four e2e
+   (conformance/BUILD.bazel:165), all of `//benchmark/...`, and four e2e
    targets: `host_fn_test`, `foreign_component_dispatch_test`,
    `foreign_fn_type_matrix_test`, `host_fn_type_matrix_test`
    (e2e/BUILD.bazel:641,674,697,721).
