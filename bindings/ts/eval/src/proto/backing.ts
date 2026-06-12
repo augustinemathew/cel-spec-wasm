@@ -46,6 +46,17 @@ const WKT_WRAPPERS = new Set<string>([
   'google.protobuf.BytesValue',
 ]);
 
+// The three dynamic JSON-value WKTs (`google.protobuf.{Value,Struct,ListValue}`).
+// A CEL scalar / map / list assigned to a field of one of these types is
+// *wrapped* into the dynamic message rather than assigned verbatim — cel-cpp
+// performs the JSON conversion of doc/langdef.md §"JSON Data Conversion"
+// (e.g. `TestAllTypes{single_value: 'foo'}` yields `Value{string_value:'foo'}`,
+// `single_struct: {'one': 1}` yields `Struct{fields{'one': number_value:1}}`).
+const WKT_VALUE = 'google.protobuf.Value';
+const WKT_STRUCT = 'google.protobuf.Struct';
+const WKT_LIST_VALUE = 'google.protobuf.ListValue';
+const WKT_DYNAMIC = new Set<string>([WKT_VALUE, WKT_STRUCT, WKT_LIST_VALUE]);
+
 /** A `MessageBacking` over a protobufjs `Message` + its `Type`. */
 export class ProtoMessageBacking implements MessageBacking {
   private readonly type: protobuf.Type;
@@ -175,6 +186,210 @@ export function isWellKnownWrappable(fqn: string): boolean {
   return (
     name === WKT_TIMESTAMP || name === WKT_DURATION || WKT_WRAPPERS.has(name)
   );
+}
+
+/**
+ * Whether `fqn` names a WKT into which a CEL scalar / map / list is *wrapped*
+ * on field construction: the nine `google.protobuf.*Value` wrappers plus the
+ * dynamic `Value` / `Struct` / `ListValue`.  (Timestamp / Duration are NOT
+ * here — those are constructed from their own `seconds`/`nanos` object shape,
+ * not wrapped from a scalar.)  See {@link wrapWellKnownValue}.
+ */
+export function isWellKnownConstructable(fqn: string): boolean {
+  const name = stripDot(fqn);
+  return WKT_WRAPPERS.has(name) || WKT_DYNAMIC.has(name);
+}
+
+/**
+ * Wrap a CEL value into a constructed protobufjs message of the WKT `type`, the
+ * construct-direction counterpart of {@link peelWrapper}.  cel-cpp applies the
+ * JSON conversion of doc/langdef.md §"JSON Data Conversion" when a scalar / map
+ * / list is assigned to a WKT-typed field (e.g. `TestAllTypes{single_value:
+ * 'foo'}` yields `Value{string_value:'foo'}`).  The message is built against the
+ * supplied `type` (and its `Value`/`Struct`/`ListValue` siblings resolved off
+ * the same `Root`) so the shape matches whatever descriptor source the caller
+ * loaded — in particular `Struct.fields` arriving as a synthetic map-entry
+ * `repeated` field under `Root.fromDescriptor` (see {@link isMapField}).
+ *
+ *   - `*Value` wrapper → `value: <scalar>` (the inner field decodes under the
+ *     wrapper's own descriptor — a bigint becomes a Long for Int64Value, a
+ *     number for Int32Value, etc.).
+ *   - `Value` → the JSON-value oneof: null→`null_value`, bool→`bool_value`,
+ *     number/bigint→`number_value` (a `double`, per langdef — `{single_value:
+ *     1}` yields `number_value:1.0`), string→`string_value`, Map→`struct_value`,
+ *     Array→`list_value`.
+ *   - `Struct` → `fields[<k>] = Value` from a string-keyed Map.
+ *   - `ListValue` → `values = [Value, …]` from an Array.
+ */
+export function wrapWellKnownValue(
+  type: protobuf.Type,
+  value: CelValue,
+): protobuf.Message {
+  const name = stripDot(type.fullName);
+  if (WKT_WRAPPERS.has(name)) {
+    return type.fromObject({ value: wrapperInner(value) });
+  }
+  if (name === WKT_VALUE) {
+    return buildValue(type, value);
+  }
+  if (name === WKT_STRUCT) {
+    return buildStruct(type, value);
+  }
+  // WKT_LIST_VALUE
+  return buildListValue(type, value);
+}
+
+// The inner `value` field of a `*Value` wrapper.  A bigint is normalized to a
+// decimal string (protobufjs accepts a string for 64-bit fields and parses it
+// for 32-bit), a Uint8Array stays as-is (BytesValue); everything else passes
+// through (number / string / bool).
+function wrapperInner(value: CelValue): unknown {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  return value;
+}
+
+// Resolve a sibling WKT type (`Value` / `Struct` / `ListValue`) off the same
+// Root as `anchor`, so a recursively-built sub-value matches the caller's
+// descriptor source.
+function siblingType(anchor: protobuf.Type, fqn: string): protobuf.Type {
+  const resolved = anchor.root.lookup(fqn, [protobuf.Type]);
+  if (!(resolved instanceof protobuf.Type)) {
+    throw new Error(`WKT '${fqn}' not in descriptor set`);
+  }
+  return resolved;
+}
+
+// A CEL value → a constructed `google.protobuf.Value` message (its oneof set by
+// CEL kind).
+function buildValue(
+  valueType: protobuf.Type,
+  value: CelValue,
+): protobuf.Message {
+  if (value === null) {
+    return valueType.fromObject({ null_value: 0 });
+  }
+  if (typeof value === 'boolean') {
+    return valueType.fromObject({ bool_value: value });
+  }
+  if (typeof value === 'bigint') {
+    // Per langdef §"JSON Data Conversion": int/uint map to a JSON Number
+    // (`double`); cel-cpp encodes `{single_value: 1}` as `number_value: 1.0`.
+    return valueType.fromObject({ number_value: Number(value) });
+  }
+  if (typeof value === 'number') {
+    return valueType.fromObject({ number_value: value });
+  }
+  if (typeof value === 'string') {
+    return valueType.fromObject({ string_value: value });
+  }
+  if (value instanceof Map) {
+    const struct = buildStruct(siblingType(valueType, WKT_STRUCT), value);
+    return setOneof(valueType, 'struct_value', struct);
+  }
+  if (Array.isArray(value)) {
+    const list = buildListValue(siblingType(valueType, WKT_LIST_VALUE), value);
+    return setOneof(valueType, 'list_value', list);
+  }
+  // Bytes / timestamp / duration / type have no JSON-Value image (langdef);
+  // cel-cpp raises an error.  An empty Value (no oneof set) is the closest the
+  // binding can build; the construction read-back surfaces the gap.
+  return valueType.create();
+}
+
+// Construct a message of `type` with a single message-typed oneof/field set to
+// an already-built sub-message (bypassing `fromObject`, which would re-coerce
+// the sub-message's nested map shape and re-trip the map-entry quirk).
+function setOneof(
+  type: protobuf.Type,
+  fieldName: string,
+  sub: protobuf.Message,
+): protobuf.Message {
+  const msg = type.create();
+  (msg as unknown as Record<string, unknown>)[fieldName] = sub;
+  return msg;
+}
+
+// A CEL Map → a constructed `google.protobuf.Struct` message.  The `fields` map
+// is assigned in whichever shape the descriptor source exposes: a record for a
+// real `MapField`, or an array of `{key, value}` entry messages for the
+// synthetic map-entry `repeated` field `Root.fromDescriptor` produces.
+function buildStruct(
+  structType: protobuf.Type,
+  value: CelValue,
+): protobuf.Message {
+  const fieldsField = structType.fields.fields;
+  if (fieldsField === undefined) {
+    throw new Error(`Struct type '${structType.fullName}' has no fields field`);
+  }
+  fieldsField.resolve();
+  const valueType = siblingType(structType, WKT_VALUE);
+  const entries = new Map<string, protobuf.Message>();
+  if (value instanceof Map) {
+    for (const [k, v] of value) {
+      entries.set(structKey(k), buildValue(valueType, v));
+    }
+  }
+  const struct = structType.create();
+  assignStructFields(struct, fieldsField, entries);
+  return struct;
+}
+
+// Assign the entry map onto a Struct's `fields`, matching the field's shape: a
+// record for a real `MapField`, an array of `{key, value}` entry messages for
+// the synthetic map-entry `repeated` field.
+function assignStructFields(
+  struct: protobuf.Message,
+  fieldsField: protobuf.Field,
+  entries: ReadonlyMap<string, protobuf.Message>,
+): void {
+  const target = struct as unknown as Record<string, unknown>;
+  if (isMapField(fieldsField)) {
+    const record: Record<string, protobuf.Message> = {};
+    for (const [k, v] of entries) {
+      record[k] = v;
+    }
+    target.fields = record;
+    return;
+  }
+  const array: Record<string, unknown>[] = [];
+  for (const [k, v] of entries) {
+    array.push({ key: k, value: v });
+  }
+  target.fields = array;
+}
+
+// The string key a CEL map key spells on a `google.protobuf.Struct`.  Struct
+// keys are strings (langdef §"Dynamic Values": "map with string keys"); cel-cpp
+// restricts the key type at check time, so a string is the only kind that
+// reaches a Struct field.  The other JS-natural scalar key shapes are spelled
+// explicitly (never via `String(unknown)`) for a best-effort encodable key.
+function structKey(key: CelValue): string {
+  if (typeof key === 'string') {
+    return key;
+  }
+  if (typeof key === 'bigint' || typeof key === 'number') {
+    return key.toString();
+  }
+  if (typeof key === 'boolean') {
+    return key ? 'true' : 'false';
+  }
+  return '';
+}
+
+// A CEL Array → a constructed `google.protobuf.ListValue` message.
+function buildListValue(
+  listType: protobuf.Type,
+  value: CelValue,
+): protobuf.Message {
+  const valueType = siblingType(listType, WKT_VALUE);
+  const values = Array.isArray(value)
+    ? value.map((v) => buildValue(valueType, v))
+    : [];
+  const list = listType.create();
+  (list as unknown as Record<string, unknown>).values = values;
+  return list;
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -446,11 +661,21 @@ function encodeField(field: protobuf.Field, value: CelValue): unknown {
     return value;
   }
   if (field.resolvedType instanceof protobuf.Type) {
+    const type = field.resolvedType;
+    // A WKT wrapper / dynamic-value field set from a CEL scalar / map / list
+    // is *wrapped* into the WKT message (doc/langdef.md §"JSON Data
+    // Conversion"); cel-cpp does the same (e.g. `{single_int64_wrapper: -321}`
+    // → `Int64Value{value:-321}`).  An already-message value (a plain object
+    // with `$type`, or another constructed sub-message) falls through to the
+    // object-coercion paths below.
+    if (isWellKnownConstructable(type.fullName) && !isMessageObject(value)) {
+      return wrapWellKnownValue(type, value);
+    }
     if (value === null) {
       return null;
     }
     if (isPlainObject(value)) {
-      return coerceObjectToMessage(field.resolvedType, value);
+      return coerceObjectToMessage(type, value);
     }
     return value;
   }
@@ -548,6 +773,20 @@ function isLongLike(value: unknown): value is LongLike {
     'low' in value &&
     'high' in value &&
     typeof (value as { toString: unknown }).toString === 'function'
+  );
+}
+
+// True iff `value` is already a constructed protobufjs message (carries a
+// `$type`).  Such a value reaching the WKT-construct path is assigned verbatim,
+// not re-wrapped — it is the message itself, not a scalar to wrap.
+function isMessageObject(value: CelValue): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof Uint8Array) &&
+    !(value instanceof Map) &&
+    '$type' in value
   );
 }
 

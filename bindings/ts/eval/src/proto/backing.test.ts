@@ -11,6 +11,8 @@ import {
   peelTimestamp,
   peelWrapper,
   isWellKnownWrappable,
+  isWellKnownConstructable,
+  wrapWellKnownValue,
 } from './backing.js';
 
 // A namespace with scalars, a nested message, repeated/map fields, an
@@ -43,6 +45,15 @@ const ROOT_JSON = {
             dur: { type: 'google.protobuf.Duration', id: 13 },
             cnt: { type: 'google.protobuf.Int32Value', id: 14 },
             nm: { type: 'google.protobuf.StringValue', id: 15 },
+            i64w: { type: 'google.protobuf.Int64Value', id: 16 },
+            u64w: { type: 'google.protobuf.UInt64Value', id: 17 },
+            dw: { type: 'google.protobuf.DoubleValue', id: 18 },
+            fw: { type: 'google.protobuf.FloatValue', id: 19 },
+            bw: { type: 'google.protobuf.BoolValue', id: 20 },
+            byw: { type: 'google.protobuf.BytesValue', id: 21 },
+            val: { type: 'google.protobuf.Value', id: 22 },
+            strct: { type: 'google.protobuf.Struct', id: 23 },
+            lst: { type: 'google.protobuf.ListValue', id: 24 },
           },
         },
       },
@@ -64,7 +75,54 @@ const ROOT_JSON = {
               },
             },
             Int32Value: { fields: { value: { type: 'int32', id: 1 } } },
+            Int64Value: { fields: { value: { type: 'int64', id: 1 } } },
+            UInt64Value: { fields: { value: { type: 'uint64', id: 1 } } },
+            DoubleValue: { fields: { value: { type: 'double', id: 1 } } },
+            FloatValue: { fields: { value: { type: 'float', id: 1 } } },
+            BoolValue: { fields: { value: { type: 'bool', id: 1 } } },
             StringValue: { fields: { value: { type: 'string', id: 1 } } },
+            BytesValue: { fields: { value: { type: 'bytes', id: 1 } } },
+            NullValue: { values: { NULL_VALUE: 0 } },
+            Value: {
+              oneofs: {
+                kind: {
+                  oneof: [
+                    'null_value',
+                    'number_value',
+                    'string_value',
+                    'bool_value',
+                    'struct_value',
+                    'list_value',
+                  ],
+                },
+              },
+              fields: {
+                null_value: { type: 'google.protobuf.NullValue', id: 1 },
+                number_value: { type: 'double', id: 2 },
+                string_value: { type: 'string', id: 3 },
+                bool_value: { type: 'bool', id: 4 },
+                struct_value: { type: 'google.protobuf.Struct', id: 5 },
+                list_value: { type: 'google.protobuf.ListValue', id: 6 },
+              },
+            },
+            Struct: {
+              fields: {
+                fields: {
+                  keyType: 'string',
+                  type: 'google.protobuf.Value',
+                  id: 1,
+                },
+              },
+            },
+            ListValue: {
+              fields: {
+                values: {
+                  rule: 'repeated',
+                  type: 'google.protobuf.Value',
+                  id: 1,
+                },
+              },
+            },
           },
         },
       },
@@ -258,6 +316,289 @@ describe('ProtoMessageBacking.setField', () => {
     const b = backingOf({});
     b.setField(5, 'by-number');
     expect(b.readField('s')).toBe('by-number');
+  });
+});
+
+// WKT-typed field construction from a scalar / map / list.  cel-cpp wraps the
+// CEL value into the target WKT message (doc/langdef.md §"JSON Data
+// Conversion"); the binding's `setField` must do the same so the constructed
+// message round-trips.  Expected values are pinned to the cel-cpp conformance
+// corpus (spec/tests/simple/testdata/{proto3,dynamic}.textproto) cited per case.
+describe('ProtoMessageBacking.setField — WKT wrapper construction', () => {
+  // proto3.textproto "int64_wrapper": `{single_int64_wrapper: -321}` →
+  // `Int64Value{value: -321}`; reads back peeled to the bigint.
+  it('wraps a bigint into Int64Value (reads back as bigint)', () => {
+    const b = backingOf({});
+    b.setField('i64w', -321n);
+    expect(b.readField('i64w')).toBe(-321n);
+    expect(b.hasField('i64w')).toBe(true);
+  });
+
+  // dynamic.textproto "uint64_wrapper": `{single_uint64_wrapper: 432u}`.
+  it('wraps a bigint into UInt64Value', () => {
+    const b = backingOf({});
+    b.setField('u64w', 432n);
+    expect(b.readField('u64w')).toBe(432n);
+  });
+
+  // proto3.textproto "int32_wrapper": `{single_int32_wrapper: -456}`.
+  it('wraps a bigint into Int32Value', () => {
+    const b = backingOf({});
+    b.setField('cnt', -456n);
+    expect(b.readField('cnt')).toBe(-456n);
+  });
+
+  // proto3.textproto "double_wrapper": `{single_double_wrapper: 2.71828}`.
+  it('wraps a number into DoubleValue', () => {
+    const b = backingOf({});
+    b.setField('dw', 2.71828);
+    expect(b.readField('dw')).toBe(2.71828);
+  });
+
+  // dynamic.textproto "float_wrapper": `{single_float_wrapper: 86.75}` (86.75 is
+  // float-exact, so it round-trips without narrowing loss).
+  it('wraps a number into FloatValue', () => {
+    const b = backingOf({});
+    b.setField('fw', 86.75);
+    expect(b.readField('fw')).toBe(86.75);
+  });
+
+  // dynamic.textproto "bool_wrapper": `{single_bool_wrapper: true}`.
+  it('wraps a bool into BoolValue', () => {
+    const b = backingOf({});
+    b.setField('bw', true);
+    expect(b.readField('bw')).toBe(true);
+  });
+
+  // dynamic.textproto "string_wrapper": `{single_string_wrapper: 'baz'}`.
+  it('wraps a string into StringValue', () => {
+    const b = backingOf({});
+    b.setField('nm', 'baz');
+    expect(b.readField('nm')).toBe('baz');
+  });
+
+  // dynamic.textproto "bytes_wrapper": `{single_bytes_wrapper: b'baz'}`.
+  it('wraps bytes into BytesValue', () => {
+    const b = backingOf({});
+    b.setField('byw', new Uint8Array([0x62, 0x61, 0x7a]));
+    expect(b.readField('byw')).toEqual(new Uint8Array([0x62, 0x61, 0x7a]));
+  });
+});
+
+// The dynamic JSON-value WKTs (`Value` / `Struct` / `ListValue`).  cel-cpp maps
+// a CEL scalar/map/list through the JSON conversion of doc/langdef.md.  The
+// constructed sub-message's *wire bytes* are the structural identity the corpus
+// `object_value` matcher reduces to (conformance compares decoded trees built
+// the same way on both sides); `expectFieldEncodes` pins them against the
+// expected protobuf-JSON shape built from `fromObject`.
+describe('ProtoMessageBacking.setField — dynamic Value/Struct/ListValue', () => {
+  // The sub-message stored at `field` after a `setField`, encoded to wire bytes.
+  function encodedSub(b: ProtoMessageBacking, field: string): Uint8Array {
+    const f = msgType().fields[field];
+    if (f === undefined) {
+      throw new Error(`no field '${field}'`);
+    }
+    f.resolve();
+    const sub = (b.raw as unknown as Record<string, unknown>)[field];
+    const subType = f.resolvedType;
+    if (
+      !(subType instanceof protobuf.Type) ||
+      sub === null ||
+      sub === undefined
+    ) {
+      throw new Error(`field '${field}' is not a set sub-message`);
+    }
+    return subType.encode(sub as protobuf.Message).finish();
+  }
+
+  // The wire bytes of `subType` built from the expected protobuf-JSON `obj`.
+  function expectedBytes(
+    subFqn: string,
+    obj: Record<string, unknown>,
+  ): Uint8Array {
+    const t = root().lookupType(subFqn);
+    return t.encode(t.fromObject(obj)).finish();
+  }
+
+  function expectFieldEncodes(
+    b: ProtoMessageBacking,
+    field: string,
+    subFqn: string,
+    obj: Record<string, unknown>,
+  ): void {
+    expect(Array.from(encodedSub(b, field))).toEqual(
+      Array.from(expectedBytes(subFqn, obj)),
+    );
+  }
+
+  // proto3.textproto "value": `{single_value: 'foo'}` → `Value{string_value:'foo'}`.
+  it('wraps a string into Value.string_value', () => {
+    const b = backingOf({});
+    b.setField('val', 'foo');
+    expectFieldEncodes(b, 'val', 'google.protobuf.Value', {
+      string_value: 'foo',
+    });
+  });
+
+  // langdef §"JSON Data Conversion": int → JSON Number (double).  proto3
+  // "struct" embeds `1` as `number_value: 1.0`, so a bigint into Value is a
+  // double `number_value`.
+  it('wraps a bigint into Value.number_value (as a double)', () => {
+    const b = backingOf({});
+    b.setField('val', 5n);
+    expectFieldEncodes(b, 'val', 'google.protobuf.Value', { number_value: 5 });
+  });
+
+  it('wraps a number into Value.number_value', () => {
+    const b = backingOf({});
+    b.setField('val', 2.5);
+    expectFieldEncodes(b, 'val', 'google.protobuf.Value', {
+      number_value: 2.5,
+    });
+  });
+
+  // dynamic.textproto: a bool into single_value → `bool_value`.
+  it('wraps a bool into Value.bool_value', () => {
+    const b = backingOf({});
+    b.setField('val', true);
+    expectFieldEncodes(b, 'val', 'google.protobuf.Value', { bool_value: true });
+  });
+
+  // dynamic.textproto "single_value: null" → `null_value: NULL_VALUE`.
+  it('wraps null into Value.null_value', () => {
+    const b = backingOf({});
+    b.setField('val', null);
+    expectFieldEncodes(b, 'val', 'google.protobuf.Value', { null_value: 0 });
+  });
+
+  // proto3.textproto "struct": `{single_struct: {'one': 1, 'two': 2}}` →
+  // `Struct{fields{'one': number_value:1}{'two': number_value:2}}`.
+  it('wraps a Map into a Struct via Value (a single_value map)', () => {
+    const b = backingOf({});
+    b.setField(
+      'val',
+      new Map<CelValue, CelValue>([
+        ['one', 1n],
+        ['two', 2n],
+      ]),
+    );
+    expectFieldEncodes(b, 'val', 'google.protobuf.Value', {
+      struct_value: {
+        fields: { one: { number_value: 1 }, two: { number_value: 2 } },
+      },
+    });
+  });
+
+  // A list into single_value → `list_value`.
+  it('wraps an Array into a ListValue via Value', () => {
+    const b = backingOf({});
+    b.setField('val', [3.0, 'foo', null]);
+    expectFieldEncodes(b, 'val', 'google.protobuf.Value', {
+      list_value: {
+        values: [
+          { number_value: 3 },
+          { string_value: 'foo' },
+          { null_value: 0 },
+        ],
+      },
+    });
+  });
+
+  // dynamic.textproto "single_struct": `{single_struct: {'un': 1.0, 'deux': 2.0}}`.
+  it('wraps a Map directly into a Struct field', () => {
+    const b = backingOf({});
+    b.setField(
+      'strct',
+      new Map<CelValue, CelValue>([
+        ['un', 1.0],
+        ['deux', 2.0],
+      ]),
+    );
+    expectFieldEncodes(b, 'strct', 'google.protobuf.Struct', {
+      fields: { un: { number_value: 1 }, deux: { number_value: 2 } },
+    });
+  });
+
+  // dynamic.textproto: `{single_struct: {}}` → an empty Struct.
+  it('wraps an empty Map into an empty Struct', () => {
+    const b = backingOf({});
+    b.setField('strct', new Map<CelValue, CelValue>());
+    expectFieldEncodes(b, 'strct', 'google.protobuf.Struct', { fields: {} });
+  });
+
+  // dynamic.textproto: `google.protobuf.ListValue{values: [3.0, 'foo', null]}`
+  // and `{list_value: [1.0, 'one']}`.
+  it('wraps an Array directly into a ListValue field', () => {
+    const b = backingOf({});
+    b.setField('lst', [1.0, 'one']);
+    expectFieldEncodes(b, 'lst', 'google.protobuf.ListValue', {
+      values: [{ number_value: 1 }, { string_value: 'one' }],
+    });
+  });
+
+  // dynamic.textproto: `{list_value: []}` → an empty ListValue.
+  it('wraps an empty Array into an empty ListValue', () => {
+    const b = backingOf({});
+    b.setField('lst', []);
+    expectFieldEncodes(b, 'lst', 'google.protobuf.ListValue', { values: [] });
+  });
+});
+
+describe('WKT construct helpers (standalone)', () => {
+  it('isWellKnownConstructable covers wrappers + Value/Struct/ListValue', () => {
+    expect(isWellKnownConstructable('google.protobuf.Int64Value')).toBe(true);
+    expect(isWellKnownConstructable('.google.protobuf.BytesValue')).toBe(true);
+    expect(isWellKnownConstructable('google.protobuf.Value')).toBe(true);
+    expect(isWellKnownConstructable('google.protobuf.Struct')).toBe(true);
+    expect(isWellKnownConstructable('google.protobuf.ListValue')).toBe(true);
+  });
+
+  it('isWellKnownConstructable excludes Timestamp/Duration + non-WKT', () => {
+    // Timestamp/Duration are constructed from their own seconds/nanos object,
+    // not wrapped from a scalar — not constructable in the wrap sense.
+    expect(isWellKnownConstructable('google.protobuf.Timestamp')).toBe(false);
+    expect(isWellKnownConstructable('google.protobuf.Duration')).toBe(false);
+    expect(isWellKnownConstructable('test.Msg')).toBe(false);
+  });
+
+  function wktType(fqn: string): protobuf.Type {
+    return root().lookupType(fqn);
+  }
+
+  // The bytes of a sub-message built from the expected protobuf-JSON shape.
+  function wktBytes(fqn: string, obj: Record<string, unknown>): number[] {
+    const t = root().lookupType(fqn);
+    return Array.from(t.encode(t.fromObject(obj)).finish());
+  }
+
+  it('wrapWellKnownValue: wrapper → {value: <scalar>} (bigint stringified)', () => {
+    const i64 = wktType('google.protobuf.Int64Value');
+    expect(
+      Array.from(i64.encode(wrapWellKnownValue(i64, -321n)).finish()),
+    ).toEqual(wktBytes('google.protobuf.Int64Value', { value: '-321' }));
+    const str = wktType('google.protobuf.StringValue');
+    expect(
+      Array.from(str.encode(wrapWellKnownValue(str, 'x')).finish()),
+    ).toEqual(wktBytes('google.protobuf.StringValue', { value: 'x' }));
+  });
+
+  it('wrapWellKnownValue: Value oneof selection by CEL kind', () => {
+    const v = wktType('google.protobuf.Value');
+    const enc = (cv: CelValue): number[] =>
+      Array.from(v.encode(wrapWellKnownValue(v, cv)).finish());
+    expect(enc(null)).toEqual(
+      wktBytes('google.protobuf.Value', { null_value: 0 }),
+    );
+    expect(enc(true)).toEqual(
+      wktBytes('google.protobuf.Value', { bool_value: true }),
+    );
+    // int/uint → number_value (a double), per langdef.
+    expect(enc(7n)).toEqual(
+      wktBytes('google.protobuf.Value', { number_value: 7 }),
+    );
+    expect(enc('hi')).toEqual(
+      wktBytes('google.protobuf.Value', { string_value: 'hi' }),
+    );
   });
 });
 

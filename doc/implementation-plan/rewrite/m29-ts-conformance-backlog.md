@@ -16,8 +16,22 @@ change to refresh the numbers.
 
 | Implementation | Corpus | pass | skip | fail |
 | --- | --- | ---: | ---: | ---: |
-| **TS bindings** (`@cel-wasm/*`) | 2454 rows | **1710** | 744 | **0** |
+| **TS bindings** (`@cel-wasm/*`) | 2454 rows | **1801** | 653 | **0** |
 | **C++** (`conformance/.baseline`, dynamic mode) | 2454 rows | **1973** | — | 0 |
+
+> Update 2026-06-11: backlog item #1 (**WKT-typed field construction from a
+> scalar**) shipped — `cel_set_field` now wraps a CEL scalar / map / list
+> into the target WKT message (the nine `*Value` wrappers + the dynamic
+> `Value` / `Struct` / `ListValue`).  **+91 PASS** (1710 → 1801), **0 fail**;
+> `eval_unimpl` dropped 144 → 53.  `.baseline` ratcheted to 1801.  Residuals
+> from the original 110: ~6 rows assign a *constructed WKT sub-message* into a
+> `Value` field (message-into-Value, not scalar-into-Value — a distinct
+> sub-case still skipped), 4 out-of-range 32-bit-wrapper rows expect a range
+> error the binding does not raise (reclassified as a separate verified
+> `eval_unimpl` skip), and the rest were lumped from adjacent blockers
+> (proto-presence, null-pruning, FloatValue narrowing) the breakdown counted
+> under the same coarse group.  The numbers below are the **pre-fix** capture;
+> re-run `--breakdown` to refresh.
 
 Same 2454-row corpus, **0 FAIL** on the TS side — every non-pass is a
 categorized SKIP carrying a verified reason. The 263-row TS↔C++ gap is
@@ -161,7 +175,7 @@ and are excluded here.
 
 | Rank | Rows | Category | Blocker | Files |
 | ---: | ---: | --- | --- | --- |
-| 1 | **110** | eval_unimpl | **WKT-typed field construction from a scalar** — building a message with a `google.protobuf.*Value`/`Value`/`Struct` field set from a scalar; the binding's `cel_set_field` does not wrap the scalar into the WKT message | dynamic, proto2, proto3 |
+| 1 | ~~110~~ **SHIPPED 2026-06-11 (+91 pass)** | eval_unimpl | **WKT-typed field construction from a scalar** — building a message with a `google.protobuf.*Value`/`Value`/`Struct` field set from a scalar; `cel_set_field` now wraps the scalar/map/list into the WKT message (`backing.ts::wrapWellKnownValue`). Residual: message-into-`Value` + 32-bit-wrapper range-check are separate gaps | dynamic, proto2, proto3 |
 | 2 | **77** | bindings | **bind an object value** — a structured (object) binding value the harness cannot marshal into the activation | block_ext, dynamic, enums, proto2, proto2_ext, proto3, timestamps |
 | 3 | **36** | envelope | **type_value matcher** — a `type(...)` result decodes to CEL_TYPE, which is outside the binding's value surface (no comparator) | conversions, enums, timestamps |
 | 4 | **22** | envelope | **typed_result matcher (no-eval check)** — a check-only typed-result expectation reaching the eval comparator | type_deduction |

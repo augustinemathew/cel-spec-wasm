@@ -365,6 +365,22 @@ function classifyProtoErrorExpectedGap(
       'out-of-range enum-field assignment not range-checked in @cel-wasm/eval',
     );
   }
+  // Out-of-range 32-bit WKT-wrapper assignment: cel-cpp raises a "range error"
+  // when a value outside the int32 / uint32 domain is assigned to an
+  // `Int32Value` / `UInt32Value` wrapper field (`{single_int32_wrapper:
+  // 12345678900}`); the binding wraps the scalar but does not narrow-check, so
+  // it constructs the (truncated) message instead.  A separate gap from
+  // scalar→WKT wrapping itself — anchored to a 32-bit wrapper field set from a
+  // literal wider than 32 bits.
+  if (
+    looksLikeProtoRow(test.expr, test.container) &&
+    /single_(int32|uint32)_wrapper:\s*-?\d{10,}u?/.test(test.expr)
+  ) {
+    return skip(
+      'eval_unimpl',
+      '32-bit WKT-wrapper assignment not range-checked in @cel-wasm/eval',
+    );
+  }
   return undefined;
 }
 

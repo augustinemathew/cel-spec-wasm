@@ -193,6 +193,88 @@ describe('runRow — proto descriptor path', () => {
     expect(r.outcome).toBe('pass');
   });
 
+  // WKT-typed field construction from a scalar — the scalar is wrapped into the
+  // target WKT message (proto3.textproto "int64_wrapper" / "value" / "struct").
+  // These passed skip→pass once `cel_set_field` learned to wrap.
+  it.runIf(protoReady)('passes Int64Value wrapper construction', async () => {
+    const r = await runRow(
+      row({
+        expr: 'cel.expr.conformance.proto3.TestAllTypes{single_int64_wrapper: -321}',
+        matcher: {
+          kind: 'value',
+          value: {
+            kind: 'object',
+            fqn: 'cel.expr.conformance.proto3.TestAllTypes',
+            message: parseTextproto('single_int64_wrapper { value: -321 }'),
+          },
+        },
+      }),
+      engine,
+      proto,
+    );
+    expect(r.outcome).toBe('pass');
+  });
+
+  it.runIf(protoReady)('passes a dynamic Value construction', async () => {
+    const r = await runRow(
+      row({
+        expr: "cel.expr.conformance.proto3.TestAllTypes{single_value: 'foo'}",
+        matcher: {
+          kind: 'value',
+          value: {
+            kind: 'object',
+            fqn: 'cel.expr.conformance.proto3.TestAllTypes',
+            message: parseTextproto('single_value { string_value: "foo" }'),
+          },
+        },
+      }),
+      engine,
+      proto,
+    );
+    expect(r.outcome).toBe('pass');
+  });
+
+  it.runIf(protoReady)('passes a Struct construction from a map', async () => {
+    const r = await runRow(
+      row({
+        expr: "cel.expr.conformance.proto3.TestAllTypes{single_struct: {'one': 1, 'two': 2}}",
+        matcher: {
+          kind: 'value',
+          value: {
+            kind: 'object',
+            fqn: 'cel.expr.conformance.proto3.TestAllTypes',
+            message: parseTextproto(
+              'single_struct { fields { key: "one" value { number_value: 1.0 } } ' +
+                'fields { key: "two" value { number_value: 2.0 } } }',
+            ),
+          },
+        },
+      }),
+      engine,
+      proto,
+    );
+    expect(r.outcome).toBe('pass');
+  });
+
+  // Out-of-range 32-bit WKT-wrapper assignment is a SEPARATE gap (the binding
+  // wraps but does not narrow-check), classified as a verified eval_unimpl skip
+  // — NOT the scalar-wrapping feature.  dynamic.textproto "field_assign_*_range".
+  it.runIf(protoReady)(
+    'skips an out-of-range 32-bit wrapper assignment',
+    async () => {
+      const r = await runRow(
+        row({
+          expr: 'cel.expr.conformance.proto3.TestAllTypes{single_int32_wrapper: 12345678900}',
+          container: 'cel.expr.conformance.proto3',
+          matcher: { kind: 'evalError' },
+        }),
+        engine,
+        proto,
+      );
+      expect(r).toMatchObject({ outcome: 'skip', category: 'eval_unimpl' });
+    },
+  );
+
   it.skipIf(protoReady)('SKIPPED: FDS fixture not built', () => {
     expect(protoReady).toBe(false);
   });

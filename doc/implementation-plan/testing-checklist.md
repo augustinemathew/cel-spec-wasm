@@ -3211,10 +3211,17 @@ Gate: `lint` + `build` + `typecheck` + `test` green — 781 pass / 13 skip
         compare + `celValuesEqual` deep-compare, `proto-compare` expected-
         message builder, monotonic ratchet. Full corpus with proto
         descriptors wired into compile (`--descriptor_set`) + eval
-        (`Engine.create({descriptors})`): **1710 pass / 744 categorized
-        skip / 0 fail** (`.baseline=1710`, `.max_fail=0`) — proto2/proto3
+        (`Engine.create({descriptors})`): **1801 pass / 653 categorized
+        skip / 0 fail** (`.baseline=1801`, `.max_fail=0`) — proto2/proto3
         construction + field-read rows run; residual proto skips are
         verified eval-binding gaps.
+  - [x] WKT-typed field construction from a scalar — `cel_set_field` wraps
+        a CEL scalar / map / list into the nine `google.protobuf.*Value`
+        wrappers + the dynamic `Value` / `Struct` / `ListValue`
+        (`eval/src/proto/backing.ts::wrapWellKnownValue`,
+        `backing.test.ts` wrapper / Value / Struct / ListValue matrix +
+        `runner.test.ts` end-to-end construction rows). +91 conformance
+        pass (1710 → 1801, 0 fail), `eval_unimpl` 144 → 53.
   - [x] browser demo — `web/**/*.test.ts` (84): variables parse, render,
         compile-client transport, dev-server endpoint, and the
         `src/run.test.ts` compile→eval wiring proof. Monaco glue is
