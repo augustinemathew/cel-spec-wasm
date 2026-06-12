@@ -35,7 +35,7 @@ cd "$(git rev-parse --show-toplevel)"
 # for `bazel build` command lines, `+`-joined for aquery/query union
 # strings (Q3).
 PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //benchmark/... //testdata/... //spec/..."
-PROJ_UNION="//compiler/... + //eval/... + //shared/... + //abi/... + //runtime/... + //tools/... + //conformance/... + //e2e/... + + //benchmark/... + //testdata/... + //spec/..."
+PROJ_UNION="//compiler/... + //eval/... + //shared/... + //abi/... + //runtime/... + //tools/... + //conformance/... + //e2e/... + //benchmark/... + //testdata/... + //spec/..."
 
 if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   echo "warning: hedron_compile_commands is not declared in MODULE.bazel." >&2
@@ -61,9 +61,15 @@ if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   # generated headers / proto outputs land on disk) and the aquery
   # target pattern (so the action set is exhaustive).  Non-manual
   # entries are unchanged — the union is idempotent.
+  # Exclude wasm32-platform manual targets (component-fixture
+  # `.bin`s, wasm component cores): they can't be configured for the
+  # host platform, and aquery hard-fails on the dependency chain.
+  # Lint only analyzes native-host TUs anyway.
   manual_cc=$(bazel query \
     "attr(tags, \"\\bmanual\\b\", ${PROJ_UNION}) intersect kind(\"cc_.*\", ${PROJ_UNION})" \
-    2>/dev/null | paste -sd '+' -)
+    2>/dev/null \
+    | grep -v 'foreign_component_fixtures\|\.bin$\|wasm_component' \
+    | paste -sd '+' -)
   if [[ -n "${manual_cc}" ]]; then
     aquery_pattern="${PROJ_UNION} + ${manual_cc}"
     # `bazel build` takes space-separated labels, not '+'-unioned.

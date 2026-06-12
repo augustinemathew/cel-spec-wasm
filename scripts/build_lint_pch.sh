@@ -99,8 +99,20 @@ for e in db:
         continue
     if '_test.cc' in f or '/test_' in f:
         continue
+    # Bench TUs carry per-target -O2/-O3 copts; a PCH built at a
+    # different OptimizationLevel is rejected by clang-tidy when
+    # replayed against fastbuild-flagged TUs.
+    if 'benchmark/' in f:
+        continue
     args_blob = ' '.join(e['arguments'])
     if 'abseil-cpp~' not in args_blob or 'protobuf~' not in args_blob:
+        continue
+    # lint_pch.h includes google/protobuf/compiler/importer.h, which
+    # only TUs depending on the full protobuf compiler carry the
+    # virtual-include path for.  Entry order in the aquery-generated
+    # DB is not stable, so require the path explicitly — a TU with
+    # absl+protobuf but no importer include fails the PCH build.
+    if 'importer' not in args_blob:
         continue
     # Skip wasm32-targeted entries (Phase C kernels build under
     # `//third_party/wasi_sdk:wasm32_wasi`).  Lint is run against

@@ -63,6 +63,13 @@ def build_entry(action: dict, root: str, sdk: str | None,
   src = find_source(args)
   if src is None:
     return None
+  # Drop exec-configuration duplicates (host tools compiled for
+  # genrules land in `bazel-out/<cpu>-opt-exec-*` with -O2 +
+  # _FORTIFY_SOURCE).  clang-tidy picks ONE entry per file; an
+  # exec-config entry mismatches the fastbuild-built PCH
+  # ("OptimizationLevel differs") and mis-flags target-config code.
+  if any("-exec-" in a for a in args):
+    return None
   # Replace bazel's cc_wrapper.sh driver with a real clang++. The
   # wrapper's only job at analysis time is env-var plumbing we don't
   # need.

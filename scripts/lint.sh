@@ -206,6 +206,10 @@ for f in "${targets[@]}"; do
     runtime/cel_string_ext_internal.h) continue ;;
     runtime/cel_string_format_internal.h) continue ;;
     runtime/string_ext_test_helpers.h) continue ;;
+    # C++ orphan header (no matching `.cc` basename → clang-tidy's
+    # DB interpolation picks a TU without the wasmtime include path).
+    # Transitively covered by memory_grow_stability_test.cc.
+    eval/internal/instance_test_peer.h) continue ;;
   esac
   case "$f" in
     *.c)                          c_targets+=("$f") ;;
