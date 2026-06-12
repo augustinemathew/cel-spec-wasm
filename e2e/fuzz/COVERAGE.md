@@ -156,8 +156,14 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
 - [x] `int64_to_uint64` `uint64_to_int64` `double_to_int64`
       `double_to_uint64` (cross-numeric — fallible, range-compared)
 - [x] `string_to_int64` `string_to_uint64` `string_to_double`
-      `string_to_bool` (parse family — fallible; current string
-      leaves are non-numeric, so mostly both-error)
+      `string_to_bool` (parse family — fallible).  Numeric-shaped
+      string leaves (`"42"` `"3.14"` `"-7"`) now drive the **success**
+      path (`int("42")`==42, `double("3.14")`==3.14, …), not only the
+      both-error branch; mined clean across int/uint/double/bool/string
+      at d5.  The over-permissive whitespace (`"  3.14  "`) and
+      leading-`+` (`"+5"`) forms stay withheld (pinned
+      `DoubleFromStringRejectsWhitespace` / `IntFromStringLeadingPlus` /
+      `UintFromStringLeadingPlus`).
 - [x] `int64_to_string` `uint64_to_string` `bool_to_string`
       `bytes_to_string` (the `string(x)` family)
 - [ ] `double_to_string` — EXCLUDED from the grammar: the oracle's
@@ -170,9 +176,13 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
       `string(timestamp|duration)` shipped with RegisterTemporal
 - [ ] `string_to_{duration,timestamp}` (`duration('…')` /
       `timestamp('…')` — need date/duration-shaped string leaves)
-- [ ] numeric-shaped string leaves (`"42"`, `"3.14"`, `"  3.14  "`,
-      `"+5"`) to actually exercise the parse path + its known bugs
-      (`DoubleFromStringRejectsWhitespace`) — deferred
+- [x] numeric-shaped string leaves — the oracle-agreeing forms
+      (`"42"`, `"3.14"`, `"-7"`) are admitted and exercise the parse
+      success path (mined clean d5).  The whitespace (`"  3.14  "`) and
+      leading-`+` (`"+5"`) forms remain withheld — they trip our
+      over-permissive parse vs cel-cpp (the
+      `DoubleFromStringRejectsWhitespace` / `*FromStringLeadingPlus`
+      pins); un-withhold when those are fixed.
 - [ ] identity: `int64_to_int64` `uint64_to_uint64` `double_to_double`
       `bytes_to_bytes` `bool_to_bool` `string_to_string`
 - Note: `int(duration)` (`duration_to_int64`) deliberately omitted —

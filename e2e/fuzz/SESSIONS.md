@@ -9,6 +9,25 @@ surfaced). See [`README.md`](README.md) for how the rig works and
 
 ---
 
+### 2026-06-11 — numeric-shaped string leaves (conversion success path)
+
+- Added oracle-agreeing numeric string leaves (`"42"`, `"3.14"`,
+  `"-7"`) to `RegisterLexicalLeaves`. Previously every string leaf was
+  non-numeric, so `int`/`uint`/`double`/`bool` of string only ever hit
+  the **both-error** branch; now the parse **success** path is fuzzed
+  (`int("42")`==42, `double("3.14")`==3.14, `int("-7")`==-7,
+  `uint("42")`==42u — all confirmed against our pipeline + oracle).
+- Deliberately withheld the whitespace (`"  3.14  "`) and leading-`+`
+  (`"+5"`) forms: they trip our over-permissive parse vs cel-cpp,
+  already pinned `DoubleFromStringRejectsWhitespace` /
+  `IntFromStringLeadingPlus` / `UintFromStringLeadingPlus`. Emit only
+  what the oracle can correctly judge.
+- Mined int/uint/double/bool/string at d5 (400 seeds each): **0
+  divergences**. grammar_test (L1/L2/L3) green.
+- From the 2026-06-11 subsystem review's P0 comprehensiveness queue
+  (`reviews/2026-06-11-pbt-subsystem.md`). Next: exact `INT64_MIN`
+  leaf, then `kBothErrored` error-kind comparison.
+
 ### 2026-06-11 — timestamp `_with_tz` accessors + substring boundary bug
 
 - `RegisterTimestampAccessors` (split out of `RegisterTemporal` for the

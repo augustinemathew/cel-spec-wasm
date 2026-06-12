@@ -121,6 +121,19 @@ void RegisterLexicalLeaves(GrammarBuilder& b) {
   b.Leaf(CelType::String(), "string_embedded_nul", R"("a\u0000b")");
   b.Leaf(CelType::String(), "string_combining", R"("é")");
 
+  // Numeric-shaped strings — these light up the SUCCESS path of the
+  // string-parse conversions (`int`/`uint`/`double`/`bool` of string),
+  // which the non-numeric leaves above only ever drive into the
+  // both-error branch.  Only oracle-agreeing forms are admitted: a
+  // plain int, a plain double, and a negative int.  The
+  // whitespace-padded (`"  3.14  "`) and leading-`+` (`"+5"`) forms are
+  // deliberately withheld — they trip our over-permissive parse vs
+  // cel-cpp (pinned `DoubleFromStringRejectsWhitespace` /
+  // `IntFromStringLeadingPlus` / `UintFromStringLeadingPlus`).
+  b.Leaf(CelType::String(), "string_num_int", R"("42")");
+  b.Leaf(CelType::String(), "string_num_double", R"("3.14")");
+  b.Leaf(CelType::String(), "string_num_neg", R"("-7")");
+
   // Bytes — same shape as string, plus a NUL byte and a sequence
   // that is NOT valid UTF-8 (legal for bytes; lethal for any code
   // path that assumes bytes are stringly).
