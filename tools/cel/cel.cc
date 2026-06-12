@@ -81,6 +81,12 @@ ABSL_FLAG(std::uint32_t, mem_size_bytes, 128u * 1024u,
           "Rounded up to the next 64KiB wasm page.  Raise when the "
           "expression needs a larger arena (heavy string concat, big lists).");
 
+ABSL_FLAG(std::string, link_mode, "dynamic",
+          "Runtime link mode for the emitted Program: `dynamic` (default) "
+          "emits a thin expr module that imports the `cel.*` runtime helpers "
+          "(a few KB — easy to inspect; Engine links the runtime at Plan); "
+          "`static` embeds the runtime into a self-contained module (~1.3 MB).");
+
 ABSL_FLAG(std::string, output, "",
           "`cel compile` only: path to write the emitted wasm bytes.  "
           "If empty, bytes go to stdout.");
@@ -224,6 +230,15 @@ absl::StatusOr<PoolBundle> BuildPool() {
   return out;
 }
 
+// Parse the --link_mode flag value into the compile option enum.
+absl::StatusOr<celwasm::CompileOptions::LinkMode> ParseLinkMode(
+    absl::string_view value) {
+  if (value == "dynamic") return celwasm::CompileOptions::LinkMode::kDynamic;
+  if (value == "static") return celwasm::CompileOptions::LinkMode::kStatic;
+  return absl::InvalidArgumentError(absl::StrCat(
+      "--link_mode must be `dynamic` or `static`, got `", value, "`"));
+}
+
 // Populate `celwasm::CompileOptions` from the global flag state +
 // the parsed --var declarations.  Variable specs flow through as
 // `name:TypeSpec` strings (the form parse_and_check.cc consumes).
@@ -235,6 +250,9 @@ absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
   opts.check.container = absl::GetFlag(FLAGS_container);
   opts.mem_size_bytes = absl::GetFlag(FLAGS_mem_size_bytes);
   opts.optimize_level = absl::GetFlag(FLAGS_O);
+  auto link_mode = ParseLinkMode(absl::GetFlag(FLAGS_link_mode));
+  if (!link_mode.ok()) return link_mode.status();
+  opts.link_mode = *link_mode;
   // The compiler resolves message types against this pool — `BuildPool`
   // already merged the --proto / --descriptor_set schema over the generated
   // pool (the compiler itself never loads schemas; it is a pool consumer).
