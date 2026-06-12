@@ -14,6 +14,9 @@
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
 #include "gmock/gmock.h"
+#include "google/protobuf/descriptor.h"
+#include "google/protobuf/descriptor.pb.h"
+#include "google/protobuf/descriptor_database.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
@@ -482,44 +485,89 @@ TEST(ParseAndCheckTest, RejectsTrailingGarbageInSpec) {
             absl::string_view::npos);
 }
 
-TEST(ParseAndCheckTest, RejectsSchemaDescriptorSetNotFound) {
-  CheckOptions opts;
-  opts.schema = SchemaDescriptorSet{"/does/not/exist.fds"};
-  EXPECT_THAT(ParseAndCheck("1", opts), StatusIs(absl::StatusCode::kNotFound));
+// A DescriptorPool carrying `celwasm.test.Widget` / `Inner`, layered OVER the
+// generated pool (the way a real caller — e.g. the CLI's `BuildPool` — builds
+// one): the schema database resolves Widget, the generated pool resolves the
+// well-known types the checker needs during setup.  Widget is defined ONLY in
+// the schema layer — never in the generated pool — so a passing
+// field-resolution test proves the supplied `descriptor_pool` is load-bearing.
+// Function-local statics (process lifetime, no raw new).
+const google::protobuf::DescriptorPool* WidgetPool() {
+  using google::protobuf::FieldDescriptorProto;
+  static google::protobuf::SimpleDescriptorDatabase schema_db;
+  static const bool kInitialized = [] {
+    google::protobuf::FileDescriptorSet fds;
+    google::protobuf::FileDescriptorProto* file = fds.add_file();
+    file->set_name("widget.proto");
+    file->set_package("celwasm.test");
+    file->set_syntax("proto3");
+
+    google::protobuf::DescriptorProto* widget = file->add_message_type();
+    widget->set_name("Widget");
+    FieldDescriptorProto* label = widget->add_field();
+    label->set_name("label");
+    label->set_number(1);
+    label->set_type(FieldDescriptorProto::TYPE_STRING);
+    label->set_label(FieldDescriptorProto::LABEL_OPTIONAL);
+    FieldDescriptorProto* inner = widget->add_field();
+    inner->set_name("inner");
+    inner->set_number(2);
+    inner->set_type(FieldDescriptorProto::TYPE_MESSAGE);
+    inner->set_type_name(".celwasm.test.Inner");
+    inner->set_label(FieldDescriptorProto::LABEL_OPTIONAL);
+
+    google::protobuf::DescriptorProto* inner_msg = file->add_message_type();
+    inner_msg->set_name("Inner");
+    FieldDescriptorProto* note = inner_msg->add_field();
+    note->set_name("note");
+    note->set_number(1);
+    note->set_type(FieldDescriptorProto::TYPE_STRING);
+    note->set_label(FieldDescriptorProto::LABEL_OPTIONAL);
+
+    for (const auto& f : fds.file()) {
+      schema_db.Add(f);
+    }
+    return true;
+  }();
+  (void)kInitialized;
+  static google::protobuf::DescriptorPoolDatabase generated_db(
+      *google::protobuf::DescriptorPool::generated_pool());
+  static google::protobuf::MergedDescriptorDatabase merged_db(&schema_db,
+                                                              &generated_db);
+  static google::protobuf::DescriptorPool pool(&merged_db);
+  return &pool;
 }
 
-TEST(ParseAndCheckTest, RejectsProtoSourceNotFound) {
+// Positive: the supplied descriptor pool resolves a message-typed variable's
+// field select.  `Widget` lives only in this pool, so a pass proves the
+// compiler resolves against `descriptor_pool` — the path the C ABI /
+// compiler.wasm use, where there is no filesystem.
+TEST(ParseAndCheckTest, DescriptorPoolResolvesSuppliedMessageField) {
   CheckOptions opts;
-  opts.schema = SchemaProtoSource{"/does/not/exist.proto"};
-  EXPECT_THAT(ParseAndCheck("1", opts), StatusIs(absl::StatusCode::kNotFound));
-}
-
-// Positive: loading a proto source file registers its messages and the
-// checker resolves field selects through the user-supplied schema.
-TEST(ParseAndCheckTest, ProtoSourceSchemaRegistersMessage) {
-  CheckOptions opts;
-  opts.schema = SchemaProtoSource{"testdata/e2e_fixture.proto"};
-  opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  auto ta = ParseAndCheck("c.name", opts);
+  opts.descriptor_pool = WidgetPool();
+  opts.variable_specs = {"w:celwasm.test.Widget"};
+  auto ta = ParseAndCheck("w.label", opts);
   ASSERT_THAT(ta, IsOk());
   EXPECT_EQ(RootRepr(*ta), Repr::kString);
 }
 
-TEST(ParseAndCheckTest, ProtoSourceSchemaResolvesNestedMessageField) {
+TEST(ParseAndCheckTest, DescriptorPoolResolvesNestedSuppliedField) {
   CheckOptions opts;
-  opts.schema = SchemaProtoSource{"testdata/e2e_fixture.proto"};
-  opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  auto ta = ParseAndCheck("c.billing_address.city", opts);
+  opts.descriptor_pool = WidgetPool();
+  opts.variable_specs = {"w:celwasm.test.Widget"};
+  auto ta = ParseAndCheck("w.inner.note", opts);
   ASSERT_THAT(ta, IsOk());
   EXPECT_EQ(RootRepr(*ta), Repr::kString);
 }
 
-TEST(ParseAndCheckTest, ProtoSourceSchemaRejectsSyntaxError) {
-  CheckOptions opts;
-  // Point at a file that exists but isn't a valid .proto source.
-  opts.schema = SchemaProtoSource{"compiler/frontend/parse_and_check.h"};
-  opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  EXPECT_THAT(ParseAndCheck("c.name", opts),
+// Negative / contract: with no supplied pool the compiler resolves against
+// the generated pool alone, which does not contain Widget — so the
+// supplied-only message type is undeclared (InvalidArgument).  This brackets
+// the positive cases: the supplied pool is what makes Widget resolve.
+TEST(ParseAndCheckTest, NullDescriptorPoolCannotResolveSuppliedOnlyType) {
+  CheckOptions opts;  // descriptor_pool == nullptr → generated pool only
+  opts.variable_specs = {"w:celwasm.test.Widget"};
+  EXPECT_THAT(ParseAndCheck("w.label", opts),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
@@ -716,9 +764,9 @@ TEST(ParseAndCheckTest, RejectDynStillRejectsDynMessage) {
   // it would invite `dyn(msg).field` (M7-surface late-bound field
   // reads that runtime cannot dispatch today).
   CheckOptions opts;
-  opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  opts.schema = SchemaProtoSource{"testdata/e2e_fixture.proto"};
-  EXPECT_THAT(ParseAndCheck("dyn(c)", opts),
+  opts.descriptor_pool = WidgetPool();
+  opts.variable_specs = {"w:celwasm.test.Widget"};
+  EXPECT_THAT(ParseAndCheck("dyn(w)", opts),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
@@ -727,19 +775,19 @@ TEST(ParseAndCheckTest, RejectDynStillRejectsDynFieldAccess) {
   // and the outer Select node carries `dyn` typing.  Either gate
   // catches the rejection.
   CheckOptions opts;
-  opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  opts.schema = SchemaProtoSource{"testdata/e2e_fixture.proto"};
-  EXPECT_THAT(ParseAndCheck("dyn(c).name", opts),
+  opts.descriptor_pool = WidgetPool();
+  opts.variable_specs = {"w:celwasm.test.Widget"};
+  EXPECT_THAT(ParseAndCheck("dyn(w).label", opts),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(ParseAndCheckTest, RejectDynAdmitsScalarSelect) {
-  // `dyn(c.name)` — the argument is a scalar select (string); admits
+  // `dyn(w.label)` — the argument is a scalar select (string); admits
   // per Risk #1 in the plan (the field read is itself admissible).
   CheckOptions opts;
-  opts.variable_specs = {"c:celwasm.testdata.Customer"};
-  opts.schema = SchemaProtoSource{"testdata/e2e_fixture.proto"};
-  auto r = ParseAndCheck("dyn(c.name)", opts);
+  opts.descriptor_pool = WidgetPool();
+  opts.variable_specs = {"w:celwasm.test.Widget"};
+  auto r = ParseAndCheck("dyn(w.label)", opts);
   ASSERT_THAT(r, IsOk());
 }
 

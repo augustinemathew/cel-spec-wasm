@@ -228,23 +228,17 @@ absl::StatusOr<PoolBundle> BuildPool() {
 // the parsed --var declarations.  Variable specs flow through as
 // `name:TypeSpec` strings (the form parse_and_check.cc consumes).
 absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
-    absl::string_view source_desc, const std::vector<ParsedVar>& vars) {
+    absl::string_view source_desc, const std::vector<ParsedVar>& vars,
+    const google::protobuf::DescriptorPool* pool) {
   celwasm::CompileOptions opts;
   opts.check.description = std::string(source_desc);
   opts.check.container = absl::GetFlag(FLAGS_container);
   opts.mem_size_bytes = absl::GetFlag(FLAGS_mem_size_bytes);
   opts.optimize_level = absl::GetFlag(FLAGS_O);
-  const std::string proto_path = absl::GetFlag(FLAGS_proto);
-  const std::string fds_path = absl::GetFlag(FLAGS_descriptor_set);
-  if (!proto_path.empty() && !fds_path.empty()) {
-    return absl::InvalidArgumentError(
-        "--proto and --descriptor_set are mutually exclusive");
-  }
-  if (!proto_path.empty()) {
-    opts.check.schema = celwasm::SchemaProtoSource{proto_path};
-  } else if (!fds_path.empty()) {
-    opts.check.schema = celwasm::SchemaDescriptorSet{fds_path};
-  }
+  // The compiler resolves message types against this pool — `BuildPool`
+  // already merged the --proto / --descriptor_set schema over the generated
+  // pool (the compiler itself never loads schemas; it is a pool consumer).
+  opts.check.descriptor_pool = pool;
   for (const auto& v : vars) {
     // CelType → spec-string round-trip.  We could thread the
     // original spec from the --var flag, but reusing the CelType-
@@ -336,7 +330,7 @@ int RunEval(absl::string_view expr) {
     std::cerr << "ERROR: " << vars.status().message() << "\n";
     return 2;
   }
-  auto opts = BuildCompileOptions("<cli>", *vars);
+  auto opts = BuildCompileOptions("<cli>", *vars, pool->pool);
   if (!opts.ok()) {
     std::cerr << "ERROR: " << opts.status().message() << "\n";
     return 2;
@@ -410,7 +404,7 @@ int RunCheck(absl::string_view expr) {
     std::cerr << "ERROR: " << vars.status().message() << "\n";
     return 2;
   }
-  auto opts = BuildCompileOptions("<cli>", *vars);
+  auto opts = BuildCompileOptions("<cli>", *vars, pool->pool);
   if (!opts.ok()) {
     std::cerr << "ERROR: " << opts.status().message() << "\n";
     return 2;
@@ -436,7 +430,7 @@ int RunCompile(absl::string_view expr) {
     std::cerr << "ERROR: " << vars.status().message() << "\n";
     return 2;
   }
-  auto opts = BuildCompileOptions("<cli>", *vars);
+  auto opts = BuildCompileOptions("<cli>", *vars, pool->pool);
   if (!opts.ok()) {
     std::cerr << "ERROR: " << opts.status().message() << "\n";
     return 2;

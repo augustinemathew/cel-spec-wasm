@@ -1,6 +1,19 @@
 # M30 — descriptor-pool plumbing through the C++ compiler APIs
 
-Status: plan — drafted 2026-06-11, not yet started.
+Status: in progress — drafted 2026-06-11. Slice A (C++ core + public API)
+implemented 2026-06-11 (uncommitted).
+
+> **Plan-vs-execution delta (2026-06-11).** The original §3 below designed
+> a *bytes-based schema variant* inside the frontend (`SchemaDescriptorSetBytes`
+> on `CheckOptions`). During execution this was reshaped to a **pool-first**
+> contract: the compiler is a pure descriptor-pool *consumer* — it never
+> builds a pool from `.proto` sources or FDS bytes. The public surface is
+> `Compiler::Builder::SetDescriptorPool(const DescriptorPool*)`; callers
+> (the CLI, the C ABI) build the pool (layered over `generated_pool()` so
+> the well-known types the checker needs resolve) and hand it in. The old
+> path-based `schema` variant + all in-frontend pool building were
+> **deleted**. §3.1–3.2 are rewritten to the as-built shape; §2 below
+> describes the pre-m30 starting point (now removed).
 
 ## 1. Why
 
@@ -66,46 +79,52 @@ a path.
 
 ## 3. Design
 
-### 3.1 A bytes-based schema variant
+### 3.1 The compiler accepts a descriptor pool (as built)
 
-Add a third schema alternative that carries the serialized
-`FileDescriptorSet` in memory:
+The compiler is a pure descriptor-pool **consumer**. The public surface
+is a Builder setter (the pool is type-environment state, alongside the
+message-typed variable declarations it resolves):
 
 ```cpp
-// compiler/frontend/parse_and_check.h
-// A binary-serialized google.protobuf.FileDescriptorSet held in memory
-// (no filesystem). The path-based SchemaDescriptorSet stays for the CLI;
-// this is what the C ABI / compiler.wasm use, where there is no FS.
-struct SchemaDescriptorSetBytes {
-  std::string bytes;
-};
-
-struct CheckOptions {
-  std::variant<std::monostate,
-               SchemaProtoSource,
-               SchemaDescriptorSet,
-               SchemaDescriptorSetBytes> schema;
-  // ...
+// compiler/compiler.h
+class Compiler::Builder {
+  // Borrowed; nullptr → generated_pool(). The supplied pool resolves a
+  // type first; types it lacks fall back to the generated pool — but that
+  // fallback is the *pool's* property (the caller layers it over
+  // generated_pool()), NOT something the compiler builds.
+  Builder& SetDescriptorPool(const google::protobuf::DescriptorPool* pool);
 };
 ```
 
-Factor the parse-and-register half out of `RegisterSchemaDescriptorSet`
-so both the file path and the in-memory bytes share it:
+The frontend `CheckOptions` carries the same borrowed pointer
+(`const google::protobuf::DescriptorPool* descriptor_pool = nullptr`),
+and `parse_and_check.cc` collapses to:
 
 ```cpp
-// Registers every file of a serialized FileDescriptorSet into schema_db.
-absl::Status RegisterFileDescriptorSetBytes(
-    absl::string_view bytes,
-    google::protobuf::SimpleDescriptorDatabase& schema_db);
+const google::protobuf::DescriptorPool* SelectDescriptorPool(
+    const CheckOptions& opts) {
+  return opts.descriptor_pool != nullptr
+             ? opts.descriptor_pool
+             : google::protobuf::DescriptorPool::generated_pool();
+}
 ```
 
-The existing path variant reads the file then delegates; the new bytes
-variant delegates directly. `LoadDescriptorPool`'s `std::visit` gains
-one `else if constexpr` arm. The merged-pool construction is unchanged —
-the new variant only changes *where the bytes come from*, not how the
-pool is built, so WKT resolution and the generated-pool merge are
-identical to the path case (this preserves the byte-exact conformance
-behaviour the CLI path already has).
+That is the entire frontend descriptor logic. The deleted code — the
+`.proto` parser, the FDS-file reader, the `SimpleDescriptorDatabase` /
+`MergedDescriptorDatabase` / owned-`DescriptorPool` building, and the
+`schema` variant — moved **out** of the compiler to the callers (the CLI
+already builds a merged pool in `BuildPool`; the C ABI does in §3.2).
+The compiler no longer touches a filesystem, which is what the wasm
+build needs.
+
+**Why the caller builds the fallback, not the compiler.** A bare
+supplied pool (schema only, no generated underlay) fails: the cel-cpp
+checker references the well-known types during setup, so the pool handed
+to it must resolve them. The idiomatic fix is the caller layering the
+schema over `generated_pool()` (a `DescriptorPool` over a
+`MergedDescriptorDatabase{schema_db, generated_db}`) — exactly what the
+CLI's `BuildPool` already does. The compiler stays dumb: it uses
+whichever single pool resolves supplied-then-generated.
 
 ### 3.2 C ABI surface
 
@@ -119,11 +138,14 @@ void cel_compile_opts_set_descriptor_set(
     CelCompileOpts* opts, const uint8_t* fds, int len);
 ```
 
-`CelCompileOpts` gains a `std::string descriptor_set` field;
-`MakeCompilerOptions` (`cel_capi.cc`) sets
-`out.check.schema = SchemaDescriptorSetBytes{opts->descriptor_set}` when
-it is non-empty (and leaves `std::monostate` otherwise — so a
-no-descriptor compile is unchanged).
+The C ABI is where the FDS bytes become a pool (all building outside the
+compiler): `cel_capi.cc` parses the bytes into a `FileDescriptorSet`,
+builds an owning pool **layered over `generated_pool()`** (the same
+`MergedDescriptorDatabase` shape the CLI uses), stashes the owning
+intermediates on `CelCompileOpts` so they outlive the compile, and calls
+`builder.SetDescriptorPool(pool)`. `CelCompileOpts` gains the owning
+pool members + a `const DescriptorPool*`; when no descriptor set was
+supplied it leaves the pool null (→ generated pool, unchanged).
 
 ### 3.3 `cew_compile_opts` records entry
 
@@ -185,15 +207,15 @@ Once descriptors flow through the wasm path:
 Per repo rules — probe the real behaviour before asserting it, and pin
 it with the oracle where a value is in question.
 
-  - **C++ unit** — `parse_and_check_test.cc`: a `SchemaDescriptorSetBytes`
-    built from an in-memory FDS type-checks a `Foo{...}` literal and a
-    message-typed var identically to the path variant (same pool, same
-    result). Negative: malformed bytes → `InvalidArgumentError`; a file
-    with a duplicate `name` → the same duplicate error the path variant
-    gives.
-  - **C ABI** — `cel_capi_test.cc`: `cel_compile_opts_set_descriptor_set`
+  - **C++ unit (slice A, done)** — `parse_and_check_test.cc`: a supplied
+    `descriptor_pool` (a `Widget` message defined only in that pool,
+    layered over generated) resolves a field select and a nested field;
+    with no pool the supplied-only type is undeclared. `compiler_test.cc`:
+    the public `SetDescriptorPool` compiles `w.label` end-to-end, and
+    without it the type is undeclared.
+  - **C ABI (slice B)** — `cel_capi_test.cc`: `cel_compile_opts_set_descriptor_set`
     then `cel_compile` of a proto expression succeeds and the emitted
-    Program decodes; null/zero-len leaves the schema at `monostate`.
+    Program decodes; null/zero-len leaves the pool null (→ generated pool).
   - **wasm e2e** — extend `web/src/run.test.ts` (or a compiler-package
     test once the asset moves): compile a proto expression through
     `compiler.wasm` with a `'d'` record and assert it type-checks where
@@ -208,13 +230,22 @@ it with the oracle where a value is in question.
 
 ## 5. Work breakdown (slices)
 
-  - **A — C++ core.** `SchemaDescriptorSetBytes` variant +
-    `RegisterFileDescriptorSetBytes` + `LoadDescriptorPool` arm + tests.
-    No ABI/TS change; fully testable in isolation.
-  - **B — C ABI + wasm export.** `cel_compile_opts_set_descriptor_set`,
-    the `'d'` record in `ApplyOneOption`, rebuild `compiler.wasm`, C ABI
-    test. End-to-end testable via a Node harness driving the rebuilt
-    wasm (the m29 pattern).
+  - **A — C++ core + public API. ✅ DONE (2026-06-11, uncommitted).**
+    `CheckOptions::descriptor_pool` + `SelectDescriptorPool` (frontend is a
+    pure pool consumer); public `Compiler::Builder::SetDescriptorPool`
+    threaded Builder → Compiler → `Compile` → `CheckOptions`; the path-based
+    `schema` variant + all in-frontend pool building **deleted**; the CLI
+    migrated to pass its `BuildPool` pool via `descriptor_pool`. Tests:
+    `parse_and_check_test` (supplied-pool resolution, nested field,
+    null-can't-resolve-supplied-only), `compiler_test` ×2
+    (`SetDescriptorPool` compiles `w.label` end-to-end; without-pool
+    undeclared). Broad `//compiler/... //eval/... //tools/... //conformance/...`
+    build green.
+  - **B — C ABI + wasm export.** `cel_compile_opts_set_descriptor_set`
+    (parses FDS bytes → builds a pool over `generated_pool()` → owns it on
+    `CelCompileOpts` → `builder.SetDescriptorPool`), the `'d'` record in
+    `ApplyOneOption`, rebuild `compiler.wasm`, C ABI test. End-to-end
+    testable via a Node harness driving the rebuilt wasm (the m29 pattern).
   - **C — TS backend.** `descriptorSetBytes` on `CompileRequest`,
     `wasm-backend.ts` encoder, unit test.
   - **D — retire the CLI.** Move the compiler.wasm asset into the

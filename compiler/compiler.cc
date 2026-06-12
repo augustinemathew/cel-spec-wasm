@@ -111,6 +111,12 @@ Compiler::Builder& Compiler::Builder::DeclareVariable(const std::string& name,
   return *this;
 }
 
+Compiler::Builder& Compiler::Builder::SetDescriptorPool(
+    const google::protobuf::DescriptorPool* pool) {
+  descriptor_pool_ = pool;
+  return *this;
+}
+
 Compiler::Builder& Compiler::Builder::AddLibrary(
     celwasm::FunctionLibrary library) {
   function_libraries_.push_back(std::move(library));
@@ -168,6 +174,7 @@ absl::StatusOr<Compiler> Compiler::Builder::Build() && {
   Compiler c;
   c.declared_variables_ = std::move(declared_variables_);
   c.function_libraries_ = std::move(function_libraries_);
+  c.descriptor_pool_ = descriptor_pool_;
   return c;
 }
 
@@ -181,6 +188,9 @@ absl::StatusOr<Program> Compiler::Compile(absl::string_view source,
   // enum (same underlying type, same values).
   inner.link_mode = static_cast<celwasm::CompileOptions::LinkMode>(
       static_cast<std::uint8_t>(opts.link_mode));
+  // The descriptor pool message-typed declarations resolve against; nullptr
+  // (the default) falls through to the generated pool in the frontend.
+  inner.check.descriptor_pool = descriptor_pool_;
   inner.check.variable_specs.reserve(declared_variables_.size());
   for (const auto& decl : declared_variables_) {
     inner.check.variable_specs.push_back(

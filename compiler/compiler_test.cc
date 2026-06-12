@@ -12,6 +12,9 @@
 #include "compiler/program.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
+#include "google/protobuf/descriptor.h"
+#include "google/protobuf/descriptor.pb.h"
+#include "google/protobuf/descriptor_database.h"
 #include "google/protobuf/message.h"
 #include "bazel/link_mode_test_helpers.h"
 #include "gtest/gtest.h"
@@ -219,6 +222,66 @@ TEST(CompilerCompileDeclaredVariableTest,
   auto compiler = std::move(b).Build();
   ASSERT_THAT(compiler, IsOk());
   EXPECT_THAT(compiler->Compile("c.name", LinkModeOpts()), IsOk());
+}
+
+// A DescriptorPool carrying `celwasm.test.Widget`, layered over the generated
+// pool (the way a real caller builds one — schema resolves Widget, generated
+// resolves the WKTs the checker needs).  Widget lives ONLY in the schema
+// layer, never the generated pool, so a Compile that resolves it proves
+// `SetDescriptorPool` threaded the supplied pool through.  Function-local
+// statics (process lifetime, no raw new).
+const google::protobuf::DescriptorPool* WidgetPool() {
+  using google::protobuf::FieldDescriptorProto;
+  static google::protobuf::SimpleDescriptorDatabase schema_db;
+  static const bool kInitialized = [] {
+    google::protobuf::FileDescriptorSet fds;
+    google::protobuf::FileDescriptorProto* file = fds.add_file();
+    file->set_name("widget.proto");
+    file->set_package("celwasm.test");
+    file->set_syntax("proto3");
+    google::protobuf::DescriptorProto* widget = file->add_message_type();
+    widget->set_name("Widget");
+    FieldDescriptorProto* label = widget->add_field();
+    label->set_name("label");
+    label->set_number(1);
+    label->set_type(FieldDescriptorProto::TYPE_STRING);
+    label->set_label(FieldDescriptorProto::LABEL_OPTIONAL);
+    for (const auto& f : fds.file()) {
+      schema_db.Add(f);
+    }
+    return true;
+  }();
+  (void)kInitialized;
+  static google::protobuf::DescriptorPoolDatabase generated_db(
+      *google::protobuf::DescriptorPool::generated_pool());
+  static google::protobuf::MergedDescriptorDatabase merged_db(&schema_db,
+                                                              &generated_db);
+  static google::protobuf::DescriptorPool pool(&merged_db);
+  return &pool;
+}
+
+// SetDescriptorPool threads a caller-supplied pool through to type checking:
+// `celwasm.test.Widget` resolves only via the supplied pool, and the field
+// read compiles end-to-end.
+TEST(CompilerCompileDeclaredVariableTest, SetDescriptorPoolResolvesMessageType) {
+  auto b = Compiler::NewBuilder();
+  b.SetDescriptorPool(WidgetPool())
+      .DeclareVariable("w", CelType::Message("celwasm.test.Widget"));
+  auto compiler = std::move(b).Build();
+  ASSERT_THAT(compiler, IsOk());
+  EXPECT_THAT(compiler->Compile("w.label", LinkModeOpts()), IsOk());
+}
+
+// Without SetDescriptorPool the supplied-only message type is undeclared —
+// the generated pool alone does not contain Widget.
+TEST(CompilerCompileDeclaredVariableTest,
+     WithoutDescriptorPoolSuppliedMessageTypeIsUndeclared) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("w", CelType::Message("celwasm.test.Widget"));
+  auto compiler = std::move(b).Build();
+  ASSERT_THAT(compiler, IsOk());
+  EXPECT_THAT(compiler->Compile("w.label", LinkModeOpts()),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 // Undeclared variable in the source → InvalidArgument at the
