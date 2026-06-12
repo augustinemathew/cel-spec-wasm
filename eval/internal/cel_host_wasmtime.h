@@ -1,10 +1,11 @@
 // Layer 3 — wasmtime glue for cel_host trampolines.
 //
-// Converts the wasmtime callback calling convention (`void* env`,
-// `wasmtime_caller_t*`, `wasmtime_val_t` args) into Layer 2's
-// abstract `TrampolineContext` + `CelGetFieldImpl` / `CelHasFieldImpl`.
-// Engine::Plan owns a `CelHostCallbackEnv` per Instance; the linker
-// callback borrows it by pointer.
+// Converts wasmtime's unchecked (raw, unboxed) host-callback calling
+// convention (`void* env`, `wasmtime_caller_t*`, `wasmtime_val_raw_t`
+// args) into Layer 2's abstract `TrampolineContext` +
+// `CelGetFieldImpl` / `CelHasFieldImpl` / …  Engine::Plan owns a
+// `CelHostCallbackEnv` per Instance; the linker callback borrows it
+// by pointer.
 
 #ifndef CELWASM_EVAL_INTERNAL_CEL_HOST_WASMTIME_H_
 #define CELWASM_EVAL_INTERNAL_CEL_HOST_WASMTIME_H_

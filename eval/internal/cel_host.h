@@ -588,10 +588,10 @@ ABSL_MUST_USE_RESULT absl::Status CelListIterOpenImpl(
 // non-OK Status only on infrastructure failure.  Routing rationale
 // in `doc/implementation-plan/rewrite/map-list-dispatch.md`.
 //
-// Each Impl uses the 3-arg trampoline shape (out + 2 operands) so
-// the existing `HostThreeArgTrampoline<Impl>` template fits.
-// `CelListSizeImpl` and `CelMapSizeImpl` ignore the third arg; the
-// dispatcher omits the third arg entirely (2-arg call), and the
+// Each Impl uses the 3-arg shape (out + 2 operands); Layer 3's
+// `UncheckedHostThunk` derives the wasm arity from the impl's C++
+// signature.  `CelListSizeImpl` and `CelMapSizeImpl` take only
+// (out + 1 operand) — the dispatcher makes a 2-arg call, and the
 // linker registers them as 2-arg host functions.
 ABSL_MUST_USE_RESULT absl::Status CelListSizeImpl(uint32_t out_slot,
                                                   uint32_t list_slot,
