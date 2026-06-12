@@ -113,16 +113,25 @@ step 1 into `/tmp/fuzz_baseline.txt`.
 
 ## Step 3 — one grammar, one test suite  **[pure]**
 
-- [ ] Merge `generator.{h,cc}` into `grammar.{h,cc}` (engine = data
-      model + walk); fold `generator_test.cc` cases into
-      `grammar_test.cc` where not redundant.
-- [ ] Delete `BuildScalarGrammar`; one grammar (rename
+- [x] Merge `generator.{h,cc}` into `grammar.{h,cc}` (engine = data
+      model + walk); `NewGenCtx` moved beside `ActivationSchema` in
+      the scalar catalog (fixes the engine→catalog dep inversion);
+      `generator_test.cc`'s determinism/depth/reachability cases
+      folded into `grammar_test.cc`.
+- [x] Delete `BuildScalarGrammar`; one grammar (rename
       `BuildFullGrammar` → `BuildGrammar`).
-- [ ] `grammar_test.cc`: collapse scalar/aggregate L2+L3 duplication
-      into one suite over the one grammar; L3 calls the real
-      `GenerateExpr` (delete the `namespace l3` walker copy).
-- [ ] Baseline diff: byte-identical.
-- [ ] Lint; commit.
+- [x] `grammar_test.cc`: collapsed scalar/aggregate L1+L2+L3
+      duplication into one suite over the one grammar
+      (635 → ~540 lines); L3 calls the real `GenerateExpr`
+      (the `namespace l3` walker copy deleted).
+- [x] Baseline diff: byte-identical (verified twice — after the
+      move and again after the lint cleanup below).
+- [x] Lint; commit.  Bonus: cleared ALL 10 pre-existing clang-tidy
+      warnings in `grammar.{h,cc}` (const-ref `target` params;
+      dropped never-passed `weight` defaults from `Ternary` /
+      `Comprehension`, fixing their 7-param gate exceedance;
+      `Validate` split via `ValidateProduction` under the 60-line
+      gate).  `grammar.{h,cc}` is now fully lint-clean.
 
 ## Step 4 — catalogs regrouped by family  **[pure]**
 

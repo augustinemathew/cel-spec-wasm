@@ -20,6 +20,7 @@
 // L2 (`grammar_test.cc`) verifies each production individually
 // type-checks against the real cel-cpp pipeline.
 
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,11 +50,10 @@ struct ActivationBinding {
 // call; cheap.
 std::vector<ActivationBinding> ActivationSchema();
 
-// Builds and returns the scalar grammar.  Crashes the test
-// binary via ABSL_CHECK if `Grammar::Validate()` (L1) fails —
-// the grammar is the spec, an invalid grammar is a programmer
-// error in the catalog file itself.
-Grammar BuildScalarGrammar();
+// Initialise a `GenCtx` with the fuzz activation's bindings
+// pre-populated in `in_scope`.  Lives beside `ActivationSchema`
+// (the data it wraps) so the grammar engine stays catalog-agnostic.
+GenCtx NewGenCtx(int depth, std::mt19937_64& rng);
 
 // Registers the scalar production catalog onto `b` WITHOUT
 // finalising / validating.  Used by `grammar_aggregates.cc` to

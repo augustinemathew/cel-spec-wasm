@@ -13,7 +13,6 @@
 #include "absl/strings/string_view.h"
 #include "cel/expr/value.pb.h"
 #include "compiler/compiler.h"
-#include "e2e/fuzz/generator.h"
 #include "e2e/fuzz/grammar.h"
 #include "e2e/fuzz/grammar_aggregates.h"
 #include "e2e/fuzz/grammar_scalars.h"
@@ -193,7 +192,7 @@ absl::StatusOr<Value> OurEval(absl::string_view source) {
 
 GenAndEvalStatus GenAndEvalFull(const CelType& target, uint64_t seed, int depth,
                                 GenAndEvalResult& out, std::string* error_out) {
-  static const Grammar& grammar = *new Grammar(BuildFullGrammar());
+  static const Grammar& grammar = *new Grammar(BuildGrammar());
 
   std::mt19937_64 rng(seed);
   GenCtx ctx = NewGenCtx(depth, rng);

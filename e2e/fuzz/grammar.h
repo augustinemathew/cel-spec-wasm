@@ -20,6 +20,7 @@
 // §"Grammar validation".
 
 #include <cstdint>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -122,31 +123,32 @@ class GrammarBuilder {
  public:
   // Leaf with zero placeholders — `format` is the literal source.
   // Example: `Leaf(Int(), "int_const_zero", "0")`.
-  GrammarBuilder& Leaf(CelType target, std::string name, std::string format,
-                       int weight = 1);
+  GrammarBuilder& Leaf(const CelType& target, std::string name,
+                       std::string format, int weight = 1);
 
   // 1-arg recursive rule.  `format` must contain `%0`.
-  GrammarBuilder& Unary(CelType target, std::string name, std::string format,
-                        CelType arg0_type, int weight = 1);
+  GrammarBuilder& Unary(const CelType& target, std::string name,
+                        std::string format, CelType arg0_type, int weight = 1);
 
   // 2-arg recursive rule.  `format` must contain `%0` and `%1`.
-  GrammarBuilder& Binary(CelType target, std::string name, std::string format,
-                         CelType arg0_type, CelType arg1_type, int weight = 1);
+  GrammarBuilder& Binary(const CelType& target, std::string name,
+                         std::string format, CelType arg0_type,
+                         CelType arg1_type, int weight = 1);
 
   // 3-arg recursive rule (ternary).  `format` must contain
   // `%0`, `%1`, `%2`.
-  GrammarBuilder& Ternary(CelType target, std::string name, std::string format,
-                          CelType arg0_type, CelType arg1_type,
-                          CelType arg2_type, int weight = 1);
+  GrammarBuilder& Ternary(const CelType& target, std::string name,
+                          std::string format, CelType arg0_type,
+                          CelType arg1_type, CelType arg2_type);
 
   // Comprehension shape — `range_type` for `%0`, `body_type` for
   // `%1` with `(iter.first : iter.second)` added to scope only
   // while `%1` is generated.  Format example:
   // `"(%0).exists(v, %1)"` for `exists`.
-  GrammarBuilder& Comprehension(CelType target, std::string name,
+  GrammarBuilder& Comprehension(const CelType& target, std::string name,
                                 std::string format, CelType range_type,
                                 std::pair<std::string, CelType> iter,
-                                CelType body_type, int weight = 1);
+                                CelType body_type);
 
   // N-arg production with homogeneous arg type — e.g.
   // `Repeated(list<int>, "list_int_lit_5", "[%0, %1, %2, %3, %4]",
@@ -155,8 +157,9 @@ class GrammarBuilder {
   // constructors past the Ternary cap so the catalog can emit
   // larger aggregates without typing each variant by hand.  L1
   // checks placeholder consistency.
-  GrammarBuilder& Repeated(CelType target, std::string name, std::string format,
-                           CelType arg_type, int arity, int weight = 1);
+  GrammarBuilder& Repeated(const CelType& target, std::string name,
+                           std::string format, const CelType& arg_type,
+                           int arity, int weight = 1);
 
   // Finalises and returns the grammar.  Consumes `*this`.
   Grammar Build() &&;
@@ -186,6 +189,40 @@ std::string TypeKey(const CelType& t);
 // quoting — fed straight into `CheckOptions::variable_specs`.
 // Used by L2 to synthesise check-able sources.
 std::string TypeSpec(const CelType& t);
+
+// ── Generation: the type-directed walker over the grammar ───────
+//
+// Picks productions weighted by `Production::weight`, recursing
+// into each declared placeholder's `arg_type`.  Termination is by
+// depth budget: at `depth_budget == 0` only `is_leaf` productions
+// are eligible.
+
+// Per-recursion state, threaded through `GenerateExpr`'s descent.
+struct GenCtx {
+  // Remaining depth.  Decremented by one each recursion; at zero,
+  // only leaf productions are eligible.  Negative values are
+  // treated as zero.
+  int depth_budget;
+
+  // Variables bound in lexical scope at the current recursion
+  // point.  The activation's free variables sit here from the
+  // start (see the catalog's `NewGenCtx`); comprehension
+  // productions push their iter_var only while their body subtree
+  // is being generated.
+  std::vector<std::pair<std::string, CelType>> in_scope;
+
+  // Deterministic RNG.  Driven by a 64-bit seed the caller picks
+  // (the fuzztest property hands in `Arbitrary<uint64_t>`).
+  std::mt19937_64* rng;
+};
+
+// Generate a CEL source string of type `target` against
+// `grammar` using `ctx` for depth/RNG state.  ABSL_CHECKs if the
+// grammar lacks an eligible production (which `Grammar::Validate`
+// should have caught at construction time, so this is an internal
+// invariant violation, not a runtime error).
+std::string GenerateExpr(const Grammar& grammar, const CelType& target,
+                         GenCtx& ctx);
 
 }  // namespace celwasm::fuzz
 

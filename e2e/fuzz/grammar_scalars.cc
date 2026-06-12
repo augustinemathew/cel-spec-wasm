@@ -1,5 +1,6 @@
 #include "e2e/fuzz/grammar_scalars.h"
 
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -560,18 +561,14 @@ void RegisterScalarProductions(GrammarBuilder& b) {
   RegisterConversions(b);
 }
 
-Grammar BuildScalarGrammar() {
-  GrammarBuilder b;
-  RegisterScalarProductions(b);
-  Grammar g = std::move(b).Build();
-  // L1 — Grammar::Validate() must accept the catalog the test
-  // binary just constructed.  If this fires, the catalog has a
-  // structural bug (missing leaf, mismatched placeholder, etc.)
-  // and no PBT iterations should run against it.
-  ABSL_CHECK_OK(g.Validate())
-      << "scalar grammar failed L1 validation; the catalog in "
-         "grammar_scalars.cc is malformed";
-  return g;
+GenCtx NewGenCtx(int depth, std::mt19937_64& rng) {
+  GenCtx ctx;
+  ctx.depth_budget = depth;
+  ctx.rng = &rng;
+  for (const ActivationBinding& v : ActivationSchema()) {
+    ctx.in_scope.emplace_back(v.name, v.type);
+  }
+  return ctx;
 }
 
 }  // namespace celwasm::fuzz

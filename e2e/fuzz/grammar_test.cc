@@ -1,9 +1,18 @@
-// L1 unit tests for `Grammar::Validate()`.  These exercise the
-// static structural checks in isolation, without involving the
-// real cel-cpp parser+checker — L2 will add that in
-// `grammar_test.cc` once `grammar_scalars.cc` lands.  L3
-// (composition spot-checks against the cel-cpp oracle) lands
-// alongside L2.
+// The grammar's validation ladder, over THE grammar
+// (`BuildGrammar()` — scalars + aggregates, the one the drivers
+// mine):
+//
+//   L1 — `Grammar::Validate()` structural checks (unit-tested in
+//        isolation on synthetic mini-grammars below).
+//   L2 — every registered production individually parses and
+//        type-checks as its declared target against the REAL
+//        cel-cpp parser+checker.
+//   L3 — sampled compositions through `GenerateExpr` (the same
+//        walker the oracle property and the miner drive) parse and
+//        type-check at depths {1, 3, 6}.
+//
+// Plus unit coverage for `GenerateExpr` itself (determinism, depth
+// budget, per-target reachability).
 
 #include "e2e/fuzz/grammar.h"
 
@@ -210,31 +219,33 @@ TEST(GrammarValidateTest, NegativeWeightRejected) {
                                      ::testing::HasSubstr("negative weight")));
 }
 
-// ── Scalar catalog: L1 self-consistency ─────────────────────────
+// ── The catalog: L1 self-consistency ────────────────────────────
 
-TEST(ScalarGrammarTest, BuildsAndPassesL1Validation) {
-  // `BuildScalarGrammar()` ABSL_CHECKs internally if L1 fails — so
+TEST(GrammarCatalogTest, BuildsAndPassesL1Validation) {
+  // `BuildGrammar()` ABSL_CHECKs internally if L1 fails — so
   // reaching this point is itself the assertion.  We also check
-  // a couple of structural properties to detect catalog-skew.
-  Grammar g = BuildScalarGrammar();
+  // structural properties to detect catalog-skew.
+  Grammar g = BuildGrammar();
   EXPECT_THAT(g.Validate(), IsOk());
-  // Every supported scalar target must have at least one
-  // production registered.
+  // Every scalar target, and list<T> for every scalar T, must have
+  // at least one production registered.
   for (const CelType& t :
        {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
         CelType::String(), CelType::Bytes()}) {
-    EXPECT_TRUE(g.HasType(t))
-        << "scalar catalog is missing target " << TypeKey(t);
+    EXPECT_TRUE(g.HasType(t)) << "catalog is missing target " << TypeKey(t);
     EXPECT_FALSE(g.Rules(t).empty()) << TypeKey(t);
+    EXPECT_TRUE(g.HasType(CelType::List(t)))
+        << "catalog is missing list<" << TypeKey(t) << ">";
+    EXPECT_FALSE(g.Rules(CelType::List(t)).empty());
   }
   // Catalog size sanity check — catches accidental wholesale
-  // deletions.  Bump as the catalog grows; sub-50 means we
-  // dropped a category by accident.
-  EXPECT_GE(g.TotalProductions(), 50u);
+  // deletions.  Bump as the catalog grows; a drop below means we
+  // lost a category by accident.
+  EXPECT_GT(g.TotalProductions(), 130u);
 }
 
-TEST(ScalarGrammarTest, EveryActivationBindingHasIdentLeaf) {
-  Grammar g = BuildScalarGrammar();
+TEST(GrammarCatalogTest, EveryActivationBindingHasIdentLeaf) {
+  Grammar g = BuildGrammar();
   for (const ActivationBinding& v : ActivationSchema()) {
     const auto& rules = g.Rules(v.type);
     bool found = false;
@@ -339,8 +350,8 @@ std::vector<std::string> BuildVariableSpecs(
 
 }  // namespace l2
 
-TEST(ScalarGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
-  Grammar g = BuildScalarGrammar();
+TEST(GrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
+  Grammar g = BuildGrammar();
   std::size_t productions_checked = 0;
   for (const CelType& target : g.Types()) {
     const Repr expected = l2::ExpectedRoot(target);
@@ -375,104 +386,22 @@ TEST(ScalarGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
     }
   }
   // Sanity: we actually iterated the whole catalog.
-  EXPECT_GE(productions_checked, 50u);
+  EXPECT_GT(productions_checked, 130u);
 }
 
 // ── L3 — sampled composition check at varying depths ────────────
 //
-// The walker below is a deliberately-minimal implementation of
-// the type-directed recursion described in m27 §"The data model".
-// The real generator (the seeded grammar walker)
-// will live in `generator.{h,cc}` with a richer API
-// (fuzztest Domain, weighting hooks, shrinker support, etc.); we
-// inline a tiny version here just so L3 can assert composition
-// correctness BEFORE step 4 lands.  If this walker disagrees with
-// the eventual generator, the production-level invariants L3
-// pins still hold because both walk the same grammar.
+// Walks THE generator (`GenerateExpr` — the same walker the
+// oracle property and the miner drive) and asserts every composed
+// source parses and types as the declared target against the real
+// cel-cpp checker.
 
-namespace l3 {
+TEST(GrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
+  Grammar g = BuildGrammar();
 
-// Per-recursion context.  Threaded through `Walk`; mirrors the
-// `GenCtx` the future generator will use.
-struct WalkCtx {
-  int depth_budget;
-  // in_scope: name → type.  the scalar leaves draw idents only
-  // from the fixed activation, so the only entries that ever land
-  // here are the comprehension-bound iter_vars (which the scalar catalog
-  // doesn't have).  Kept for shape-parity with `GenCtx`.
-  std::vector<std::pair<std::string, CelType>> in_scope;
-  std::mt19937_64* rng;
-};
-
-// Pick a production from `rules` honouring `is_leaf` filtering at
-// depth 0 and `weight` for sampling.  Returns nullptr only if the
-// rule set has no eligible production at the current depth — the
-// caller must ASSERT that doesn't happen (it would be a grammar
-// bug L1 should have caught).
-const Production* PickProduction(const std::vector<Production>& rules,
-                                 bool require_leaf, std::mt19937_64& rng) {
-  int total_weight = 0;
-  for (const Production& p : rules) {
-    if (require_leaf && !p.is_leaf) continue;
-    if (p.weight <= 0) continue;
-    total_weight += p.weight;
-  }
-  if (total_weight == 0) return nullptr;
-  std::uniform_int_distribution<int> dist(0, total_weight - 1);
-  int pick = dist(rng);
-  for (const Production& p : rules) {
-    if (require_leaf && !p.is_leaf) continue;
-    if (p.weight <= 0) continue;
-    pick -= p.weight;
-    if (pick < 0) return &p;
-  }
-  return nullptr;  // unreachable
-}
-
-std::string Walk(const Grammar& g, const CelType& target, WalkCtx& ctx);
-
-// Substitute `%i` in `format` with the result of recursively
-// walking each arg type, threading `extra_scope_for_arg[i]` into
-// scope only for that recursion.
-std::string ExpandTemplate(const Grammar& g, const Production& p,
-                           WalkCtx& ctx) {
-  std::string out = p.format;
-  for (std::size_t i = 0; i < p.arg_types.size(); ++i) {
-    WalkCtx sub = ctx;
-    sub.depth_budget--;
-    for (const auto& [n, t] : p.extra_scope_for_arg[i]) {
-      sub.in_scope.emplace_back(n, t);
-    }
-    const std::string arg = Walk(g, p.arg_types[i], sub);
-    out = absl::StrReplaceAll(out, {{absl::StrCat("%", i), arg}});
-  }
-  return out;
-}
-
-std::string Walk(const Grammar& g, const CelType& target, WalkCtx& ctx) {
-  const auto& rules = g.Rules(target);
-  const Production* p =
-      PickProduction(rules, /*require_leaf=*/ctx.depth_budget == 0, *ctx.rng);
-  // Falls back to any leaf if the depth-0 require_leaf filter found
-  // nothing usable — shouldn't happen post-L1, but defensive.
-  if (p == nullptr) {
-    p = PickProduction(rules, /*require_leaf=*/true, *ctx.rng);
-  }
-  if (p == nullptr) return "/*l3-walker: no production*/";
-  if (p->arg_types.empty()) {
-    return p->format;
-  }
-  return ExpandTemplate(g, *p, ctx);
-}
-
-}  // namespace l3
-
-TEST(ScalarGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
-  Grammar g = BuildScalarGrammar();
-
-  // The activation idents are the only idents the scalar catalog can emit;
-  // declare them once.  No synthesised slot vars needed because
-  // L3 generates self-contained source (no `%i` left over).
+  // The activation idents are the only free idents the catalog can
+  // emit; declare them once.  No synthesised slot vars needed
+  // because L3 generates self-contained source (no `%i` left over).
   CheckOptions opts;
   for (const ActivationBinding& v : ActivationSchema()) {
     opts.variable_specs.push_back(absl::StrCat(v.name, ":", TypeSpec(v.type)));
@@ -486,8 +415,8 @@ TEST(ScalarGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
     for (int seed = 0; seed < kSeedsPerDepth; ++seed) {
       std::mt19937_64 rng((static_cast<uint64_t>(seed) * 1000u) +
                           static_cast<uint64_t>(depth));
-      l3::WalkCtx ctx{depth, {}, &rng};
-      const std::string source = l3::Walk(g, CelType::Bool(), ctx);
+      GenCtx ctx = NewGenCtx(depth, rng);
+      const std::string source = GenerateExpr(g, CelType::Bool(), ctx);
 
       auto ta = ParseAndCheck(source, opts);
       ASSERT_THAT(ta, IsOk()) << "L3 depth=" << depth << " seed=" << seed
@@ -511,39 +440,87 @@ TEST(ScalarGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
   EXPECT_EQ(total_sampled, kSeedsPerDepth * 3);
 }
 
-// ── Aggregate catalog: L1 / catalog-shape / L2 / L3 ────────────────
-//
-// The aggregate catalog extends the grammar with aggregates (list / map
-// literals) and comprehension macros.  Reuses the L2 / L3
-// helpers above by passing the slice-C grammar instead of B.
-// Per m27 §"Grammar validation", the three validation layers
-// must be green BEFORE any oracle iteration runs against the
-// expanded grammar; that's what these tests guard.
+// ── GenerateExpr unit coverage (determinism, depth, targets) ─────
 
-TEST(AggregateGrammarTest, BuildsAndPassesL1Validation) {
-  Grammar g = BuildFullGrammar();
-  EXPECT_THAT(g.Validate(), IsOk());
-  // C1 must register list<T> for every scalar T and a sampled
-  // K×V map vocab.
-  for (const CelType& elt :
-       {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
-        CelType::String(), CelType::Bytes()}) {
-    EXPECT_TRUE(g.HasType(CelType::List(elt)))
-        << "aggregate catalog is missing list<" << TypeKey(elt) << ">";
-    EXPECT_FALSE(g.Rules(CelType::List(elt)).empty());
+TEST(GenerateExprTest, DepthZeroAlwaysProducesAValidLeafSource) {
+  Grammar g = BuildGrammar();
+  CheckOptions opts;
+  for (const ActivationBinding& v : ActivationSchema()) {
+    opts.variable_specs.push_back(absl::StrCat(v.name, ":", TypeSpec(v.type)));
   }
-  // Aggregates grow the catalog substantially — roughly the scalar
-  // B count plus aggregates + comprehensions.  Lower-bound the
-  // total to catch accidental wholesale deletions.
-  EXPECT_GT(g.TotalProductions(), 130u);
+
+  for (uint64_t seed = 0; seed < 64; ++seed) {
+    std::mt19937_64 rng(seed);
+    GenCtx ctx = NewGenCtx(/*depth=*/0, rng);
+    const std::string source = GenerateExpr(g, CelType::Bool(), ctx);
+
+    auto ta = ParseAndCheck(source, opts);
+    ASSERT_THAT(ta, IsOk())
+        << "depth-0 seed=" << seed << " source=`" << source << "`";
+
+    // Root must annotate as Bool.
+    const int64_t root_id = ta->ast().root_expr().id();
+    const NodeAnnotation* ann = ta->annotations().Find(root_id);
+    ASSERT_NE(ann, nullptr);
+    EXPECT_EQ(ann->repr, Repr::kBool) << source;
+  }
 }
 
-TEST(AggregateGrammarTest, EveryListAndMapHasALeaf) {
+TEST(GenerateExprTest, DeterministicForFixedSeed) {
+  Grammar g = BuildGrammar();
+  // Constant seeds are the POINT here — the test asserts the
+  // generator is a pure function of (seed, depth).
+  // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+  std::mt19937_64 rng_a(42);
+  // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+  std::mt19937_64 rng_b(42);
+  GenCtx ctx_a = NewGenCtx(4, rng_a);
+  GenCtx ctx_b = NewGenCtx(4, rng_b);
+  EXPECT_EQ(GenerateExpr(g, CelType::Bool(), ctx_a),
+            GenerateExpr(g, CelType::Bool(), ctx_b));
+}
+
+TEST(GenerateExprTest, DifferentSeedsProduceDifferentSources) {
+  // Stochastic — extremely unlikely for two different 64-bit
+  // seeds at depth=6 to produce identical sources, but the
+  // assertion guards against accidental seed-ignoring.
+  Grammar g = BuildGrammar();
+  // Distinct constant seeds, deliberately — see comment above.
+  // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+  std::mt19937_64 rng_a(1);
+  // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+  std::mt19937_64 rng_b(2);
+  GenCtx ctx_a = NewGenCtx(6, rng_a);
+  GenCtx ctx_b = NewGenCtx(6, rng_b);
+  EXPECT_NE(GenerateExpr(g, CelType::Bool(), ctx_a),
+            GenerateExpr(g, CelType::Bool(), ctx_b));
+}
+
+TEST(GenerateExprTest, DepthBudgetActuallyBoundsRecursion) {
+  // A depth-1 expression must have at most one level of operator
+  // wrapping above a leaf — so its source can't be insanely long.
+  // This catches the regression where the walker forgets to
+  // decrement the budget.  (Bound sized for the full grammar's
+  // widest leaf + one ternary wrap.)
+  Grammar g = BuildGrammar();
+  for (uint64_t seed = 0; seed < 16; ++seed) {
+    std::mt19937_64 rng(seed);
+    GenCtx ctx = NewGenCtx(/*depth=*/1, rng);
+    const std::string source = GenerateExpr(g, CelType::Bool(), ctx);
+    EXPECT_LT(source.size(), 400u)
+        << "depth-1 source was " << source.size()
+        << " chars, suggesting the depth budget isn't being "
+           "honoured. source=`"
+        << source << "`";
+  }
+}
+
+TEST(GrammarCatalogTest, EveryListAndMapHasALeaf) {
   // L1 already checks this generically; this test re-states the
   // invariant for the new aggregate targets so a future catalog
   // edit that drops the literal-only leaf gets a focused
   // failure message.
-  Grammar g = BuildFullGrammar();
+  Grammar g = BuildGrammar();
   for (const CelType& elt :
        {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::Double(),
         CelType::String(), CelType::Bytes()}) {
@@ -557,78 +534,6 @@ TEST(AggregateGrammarTest, EveryListAndMapHasALeaf) {
     EXPECT_TRUE(has_leaf) << "list<" << TypeKey(elt)
                           << "> has no leaf production";
   }
-}
-
-TEST(AggregateGrammarL2Test, EveryProductionParsesAndTypesAsDeclared) {
-  Grammar g = BuildFullGrammar();
-  std::size_t productions_checked = 0;
-  for (const CelType& target : g.Types()) {
-    // `ExpectedRoot` covers scalar AND aggregate targets (the
-    // annotator stamps an aggregate root with Repr::kList /
-    // kMap), so every registered target gets the Repr equality
-    // assertion.
-    const Repr expected_scalar = l2::ExpectedRoot(target);
-    for (const Production& p : g.Rules(target)) {
-      const auto synth = l2::Synthesise(p);
-      CheckOptions opts;
-      opts.variable_specs = l2::BuildVariableSpecs(synth.slot_vars);
-
-      auto ta = ParseAndCheck(synth.source, opts);
-      ASSERT_THAT(ta, IsOk())
-          << "aggregate production `" << p.name << "` (target "
-          << TypeKey(target) << "): source `" << synth.source
-          << "` failed ParseAndCheck";
-
-      if (expected_scalar != Repr::kUnknown) {
-        const int64_t root_id = ta->ast().root_expr().id();
-        const NodeAnnotation* root_ann = ta->annotations().Find(root_id);
-        ASSERT_NE(root_ann, nullptr);
-        EXPECT_EQ(root_ann->repr, expected_scalar)
-            << "aggregate production `" << p.name << "` (source `"
-            << synth.source << "`): declared target " << TypeKey(target)
-            << " (expects scalar Repr=" << static_cast<int>(expected_scalar)
-            << "), but cel-cpp stamped Repr="
-            << static_cast<int>(root_ann->repr);
-      }
-      ++productions_checked;
-    }
-  }
-  EXPECT_GT(productions_checked, 130u);
-}
-
-TEST(AggregateGrammarL3Test, SampledCompositionsParseAndTypeAsBool) {
-  Grammar g = BuildFullGrammar();
-  CheckOptions opts;
-  for (const ActivationBinding& v : ActivationSchema()) {
-    opts.variable_specs.push_back(absl::StrCat(v.name, ":", TypeSpec(v.type)));
-  }
-
-  constexpr int kSeedsPerDepth = 200;
-  constexpr int kDepths[] = {1, 3, 6};
-  int total_sampled = 0;
-  for (int depth : kDepths) {
-    for (int seed = 0; seed < kSeedsPerDepth; ++seed) {
-      std::mt19937_64 rng(0xC0FFEEull ^ (static_cast<uint64_t>(seed) << 8) ^
-                          static_cast<uint64_t>(depth));
-      l3::WalkCtx ctx{depth, {}, &rng};
-      const std::string source = l3::Walk(g, CelType::Bool(), ctx);
-
-      auto ta = ParseAndCheck(source, opts);
-      ASSERT_THAT(ta, IsOk())
-          << "aggregate L3 depth=" << depth << " seed=" << seed
-          << ": composed source `" << source << "` failed ParseAndCheck";
-
-      const int64_t root_id = ta->ast().root_expr().id();
-      const NodeAnnotation* root_ann = ta->annotations().Find(root_id);
-      ASSERT_NE(root_ann, nullptr);
-      EXPECT_EQ(root_ann->repr, Repr::kBool)
-          << "aggregate L3 depth=" << depth << " seed=" << seed
-          << ": expected Bool, got Repr=" << static_cast<int>(root_ann->repr)
-          << " on source `" << source << "`";
-      ++total_sampled;
-    }
-  }
-  EXPECT_EQ(total_sampled, kSeedsPerDepth * 3);
 }
 
 }  // namespace

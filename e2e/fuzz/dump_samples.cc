@@ -10,14 +10,14 @@
 #include <string>
 
 #include "absl/strings/string_view.h"
-#include "e2e/fuzz/generator.h"
 #include "e2e/fuzz/grammar.h"
 #include "e2e/fuzz/grammar_aggregates.h"
+#include "e2e/fuzz/grammar_scalars.h"
 #include "e2e/fuzz/targets.h"
 #include "shared/type.h"
 
 using celwasm::CelType;
-using celwasm::fuzz::BuildFullGrammar;
+using celwasm::fuzz::BuildGrammar;
 using celwasm::fuzz::GenCtx;
 using celwasm::fuzz::GenerateExpr;
 using celwasm::fuzz::Grammar;
@@ -45,7 +45,7 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   const int depth = static_cast<int>(std::strtol(argv[2], nullptr, 10));
   const int count = static_cast<int>(std::strtol(argv[3], nullptr, 10));
 
-  const Grammar g = BuildFullGrammar();
+  const Grammar g = BuildGrammar();
   for (int seed = 1; seed <= count; ++seed) {
     std::mt19937_64 rng(static_cast<uint64_t>(seed));
     GenCtx ctx = NewGenCtx(depth, rng);

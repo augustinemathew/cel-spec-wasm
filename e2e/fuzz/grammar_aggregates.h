@@ -25,7 +25,7 @@
 // fixture pins specific bounds.
 //
 // L1 / L2 / L3 are extended in `grammar_test.cc` to run against
-// `BuildFullGrammar` before the oracle property fires any
+// `BuildGrammar` before the oracle property fires any
 // iteration.  See m27 §"Grammar validation" for the
 // discipline.
 
@@ -44,7 +44,7 @@ namespace celwasm::fuzz {
 // constructors, the size / in operators, and the comprehension
 // macros.  ABSL_CHECKs internally if `Grammar::Validate` (L1)
 // rejects the catalog.
-Grammar BuildFullGrammar();
+Grammar BuildGrammar();
 
 }  // namespace celwasm::fuzz
 

@@ -305,7 +305,7 @@ void RegisterNestedAggregates(GrammarBuilder& b) {
 
 }  // namespace
 
-Grammar BuildFullGrammar() {
+Grammar BuildGrammar() {
   GrammarBuilder b;
 
   // Layer the scalar productions first so the full grammar is a

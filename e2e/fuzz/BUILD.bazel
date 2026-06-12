@@ -9,9 +9,9 @@ cc_binary(
     srcs = ["dump_samples.cc"],
     tags = ["manual"],
     deps = [
-        ":generator",
         ":grammar",
         ":grammar_aggregates",
+        ":grammar_scalars",
         ":targets",
         "//shared:type",
         "@com_google_absl//absl/strings:string_view",
@@ -36,11 +36,9 @@ cc_test(
     ],
 )
 
-# Typed attribute grammar — the data model for the CEL source
-# generator.  See `doc/implementation-plan/rewrite/m27-pbt-cel-
-# generator.md` §"The data model".  No fuzztest dep — the grammar
-# is plain data that grammar_test (L1) and the future generator
-# / property layers consume.
+# The engine: the typed-attribute grammar data model (Production /
+# GrammarBuilder / Validate) AND the type-directed walker
+# (GenCtx / GenerateExpr) that generates source from it.
 cc_library(
     name = "grammar",
     srcs = ["grammar.cc"],
@@ -48,14 +46,15 @@ cc_library(
     deps = [
         "//shared:type",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
     ],
 )
 
-# Slice B catalog — scalar-only typed-attribute grammar.  See
-# `grammar_scalars.h` for the activation + production list.
+# Scalar catalog — bool/int/uint/double/string/bytes productions +
+# the activation schema + NewGenCtx.  See `grammar_scalars.h`.
 cc_library(
     name = "grammar_scalars",
     srcs = ["grammar_scalars.cc"],
@@ -67,10 +66,9 @@ cc_library(
     ],
 )
 
-# Slice C catalog — Slice B + list / map literals, size, _in_,
-# comprehension macros over scalar lists and maps.
-# kStructExpr / kSelectExpr / has() / Customer activation are
-# deferred to Slice C2.  See `grammar_aggregates.h`.
+# Aggregate catalog — list / map literals, size, _in_,
+# comprehension macros over scalar lists and maps; composes the
+# scalar catalog into BuildGrammar().  See `grammar_aggregates.h`.
 cc_library(
     name = "grammar_aggregates",
     srcs = ["grammar_aggregates.cc"],
@@ -81,40 +79,6 @@ cc_library(
         "//shared:type",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
-    ],
-)
-
-# Type-directed CEL source generator.  Walks a Grammar honouring
-# depth budget + leaf eligibility + per-production weights.
-cc_library(
-    name = "generator",
-    srcs = ["generator.cc"],
-    hdrs = ["generator.h"],
-    deps = [
-        ":grammar",
-        ":grammar_scalars",
-        "//shared:type",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/strings",
-    ],
-)
-
-cc_test(
-    name = "generator_test",
-    size = "small",
-    srcs = ["generator_test.cc"],
-    deps = [
-        ":generator",
-        ":grammar",
-        ":grammar_scalars",
-        "//compiler/frontend:parse_and_check",
-        "//compiler/ir:annotations",
-        "//compiler/ir:typed_ast",
-        "//shared:type",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -131,9 +95,9 @@ cc_library(
     srcs = ["oracle_harness.cc"],
     hdrs = ["oracle_harness.h"],
     deps = [
-        ":generator",
         ":grammar",
         ":grammar_aggregates",
+        ":grammar_scalars",
         "//compiler:compiler",
         "//eval:activation",
         "//eval:engine",
@@ -149,13 +113,6 @@ cc_library(
     ],
 )
 
-# Loop-driven divergence miner.  Walks sequential seeds for one
-# target type, prints each oracle divergence it finds along with
-# the source / ours / oracle values.  Use when fuzztest's
-# unit-test mode buffers the EXPECT_EQ output and the message
-# never reaches the test log.  Run as `bazel run //e2e/fuzz:
-# mine_divergences -- <target> <max_seeds> <depth> [stop_after]`.
-# Recursive type-driven ours-vs-oracle value comparison (scalars,
 # Single source of truth for the mineable target set (CLI name ->
 # CelType).  mine_divergences + dump_samples both derive their
 # `ParseTarget` from this so the two CLIs (and the scripts/fuzz.sh
