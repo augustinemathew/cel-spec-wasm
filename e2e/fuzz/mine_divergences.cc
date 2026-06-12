@@ -17,14 +17,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string>
-#include <utility>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "cel/expr/value.pb.h"
 #include "e2e/fuzz/compare.h"
 #include "e2e/fuzz/oracle_harness.h"
+#include "e2e/fuzz/targets.h"
 #include "eval/value.h"
 #include "shared/type.h"
 
@@ -37,29 +38,13 @@ using ::celwasm::fuzz::GenAndEvalStatus;
 
 namespace {
 
-CelType ParseTarget(absl::string_view s) {
-  const CelType i = CelType::Int();
-  const CelType str = CelType::String();
-  const std::pair<absl::string_view, CelType> table[] = {
-      {"bool", CelType::Bool()},
-      {"int", i},
-      {"uint", CelType::Uint()},
-      {"double", CelType::Double()},
-      {"string", str},
-      {"bytes", CelType::Bytes()},
-      {"list_int", CelType::List(i)},
-      {"list_bool", CelType::List(CelType::Bool())},
-      {"list_double", CelType::List(CelType::Double())},
-      {"list_string", CelType::List(str)},
-      {"map_string_int", CelType::Map(str, i)},
-      {"list_list_int", CelType::List(CelType::List(i))},
-      {"map_string_list_int", CelType::Map(str, CelType::List(i))},
-  };
-  for (const auto& [name, type] : table) {
-    if (s == name) return type;
+CelType ParseTargetOrDie(absl::string_view s) {
+  std::optional<CelType> t = celwasm::fuzz::ParseTarget(s);
+  if (!t.has_value()) {
+    std::cerr << "unknown target `" << s << "`\n";
+    std::exit(2);
   }
-  std::cerr << "unknown target `" << s << "`\n";
-  std::exit(2);
+  return *t;
 }
 
 // Returns true on divergence (printed to stdout); false otherwise.
@@ -170,22 +155,17 @@ int RunMine(absl::string_view target_str, const CelType& target,
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   if (argc < 4 || argc > 5) {
     std::cerr << "usage: " << argv[0]
               << " <target> <max_seeds> <depth> [stop_after=5]\n";
     return 1;
   }
-  try {
-    const absl::string_view target_str = argv[1];
-    const CelType target = ParseTarget(target_str);
-    const uint64_t max_seeds = std::strtoull(argv[2], nullptr, 10);
-    const int depth = static_cast<int>(std::strtol(argv[3], nullptr, 10));
-    const int stop_after =
-        (argc == 5) ? static_cast<int>(std::strtol(argv[4], nullptr, 10)) : 5;
-    return RunMine(target_str, target, max_seeds, depth, stop_after);
-  } catch (const std::exception& e) {
-    std::cerr << "fatal: " << e.what() << "\n";
-    return 3;
-  }
+  const absl::string_view target_str = argv[1];
+  const CelType target = ParseTargetOrDie(target_str);
+  const uint64_t max_seeds = std::strtoull(argv[2], nullptr, 10);
+  const int depth = static_cast<int>(std::strtol(argv[3], nullptr, 10));
+  const int stop_after =
+      (argc == 5) ? static_cast<int>(std::strtol(argv[4], nullptr, 10)) : 5;
+  return RunMine(target_str, target, max_seeds, depth, stop_after);
 }

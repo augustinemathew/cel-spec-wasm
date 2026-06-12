@@ -12,6 +12,7 @@ cc_binary(
         ":generator",
         ":grammar",
         ":grammar_aggregates",
+        ":targets",
         "//shared:type",
         "@com_google_absl//absl/strings:string_view",
     ],
@@ -155,6 +156,33 @@ cc_library(
 # never reaches the test log.  Run as `bazel run //e2e/fuzz:
 # mine_divergences -- <target> <max_seeds> <depth> [stop_after]`.
 # Recursive type-driven ours-vs-oracle value comparison (scalars,
+# Single source of truth for the mineable target set (CLI name ->
+# CelType).  mine_divergences + dump_samples both derive their
+# `ParseTarget` from this so the two CLIs (and the scripts/fuzz.sh
+# sweep list) cannot drift; targets_test pins the canonical list.
+cc_library(
+    name = "targets",
+    srcs = ["targets.cc"],
+    hdrs = ["targets.h"],
+    deps = [
+        "//shared:type",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "targets_test",
+    size = "small",
+    srcs = ["targets_test.cc"],
+    deps = [
+        ":targets",
+        "//shared:type",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # lists, maps, nested) + printable renders for divergence logs.
 cc_library(
     name = "compare",
@@ -191,6 +219,7 @@ cc_binary(
     deps = [
         ":compare",
         ":oracle_harness",
+        ":targets",
         "//eval:value",
         "//shared:type",
         "@com_google_absl//absl/strings",

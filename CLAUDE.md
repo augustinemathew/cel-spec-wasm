@@ -139,6 +139,18 @@ reference — when in doubt, copy its conventions verbatim.  In particular:
     `absl::StatusOr`.
   - No raw `new` / `delete`.  Use `std::unique_ptr`, `std::make_unique`, or
     `google::protobuf::Arena` for checker-owned types.
+  - **No C++ exceptions.**  Per the [Google C++ Style Guide]
+    (https://google.github.io/styleguide/cppguide.html#Exceptions), we
+    do not use exceptions: never `throw`, never `try` / `catch`, never
+    add an exception-only header (`<exception>`, `<stdexcept>`).  Fallible
+    APIs return `absl::Status` / `absl::StatusOr<T>`; programmer-error
+    invariants use `ABSL_CHECK` (which aborts, it does not throw).  STL
+    operations that can in principle throw `std::bad_alloc` are treated
+    as process-fatal — we never catch them.  The single allowed
+    accommodation is on a `cc_binary` `main`, where clang-tidy's
+    `bugprone-exception-escape` is silenced with a trailing
+    `// NOLINT(bugprone-exception-escape)` (see `tools/cel/cel.cc`); this
+    is NOT a license to write `try` / `catch` in the body.
   - One logical unit per translation unit; BUILD targets are granular
     (`cc_library` per header).
   - Close namespaces with `}  // namespace celwasm`.

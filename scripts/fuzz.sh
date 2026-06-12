@@ -28,7 +28,9 @@ DUMP=//e2e/fuzz:dump_samples
 BIN_MINER=bazel-bin/e2e/fuzz/mine_divergences
 BIN_DUMP=bazel-bin/e2e/fuzz/dump_samples
 
-# Every mineable target (must match ParseTarget in mine_divergences.cc).
+# Every mineable target.  Source of truth: AllTargets() in
+# e2e/fuzz/targets.cc (pinned by //e2e/fuzz:targets_test).  Keep this
+# list in sync with that test's canonical expectation.
 ALL_TARGETS=(
   bool int uint double string bytes
   list_int list_bool list_double list_string
