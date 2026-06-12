@@ -40,6 +40,21 @@ export {
   type ScopeDecision,
 } from './classify.js';
 export {
+  featureBreakdown,
+  fileStats,
+  fileCategoryCells,
+  reasonGroups,
+  normalizeReason,
+  isFixable,
+  renderFileStats,
+  renderReasonGroups,
+  OUT_OF_SCOPE_CATEGORIES,
+  type FeatureBreakdown,
+  type FileStats,
+  type FileCategoryCell,
+  type ReasonGroup,
+} from './breakdown.js';
+export {
   parseTextproto,
   TextprotoParseError,
   type TextprotoMessage,

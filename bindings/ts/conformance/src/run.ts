@@ -16,6 +16,11 @@ import { fileURLToPath } from 'node:url';
 
 import { checkBaseline, updateBaseline } from './baseline.js';
 import {
+  featureBreakdown,
+  renderFileStats,
+  renderReasonGroups,
+} from './breakdown.js';
+import {
   runCorpus,
   skipBreakdown,
   summaryLine,
@@ -43,11 +48,13 @@ interface CliOptions {
   readonly update: boolean;
   readonly files: readonly string[] | undefined;
   readonly verbose: boolean;
+  readonly breakdown: boolean;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
   let update = false;
   let verbose = false;
+  let breakdown = false;
   let files: readonly string[] | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -55,6 +62,8 @@ function parseArgs(argv: readonly string[]): CliOptions {
       update = true;
     } else if (arg === '--verbose' || arg === '-v') {
       verbose = true;
+    } else if (arg === '--breakdown') {
+      breakdown = true;
     } else if (arg === '--files') {
       const next = argv[i + 1];
       if (next !== undefined) {
@@ -63,7 +72,17 @@ function parseArgs(argv: readonly string[]): CliOptions {
       }
     }
   }
-  return { update, files, verbose };
+  return { update, files, verbose, breakdown };
+}
+
+// Render the per-feature breakdown (per-file table + ranked reason groups)
+// to stdout.  Driven off the per-row stream collected during the run.
+function printFeatureBreakdown(rows: readonly TaggedResult[]): void {
+  const bd = featureBreakdown(rows);
+  process.stdout.write('\n=== per-file table ===\n');
+  process.stdout.write(`${renderFileStats(bd.byFile)}\n`);
+  process.stdout.write('\n=== skip-reason groups (ranked) ===\n');
+  process.stdout.write(`${renderReasonGroups(bd.reasonGroups)}\n`);
 }
 
 function printFailures(report: ConformanceReport): void {
@@ -84,8 +103,12 @@ async function main(): Promise<number> {
   const opts = parseArgs(process.argv.slice(2));
 
   let done = 0;
+  const collected: TaggedResult[] = [];
   const onRow = (tagged: TaggedResult): void => {
     done += 1;
+    if (opts.breakdown) {
+      collected.push(tagged);
+    }
     if (opts.verbose && tagged.result.outcome === 'fail') {
       process.stderr.write(
         `FAIL ${tagged.file}/${tagged.name}: ${tagged.result.detail}\n`,
@@ -109,6 +132,9 @@ async function main(): Promise<number> {
     process.stdout.write(`skip breakdown:\n${breakdown}\n`);
   }
   printFailures(report);
+  if (opts.breakdown) {
+    printFeatureBreakdown(collected);
+  }
 
   const paths = { baseline: BASELINE_PATH, maxFail: MAX_FAIL_PATH };
   if (opts.update) {
