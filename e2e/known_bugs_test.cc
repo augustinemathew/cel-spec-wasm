@@ -1176,5 +1176,25 @@ TEST(KnownBugs, PbtSubstringEndEqualsSizeOverPermissive) {
       << (v.ok() ? "a value" : v.status().ToString());
 }
 
+// PBT int (M30 INT64_MIN leaf, 2026-06-11) — FIXED.  `INT64_MIN % -1`
+// returned 0 in our runtime (cel_int_mod_at_vv) on a wrong "cel-cpp
+// returns 0" assumption; cel-cpp ERRORS with integer overflow
+// (CheckedMod, third_party/cel-cpp/internal/overflow.cc — the implied
+// division INT64_MIN/-1 overflows).  Oracle-confirmed when the exact
+// INT64_MIN leaf was added to the differential grammar.  Fixed to
+// poison CEL_ERR_OVERFLOW, mirroring divide.  Live regression below;
+// kernel-level pin in runtime/cel_arith_test.cc::IntModIntMinByNegOne-
+// Poisons.
+TEST(KnownBugs, PbtModuloInt64MinByNegOneOverflows) {
+  // The overflow surfaces as a CEL error VALUE (3VL kError), not a
+  // failed status — eval succeeds, the result is an error.
+  auto v = TryEval(R"((-9223372036854775807 - 1) % (-1))");
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(v->IsError())
+      << "INT64_MIN % -1 should be an overflow error (matching cel-cpp), got "
+         "value kind "
+      << static_cast<int>(v->kind());
+}
+
 }  // namespace
 }  // namespace celwasm

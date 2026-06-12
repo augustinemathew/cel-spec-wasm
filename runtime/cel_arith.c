@@ -152,10 +152,13 @@ void cel_int_mod_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
     poison(out, CEL_ERR_MODULUS_BY_ZERO);
     return;
   }
-  // INT64_MIN % -1 is undefined behaviour in C; cel-cpp returns 0
-  // for this case explicitly (the mathematically-correct result).
+  // INT64_MIN % -1 is undefined behaviour in C (the implied division
+  // overflows).  cel-cpp treats it as an integer-overflow ERROR, not 0:
+  // CheckedMod errors on `x == INT64_MIN && y == -1` before computing
+  // (third_party/cel-cpp/internal/overflow.cc CheckedMod).  Mirror the
+  // divide case above.
   if (a->payload.i == INT64_MIN && b->payload.i == -1) {
-    write_int(out, 0);
+    poison(out, CEL_ERR_OVERFLOW);
     return;
   }
   write_int(out, a->payload.i % b->payload.i);

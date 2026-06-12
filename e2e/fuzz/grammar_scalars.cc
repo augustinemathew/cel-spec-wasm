@@ -76,6 +76,13 @@ void RegisterNumericLeaves(GrammarBuilder& b) {
   b.Leaf(CelType::Int(), "int_seven", "7");
   b.Leaf(CelType::Int(), "int_max", "9223372036854775807");
   b.Leaf(CelType::Int(), "int_neg_max", "(-9223372036854775807)");
+  // Exact INT64_MIN — can't be a plain literal (the magnitude
+  // 9223372036854775808 overflows int64 at parse time), so build it by
+  // subtraction.  This is the two's-complement asymmetry boundary:
+  // negate / abs / `* -1` / `/ -1` / `% -1` / `- 1` all overflow here,
+  // and cel-cpp errors on each — both-error agreement (mining
+  // surfaced the one case we got wrong, `% -1`, now fixed).
+  b.Leaf(CelType::Int(), "int_min", "(-9223372036854775807 - 1)");
   // 2^53 ± 1 — the largest ints a double can hold exactly; the
   // lossy int↔double boundary (cf. KnownBugs.MapKeyLossyDoubleEquality).
   b.Leaf(CelType::Int(), "int_2p53", "9007199254740992");

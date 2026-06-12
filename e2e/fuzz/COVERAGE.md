@@ -76,6 +76,7 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
 | `PbtStringDoubleScientificForm` | PINNED | `string(double)` emits scientific where cel-cpp emits fixed (our `to_chars` + oracle `%.17g` gap) | runtime `to_chars` |
 | `PbtIntOfDurationOverPermissive` | PINNED | `int(duration)` accepted; cel-cpp rejects (no such overload) | checker + `overload_table.cc` |
 | `PbtSubstringEndEqualsSizeOverPermissive` | PINNED | two-arg `substring(start, size)` returns the tail; cel-cpp errors (its own `SubstringImpl` off-by-one) | runtime (to match cel-cpp) |
+| `PbtModuloInt64MinByNegOneOverflows` | LIVE | `INT64_MIN % -1` returned `0` on a wrong "cel-cpp returns 0" assumption; cel-cpp errors (integer overflow, `CheckedMod`). Found by adding the exact `INT64_MIN` leaf | runtime `cel_arith.c` `cel_int_mod_at_vv` |
 
 ---
 

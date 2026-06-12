@@ -310,13 +310,18 @@ TEST_F(ArithTest, IntDivIntMinByNegOnePoisons) {
   EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
 }
 
-TEST_F(ArithTest, IntModIntMinByNegOneIsZero) {
-  // C's `%` is undefined for INT64_MIN % -1; cel-cpp returns 0
-  // (the mathematically correct result) and we mirror.
+TEST_F(ArithTest, IntModIntMinByNegOnePoisons) {
+  // C's `%` is undefined for INT64_MIN % -1 (the implied division
+  // overflows).  cel-cpp treats it as an integer-overflow ERROR, NOT 0:
+  // CheckedMod errors on `x == INT64_MIN && y == -1`
+  // (third_party/cel-cpp/internal/overflow.cc).  Oracle-confirmed via
+  // the differential fuzzer (mining the `int` target).  An earlier
+  // version of this code returned 0 on a wrong "cel-cpp returns 0"
+  // assumption; the oracle won.
   uint32_t out = MakeOut();
   cel_int_mod_at_vv(out, cel_make_int(INT64_MIN), cel_make_int(-1));
-  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_INT));
-  EXPECT_EQ(At(out)->payload.i, 0);
+  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
 }
 
 TEST_F(ArithTest, IntNegHappyPath) {

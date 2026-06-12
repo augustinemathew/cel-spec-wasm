@@ -9,6 +9,27 @@ surfaced). See [`README.md`](README.md) for how the rig works and
 
 ---
 
+### 2026-06-11 — exact INT64_MIN leaf → found + FIXED a real modulo bug
+
+- Added the exact `INT64_MIN` leaf (`int_min` =
+  `(-9223372036854775807 - 1)` — can't be a plain literal, the
+  magnitude overflows int64 at parse time). This is the
+  two's-complement asymmetry boundary: `negate` / `abs` / `* -1` /
+  `/ -1` / `% -1` / `- 1` all overflow here.
+- **REAL BUG FOUND + FIXED:** `INT64_MIN % -1` returned `0` in our
+  runtime (`cel_arith.c` `cel_int_mod_at_vv`), on a comment-asserted
+  "cel-cpp returns 0" assumption. The oracle proved cel-cpp **errors**
+  (integer overflow), confirmed in cel-cpp source (`CheckedMod`,
+  `internal/overflow.cc` — the implied division `INT64_MIN / -1`
+  overflows). Classic "codebase comment says A, oracle says B → oracle
+  wins." Fixed to poison `CEL_ERR_OVERFLOW`, mirroring divide. Live
+  regression `PbtModuloInt64MinByNegOneOverflows` (e2e, both link
+  modes) + corrected kernel test `IntModIntMinByNegOnePoisons`.
+- Every other INT64_MIN overflow case (negate/abs/mul/div/sub) already
+  agreed (both-error). Post-fix, int/uint/double mine clean at d6.
+  The overflow surfaces as a CEL error VALUE (3VL kError), not a
+  failed status — the e2e assertion checks `v->IsError()`.
+
 ### 2026-06-11 — numeric-shaped string leaves (conversion success path)
 
 - Added oracle-agreeing numeric string leaves (`"42"`, `"3.14"`,
