@@ -106,8 +106,18 @@ sweeps at depths 6–9 across all 11 targets; every find pinned.
 - `optional<T>`: `optional.of`/`ofNonZeroValue`/`.orValue` within
   the static subset (`.?` is blocked by the known
   `OptionalSelectOnMapRejected` gate — pin rides until fixed).
-- proto messages (old m27 Slice C2): `celwasm.testdata.Customer`
-  struct/select/has productions + a message-typed binding.
+- proto messages (old m27 Slice C2): struct/select/has productions +
+  a message-typed binding.  **Fixture requirement (user, 2026-06-11):**
+  do NOT reuse the small `Customer`; author a deliberately adversarial
+  test proto — **large, deeply nested, self-recursive** (a field of
+  its own message type, so the grammar can recurse to arbitrary depth),
+  with **every scalar field type** (int32/64, uint32/64, sint, fixed,
+  sfixed, float, double, bool, string, bytes, enum), **repeated**
+  variants of each, and **map** fields (varied key + value types incl.
+  message values).  This is what stresses the field-access /
+  struct-construction codegen: nesting depth, every wire type, repeated
+  + map field marshalling, and recursion.  Needs `OracleVar` proto
+  marshalling (the message-typed binding the oracle can't build today).
 - **Nested aggregates shipped 2026-06-11** — `list<list<T>>`,
   `list<map<K,V>>`, `map<string,list<int>>` (`RegisterNestedAggregates`);
   the recursive comparator (e9ab2fc) handled the verdict, so only
@@ -250,6 +260,13 @@ Surfaced by the 2026-06-11 subsystem review
   `dump_samples.cc`, `fuzz.sh` and has drifted); `grammar_scalars.cc`
   family split; comparison/math table helpers; L3 walker → real
   generator; `%i` single-pass substitution.
+- **Proto field access (M30.C)** — the largest *generative* gap not
+  blocked on a type-vocabulary change (`CelType::kMessage` already
+  exists).  Needs: an adversarial test proto (large / deeply nested /
+  self-recursive / every scalar type + repeated + maps — see M30.C),
+  message-leaf + `{field: …}` constructor + `.field` select + `has()`
+  productions, and `OracleVar` proto marshalling for the message-typed
+  binding.  User-requested 2026-06-11.
 - **net_ext (20) + optionals (14)** — blocked on a `shared/type.h`
   opaque/optional type-vocabulary extension (a compiler change). The
   largest single coverage hole; schedule the type-vocab work.
