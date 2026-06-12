@@ -1,0 +1,29 @@
+{
+  "name": "@cel-wasm/compiler",
+  "version": "0.1.0",
+  "description": "TypeScript compiler binding for cel-wasm (CEL source → portable Program).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./wasm-backend": {
+      "types": "./dist/internal/wasm-backend.d.ts",
+      "import": "./dist/internal/wasm-backend.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm/compiler.wasm"
+  ],
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json"
+  },
+  "dependencies": {
+    "@cel-wasm/eval": "0.1.0",
+    "protobufjs": "7.6.3"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@cel-wasm/eval",
+  "version": "0.1.0",
+  "description": "Pure-TypeScript evaluator for cel-wasm Programs (runs in Node and the browser).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./proto": {
+      "types": "./dist/proto.d.ts",
+      "import": "./dist/proto.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json"
+  },
+  "dependencies": {
+    "protobufjs": "7.6.3"
+  }
+}

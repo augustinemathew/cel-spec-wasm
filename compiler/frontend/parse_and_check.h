@@ -2,13 +2,16 @@
 #define CELWASM_COMPILER_FRONTEND_PARSE_AND_CHECK_H_
 
 #include <string>
-#include <variant>
 #include <vector>
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "compiler/celfn/function_library.h"
 #include "compiler/ir/typed_ast.h"
+
+namespace google::protobuf {
+class DescriptorPool;
+}  // namespace google::protobuf
 
 namespace celwasm {
 
@@ -27,23 +30,6 @@ namespace celwasm {
 // (doc/implementation-plan/cleanup-backlog.md #45).
 inline constexpr int kMaxExpressionNestingDepth = 2048;
 
-// Path to a textual `.proto` source file describing protobuf message types
-// referenced by variables.  Parsed in-process with
-// `google::protobuf::compiler::Parser`; imports other than CEL well-known
-// types are not resolved at parse time, so use `SchemaDescriptorSet` for
-// multi-file schemas that reference one another.
-struct SchemaProtoSource {
-  std::string path;
-};
-
-// Path to a binary-serialized `google.protobuf.FileDescriptorSet` (the output
-// of `protoc --descriptor_set_out=...`) describing protobuf message types
-// referenced by variables.  Preferred for multi-file schemas or when the
-// caller already runs `protoc` in their build.
-struct SchemaDescriptorSet {
-  std::string path;
-};
-
 // Options for `ParseAndCheck`.
 //
 // `variable_specs` entries are of the form `name:Type` where `Type` is one of:
@@ -52,10 +38,15 @@ struct SchemaDescriptorSet {
 //   - a parameterized type: list<T>, map<K,V> (recursively composed)
 //   - a protobuf message's fully-qualified name, e.g. `google.example.Request`
 struct CheckOptions {
-  // Schema source for protobuf message types referenced by variables.
-  // `std::monostate` (the default) means "use the process-wide generated
-  // descriptor pool only".
-  std::variant<std::monostate, SchemaProtoSource, SchemaDescriptorSet> schema;
+  // Descriptor pool that message-typed variable declarations and proto
+  // expressions resolve against.  The supplied pool resolves a type first;
+  // any type it does not contain falls back to the process-wide
+  // `generated_pool()` (so well-known types and statically-linked messages
+  // always resolve even when the supplied pool carries only the caller's
+  // schema).  `nullptr` (the default) resolves against `generated_pool()`
+  // alone.  Borrowed — the pool must outlive every `ParseAndCheck` that
+  // reads it.  Takes precedence over `schema` when both are set.
+  const google::protobuf::DescriptorPool* descriptor_pool = nullptr;
 
   // `name:Type` variable declarations injected into the checker's env.
   std::vector<std::string> variable_specs;

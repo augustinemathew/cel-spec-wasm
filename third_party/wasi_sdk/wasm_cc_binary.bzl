@@ -38,6 +38,16 @@ def _wasm_transition_impl(_settings, _attr):
         "//command_line_option:platforms": str(
             Label("//third_party/wasi_sdk:wasm32_wasi"),
         ),
+        # Reset --cxxopt so a wasm_cc_binary (the C runtime kernel, the
+        # Component-Model components) builds with the toolchain's own flags
+        # regardless of any --cxxopt the parent config injected.  This is
+        # load-bearing: `compiler.wasm` is built under a transition that
+        # adds `-frtti -fexceptions` for cel-cpp + Binaryen, and the
+        # compiler EMBEDS the stripped runtime bytes into every Program it
+        # emits — without this reset those exception flags leak into the
+        # embedded runtime (adding `env.__cxa_*` imports) and corrupt every
+        # compiled Program.
+        "//command_line_option:cxxopt": [],
         # The transition is one-way; cc_binary's host-config dependencies
         # (compilers etc.) come from toolchain resolution, not from the
         # target config, so we don't need to thread the host platform.
@@ -46,7 +56,10 @@ def _wasm_transition_impl(_settings, _attr):
 _wasm_transition = transition(
     implementation = _wasm_transition_impl,
     inputs = [],
-    outputs = ["//command_line_option:platforms"],
+    outputs = [
+        "//command_line_option:platforms",
+        "//command_line_option:cxxopt",
+    ],
 )
 
 def _wasm_p2_transition_impl(_settings, _attr):
@@ -97,6 +110,49 @@ wasm_p2_cc_binary = rule(
             cfg = _wasm_p2_transition,
             mandatory = True,
             doc = "A `cc_binary` target; built under the wasm32-wasip2 (Component-Model native) platform.",
+        ),
+    },
+)
+
+def _wasm_cpp_transition_impl(settings, _attr):
+    """wasm32-wasi-threads, with C++ exceptions + RTTI enabled.
+
+    The toolchain's `default_compile_flags` pin `-fno-exceptions
+    -fno-rtti` to keep the tiny C runtime small, but cel-cpp's parser /
+    type-checker (ANTLR4, `dynamic_cast`/`throw`) and Binaryen require
+    both.  `-frtti -fexceptions` are appended AFTER the toolchain flags
+    and win (clang takes the last), and the whole `cc_binary` subgraph —
+    cel-cpp + Binaryen + the C ABI — sees them because a `--cxxopt`
+    transition flows to every C++ compile in the configuration.  Scoped
+    to this transition so the runtime's own wasm build keeps its minimal
+    flags.
+    """
+    return {
+        "//command_line_option:platforms": str(
+            Label("//third_party/wasi_sdk:wasm32_wasi"),
+        ),
+        "//command_line_option:cxxopt": settings["//command_line_option:cxxopt"] +
+                                        ["-frtti", "-fexceptions"],
+    }
+
+_wasm_cpp_transition = transition(
+    implementation = _wasm_cpp_transition_impl,
+    inputs = ["//command_line_option:cxxopt"],
+    outputs = [
+        "//command_line_option:platforms",
+        "//command_line_option:cxxopt",
+    ],
+)
+
+# Like `wasm_cc_binary`, but for a `cc_binary` whose C++ dependency graph
+# (the CEL compiler: cel-cpp + Binaryen) needs exceptions + RTTI.
+wasm_cpp_cc_binary = rule(
+    implementation = _wasm_cc_binary_impl,
+    attrs = {
+        "binary": attr.label(
+            cfg = _wasm_cpp_transition,
+            mandatory = True,
+            doc = "A `cc_binary` with exceptions/RTTI-requiring C++ deps; built under wasm32-wasi-threads with -frtti -fexceptions.",
         ),
     },
 )

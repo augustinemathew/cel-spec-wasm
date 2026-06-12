@@ -1,0 +1,251 @@
+{
+  "_comment": "Golden compiled-Program fixtures for the pure-TS eval binding. SOURCE OF TRUTH: this manifest. Regenerate the .wasm files with `bindings/ts/scripts/build-fixtures.sh`, which compiles each `expr` (with `compileVars`) via the native `cel` CLI into `<name>.wasm` (a self-contained static Program) and cross-checks the result against `cliCheck`. The `activation` (JS-natural, tagged) and `expected` (tagged CelValue) are what the eval-binding tests pass in and assert. Tagged value forms: {kind:null} | {kind:bool,value} | {kind:int,value:'<dec>'} | {kind:uint,value:'<dec>'} | {kind:double,value:<num>} | {kind:string,value} | {kind:bytes,bytes:[..]} | {kind:list,elements:[..]} | {kind:map,entries:[[k,v]..]} | {kind:error,code:<CelErrorCode>}.",
+  "runtimeAbiVersion": null,
+  "fixtures": [
+    {
+      "name": "int_add",
+      "expr": "1 + 2",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "3",
+      "expected": { "kind": "int", "value": "3" }
+    },
+    {
+      "name": "int_unary_minus",
+      "expr": "-5",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "-5",
+      "expected": { "kind": "int", "value": "-5" }
+    },
+    {
+      "name": "double_add",
+      "expr": "1.5 + 2.5",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "4",
+      "expected": { "kind": "double", "value": 4.0 }
+    },
+    {
+      "name": "uint_literal",
+      "expr": "42u",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "42u",
+      "expected": { "kind": "uint", "value": "42" }
+    },
+    {
+      "name": "string_concat",
+      "expr": "\"hello\" + \" world\"",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "\"hello world\"",
+      "expected": { "kind": "string", "value": "hello world" }
+    },
+    {
+      "name": "bool_and",
+      "expr": "true && false",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "false",
+      "expected": { "kind": "bool", "value": false }
+    },
+    {
+      "name": "ternary_string",
+      "expr": "2 > 1 ? \"yes\" : \"no\"",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "\"yes\"",
+      "expected": { "kind": "string", "value": "yes" }
+    },
+    {
+      "name": "modulo",
+      "expr": "7 % 3",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "1",
+      "expected": { "kind": "int", "value": "1" }
+    },
+    {
+      "name": "list_map_double",
+      "expr": "[1, 2, 3].map(x, x * 2)",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "[2, 4, 6]",
+      "expected": {
+        "kind": "list",
+        "elements": [
+          { "kind": "int", "value": "2" },
+          { "kind": "int", "value": "4" },
+          { "kind": "int", "value": "6" }
+        ]
+      }
+    },
+    {
+      "name": "list_filter_gt1",
+      "expr": "[1, 2, 3].filter(x, x > 1)",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "[2, 3]",
+      "expected": {
+        "kind": "list",
+        "elements": [
+          { "kind": "int", "value": "2" },
+          { "kind": "int", "value": "3" }
+        ]
+      }
+    },
+    {
+      "name": "list_exists",
+      "expr": "[1, 2, 3].exists(x, x == 2)",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "true",
+      "expected": { "kind": "bool", "value": true }
+    },
+    {
+      "name": "list_all_false",
+      "expr": "[1, 2, 3].all(x, x > 1)",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "false",
+      "expected": { "kind": "bool", "value": false }
+    },
+    {
+      "name": "size_list",
+      "expr": "size([1, 2, 3])",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "3",
+      "expected": { "kind": "int", "value": "3" }
+    },
+    {
+      "name": "map_index",
+      "expr": "{\"a\": 1, \"b\": 2}[\"a\"]",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "1",
+      "expected": { "kind": "int", "value": "1" }
+    },
+    {
+      "name": "map_in_key",
+      "expr": "\"a\" in {\"a\": 1}",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "true",
+      "expected": { "kind": "bool", "value": true }
+    },
+    {
+      "name": "string_starts_with",
+      "expr": "\"abc\".startsWith(\"ab\")",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "true",
+      "expected": { "kind": "bool", "value": true }
+    },
+    {
+      "name": "string_size_unicode",
+      "expr": "size(\"héllo\")",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "5",
+      "expected": { "kind": "int", "value": "5" }
+    },
+    {
+      "name": "bytes_literal",
+      "expr": "b\"\\x01\\x02\\x03\"",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "b\"\\x01\\x02\\x03\"",
+      "expected": { "kind": "bytes", "bytes": [1, 2, 3] }
+    },
+    {
+      "name": "null_literal",
+      "expr": "null",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "null",
+      "expected": { "kind": "null" }
+    },
+    {
+      "name": "divide_by_zero",
+      "expr": "10 / 0",
+      "compileVars": [],
+      "activation": {},
+      "cliCheck": "error: divide_by_zero divide_by_zero",
+      "expected": { "kind": "error", "code": 11 }
+    },
+    {
+      "name": "var_int_identity",
+      "expr": "x",
+      "compileVars": ["x:int"],
+      "activation": { "x": { "kind": "int", "value": "42" } },
+      "cliCheck": "42",
+      "cliVars": ["x:int=42"],
+      "expected": { "kind": "int", "value": "42" }
+    },
+    {
+      "name": "var_int_add",
+      "expr": "x + y",
+      "compileVars": ["x:int", "y:int"],
+      "activation": {
+        "x": { "kind": "int", "value": "10" },
+        "y": { "kind": "int", "value": "32" }
+      },
+      "cliCheck": "42",
+      "cliVars": ["x:int=10", "y:int=32"],
+      "expected": { "kind": "int", "value": "42" }
+    },
+    {
+      "name": "var_string_identity",
+      "expr": "name",
+      "compileVars": ["name:string"],
+      "activation": { "name": { "kind": "string", "value": "Ada" } },
+      "cliCheck": "\"Ada\"",
+      "cliVars": ["name:string=\"Ada\""],
+      "expected": { "kind": "string", "value": "Ada" }
+    },
+    {
+      "name": "policy_age_country_true",
+      "expr": "age >= 18 && country in [\"US\", \"CA\"]",
+      "compileVars": ["age:int", "country:string"],
+      "activation": {
+        "age": { "kind": "int", "value": "25" },
+        "country": { "kind": "string", "value": "US" }
+      },
+      "cliCheck": "true",
+      "cliVars": ["age:int=25", "country:string=\"US\""],
+      "expected": { "kind": "bool", "value": true }
+    },
+    {
+      "name": "policy_age_country_false",
+      "expr": "age >= 18 && country in [\"US\", \"CA\"]",
+      "compileVars": ["age:int", "country:string"],
+      "activation": {
+        "age": { "kind": "int", "value": "16" },
+        "country": { "kind": "string", "value": "US" }
+      },
+      "cliCheck": "false",
+      "cliVars": ["age:int=16", "country:string=\"US\""],
+      "expected": { "kind": "bool", "value": false }
+    },
+    {
+      "name": "var_double_compare",
+      "expr": "temp > 98.6",
+      "compileVars": ["temp:double"],
+      "activation": { "temp": { "kind": "double", "value": 99.1 } },
+      "cliCheck": "true",
+      "cliVars": ["temp:double=99.1"],
+      "expected": { "kind": "bool", "value": true }
+    },
+    {
+      "name": "var_list_membership",
+      "expr": "x in [1, 2, 3]",
+      "compileVars": ["x:int"],
+      "activation": { "x": { "kind": "int", "value": "2" } },
+      "cliCheck": "true",
+      "cliVars": ["x:int=2"],
+      "expected": { "kind": "bool", "value": true }
+    }
+  ]
+}

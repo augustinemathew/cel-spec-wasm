@@ -6,12 +6,18 @@ name: docs
 
 on:
   push:
-    branches: [master]
+    # `m29-spa` is included so the in-browser playground SPA deploys to the
+    # live Pages site from that feature branch (the demo lives there until
+    # it merges to master).
+    branches: [master, m29-spa]
     paths:
       - doc/**
       - mkdocs.yml
       - mkdocs-requirements.txt
       - .github/workflows/pages.yml
+      # The in-browser playground SPA is published into site/playground/,
+      # so its sources redeploy the site too.
+      - bindings/ts/**
   workflow_dispatch:
 
 # Least-privilege token scoped to a Pages deploy.
@@ -42,6 +48,57 @@ jobs:
       # (../conformance/README.md, …) that resolve on GitHub but warn
       # here; those are migrated incrementally, not build-breaking.
       - run: mkdocs build --verbose
+
+      # Build the in-browser playground SPA and publish it under
+      # site/playground/.  This is a pure-TypeScript build — no Bazel: it
+      # uses the committed bindings/ts/web/public/compiler.wasm asset plus
+      # the @cel-wasm/eval + @cel-wasm/compiler packages, all from source.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: bindings/ts/package-lock.json
+      - name: Install SPA workspace deps
+        working-directory: bindings/ts
+        run: npm ci
+      # The wasm artifacts are NOT committed; the `wasm-assets` rolling
+      # GitHub Release holds the latest build (published by release.yml).
+      # Download them into the git-ignored locations the SPA reads, so the
+      # pure-Node Pages build needs no bazel/C++ toolchain.
+      - name: Download wasm artifacts from the wasm-assets release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download wasm-assets --repo "$GITHUB_REPOSITORY" \
+            --pattern compiler.wasm \
+            --output bindings/ts/web/public/compiler.wasm --clobber
+          gh release download wasm-assets --repo "$GITHUB_REPOSITORY" \
+            --pattern cel_runtime.wasm \
+            --output bindings/ts/web/public/cel_runtime.wasm --clobber
+          cp bindings/ts/web/public/cel_runtime.wasm \
+            bindings/ts/eval/runtime/cel_runtime.wasm
+      - name: Build SPA workspace deps + the playground
+        working-directory: bindings/ts
+        # The Vite base must match the Pages subpath the SPA is served
+        # from (site/playground/ → /cel-spec-wasm/playground/).
+        # CEL_SKIP_WASM_BUILD: the wasm assets were just downloaded; the
+        # web package's `prebuild` hook must not try to bazel-build them.
+        env:
+          VITE_BASE: /cel-spec-wasm/playground/
+          CEL_SKIP_WASM_BUILD: "1"
+        run: |
+          npm run build -w @cel-wasm/eval
+          npm run build -w @cel-wasm/compiler
+          npm run build -w @cel-wasm/web
+      - name: Stage the SPA into the published site
+        # The Vite build emits bindings/ts/web/dist/web/ (including the
+        # 54 MB compiler.wasm copied from public/).  Place it at
+        # site/playground/ so it serves at /cel-spec-wasm/playground/.
+        run: |
+          mkdir -p site/playground
+          cp -R bindings/ts/web/dist/web/. site/playground/
+          test -f site/playground/compiler.wasm
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

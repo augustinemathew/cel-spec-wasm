@@ -68,7 +68,7 @@ WarningsAsErrors: ''
 
 # Analyse compiler/ and any include/ we add later. third_party/, the
 # bazel-* symlinks, and generated protobuf headers are ignored.
-HeaderFilterRegex: '^(abi|bench|compiler|conformance|e2e|eval|runtime|shared|spec|testdata|tools|include)/.*'
+HeaderFilterRegex: '^(abi|bench|bindings|compiler|conformance|e2e|eval|runtime|shared|spec|testdata|tools|include)/.*'
 
 FormatStyle: file
 

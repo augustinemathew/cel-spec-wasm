@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  },
+  "references": [
+    { "path": "../eval/tsconfig.build.json" },
+    { "path": "../compiler/tsconfig.build.json" }
+  ],
+  "include": ["src/**/*.ts", "dev-server/**/*.ts", "vite.config.ts"]
+}

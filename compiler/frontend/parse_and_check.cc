@@ -4,15 +4,11 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
-#include <sstream>
 #include <string>
-#include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "absl/base/nullability.h"
@@ -52,13 +48,7 @@
 #include "extensions/math_ext_macros.h"
 #include "extensions/strings.h"
 #include "google/protobuf/arena.h"
-#include "google/protobuf/compiler/importer.h"
-#include "google/protobuf/compiler/parser.h"
 #include "google/protobuf/descriptor.h"
-#include "google/protobuf/descriptor.pb.h"
-#include "google/protobuf/descriptor_database.h"
-#include "google/protobuf/io/tokenizer.h"
-#include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "parser/macro_registry.h"
 #include "parser/options.h"
 #include "parser/parser.h"
@@ -68,133 +58,20 @@ namespace celwasm {
 
 namespace {
 
-// --- Schema loading ----------------------------------------------------------
+// --- Descriptor pool selection -----------------------------------------------
 
-struct DescriptorPoolBundle {
-  std::unique_ptr<google::protobuf::SimpleDescriptorDatabase> schema_db;
-  std::unique_ptr<google::protobuf::DescriptorPoolDatabase> generated_db;
-  std::unique_ptr<google::protobuf::MergedDescriptorDatabase> merged_db;
-  std::unique_ptr<google::protobuf::DescriptorPool> owned_pool;
-  const google::protobuf::DescriptorPool* pool = nullptr;
-};
-
-class StringErrorCollector : public google::protobuf::io::ErrorCollector {
- public:
-  void RecordError(int line, int column, absl::string_view message) override {
-    absl::StrAppend(&text_, "  line ", line + 1, ":", column + 1, " ", message,
-                    "\n");
-  }
-  void RecordWarning(int /*line*/, int /*column*/,
-                     absl::string_view /*message*/) override {}
-  const std::string& text() const {
-    return text_;
-  }
-
- private:
-  std::string text_;
-};
-
-absl::StatusOr<google::protobuf::FileDescriptorProto> ParseProtoSource(
-    absl::string_view path) {
-  std::ifstream in{std::string(path)};
-  if (!in) {
-    return absl::NotFoundError(
-        absl::StrCat("cannot open proto source: ", path));
-  }
-  std::stringstream buf;
-  buf << in.rdbuf();
-  const std::string contents = buf.str();
-
-  google::protobuf::io::ArrayInputStream input(
-      contents.data(), static_cast<int>(contents.size()));
-  StringErrorCollector collector;
-  google::protobuf::io::Tokenizer tokenizer(&input, &collector);
-
-  google::protobuf::compiler::Parser parser;
-  parser.RecordErrorsTo(&collector);
-
-  google::protobuf::FileDescriptorProto file;
-  if (!parser.Parse(&tokenizer, &file)) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "failed to parse proto source ", path, ":\n", collector.text()));
-  }
-  file.set_name(std::string(path));
-  return file;
-}
-
-absl::Status RegisterSchemaProtoSource(
-    const SchemaProtoSource& src,
-    google::protobuf::SimpleDescriptorDatabase& schema_db) {
-  auto file = ParseProtoSource(src.path);
-  if (!file.ok()) return file.status();
-  if (!schema_db.Add(*file)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("could not register proto source: ", src.path));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status RegisterSchemaDescriptorSet(
-    const SchemaDescriptorSet& src,
-    google::protobuf::SimpleDescriptorDatabase& schema_db) {
-  std::ifstream in{src.path, std::ios::binary};
-  if (!in) {
-    return absl::NotFoundError(
-        absl::StrCat("cannot open schema file: ", src.path));
-  }
-  std::stringstream buf;
-  buf << in.rdbuf();
-  const std::string bytes = buf.str();
-
-  google::protobuf::FileDescriptorSet fds;
-  if (!fds.ParseFromString(bytes)) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "schema file is not a valid FileDescriptorSet: ", src.path));
-  }
-  for (const auto& file : fds.file()) {
-    if (!schema_db.Add(file)) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("duplicate file in FileDescriptorSet: ", file.name()));
-    }
-  }
-  return absl::OkStatus();
-}
-
-absl::StatusOr<DescriptorPoolBundle> LoadDescriptorPool(
+// The descriptor pool that message-typed declarations and proto expressions
+// resolve against.  The compiler is a pure pool *consumer*: it never builds
+// a pool from `.proto` sources or `FileDescriptorSet` bytes — that is the
+// caller's job (the CLI's `BuildPool`, the C ABI), and a supplied pool is
+// already responsible for its own generated-pool fallback (e.g. layered via
+// a `MergedDescriptorDatabase`, as `BuildPool` does).  A null
+// `descriptor_pool` resolves against the process-wide generated pool.
+const google::protobuf::DescriptorPool* SelectDescriptorPool(
     const CheckOptions& opts) {
-  DescriptorPoolBundle bundle;
-  if (std::holds_alternative<std::monostate>(opts.schema)) {
-    bundle.pool = google::protobuf::DescriptorPool::generated_pool();
-    return bundle;
-  }
-
-  bundle.schema_db =
-      std::make_unique<google::protobuf::SimpleDescriptorDatabase>();
-
-  absl::Status register_status = std::visit(
-      [&](const auto& src) -> absl::Status {
-        using T = std::decay_t<decltype(src)>;
-        if constexpr (std::is_same_v<T, std::monostate>) {
-          return absl::OkStatus();
-        } else if constexpr (std::is_same_v<T, SchemaProtoSource>) {
-          return RegisterSchemaProtoSource(src, *bundle.schema_db);
-        } else if constexpr (std::is_same_v<T, SchemaDescriptorSet>) {
-          return RegisterSchemaDescriptorSet(src, *bundle.schema_db);
-        }
-      },
-      opts.schema);
-  if (!register_status.ok()) return register_status;
-
-  bundle.generated_db =
-      std::make_unique<google::protobuf::DescriptorPoolDatabase>(
-          *google::protobuf::DescriptorPool::generated_pool());
-  bundle.merged_db =
-      std::make_unique<google::protobuf::MergedDescriptorDatabase>(
-          bundle.schema_db.get(), bundle.generated_db.get());
-  bundle.owned_pool = std::make_unique<google::protobuf::DescriptorPool>(
-      bundle.merged_db.get());
-  bundle.pool = bundle.owned_pool.get();
-  return bundle;
+  return opts.descriptor_pool != nullptr
+             ? opts.descriptor_pool
+             : google::protobuf::DescriptorPool::generated_pool();
 }
 
 // --- Type spec parsing -------------------------------------------------------
@@ -1612,15 +1489,13 @@ void InlineTypeIdentifierReferences(cel::Ast& ast) {
 
 absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
                                        const CheckOptions& opts) {
-  auto pool_bundle = LoadDescriptorPool(opts);
-  if (!pool_bundle.ok()) return pool_bundle.status();
+  const google::protobuf::DescriptorPool* pool = SelectDescriptorPool(opts);
 
-  auto builder = cel::CreateTypeCheckerBuilder(pool_bundle->pool);
+  auto builder = cel::CreateTypeCheckerBuilder(pool);
   if (!builder.ok()) return builder.status();
 
   std::vector<Variable> variables;
-  if (auto s = ConfigureCheckerBuilder(**builder, opts, pool_bundle->pool,
-                                       variables);
+  if (auto s = ConfigureCheckerBuilder(**builder, opts, pool, variables);
       !s.ok()) {
     return s;
   }
@@ -1657,7 +1532,7 @@ absl::StatusOr<TypedAst> ParseAndCheck(absl::string_view expression,
   if (auto s = RejectDyn(**checked_ast); !s.ok()) return s;
 
   WasmAnnotations annotations;
-  PopulateAnnotations(**checked_ast, pool_bundle->pool, annotations);
+  PopulateAnnotations(**checked_ast, pool, annotations);
 
   return TypedAst(std::move(*checked_ast), std::move(annotations),
                   std::move(variables));

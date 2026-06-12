@@ -3201,6 +3201,312 @@ logic ops carry the oracle-confirmed UNKNOWN-over-ERROR precedence
         `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest`
         (unknown-over-error, both orders, both ops).
 
+## Rewrite M29 — TypeScript bindings + browser demo (shipped 2026-06-11)
+
+Pure-TS evaluator + compiler binding + Monaco demo under `bindings/ts/`.
+Gate: `lint` + `build` + `typecheck` + `test` green — 781 pass / 13 skip
+(41 files). Coverage by component:
+
+  - [x] wire-format contract — `bindings/ts/eval/src/types.test.ts`
+        (CelKind/CelErrorCode/offset/stride constants pinned to
+        `runtime/cel_data.h`).
+  - [x] ABI decoder — `eval/src/abi.test.ts` (39): wasm section walk +
+        protobufjs CelAbi parse vs the golden fixtures' variable tables;
+        non-cel reject.
+  - [x] CelValue codec — `eval/src/celvalue.test.ts` (66): every in-scope
+        kind, bigint i64/u64, span/arena decode, error→CelError,
+        little-endian, INT64_MIN/MAX/UINT64_MAX boundaries, UTF-8 +
+        embedded-NUL.
+  - [x] externref table — `eval/src/externref.test.ts` (19): three
+        namespaces, slot-0 sentinel, reset.
+  - [x] host trampolines — `eval/src/host/aggregates.test.ts` (52,
+        list/map), `host/proto.test.ts` (41, proto/WKT/message),
+        `host/stubs.test.ts` (24, cel_env + WASI): 3VL absorption,
+        errors-as-values, NO_SUCH_KEY/INDEX_OOB.
+  - [x] proto backing — `eval/src/proto/{descriptors,backing}.test.ts`
+        (44): FileDescriptorSet load, field read/has/set, object↔message
+        coercion, WKT peel.
+  - [x] assembly (the keystone) — `eval/src/{engine,instance,marshal,
+        activation,resolving-codec}.test.ts` (372 total in eval):
+        **all 27 golden fixtures evaluate e2e** through
+        `Engine.create → plan → eval`; host-fn round-trip + message-var
+        marshal unit-pinned.
+  - [x] compiler binding — `compiler/src/{index,errors,internal/cli-backend}.test.ts`
+        (26): compile→Program byte-identical to `var_int_add.wasm`;
+        CelCompileError diagnostics.
+  - [x] e2e behavior ports — `eval/e2e/*.test.ts` (200 + 11 skip):
+        operators/strings/lists/maps/comprehensions/conversions/
+        timestamps, each citing its `e2e/*_test.cc` origin + langdef.
+  - [x] conformance harness — `conformance/src/*.test.ts`: textproto
+        reader (all 2454 rows / 30 files), classify (skip categories),
+        compare + `celValuesEqual` deep-compare, `proto-compare` expected-
+        message builder, monotonic ratchet. Full corpus with proto
+        descriptors wired into compile (`--descriptor_set`) + eval
+        (`Engine.create({descriptors})`): **1801 pass / 653 categorized
+        skip / 0 fail** (`.baseline=1801`, `.max_fail=0`) — proto2/proto3
+        construction + field-read rows run; residual proto skips are
+        verified eval-binding gaps.
+  - [x] WKT-typed field construction from a scalar — `cel_set_field` wraps
+        a CEL scalar / map / list into the nine `google.protobuf.*Value`
+        wrappers + the dynamic `Value` / `Struct` / `ListValue`
+        (`eval/src/proto/backing.ts::wrapWellKnownValue`,
+        `backing.test.ts` wrapper / Value / Struct / ListValue matrix +
+        `runner.test.ts` end-to-end construction rows). +91 conformance
+        pass (1710 → 1801, 0 fail), `eval_unimpl` 144 → 53.
+  - [x] object-value bindings (conformance backlog #2) — the corpus
+        loader lowers an `object_value` binding to a protobufjs message /
+        time record against the conformance descriptors
+        (`conformance/src/proto-compare.ts::buildBindingInput`, builder
+        threaded through `expectedToInput`; positive + unknown-FQN +
+        no-builder negatives in `corpus.test.ts` / `proto-compare.test.ts`,
+        e2e binding row in `runner.test.ts`).  Marshal fix: a bound
+        protobufjs message backs by its own `$type` (the ABI `types[]`
+        null sentinel no longer mis-resolves; `marshal.test.ts` sentinel
+        matrix) and `DescriptorSet.messageType('')` throws
+        (`descriptors.test.ts`).  +12 conformance pass (1801 → 1813,
+        0 fail), `bindings` 77 → 36.
+  - [x] CEL_TYPE value surface + type_value matcher (conformance backlog
+        #3) — kind 11 decodes to `{ kind: 'type', name }`
+        (`eval/src/types.ts` + `celvalue.ts` span arm; positive scalar +
+        message-FQN and boundary cases in `celvalue.test.ts`,
+        `resolving-codec.test.ts`; web render in `render.test.ts`); the
+        conformance comparator matches `type_value` by exact name
+        (`compare.test.ts` match/mismatch matrix, `runner.test.ts` e2e
+        rows).  Strong-enum residual pinned as `spec_unimpl`
+        (`classify.test.ts`), mirroring the C++ harness's per-row skip.
+        +29 conformance pass (1813 → 1842, 0 fail), `envelope` 59 → 23.
+  - [x] browser demo — `web/**/*.test.ts` (84): variables parse, render,
+        compile-client transport, dev-server endpoint, and the
+        `src/run.test.ts` compile→eval wiring proof. Monaco glue is
+        browser-only (verified via `vite build` + `web/README.md`).
+  - [x] C ABI — `bindings/c/compiler/cel_capi_test.cc` (12, bazel): const/var/
+        aggregate compile + magic check; bad-expr/undeclared/bad-opt/
+        bad-host-fn diagnostics.
+
+## Rewrite M30 slice F — proto CompileRequest over the compile C ABI (2026-06-12)
+
+The compiler-wasm boundary takes one serialized
+`celwasm.compile.CompileRequest` (`bindings/c/compiler/compile_request.proto`)
+instead of a NUL-terminated source + records blob.
+
+  - [x] length-delimited C compile — `bindings/c/compiler/cel_capi_test.cc`
+        `CompileN*` (embedded-NUL source compiles; strlen-equivalence
+        byte-identity; null-arg negatives).
+  - [x] cew_* export layer (native config) —
+        `bindings/c/compiler/compiler_wasm_exports_test.cc` (20): every
+        request field positive (vars/fns/container/optimize/link/FDS),
+        embedded-NUL source, absent-link-mode wire default (dynamic),
+        static-vs-dynamic size gap, malformed-request / unknown-link-mode /
+        bad-decl / invalid-FDS / null negatives, reset/replace lifecycle,
+        alloc-write-compile-free round trip.
+  - [x] TS request encoder —
+        `bindings/ts/compiler/src/internal/compile-request.test.ts` (8):
+        full-option + minimal round trips, embedded-NUL +
+        multi-byte-UTF-8 source, full-byte-range FDS, wire field-number
+        pins to compile_request.proto, link_mode zero-value semantics.
+  - [x] embedded-NUL regression e2e — `compiler/src/index.test.ts`
+        (compile) + `web/src/run.test.ts` (compile→eval, mirrors
+        conformance row `gt_bytes`); the 9 `embedded_nul` conformance
+        skips flip to PASS (skip predicate + category deleted; baseline
+        1842 → 1851, 0 fail).
+
+## Rewrite M29 follow-up — eval_unimpl proto-semantics sweep (2026-06-12)
+
+50 of 53 `eval_unimpl` conformance skips closed in `@cel-wasm/eval`
+(`bindings/ts/eval/src/proto/backing.ts`, `host/proto.ts`,
+`host/aggregates.ts`), each mirroring its `eval/internal/cel_host.cc`
+seam; conformance 1851 → **1902 pass / 552 skip / 0 fail**, `.baseline`
+ratcheted to 1902.
+
+  - [x] proto field-presence (langdef §"Field Selection" `has()`) —
+        `backing.test.ts` presence matrix: repeated/map non-empty,
+        proto3 scalar/enum set-to-default absent, proto2 explicit
+        presence (a `protobuf.parse` proto2 fixture), bool/bytes/string
+        defaults.  Corpus proto2/proto3 `has` sections (10 rows).
+  - [x] null assignment + null-pruning — `backing.test.ts`: null clears
+        wrapper / nested-message fields (wire bytes equal an untouched
+        message); null element of a repeated message field pruned; null
+        value of a message-typed map field prunes the entry; `Value`
+        still packs `null_value`.  Corpus `wrappers/*/to_null` (9) +
+        `set_null/*_null_pruned` (8).
+  - [x] timestamp/duration packing into WKT fields —
+        `backing.test.ts`: CelTimestamp/CelDuration round-trip through
+        singular / repeated-element / map-value assignment.  Corpus
+        `literal_wellknown/timestamp` (2).
+  - [x] int32/uint32/enum range checks — `backing.test.ts`
+        (`ProtoFieldRangeError` on enum / Int32Value / UInt32Value /
+        plain int32+uint32, exact 32-bit boundary admits) +
+        `host/proto.test.ts` (OVERFLOW poison of the message slot, late
+        set on a poisoned slot is a no-op) + `runner.test.ts` (range
+        row satisfies the evalError matcher).  Corpus enum range (4) +
+        wrapper range (4).
+  - [x] float32 narrowing on decode — `backing.test.ts`: FloatValue
+        read narrows (`Math.fround`), 1e-50 → 0, 1.4e55 → +inf, plain
+        `float` field narrows.  Corpus `dynamic/float` (5).
+  - [x] unset nested-message reads as default instance —
+        `host/proto.test.ts`: `cel_get_field` on an unset message field
+        writes a chainable CEL_MESSAGE default instance (sub-field read
+        serves the sub-default); Any / JSON WKTs stay null.  Corpus
+        `empty_field/nested_message*` + `parse/nest|repeat` (6).
+  - [x] mixed arena/host list+map equality — `aggregates.test.ts`:
+        `cel_list_eq` / `cel_map_eq` admit any origin pair (arena
+        operand decoded via the resolving codec; host/arena swapped
+        orders, timestamp elements, set-equality, TYPE_MISMATCH
+        negatives).  Corpus `set_null` read-back equality (8) +
+        `comparisons/bound` host-aggregate equality (2, adjacent
+        unlock; `runner.test.ts` pin flipped skip → pass).
+  - [x] runner predicates removed in the same commit — has(/null-prune/
+        unset-nested/range/FloatValue/WKT-mismatch/host-aggregate
+        predicates deleted from `conformance/src/runner.ts` (+
+        `setsWellKnownField` retired from `proto-compare.ts`); the 3
+        residual `eval_unimpl` predicates (NaN message equality ×2, tz
+        accessor ×1) stay with verified reasons.
+
+## Rewrite M29 follow-up — TS-conformance parity sweep (2026-06-12)
+
+The final C++-passes-but-TS-skips sweep: tz-string timestamp accessors,
+NaN-field message equality, the strong-enum spec-unimpl reclassification
+(mirroring the C++ harness's `IsSpecUnimplSection` list), and the
+wrapper-typed declared-variable path (renderer pass-through + the
+activation-bind wrapper peel).  Conformance 1902 → **1920 pass / 0
+fail**, `.baseline` ratcheted.
+
+  - [x] fixed-offset timezone accessors (langdef §"Timezones") —
+        `eval/src/host/stubs.test.ts`: unsigned `'02:00'`, `Z`,
+        `-00:00`, negative half-hour `-02:30`, `+05:45`, day/weekday
+        rollover, malformed/out-of-range offsets reject
+        INVALID_ARGUMENT; DST-crossing instant in an IANA zone (the
+        US spring-forward second, hours 1 → 3).  Mirrors
+        `ResolveTimeZone` (eval/internal/cel_host.cc).  Corpus
+        `timestamps/timestamp_selectors_tz/getHours_tz` (1 row);
+        runner tz predicate removed.
+  - [x] NaN-field proto message inequality (langdef §"Equality") —
+        `eval/src/host/proto.test.ts`: NaN double field unequal on
+        byte-identical messages; nested-message NaN; repeated-double
+        NaN; map-value NaN (descriptor-path entry-message shape);
+        finite/Infinity stay equal.  Mirrors
+        `MessageDifferencer::Equals` via `CompareProtoMessages`
+        (eval/internal/cel_host.cc).  Corpus
+        `comparisons/eq_wrapper/eq_proto_nan_equal` +
+        `ne_literal/ne_proto_nan_not_equal` (2 rows); runner NaN
+        predicate removed.
+  - [x] strong-enum spec-unimpl pre-skip — `classify.test.ts`
+        (listed row skips `spec_unimpl`, off-list row in the same
+        section proceeds, listed name outside enums proceeds) +
+        `runner.test.ts` (error-matcher conversion row PASSes via the
+        compile-error arm, reordered before the proto reclassify to
+        match `ClassifyCompileFailure`).  12 rows reclassified
+        proto_unimpl → spec_unimpl; 6 error-matcher rows
+        (`convert_int_too_big/too_neg`, `convert_string_bad` ×
+        proto2/proto3) flip to PASS.
+  - [x] wrapper-typed declared variables — `classify.test.ts`
+        (non-time WKT renders as its message FQN; Any stays
+        unrenderable, §A.3) + `eval/src/marshal.test.ts`
+        wrapper-peel matrix: all 9 wrapper FQNs peel into their
+        scalar slots (bool/int/uint/double/string/bytes, float32
+        narrowing via `Math.fround`), wrong-family wrapper rejects,
+        MESSAGE-declared wrapper does NOT peel, non-wrapper message
+        on a scalar var still rejects.  Mirrors
+        `TryEncodeWktWrapperMessage` /
+        `TryReadWktStringWrapperValue` (eval/instance.cc).  Corpus
+        `dynamic/<wrapper>/var` (9 rows).
+
+## Rewrite M29 follow-up — host-fn + message-var e2e fixtures (2026-06-12)
+
+Closes the m29 "Future work" gap: the `cel_fn.*` trampoline and the
+message-typed-variable marshal are now driven end-to-end from Programs
+compiled in-process (the wasm compile backend's `fns` +
+`descriptorSetBytes` options).  Three binding bugs surfaced and fixed,
+each with colocated unit pins.
+
+  - [x] `.celfn` decl → overload-id synthesis — `eval/src/celfn-decl.test.ts`
+        (38): the full argkind matrix (every scalar, Duration/Timestamp
+        lowercase, list/map/proto nesting, arity 0/2+, `this` receiver),
+        mirroring `SynthesiseOverloadId` + `CelfnType::Argkind`
+        (compiler/celfn/function_library.cc:180/:30); malformed /
+        non-`@host` decls reject (`CelFnDeclError`); bare-overload-id
+        escape hatch.  Fixes the bug where `defineFunction` keyed the
+        `cel_fn` import on the bare name and a compiled `@host` Program
+        could never link.
+  - [x] `@host` e2e — `eval/e2e/host-fns.test.ts` (31 pass + 1 skip),
+        porting the reachable envelope of `e2e/host_fn_test.cc` +
+        `e2e/host_fn_type_matrix_test.cc`: scalar round-trips (bool /
+        int incl. INT64 boundaries / uint incl. UINT64_MAX / double /
+        string incl. UTF-8 + empty / bytes incl. `b'\x00\x01'` + empty
+        / null arg+return), Duration + Timestamp tagged records,
+        0-arg / 2-arg / receiver-form / two-overloads-one-name,
+        list + map args and returns (composed through CEL indexing),
+        proto(TestAllTypes) args (scalar + repeated + map fields read in
+        JS), CelError-value returns (absorbed downstream), throwing impl
+        → `CelEvalError` TRAP, unregistered fn → plan LinkError,
+        undeclared-fn / `type`-arg compile rejects.  ~~Skip-pinned:
+        message-typed host-fn *return*~~ (closed by the
+        message-return section below — the skip is gone).
+  - [x] uint kind re-stamp — `eval/src/instance.test.ts`
+        (`buildCelFnImports` uint-declared return → CEL_UINT; non-bigint
+        gated) + `eval/src/host/proto.test.ts` (uint64 field read +
+        UInt64Value unwrap stamp CEL_UINT, UINT64_MAX survives).  Fixes
+        CEL_INT-stamped uint values corrupting ≥ 2^63 at the result
+        surface (C++ mirror: `HostCallContext::ReturnUint` / the
+        FieldDescriptor-driven kind in `cel_host.cc`).
+  - [x] plain-object message coercion — `eval/src/proto/backing.test.ts`
+        (`coerceObjectToMessage` suites): JSON-natural `{K: V}` map
+        records + JS `Map`s normalize to the descriptor source's shape
+        (entry arrays on `Root.fromDescriptor` roots), bigints accepted
+        on 32-bit (range-checked) and 64-bit (uint64 unsignedness
+        preserved) fields, nested recursion, entry-array pass-through.
+  - [x] message-var e2e — `eval/e2e/message-vars.test.ts` (41), porting
+        `e2e/m2_test.cc` (Select / Has / proto3 defaults) +
+        `e2e/arena_message_aggregate_eq_test.cc` (message equality):
+        every CEL-visible scalar field read (int32/64, uint32/64 incl.
+        UINT64_MAX, float/double, bool, string, bytes), unset → proto3
+        defaults, nested + default-instance chaining, repeated
+        (index / size / membership / OOB error), map fields (string +
+        int keys, size / membership / NO_SUCH_KEY), the 10-row `has()`
+        presence matrix, equality (var-vs-var, var-vs-literal, nested
+        literal), plain-object vs protobufjs activation shapes, and the
+        documented no-type-table-entry `CelMarshalError` contract
+        (abi/cel_abi.proto:52).
+  - [x] conformance regression gate — full corpus re-run after the eval
+        fixes: pass ≥ baseline, 0 fail (see milestone PR notes).
+
+## Rewrite M29 follow-up — message-typed host-fn returns (2026-06-12)
+
+Closes the last `host-fns.test.ts` skip: a `proto(<fqn>)`-declared
+`@host` return now interns a `ProtoMessageBacking` and stamps a
+CEL_MESSAGE slot — the TS mirror of `HostCallContext::ReturnProto`
+(`eval/host_call_context.cc:549`).  `HostFunction` returns
+`HostFnResult = CelValue | protobuf.Message` (`eval/src/types.ts`).
+
+  - [x] decl return-FQN capture — `eval/src/celfn-decl.test.ts`:
+        `returnMessageFqn` set for a `proto(<fqn>)` return (captured
+        dotted, not reversed from the lossy underscore argkind);
+        undefined for scalar / `list<proto(…)>` / `map<…, proto(…)>`
+        returns, proto-typed *params*, and the bare-overload-id form.
+  - [x] CEL_MESSAGE write seam — `eval/src/resolving-codec.test.ts`
+        (`internMessageBacking`): kind 10 + ref_slot payload, first
+        intern at slot 1, table resolves back to the same backing.
+  - [x] trampoline return routing — `eval/src/instance.test.ts`
+        (`buildCelFnImports` proto-declared returns): protobufjs Message
+        → CEL_MESSAGE intern; plain object → `coerceObjectToMessage`
+        against the declared FQN via descriptors; plain object without
+        descriptors → clear throw; null / CelError returns pass through
+        as values (§A.4.5); non-message scalar on a message decl →
+        throw; Message on a NON-message decl → throw (never a silent
+        host-map re-intern).
+  - [x] `@host` message-return e2e — `eval/e2e/host-fns.test.ts`
+        (the former skip, un-skipped + extended): field selects off the
+        returned message (`build_tat(s).single_string` /
+        `.single_int64`, the C++
+        ContextProtoReturnPopulatesMultipleFields shape), `has()` over
+        the return (set + proto3-default-unset), message equality
+        against a message literal (== true and false), plain-object
+        return coercion, and the negative contract — Message return on
+        an int-declared fn → `CelEvalError` TRAP naming the fn.
+  - [x] conformance regression gate — full corpus re-run: 1920 pass /
+        0 fail (= baseline floor; the corpus has no `@host` rows, so no
+        ratchet).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

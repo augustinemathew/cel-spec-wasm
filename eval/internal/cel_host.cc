@@ -2586,7 +2586,7 @@ absl::Status CelMakeMessageImpl(uint32_t type_id, uint32_t out_slot,
           entry.descriptor);
   if (prototype == nullptr) {
     // Generated factory doesn't know about this descriptor — most
-    // likely a dynamic descriptor loaded via SchemaProtoSource.
+    // likely a dynamic descriptor from a caller-supplied descriptor pool.
     // Dynamic-descriptor support is a follow-up tied to the
     // conformance harness's descriptor mode.  Surface as a clean
     // spec error.

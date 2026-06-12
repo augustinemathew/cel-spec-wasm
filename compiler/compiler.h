@@ -29,6 +29,10 @@
 #include "compiler/program.h"
 #include "shared/type.h"
 
+namespace google::protobuf {
+class DescriptorPool;
+}  // namespace google::protobuf
+
 namespace celwasm {
 
 // Pulled in from `namespace cel` (type.h / program.h re-exports
@@ -207,6 +211,10 @@ class Compiler {
   // overload registration (so the `cel_fn.<overload_id>` imports are
   // emitted).
   std::vector<celwasm::FunctionLibrary> function_libraries_;
+  // Descriptor pool message-typed declarations + proto expressions resolve
+  // against (set via `Builder::SetDescriptorPool`).  Borrowed; nullptr means
+  // the process-wide generated pool.
+  const google::protobuf::DescriptorPool* descriptor_pool_ = nullptr;
 };
 
 class Compiler::Builder {
@@ -239,6 +247,19 @@ class Compiler::Builder {
   // mutates `*this` in place and returns an lvalue reference.
   Builder& DeclareVariable(const std::string& name, const CelType& type);
 
+  // Set the descriptor pool that message-typed variable declarations and
+  // proto expressions resolve against.  The compiler is a pure pool
+  // *consumer* — it never builds a pool from `.proto` sources or
+  // `FileDescriptorSet` bytes; the caller builds the pool (e.g. layered over
+  // `generated_pool()` so well-known types resolve) and hands it in.  Unset
+  // (the default) resolves against the process-wide `generated_pool()`.
+  //
+  // BORROWED: the pool must outlive this Builder, every Compiler built from
+  // it, and every Program those Compilers produce (descriptors are
+  // non-owning pointers into it — see the class docblock).  Returns `*this`
+  // so calls chain.
+  Builder& SetDescriptorPool(const google::protobuf::DescriptorPool* pool);
+
   // M13 Slice C.2 — register a `FunctionLibrary` of custom CEL
   // function declarations.  All decls in the library become
   // visible to every expression this Compiler compiles.  The
@@ -260,12 +281,13 @@ class Compiler::Builder {
   // Materialises the Compiler.  Consumes the Builder — chain from a
   // named local with `std::move(b).Build()`.
   //
-  // Message-typed declarations are resolved against the process-wide
-  // `google::protobuf::DescriptorPool::generated_pool()`; any
-  // statically-linked `cc_proto_library` descriptor is reachable
-  // there automatically.  For dynamic schemas (source `.proto` /
-  // `FileDescriptorSet`) see the internal `CheckOptions::schema`
-  // plumbing in `parse_and_check.cc`.
+  // Message-typed declarations are resolved against the descriptor pool set
+  // via `SetDescriptorPool` — or, when none is set, the process-wide
+  // `google::protobuf::DescriptorPool::generated_pool()` (any
+  // statically-linked `cc_proto_library` descriptor is reachable there
+  // automatically).  For dynamic schemas (a `.proto` source or a
+  // `FileDescriptorSet`), build a `DescriptorPool` from them and pass it to
+  // `SetDescriptorPool`.
   //
   // Returns InvalidArgument on:
   //   - duplicate variable names declared on this Builder
@@ -276,6 +298,9 @@ class Compiler::Builder {
  private:
   std::vector<VariableDeclaration> declared_variables_;
   std::vector<celwasm::FunctionLibrary> function_libraries_;
+  // Borrowed descriptor pool from `SetDescriptorPool`; nullptr means the
+  // process-wide generated pool.  Copied into the built Compiler.
+  const google::protobuf::DescriptorPool* descriptor_pool_ = nullptr;
   // Deferred parse error from `AddFunction(string)` — surfaced
   // at `Build()` if non-OK.  Subsequent `AddFunction` /
   // `AddLibrary` calls overwrite this only if the prior status

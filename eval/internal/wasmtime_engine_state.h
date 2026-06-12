@@ -47,6 +47,10 @@ extern "C" {
 typedef struct wasmtime_component_t wasmtime_component_t;
 }
 
+namespace google::protobuf {
+class DescriptorPool;
+}  // namespace google::protobuf
+
 namespace celwasm {
 
 // M13 Slice C.1: a foreign wasm module registered via
@@ -102,6 +106,13 @@ struct WasmtimeEngineState {
   // library declares.  Conflict detection still rejects duplicate
   // overload-ids (against host_callbacks + other components).
   std::vector<RegisteredComponent> component_libraries;
+
+  // Descriptor pool eval-time proto operations (message construction, field
+  // reads, type resolution via the cel_host trampolines) resolve against.
+  // Set from `Engine::Builder::SetDescriptorPool`; nullptr → the process-wide
+  // generated pool.  Borrowed — the caller owns it (mirrors the compile-side
+  // `Compiler::Builder::SetDescriptorPool`).
+  const google::protobuf::DescriptorPool* descriptor_pool = nullptr;
 
   WasmtimeEngineState() = default;
   ~WasmtimeEngineState();

@@ -22,7 +22,14 @@ user.bazelrc
 
 # Node deps for the TypeScript bindings — never checked in (large, and a
 # `git add` of it would sweep thousands of files).  Restored via `npm ci`.
+# The glob covers per-workspace-package node_modules (e.g. web/) too.
+bindings/ts/**/node_modules/
 bindings/ts/node_modules/
+
+# TypeScript bindings build + coverage output — generated, never committed.
+bindings/ts/**/dist/
+bindings/ts/**/coverage/
+bindings/ts/**/*.tsbuildinfo
 
 # Rendered docs site (mkdocs build output) — published by
 # .github/workflows/pages.yml, never committed.
@@ -30,3 +37,13 @@ bindings/ts/node_modules/
 
 # macOS Finder metadata.
 .DS_Store
+bindings/ts/web/.vite/*
+
+# Build-generated wasm artifacts — produced from the bazel C++/wasm build
+# (scripts/build-wasm-assets.sh, run by the web package's `predev` hook) and
+# published as GitHub Release assets in CI. Not committed: they bloat git
+# history and git handles large binaries poorly.
+bindings/ts/compiler/wasm/compiler.wasm
+bindings/ts/web/public/compiler.wasm
+bindings/ts/web/public/cel_runtime.wasm
+bindings/ts/eval/runtime/cel_runtime.wasm

@@ -61,6 +61,25 @@ jobs:
       - name: Manual-tagged targets + dual-mode conformance gate
         run: scripts/run_full_suite.sh
 
+      # TypeScript bindings gates — after the bazel build so the wasm
+      # assets (compiler.wasm, cel_runtime.wasm) come from THIS commit
+      # (release assets lag the branch; the compile ABI must match).
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install TS workspace deps
+        run: npm ci
+        working-directory: bindings/ts
+
+      - name: Install wasm assets from the bazel outputs
+        run: bindings/ts/scripts/build-wasm-assets.sh
+
+      - name: TS lint + build + typecheck + test
+        run: npm run lint && npm run build && npm run typecheck && npm test
+        working-directory: bindings/ts
+
   # Linux leg — host deps mirror docker/Dockerfile: clang+lld are
   # required (the runtime C needs clang; gold crashes on the host
   # link), tzdata-legacy supplies the US/* timezone aliases the
