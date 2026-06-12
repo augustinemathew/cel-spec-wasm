@@ -263,7 +263,9 @@ struct UncheckedHostThunk {
                                std::index_sequence<I...>) {
     auto* env = static_cast<CelHostCallbackEnv*>(env_ptr);
     wasmtime_context_t* ctx = wasmtime_caller_context(caller);
-    WasmtimeMemoryView mem(ctx, env->memory);
+    // Hot-path view: base cached at Plan time, size snapshot shared
+    // per-Eval through the env (see CelHostCallbackEnv::mem_base).
+    WasmtimeMemoryView mem(env->memory, env->mem_base, &env->mem_size);
     WasmtimeArenaAllocator alloc(ctx, env->arena_alloc_fn, env->memory);
     const TrampolineContext tctx{env->bindings, mem, env->refs, alloc};
     return StatusToTrap(Impl(static_cast<uint32_t>(raw[I].i32)..., tctx));

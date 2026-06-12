@@ -1254,6 +1254,18 @@ std::size_t Instance::memory_size_bytes() const {
 
 absl::StatusOr<Value> Instance::Eval() {
   wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
+  // Re-seed the per-Eval linear-memory size snapshot the host
+  // trampolines bounds-check against (see
+  // `CelHostCallbackEnv::mem_base` / `mem_size`): the activation
+  // marshal that ran just before this call may have grown memory
+  // (activation-buffer malloc), and growth from prior Evals must be
+  // visible.  The cached base pointer needs no re-seed — wasmtime
+  // shared memories keep a stable base across memory.grow (pinned by
+  // memory_grow_stability_test.cc).  Mid-$eval growth past this
+  // snapshot is handled by WasmtimeMemoryView's refresh-on-bounds-
+  // miss path.
+  impl_->host_env.mem_size =
+      static_cast<uint32_t>(wasmtime_sharedmemory_data_size(impl_->memory));
   wasmtime_func_t fn = impl_->eval_fn;
   wasmtime_val_t result{};
   wasm_trap_t* trap = nullptr;

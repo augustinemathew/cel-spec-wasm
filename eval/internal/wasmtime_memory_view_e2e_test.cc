@@ -191,6 +191,107 @@ TEST(WasmtimeMemoryViewE2E, WriteCelValuePastEndIsNoop) {
   EXPECT_EQ(got.payload.i, 0x4242);
 }
 
+// ── memory.grow: base stability + view refresh ──────────────────
+//
+// The host side caches the linear-memory base pointer (and a size
+// snapshot) across accesses — see `CelHostCallbackEnv::mem_base` and
+// the contract comment on `InstanceImpl::memory`.  That caching, and
+// every `absl::string_view` lifted over linear memory (e.g. map-key
+// decode), rests on two wasmtime shared-memory contracts pinned here
+// at the API level:
+//
+//   1. `wasmtime_sharedmemory_data` returns the SAME base pointer
+//      before and after a grow (shared memories reserve their
+//      declared maximum up front; grow only commits pages).
+//   2. `wasmtime_sharedmemory_data_size` grows monotonically.
+//
+// Plus the view-level corollary: a `WasmtimeMemoryView` constructed
+// BEFORE a grow must not falsely reject offsets the grow made valid
+// (its size snapshot refreshes on a bounds miss), and must still
+// reject genuine OOB after the refresh.  The eval-level counterpart
+// (grow forced mid-$eval by arena allocation) lives in
+// `memory_grow_stability_test.cc`.
+
+TEST(WasmtimeMemoryViewE2E, GrowKeepsBasePointerStable) {
+  SharedMemHarness h;
+  std::string err;
+  ASSERT_TRUE(BuildSharedMem(&h, 1, 4, &err)) << err;
+
+  uint8_t* base_before = wasmtime_sharedmemory_data(h.mem);
+  ASSERT_NE(base_before, nullptr);
+  ASSERT_EQ(wasmtime_sharedmemory_data_size(h.mem), kPageBytes);
+
+  uint64_t prev_pages = 0;
+  wasmtime_error_t* grow_err =
+      wasmtime_sharedmemory_grow(h.mem, /*delta=*/2, &prev_pages);
+  ASSERT_EQ(grow_err, nullptr) << ConsumeError(grow_err);
+  EXPECT_EQ(prev_pages, 1u);
+
+  // Contract 1: identical base pointer.  Contract 2: size grew.
+  EXPECT_EQ(wasmtime_sharedmemory_data(h.mem), base_before);
+  EXPECT_EQ(wasmtime_sharedmemory_data_size(h.mem), 3u * kPageBytes);
+}
+
+TEST(WasmtimeMemoryViewE2E, ViewConstructedBeforeGrowAcceptsGrownPages) {
+  SharedMemHarness h;
+  std::string err;
+  ASSERT_TRUE(BuildSharedMem(&h, 1, 4, &err)) << err;
+  WasmtimeMemoryView view(wasmtime_store_context(h.store), h.mem);
+
+  // Page 2 is OOB before the grow: reads reject.
+  const uint32_t page2_off = kPageBytes + 128u;
+  EXPECT_EQ(view.ReadSpan(page2_off, 16u), absl::string_view{});
+  EXPECT_EQ(view.ReadCelValue(page2_off).kind, 0u);
+
+  uint64_t prev_pages = 0;
+  wasmtime_error_t* grow_err =
+      wasmtime_sharedmemory_grow(h.mem, /*delta=*/2, &prev_pages);
+  ASSERT_EQ(grow_err, nullptr) << ConsumeError(grow_err);
+
+  // Seed the freshly grown page directly (test setup, not the API
+  // under test) and read it back through the PRE-GROW view.  A view
+  // whose stale size snapshot falsely rejected this offset would
+  // return an empty span — the functional bug the
+  // refresh-on-bounds-miss contract exists to prevent.
+  uint8_t* base = wasmtime_sharedmemory_data(h.mem);
+  std::memset(base + page2_off, 'G', 16);
+  EXPECT_EQ(view.ReadSpan(page2_off, 16u), "GGGGGGGGGGGGGGGG");
+
+  // Writes through the same pre-grow view land in the grown page.
+  CelValue cv{};
+  cv.kind = 0xBEEF;
+  cv.payload.i = 0x77;
+  view.WriteCelValue(page2_off + 64u, cv);
+  CelValue got = view.ReadCelValue(page2_off + 64u);
+  EXPECT_EQ(got.kind, 0xBEEFu);
+  EXPECT_EQ(got.payload.i, 0x77);
+
+  // After an accepted post-grow access, Size() reflects the grown
+  // length (the snapshot refreshed).
+  EXPECT_EQ(view.Size(), 3u * kPageBytes);
+}
+
+TEST(WasmtimeMemoryViewE2E, ViewStillRejectsGenuineOobAfterGrow) {
+  SharedMemHarness h;
+  std::string err;
+  ASSERT_TRUE(BuildSharedMem(&h, 1, 4, &err)) << err;
+  WasmtimeMemoryView view(wasmtime_store_context(h.store), h.mem);
+
+  uint64_t prev_pages = 0;
+  wasmtime_error_t* grow_err =
+      wasmtime_sharedmemory_grow(h.mem, /*delta=*/2, &prev_pages);
+  ASSERT_EQ(grow_err, nullptr) << ConsumeError(grow_err);
+
+  // Just past the grown end, straddling it, and adversarial wrap:
+  // the refresh must not turn a genuine OOB into an accept.
+  const uint32_t grown = 3u * kPageBytes;
+  EXPECT_EQ(view.ReadSpan(grown, 1u), absl::string_view{});
+  EXPECT_EQ(view.ReadSpan(grown - 1u, 2u), absl::string_view{});
+  EXPECT_EQ(view.ReadSpan(0xFFFFFFFFu, 1u), absl::string_view{});
+  EXPECT_EQ(view.ReadSpan(0x80000000u, 0x80000000u), absl::string_view{});
+  EXPECT_EQ(view.ReadCelValue(grown - 8u).kind, 0u);
+}
+
 // ── Size reports the true shared memory length ──────────────────
 
 TEST(WasmtimeMemoryViewE2E, SizeReportsSharedMemoryByteLength) {

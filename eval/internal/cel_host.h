@@ -341,15 +341,32 @@ class MemoryView {
   // bounds-check `ptr + len` against memory size before iterating
   // (e.g. when walking an attacker-controlled length field from a
   // CelValue payload).
+  //
+  // An implementation over GROWABLE memory may return a cached
+  // snapshot that lags the true size while the memory grows mid-Eval
+  // (`arena_alloc` → dlmalloc → memory.grow).  The snapshot is
+  // monotonic-safe — it only ever UNDER-approximates — and
+  // `IsInBounds` is the authoritative bounds predicate: it refreshes
+  // the snapshot before rejecting (see `WasmtimeMemoryView`).
   virtual uint32_t Size() const = 0;
 
-  // True iff `[ptr, ptr+len)` lies entirely inside `[0, Size())`,
-  // i.e. the read/write of `len` bytes at `ptr` is safe.  Empty
-  // ranges (`len == 0`) are always in-bounds — they perform no
+  // True iff `[ptr, ptr+len)` lies entirely inside the linear
+  // memory, i.e. the read/write of `len` bytes at `ptr` is safe.
+  // Empty ranges (`len == 0`) are always in-bounds — they perform no
   // memory access.  Subtraction is rearranged
   // (`len <= Size() - ptr`) to avoid overflow when computing
   // `ptr + len` on the u32s.
-  bool IsInBounds(uint32_t ptr, uint32_t len) const {
+  //
+  // Virtual so implementations over growable memory can refresh a
+  // cached size snapshot before rejecting: a probe that fails
+  // against a stale snapshot of a memory that has since grown MUST
+  // re-fetch and re-test, never falsely reject an offset the grow
+  // made valid (a false reject corrupts results — e.g. a map-lookup
+  // key span in a freshly grown arena page decoding as empty).
+  // Pinned by `ViewConstructedBeforeGrowAcceptsGrownPages`
+  // (wasmtime_memory_view_e2e_test.cc) and
+  // `MemoryGrowStabilityTest` (memory_grow_stability_test.cc).
+  virtual bool IsInBounds(uint32_t ptr, uint32_t len) const {
     if (len == 0) return true;
     const uint32_t size = Size();
     return ptr <= size && len <= size - ptr;

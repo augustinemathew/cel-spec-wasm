@@ -114,6 +114,24 @@ struct CelHostCallbackEnv {
   // for the instance's lifetime; this struct is part of
   // `InstanceImpl` so the pointer stays valid).
   wasmtime_sharedmemory_t* memory = nullptr;
+  // Cached linear-memory base pointer + size snapshot, consumed by
+  // every `WasmtimeMemoryView` the trampolines build (hot-path ctor).
+  //
+  //   - `mem_base` is fetched ONCE at Plan time
+  //     (`BindRuntimeFuncHandles`): wasmtime shared memories keep a
+  //     stable base pointer for the life of the memory, across
+  //     memory.grow — the contract documented on
+  //     `InstanceImpl::memory` and pinned by
+  //     `MemoryGrowStabilityTest.BasePointerStableAcrossMidEvalGrow`.
+  //   - `mem_size` is refreshed at the top of every Eval
+  //     (`Instance::Eval`) and bumped monotonically by
+  //     `WasmtimeMemoryView`'s refresh-on-bounds-miss path when
+  //     arena allocation grows memory mid-Eval.  It only ever
+  //     under-approximates the true size (memory never shrinks), so
+  //     staleness can cause a refresh, never an out-of-bounds
+  //     accept.
+  uint8_t* mem_base = nullptr;
+  uint32_t mem_size = 0;
   wasmtime_func_t arena_alloc_fn = {};
   // Handle for the runtime's `malloc` export.  Used by
   // Instance::Eval to allocate / grow the activation buffer (where
@@ -131,43 +149,100 @@ struct CelHostCallbackEnv {
 // Layer-3 trampoline — the cel_host field/aggregate trampolines and
 // the user `@host` callback trampoline — to read arg slots and write
 // the out slot.
+//
+// Base / size caching.  `wasmtime_sharedmemory_data` + `_data_size`
+// used to be re-fetched on EVERY access; both are now cached:
+//
+//   - The BASE pointer is stable for the life of the shared memory,
+//     across memory.grow (shared memories reserve their declared
+//     maximum up front — contract documented on
+//     `InstanceImpl::memory` and pinned by
+//     `GrowKeepsBasePointerStable` / `MemoryGrowStabilityTest.
+//     BasePointerStableAcrossMidEvalGrow`), so caching it is
+//     unconditionally safe.  The hot-path ctor takes the per-Eval
+//     cached base from `CelHostCallbackEnv::mem_base`.
+//   - The SIZE grows monotonically mid-Eval (`arena_alloc` →
+//     dlmalloc → memory.grow), so a cached size can go stale in only
+//     one direction: it UNDER-approximates, making a bounds check
+//     falsely REJECT offsets in freshly grown pages (a functional
+//     bug — e.g. a map-lookup key span decoding empty — never a
+//     memory-safety bug).  `IsInBounds` therefore refreshes the
+//     snapshot on a miss and re-tests before rejecting; a genuine
+//     OOB still rejects after the refresh.  Pinned by
+//     `ViewConstructedBeforeGrowAcceptsGrownPages` /
+//     `ViewStillRejectsGenuineOobAfterGrow` and, e2e,
+//     `TrampolineReadsSpanFromPagesGrownMidEval`.
 class WasmtimeMemoryView final : public MemoryView {
  public:
-  // `ctx` is accepted for call-site symmetry with the arena allocator
-  // (and a possible future bounds-checked read), but shared-memory data
-  // is reachable without it via `wasmtime_sharedmemory_data`.
+  // Self-contained ctor: snapshots base + size from `mem` at
+  // construction.  `ctx` is accepted for call-site symmetry with the
+  // arena allocator, but shared-memory data is reachable without it.
   WasmtimeMemoryView(wasmtime_context_t* absl_nonnull /*ctx*/,
                      wasmtime_sharedmemory_t* absl_nonnull mem)
-      : mem_(mem) {}
+      : mem_(mem),
+        base_(wasmtime_sharedmemory_data(mem)),
+        own_size_(static_cast<uint32_t>(wasmtime_sharedmemory_data_size(mem))),
+        size_cache_(&own_size_) {}
 
+  // Hot-path ctor: `base` is the Plan-time cached base pointer and
+  // `size_cache` the per-Eval size snapshot, both living on
+  // `CelHostCallbackEnv` (`mem_base` / `mem_size`).  Routing the
+  // refresh-on-miss through the env's slot lets one trampoline's
+  // refresh benefit every later trampoline in the same Eval.
+  WasmtimeMemoryView(wasmtime_sharedmemory_t* absl_nonnull mem,
+                     uint8_t* absl_nonnull base,
+                     uint32_t* absl_nonnull size_cache)
+      : mem_(mem), base_(base), size_cache_(size_cache) {}
+
+  // May lag the true size while memory grows mid-Eval; monotonic-safe
+  // snapshot (see class comment).  `IsInBounds` below is the
+  // authoritative predicate.
   uint32_t Size() const override {
-    return static_cast<uint32_t>(wasmtime_sharedmemory_data_size(mem_));
+    return *size_cache_;
+  }
+
+  bool IsInBounds(uint32_t ptr, uint32_t len) const override {
+    if (InBoundsAgainst(*size_cache_, ptr, len)) return true;
+    // Miss: the snapshot may be stale — memory only ever GROWS, so
+    // re-fetch once and re-test before rejecting.  The base pointer
+    // needs no refresh (stable across grow; class comment).
+    *size_cache_ = static_cast<uint32_t>(wasmtime_sharedmemory_data_size(mem_));
+    return InBoundsAgainst(*size_cache_, ptr, len);
   }
 
   CelValue ReadCelValue(uint32_t offset) const override {
     if (!IsInBounds(offset, sizeof(CelValue))) return CelValue{};
     CelValue cv{};
-    std::memcpy(&cv, Data() + offset, sizeof(cv));
+    std::memcpy(&cv, base_ + offset, sizeof(cv));
     return cv;
   }
   void WriteCelValue(uint32_t offset, const CelValue& v) override {
     if (!IsInBounds(offset, sizeof(CelValue))) return;
-    std::memcpy(Data() + offset, &v, sizeof(v));
+    std::memcpy(base_ + offset, &v, sizeof(v));
   }
   void WriteU32(uint32_t offset, uint32_t value) override {
     if (!IsInBounds(offset, sizeof(value))) return;
-    std::memcpy(Data() + offset, &value, sizeof(value));
+    std::memcpy(base_ + offset, &value, sizeof(value));
   }
   absl::string_view ReadSpan(uint32_t ptr, uint32_t len) const override {
     if (!IsInBounds(ptr, len)) return {};
-    return {reinterpret_cast<const char*>(Data() + ptr), len};
+    return {reinterpret_cast<const char*>(base_ + ptr), len};
   }
 
  private:
-  uint8_t* absl_nonnull Data() const {
-    return wasmtime_sharedmemory_data(mem_);
+  // Bounds test against an explicit size; subtraction form avoids
+  // `ptr + len` u32 overflow (mirrors MemoryView::IsInBounds).
+  static bool InBoundsAgainst(uint32_t size, uint32_t ptr, uint32_t len) {
+    return len == 0 || (ptr <= size && len <= size - ptr);
   }
+
   wasmtime_sharedmemory_t* absl_nonnull mem_;
+  uint8_t* absl_nonnull base_;
+  // Backing slot for the self-contained ctor; `mutable` because the
+  // refresh-on-miss path writes through `size_cache_` from const
+  // methods.
+  mutable uint32_t own_size_ = 0;
+  uint32_t* absl_nonnull size_cache_;
 };
 
 // Wasmtime-backed `ArenaAllocator` — calls the runtime's

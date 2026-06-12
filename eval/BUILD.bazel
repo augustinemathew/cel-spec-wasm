@@ -747,6 +747,51 @@ cc_library(
     ],
 )
 
+# Test-only backdoor into Instance's pImpl payload — lets eval-level
+# regression tests reach the per-Instance wasmtime handles (e.g. the
+# shared linear-memory handle, to pin the base-pointer stability
+# contract on `InstanceImpl::memory`) without widening the public
+# Instance surface.
+cc_library(
+    name = "instance_test_peer",
+    testonly = True,
+    hdrs = ["internal/instance_test_peer.h"],
+    tags = ["manual"],
+    deps = [
+        ":instance",
+        ":instance_impl",
+    ],
+)
+
+# Pins the linear-memory base-stability contract at Eval level: an
+# expression whose arena allocations force memory.grow mid-$eval must
+# leave `wasmtime_sharedmemory_data` unchanged (stable base), grow
+# `data_size`, and produce the correct result — including a host
+# trampoline reading a span out of the freshly grown pages.  API-level
+# counterparts live in `wasmtime_memory_view_e2e_test`.
+link_mode_cc_test(
+    name = "memory_grow_stability_test",
+    size = "large",
+    srcs = ["internal/memory_grow_stability_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":activation",
+        ":engine",
+        ":instance",
+        ":instance_impl",
+        ":instance_test_peer",
+        ":value",
+        "//bazel:link_mode_test_helpers",
+        "//compiler:compiler",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "//third_party/wasmtime:wasmtime",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # cel::Instance — the live evaluator.  Constructed by Engine::Plan.
 cc_library(
     name = "instance",

@@ -50,8 +50,14 @@ struct InstanceImpl {
   // its memory as `shared`.  All host-side reads / writes go through
   // the shared-memory API (`wasmtime_sharedmemory_data` /
   // `wasmtime_sharedmemory_data_size`), which returns a stable base
-  // pointer and does not take a `wasmtime_context_t*`.  The pointer is
-  // owned by this struct and deleted in the destructor.
+  // pointer and does not take a `wasmtime_context_t*`.  The base
+  // stays stable ACROSS `memory.grow` (shared memories reserve their
+  // declared maximum up front) — the contract every host-side
+  // artifact over linear memory relies on (string_views from span
+  // decode, the cached `CelHostCallbackEnv::mem_base`), pinned by
+  // `memory_grow_stability_test.cc` and the grow cases in
+  // `wasmtime_memory_view_e2e_test.cc`.  The pointer is owned by
+  // this struct and deleted in the destructor.
   wasmtime_sharedmemory_t* memory = nullptr;
   // m28 — "wherever the runtime helpers live".  In kDynamic mode this
   // is the separately-instantiated cel_runtime.wasm; in kStatic mode

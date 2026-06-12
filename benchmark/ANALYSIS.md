@@ -94,13 +94,46 @@ Fresh `mega100` flame (~85 ns/access now):
 | ~23 | field/dispatch machinery (incl. outlined fragments) | context/view work below + P3 |
 | ~14 | malloc/copy — incl. a `shared_ptr<HostMessageBacking>` intern per chain hop | P2 |
 | ~8 + WKT checks | reflection metadata + `UnpackWellKnownTime/WrapperMessage` per read | **P1 (next)** |
-| ~5 | `wasmtime_sharedmemory_data/_size` + `Size()` re-fetch per memory access | per-Eval base/size cache — REQUIRES the grow test (size grows monotonically; a stale cached size under-bounds new arena pages) |
+| ~5 | `wasmtime_sharedmemory_data/_size` + `Size()` re-fetch per memory access | done — per-Eval base/size cache gated on the grow test (see "P3" below) |
 | ~2.5 | wasmtime call ABI | done — was ~29% |
 
 Priority after this data: **P1** (cache `FieldDescriptor*` + WKT/wrapper
 classification per field — pure host-side, no safety story), then the
 grow test + per-Eval base/size caching, then P2 (copies + backing
 intern), then P3.
+
+## P3 — per-Eval memory base/size cache (2026-06-12)
+
+The "~5 ns/access" row above is closed.  The grow regression test
+landed first (it gates the cache): `eval/internal/
+memory_grow_stability_test.cc` forces a real `memory.grow` mid-$eval
+(8-term string concat over a 256 KiB binding ⇒ ~8.75 MiB of arena
+intermediates against the 64 KiB seed arena) and pins (a) the base
+pointer IDENTICAL across the grow, (b) `data_size` increased by
+multiple MiB (provably in-$eval, not marshal), (c) byte-exact results
+— plus a `c.metadata[<2 MiB concat key>]` case where the cel_map_lookup
+trampoline reads the key span out of pages grown mid-Eval.  API-level
+grow + view-refresh cases live in `wasmtime_memory_view_e2e_test.cc`.
+
+The cache itself: `CelHostCallbackEnv::{mem_base, mem_size}` — base
+fetched once at Plan (stable across grow per the test), size re-seeded
+per Eval and refreshed by `WasmtimeMemoryView::IsInBounds` on a bounds
+miss (re-fetch, then re-test; stale size only ever under-approximates,
+so the failure mode without the refresh is a false REJECT of freshly
+grown pages, never an OOB accept).
+
+Measured (interleaved A/B vs the post-P2 binary, 3-rep medians @ 2 s,
+static): on a quiet machine `mega100` 8,335→7,785 / 8,373→7,841 ns
+(**−6.5%**), `select_depth16` −1.5..−3%, `authz_deep8` −1..−2%,
+single-read and map cells parity (their per-Eval floor has few memory
+accesses).  Earlier same-day rounds on a noisier machine showed wider
+spreads in both directions; the quiet-machine interleave is the
+representative number.  Fresh `mega100` flame: the
+`wasmtime_sharedmemory_data/_size` + `Size()` bucket fell from ~280
+sampled frames (of 6,118) to **1** (of 4,499); `ReadCelValue` /
+`WriteCelValue` are now pure bounds-check + memcpy.  Remaining cost
+order: CelGetFieldImpl dispatch/prelude, ProtoMap::Get +
+GetMetadata reflection, MapKeysEqual/memcmp, EncodeFieldResult.
 
 ## Corpus dedupe (applied 2026-06-11, after the published run)
 

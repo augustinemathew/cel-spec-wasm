@@ -290,6 +290,14 @@ absl::Status DefineCelLinkerBindings(celwasm::InstanceImpl* impl,
 absl::Status BindRuntimeFuncHandles(celwasm::InstanceImpl* impl,
                                     wasmtime_context_t* ctx) {
   impl->host_env.memory = impl->memory;
+  // Seed the per-Eval base/size cache (CelHostCallbackEnv::mem_base
+  // docs).  The base is stable for the life of the shared memory —
+  // across memory.grow — so fetching it once here is safe; the size
+  // snapshot is re-seeded at the top of every Eval and refreshed on
+  // bounds miss by WasmtimeMemoryView.
+  impl->host_env.mem_base = wasmtime_sharedmemory_data(impl->memory);
+  impl->host_env.mem_size =
+      static_cast<uint32_t>(wasmtime_sharedmemory_data_size(impl->memory));
   wasmtime_extern_t alloc_ext;
   if (!wasmtime_instance_export_get(ctx, &impl->helpers_instance, "arena_alloc",
                                     11, &alloc_ext)) {
@@ -652,7 +660,9 @@ wasm_trap_t* HostCallbackTrampoline(void* env_ptr, wasmtime_caller_t* caller,
   }
 
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
-  celwasm::WasmtimeMemoryView mem(ctx, he->memory);
+  // Hot-path view: base cached at Plan time, size snapshot shared
+  // per-Eval through the env (see CelHostCallbackEnv::mem_base).
+  celwasm::WasmtimeMemoryView mem(he->memory, he->mem_base, &he->mem_size);
   celwasm::WasmtimeArenaAllocator alloc(ctx, he->arena_alloc_fn, he->memory);
 
   const auto out_slot = static_cast<uint32_t>(args[0].of.i32);
@@ -870,7 +880,9 @@ wasm_trap_t* ComponentCallbackTrampoline(
   }
   celwasm::CelHostCallbackEnv* he = env->host_env;
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
-  celwasm::WasmtimeMemoryView mem(ctx, he->memory);
+  // Hot-path view: base cached at Plan time, size snapshot shared
+  // per-Eval through the env (see CelHostCallbackEnv::mem_base).
+  celwasm::WasmtimeMemoryView mem(he->memory, he->mem_base, &he->mem_size);
   celwasm::WasmtimeArenaAllocator alloc(ctx, he->arena_alloc_fn, he->memory);
 
   const auto out_slot = static_cast<uint32_t>(args[0].of.i32);

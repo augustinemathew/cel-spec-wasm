@@ -99,6 +99,12 @@ class Instance {
 
  private:
   friend class Engine;
+  // Test-only (eval/internal/instance_test_peer.h): lets eval-level
+  // regression tests reach the per-Instance wasmtime handles — e.g.
+  // the shared linear-memory handle, to pin the base-pointer
+  // stability contract documented on `InstanceImpl::memory` —
+  // without widening the public Instance surface.
+  friend struct InstanceTestPeer;
 
   // Constructed by Engine::Plan.  Takes ownership of `impl` and
   // shares the engine state via shared_ptr (so the wasm engine +
