@@ -90,33 +90,44 @@ describe('Engine.create', () => {
 });
 
 describe('Engine.defineFunction', () => {
-  it('registers a host function under its leading identifier', async () => {
+  // The decl→overload-id synthesis matrix is pinned in
+  // `celfn-decl.test.ts`; the link-through against a compiled `@host`
+  // Program is pinned in `eval/e2e/host-fns.test.ts`.  Here we pin the
+  // registration surface itself.
+  it('registers a .celfn @host declaration', async () => {
     const engine = await Engine.create();
     const impl = (...args: CelValue[]): CelValue => args[0] ?? null;
-    // A well-formed declaration registers without throwing.
+    // The same decl string the compiler's `fns` option takes.
     expect(() => {
-      engine.defineFunction('my_fn(int): int', impl);
+      engine.defineFunction('int @host.my_fn(int x);', impl);
     }).not.toThrow();
   });
 
-  it('accepts a bare-identifier declaration', async () => {
+  it('accepts a bare overload id verbatim', async () => {
     const engine = await Engine.create();
     expect(() => {
       engine.defineFunction('greet', () => 'hi');
     }).not.toThrow();
   });
 
-  it('rejects a declaration with no leading identifier', async () => {
+  it('rejects a malformed declaration', async () => {
     const engine = await Engine.create();
     expect(() => {
       engine.defineFunction('(int): int', () => null);
-    }).toThrow(/no leading identifier/);
+    }).toThrow(/malformed .celfn host declaration/);
   });
 
-  it('re-registering a name overwrites the prior impl', async () => {
+  it('rejects a TS-style signature (not a .celfn decl)', async () => {
+    const engine = await Engine.create();
+    expect(() => {
+      engine.defineFunction('my_fn(int): int', () => null);
+    }).toThrow(/is not a .celfn type/);
+  });
+
+  it('re-registering an overload id overwrites the prior impl', async () => {
     const engine = await Engine.create();
     engine.defineFunction('f', () => 1n);
-    // No throw on overwrite; the registry keys on the name.
+    // No throw on overwrite; the registry keys on the overload id.
     expect(() => {
       engine.defineFunction('f', () => 2n);
     }).not.toThrow();

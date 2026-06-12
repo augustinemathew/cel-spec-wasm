@@ -86,6 +86,17 @@ export interface ProtoCodec {
    * externref `messageSlot` (`cel_host.h:697`).
    */
   readonly writeMessageSlot: (slot: number, messageSlot: number) => void;
+
+  /**
+   * Re-stamp the CelValue at `slot` as CEL_UINT, leaving the payload
+   * bits intact.  A decoded uint64/uint32 field value is a JS `bigint`,
+   * which {@link writeValue} stamps CEL_INT (JS has no int/uint
+   * distinction); a uint-typed proto field must surface CEL_UINT
+   * (`cel_host.cc`'s field decode stamps the kind from the
+   * FieldDescriptor) or values ≥ 2^63 decode signed at the result
+   * surface.
+   */
+  readonly markUint: (slot: number) => void;
 }
 
 /**
@@ -297,7 +308,27 @@ export function celGetField(
   }
   // Scalars, enums, repeated, maps, and WKT peels decode through the
   // backing; the codec encodes the JS-natural result back to the wire.
-  ctx.codec.writeValue(out, backing.readField(fieldKey(entry)));
+  const value = backing.readField(fieldKey(entry));
+  ctx.codec.writeValue(out, value);
+  if (typeof value === 'bigint' && isUnsignedIntegerField(field)) {
+    ctx.codec.markUint(out);
+  }
+}
+
+/**
+ * True iff the field's wire type maps to CEL `uint` (uint32 / uint64 /
+ * fixed32 / fixed64 — langdef §"Protocol Buffer Data Conversion").  Used
+ * to re-stamp a decoded bigint as CEL_UINT; repeated / map fields decode
+ * to aggregates (never bigint), so the bigint guard at the call site
+ * keeps this scalar-only.
+ */
+function isUnsignedIntegerField(field: protobuf.Field): boolean {
+  return (
+    field.type === 'uint32' ||
+    field.type === 'uint64' ||
+    field.type === 'fixed32' ||
+    field.type === 'fixed64'
+  );
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -524,7 +555,14 @@ export function celWktUnwrapWrapper(
     return;
   }
   // The wrapper's `value` field (number 1), decoded as a normal field.
-  ctx.codec.writeValue(out, backing.readField(1));
+  const value = backing.readField(1);
+  ctx.codec.writeValue(out, value);
+  if (wrapperKind === (CelKind.UINT as number) && typeof value === 'bigint') {
+    // UInt32Value / UInt64Value: the decoded bigint encodes CEL_INT by
+    // JS shape; the wrapper family says uint — re-stamp (see
+    // ProtoCodec.markUint).
+    ctx.codec.markUint(out);
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────

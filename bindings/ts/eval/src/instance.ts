@@ -67,6 +67,18 @@ import type {
 const CEL_FN_MODULE = 'cel_fn';
 
 /**
+ * One registered host function, keyed by its `cel_fn.*` overload id: the
+ * JS implementation plus the declaration facts the trampoline needs.
+ * `returnsUint` mirrors the C++ `HostCallContext::ReturnUint` — a JS
+ * `bigint` return otherwise encodes as CEL_INT, and a uint-declared
+ * return must stamp CEL_UINT or downstream uint overloads reject it.
+ */
+export interface HostFnRegistration {
+  readonly impl: HostFunction;
+  readonly returnsUint: boolean;
+}
+
+/**
  * The `cel.*` import module name a DYNAMIC Program imports the runtime
  * helpers (incl. the shared `cel.memory`) from.  A STATIC Program imports
  * nothing from this namespace — its presence is the routing signal.
@@ -288,7 +300,7 @@ export class Instance {
 export async function instantiateProgram(
   program: Program,
   descriptors: DescriptorSet | undefined,
-  functions: ReadonlyMap<string, HostFunction>,
+  functions: ReadonlyMap<string, HostFnRegistration>,
   runtimeModule: () => Promise<WebAssembly.Module>,
 ): Promise<Instance> {
   const refs = new ExternrefTable();
@@ -540,7 +552,7 @@ function buildImports(
   codecEnv: CodecEnv,
   abi: CelAbi,
   descriptors: DescriptorSet | undefined,
-  functions: ReadonlyMap<string, HostFunction>,
+  functions: ReadonlyMap<string, HostFnRegistration>,
 ): HostImports {
   const aggregateCtx: AggregateContext = {
     view: () => host.view(),
@@ -590,20 +602,28 @@ function buildImports(
  * a `(out, ...argSlots) => void` trampoline that decodes its argument
  * slots through the resolving codec, calls the JS impl, and encodes the
  * result back into the out slot — the host-call ABI of
- * `eval/host_call_context.h:127`.  Exported so the host-fn round-trip can
- * be exercised without a compiled `@host` Program (none is reachable in
- * the TS test toolchain yet — see the e2e gap note in `instance.test.ts`).
+ * `eval/host_call_context.h:127`.  A uint-declared return re-stamps the
+ * slot kind to CEL_UINT after the encode (a JS `bigint` carries no
+ * int/uint distinction, so `encodeCelValue` stamps CEL_INT; the C++
+ * mirror is `HostCallContext::ReturnUint`).  Exported for the
+ * trampoline-level unit tests (`instance.test.ts`); the compiled-Program
+ * path is exercised in `eval/e2e/host-fns.test.ts`.
  */
 export function buildCelFnImports(
   codecEnv: CodecEnv,
-  functions: ReadonlyMap<string, HostFunction>,
+  functions: ReadonlyMap<string, HostFnRegistration>,
 ): Record<string, (...args: number[]) => void> {
   const imports: Record<string, (...args: number[]) => void> = {};
-  for (const [name, impl] of functions) {
+  for (const [name, fn] of functions) {
     imports[name] = (out: number, ...argSlots: number[]): void => {
       const args = argSlots.map((slot) => resolveCelValue(codecEnv, slot));
-      const result = impl(...args);
+      const result = fn.impl(...args);
       encodeCelValue(codecEnv, out, result);
+      if (fn.returnsUint && typeof result === 'bigint') {
+        codecEnv
+          .view()
+          .setUint32(out + CEL_VALUE_KIND_OFFSET, CelKind.UINT, true);
+      }
     };
   }
   return imports;
@@ -640,6 +660,11 @@ function makeProtoCodec(host: HostEnv, codecEnv: CodecEnv): ProtoCodec {
       const view = host.view();
       view.setUint32(slot + CEL_VALUE_KIND_OFFSET, CelKind.MESSAGE, true);
       view.setUint32(slot + CEL_VALUE_PAYLOAD_OFFSET, messageSlot, true);
+    },
+    markUint: (slot: number) => {
+      // Payload bits are already the two's-complement u64; only the kind
+      // tag changes (see ProtoCodec.markUint).
+      host.view().setUint32(slot + CEL_VALUE_KIND_OFFSET, CelKind.UINT, true);
     },
   };
 }

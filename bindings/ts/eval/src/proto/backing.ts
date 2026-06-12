@@ -137,13 +137,130 @@ export class ProtoMessageBacking implements MessageBacking {
 /**
  * Coerce a plain JS object (protobuf-JSON shape) to a protobufjs message
  * of the given type — the activation path for a message-typed variable
- * bound to a JS object (§A.4.6).  Uses protobufjs `fromObject`.
+ * bound to a JS object (§A.4.6).  Uses protobufjs `fromObject`, after
+ * normalizing map-field values: a JSON-natural `{ K: V }` record (or a JS
+ * `Map`) bound to a map field is rewritten to the shape the field's
+ * descriptor source expects — a `Root.fromDescriptor` map field is a
+ * synthetic repeated `{key, value}` entry field (see {@link isMapField}),
+ * for which `fromObject` wants an entry array, not a record.
  */
 export function coerceObjectToMessage(
   type: protobuf.Type,
   obj: Record<string, unknown>,
 ): protobuf.Message {
-  return type.fromObject(obj);
+  return type.fromObject(normalizeObjectForType(type, obj));
+}
+
+/**
+ * Rewrite `obj`'s map-field values into the shape `type.fromObject`
+ * accepts, recursing through nested message fields (singular and
+ * repeated) so a nested map normalizes too.  Non-field keys and already
+ * conformant values pass through untouched.
+ */
+function normalizeObjectForType(
+  type: protobuf.Type,
+  obj: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const field: protobuf.Field | undefined = type.fields[key];
+    out[key] = field === undefined ? value : normalizeFieldValue(field, value);
+  }
+  return out;
+}
+
+/** Normalize one bound field value (map / repeated / singular). */
+function normalizeFieldValue(field: protobuf.Field, value: unknown): unknown {
+  field.resolve();
+  if (field instanceof protobuf.MapField) {
+    // A real MapField (descriptors from .proto source) wants a `{ K: V }`
+    // record; accept a JS `Map` by stringifying its keys.
+    if (value instanceof Map) {
+      const record: Record<string, unknown> = {};
+      for (const [k, v] of value as Map<unknown, unknown>) {
+        record[String(k)] = v;
+      }
+      return record;
+    }
+    return value;
+  }
+  if (isMapField(field)) {
+    return normalizeSyntheticMapEntries(field, value);
+  }
+  if (field.repeated && Array.isArray(value)) {
+    return value.map((element) => normalizeSingularValue(field, element));
+  }
+  return normalizeSingularValue(field, value);
+}
+
+/**
+ * A synthetic map-entry repeated field (`Root.fromDescriptor`): rewrite a
+ * `{ K: V }` record or a JS `Map` to the `[{key, value}, …]` entry array
+ * `fromObject` expects.  An already entry-shaped array passes through.
+ */
+function normalizeSyntheticMapEntries(
+  field: protobuf.Field,
+  value: unknown,
+): unknown {
+  const entryType = field.resolvedType;
+  if (!(entryType instanceof protobuf.Type)) {
+    return value;
+  }
+  const keyField = entryType.fields.key;
+  const valueField = entryType.fields.value;
+  const entries: [unknown, unknown][] | undefined =
+    value instanceof Map
+      ? [...(value as Map<unknown, unknown>).entries()]
+      : isRecordObject(value)
+        ? Object.entries(value)
+        : undefined;
+  if (
+    entries === undefined ||
+    keyField === undefined ||
+    valueField === undefined
+  ) {
+    return value; // already entry-shaped (array) or not coercible — pass through
+  }
+  return entries.map(([key, entryValue]) => ({
+    key: normalizeSingularValue(keyField, key),
+    value: normalizeSingularValue(valueField, entryValue),
+  }));
+}
+
+/**
+ * Normalize one singular value: recurse into a nested message-typed
+ * record, and rewrite a `bigint` to the shape protobufjs `fromObject`
+ * accepts (a Number for 32-bit fields, a decimal string for 64-bit Long
+ * fields — `fromObject`'s generated converters reject bigint on 32-bit
+ * fields and lose uint64 unsignedness, while {@link encodeScalar} also
+ * range-checks the 32-bit narrowing).  Other scalars pass through.
+ */
+function normalizeSingularValue(
+  field: protobuf.Field,
+  value: unknown,
+): unknown {
+  if (typeof value === 'bigint') {
+    return encodeScalar(field, value);
+  }
+  if (
+    isRecordObject(value) &&
+    field.resolvedType instanceof protobuf.Type &&
+    !('$type' in value)
+  ) {
+    return normalizeObjectForType(field.resolvedType, value);
+  }
+  return value;
+}
+
+/** A plain record object (not an array / Map / bytes / protobufjs message). */
+function isRecordObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof Uint8Array) &&
+    !(value instanceof Map)
+  );
 }
 
 /**

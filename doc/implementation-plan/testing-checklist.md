@@ -3380,6 +3380,65 @@ fail**, `.baseline` ratcheted.
         `TryReadWktStringWrapperValue` (eval/instance.cc).  Corpus
         `dynamic/<wrapper>/var` (9 rows).
 
+## Rewrite M29 follow-up — host-fn + message-var e2e fixtures (2026-06-12)
+
+Closes the m29 "Future work" gap: the `cel_fn.*` trampoline and the
+message-typed-variable marshal are now driven end-to-end from Programs
+compiled in-process (the wasm compile backend's `fns` +
+`descriptorSetBytes` options).  Three binding bugs surfaced and fixed,
+each with colocated unit pins.
+
+  - [x] `.celfn` decl → overload-id synthesis — `eval/src/celfn-decl.test.ts`
+        (38): the full argkind matrix (every scalar, Duration/Timestamp
+        lowercase, list/map/proto nesting, arity 0/2+, `this` receiver),
+        mirroring `SynthesiseOverloadId` + `CelfnType::Argkind`
+        (compiler/celfn/function_library.cc:180/:30); malformed /
+        non-`@host` decls reject (`CelFnDeclError`); bare-overload-id
+        escape hatch.  Fixes the bug where `defineFunction` keyed the
+        `cel_fn` import on the bare name and a compiled `@host` Program
+        could never link.
+  - [x] `@host` e2e — `eval/e2e/host-fns.test.ts` (31 pass + 1 skip),
+        porting the reachable envelope of `e2e/host_fn_test.cc` +
+        `e2e/host_fn_type_matrix_test.cc`: scalar round-trips (bool /
+        int incl. INT64 boundaries / uint incl. UINT64_MAX / double /
+        string incl. UTF-8 + empty / bytes incl. `b'\x00\x01'` + empty
+        / null arg+return), Duration + Timestamp tagged records,
+        0-arg / 2-arg / receiver-form / two-overloads-one-name,
+        list + map args and returns (composed through CEL indexing),
+        proto(TestAllTypes) args (scalar + repeated + map fields read in
+        JS), CelError-value returns (absorbed downstream), throwing impl
+        → `CelEvalError` TRAP, unregistered fn → plan LinkError,
+        undeclared-fn / `type`-arg compile rejects.  Skip-pinned:
+        message-typed host-fn *return* (no protobufjs-Message arm on
+        `HostFunction`; plain objects re-intern as host maps).
+  - [x] uint kind re-stamp — `eval/src/instance.test.ts`
+        (`buildCelFnImports` uint-declared return → CEL_UINT; non-bigint
+        gated) + `eval/src/host/proto.test.ts` (uint64 field read +
+        UInt64Value unwrap stamp CEL_UINT, UINT64_MAX survives).  Fixes
+        CEL_INT-stamped uint values corrupting ≥ 2^63 at the result
+        surface (C++ mirror: `HostCallContext::ReturnUint` / the
+        FieldDescriptor-driven kind in `cel_host.cc`).
+  - [x] plain-object message coercion — `eval/src/proto/backing.test.ts`
+        (`coerceObjectToMessage` suites): JSON-natural `{K: V}` map
+        records + JS `Map`s normalize to the descriptor source's shape
+        (entry arrays on `Root.fromDescriptor` roots), bigints accepted
+        on 32-bit (range-checked) and 64-bit (uint64 unsignedness
+        preserved) fields, nested recursion, entry-array pass-through.
+  - [x] message-var e2e — `eval/e2e/message-vars.test.ts` (41), porting
+        `e2e/m2_test.cc` (Select / Has / proto3 defaults) +
+        `e2e/arena_message_aggregate_eq_test.cc` (message equality):
+        every CEL-visible scalar field read (int32/64, uint32/64 incl.
+        UINT64_MAX, float/double, bool, string, bytes), unset → proto3
+        defaults, nested + default-instance chaining, repeated
+        (index / size / membership / OOB error), map fields (string +
+        int keys, size / membership / NO_SUCH_KEY), the 10-row `has()`
+        presence matrix, equality (var-vs-var, var-vs-literal, nested
+        literal), plain-object vs protobufjs activation shapes, and the
+        documented no-type-table-entry `CelMarshalError` contract
+        (abi/cel_abi.proto:52).
+  - [x] conformance regression gate — full corpus re-run after the eval
+        fixes: pass ≥ baseline, 0 fail (see milestone PR notes).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

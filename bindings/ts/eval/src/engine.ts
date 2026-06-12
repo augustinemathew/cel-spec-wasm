@@ -17,8 +17,9 @@
 
 import type * as protobuf from 'protobufjs';
 
+import { hostFnDecl } from './celfn-decl.js';
 import { instantiateProgram } from './instance.js';
-import type { Instance } from './instance.js';
+import type { HostFnRegistration, Instance } from './instance.js';
 import { DescriptorSet } from './proto/descriptors.js';
 import { loadRuntimeModule } from './runtime-loader.js';
 import type { CelValue, HostFunction, Program } from './types.js';
@@ -52,15 +53,17 @@ export interface EngineOptions {
 
 /**
  * A registered host function — the overload id it is exposed under as a
- * `cel_fn.*` import, plus its JS implementation.  A `decl` like
- * `"my_fn(string): bool"` reduces to the leading identifier as the
- * import name; the full IDL parse is the compiler binding's concern (the
- * Program already carries the resolved overload id), so the registry keys
- * on the declared name.
+ * `cel_fn.*` import, plus its JS implementation.  The overload id is
+ * synthesized from the `.celfn` declaration (`celfn-decl.ts`), matching
+ * the import name the compiler stamps on the Program
+ * (`SynthesiseOverloadId`, compiler/celfn/function_library.cc:180).
  */
 interface RegisteredFunction {
-  readonly name: string;
+  readonly overloadId: string;
   readonly impl: HostFunction;
+  /** Declared `uint` return — the trampoline re-stamps CEL_UINT (see
+   * `HostFnRegistration`, `instance.ts`). */
+  readonly returnsUint: boolean;
 }
 
 /**
@@ -102,16 +105,21 @@ export class Engine {
   }
 
   /**
-   * Register a host function under `decl`'s leading identifier, exposed to
-   * a planned Program as a `cel_fn.<name>` import.  The implementation
-   * receives already-decoded {@link CelValue} arguments and returns a
-   * {@link CelValue}; a CEL spec error it wants to surface is a
-   * {@link CelError} value, never a thrown exception (§A.4.5).  Throws on
-   * a malformed `decl` (no leading identifier).
+   * Register a host function, exposed to a planned Program as a
+   * `cel_fn.<overload_id>` import.  `decl` is the same `.celfn` `@host`
+   * declaration string passed to the compiler (e.g.
+   * `'int @host.addOne(int x);'` — `CompileOptions.fns`), from which the
+   * overload id is synthesized exactly as the compiler does; a bare
+   * identifier is taken verbatim as an already-synthesized overload id
+   * (the C++ `Engine::AddFunction(overload_id, …)` form).  The
+   * implementation receives already-decoded {@link CelValue} arguments
+   * and returns a {@link CelValue}; a CEL spec error it wants to surface
+   * is a {@link CelError} value, never a thrown exception (§A.4.5).
+   * Throws {@link CelFnDeclError} on a malformed `decl`.
    */
   defineFunction(decl: string, impl: HostFunction): void {
-    const name = leadingIdentifier(decl);
-    this.functions.set(name, { name, impl });
+    const { overloadId, returnsUint } = hostFnDecl(decl);
+    this.functions.set(overloadId, { overloadId, impl, returnsUint });
   }
 
   /**
@@ -136,9 +144,9 @@ export class Engine {
    * isolation, matching the C++ per-Plan store).
    */
   async plan(program: Program): Promise<Instance> {
-    const fns = new Map<string, HostFunction>();
-    for (const [name, fn] of this.functions) {
-      fns.set(name, fn.impl);
+    const fns = new Map<string, HostFnRegistration>();
+    for (const [overloadId, fn] of this.functions) {
+      fns.set(overloadId, { impl: fn.impl, returnsUint: fn.returnsUint });
     }
     return instantiateProgram(program, this.descriptors, fns, () =>
       this.runtimeModuleFor(),
@@ -172,19 +180,4 @@ function loadDescriptors(
     return DescriptorSet.fromFileDescriptorSet(descriptors);
   }
   return DescriptorSet.fromRoot(descriptors);
-}
-
-/**
- * The leading identifier of a host-function declaration — `"f(int): bool"`
- * → `"f"`.  The Program already carries the resolved overload id this maps
- * to; the registry only needs the call-site name.
- */
-function leadingIdentifier(decl: string): string {
-  const match = /^\s*([A-Za-z_][A-Za-z0-9_.]*)/.exec(decl);
-  if (match?.[1] === undefined) {
-    throw new Error(
-      `defineFunction: declaration '${decl}' has no leading identifier`,
-    );
-  }
-  return match[1];
 }

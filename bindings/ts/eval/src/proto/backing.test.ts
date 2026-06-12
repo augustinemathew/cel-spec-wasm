@@ -1,4 +1,7 @@
 import * as protobuf from 'protobufjs';
+// Importing the descriptor extension installs `Root.prototype.toDescriptor`
+// / `Root.fromDescriptor`, used by the descriptor-built-root suite below.
+import 'protobufjs/ext/descriptor/index.js';
 import { describe, it, expect } from 'vitest';
 
 import type { CelDuration, CelTimestamp, CelValue } from '../types.js';
@@ -644,6 +647,143 @@ describe('coerceObjectToMessage / messageToObject round-trip', () => {
     expect(obj.i64).toBe(1n);
     expect(obj.s).toBe('hi');
     expect(obj.user).toBeNull();
+  });
+
+  it('coerces a JSON-natural map record on a real MapField', () => {
+    const msg = coerceObjectToMessage(msgType(), { counts: { a: 1, b: 2 } });
+    const obj = messageToObject(msg);
+    expect(obj.counts).toEqual(
+      new Map<CelValue, CelValue>([
+        ['a', 1n],
+        ['b', 2n],
+      ]),
+    );
+  });
+
+  it('coerces a JS Map on a real MapField (keys stringified)', () => {
+    const msg = coerceObjectToMessage(msgType(), {
+      counts: new Map([['a', 1]]),
+    });
+    expect(messageToObject(msg).counts).toEqual(
+      new Map<CelValue, CelValue>([['a', 1n]]),
+    );
+  });
+});
+
+describe('coerceObjectToMessage — descriptor-built roots (synthetic map entries)', () => {
+  // `Root.fromDescriptor` reconstructs a `map<K,V>` as a repeated
+  // synthetic `*Entry` field, for which protobufjs `fromObject` demands a
+  // `[{key, value}, …]` entry array and throws `array expected` on the
+  // JSON-natural `{K: V}` record.  The coercion must accept the natural
+  // record / Map shapes against BOTH descriptor sources — this suite pins
+  // the fromDescriptor side (the form `Engine.create({descriptors:
+  // <FileDescriptorSet bytes>})` produces).
+  type ToDescriptor = (edition?: string) => protobuf.Message;
+
+  function descriptorBuiltMsgType(): protobuf.Type {
+    const source = protobuf.Root.fromJSON(ROOT_JSON);
+    source.resolveAll();
+    const toDescriptor = (source as unknown as { toDescriptor: ToDescriptor })
+      .toDescriptor;
+    const fds = toDescriptor.call(source, 'proto3');
+    const root = (
+      protobuf.Root as unknown as {
+        fromDescriptor: (d: protobuf.Message) => protobuf.Root;
+      }
+    ).fromDescriptor(fds);
+    root.resolveAll();
+    return root.lookupType('test.Msg');
+  }
+
+  it('coerces a JSON-natural map record to the entry-array shape', () => {
+    const type = descriptorBuiltMsgType();
+    // Without normalization this throws `counts: array expected`.
+    const msg = coerceObjectToMessage(type, { counts: { a: 1, b: 2 } });
+    expect(messageToObject(msg).counts).toEqual(
+      new Map<CelValue, CelValue>([
+        ['a', 1n],
+        ['b', 2n],
+      ]),
+    );
+  });
+
+  it('coerces a JS Map to the entry-array shape', () => {
+    const type = descriptorBuiltMsgType();
+    const msg = coerceObjectToMessage(type, { counts: new Map([['z', 9]]) });
+    expect(messageToObject(msg).counts).toEqual(
+      new Map<CelValue, CelValue>([['z', 9n]]),
+    );
+  });
+
+  it('passes an already entry-shaped array through unchanged', () => {
+    const type = descriptorBuiltMsgType();
+    const msg = coerceObjectToMessage(type, {
+      counts: [{ key: 'k', value: 3 }],
+    });
+    expect(messageToObject(msg).counts).toEqual(
+      new Map<CelValue, CelValue>([['k', 3n]]),
+    );
+  });
+
+  it('normalizes a map inside a nested message field', () => {
+    // `user` has no map, so nest Msg-in-Msg via the repeated form is not
+    // available in ROOT_JSON; pin recursion through the singular `user`
+    // path plus the top-level map in one object instead.
+    const type = descriptorBuiltMsgType();
+    const msg = coerceObjectToMessage(type, {
+      user: { id: 7 },
+      counts: { nested: 5 },
+    });
+    const obj = messageToObject(msg);
+    expect(obj.user).toEqual({ id: 7n, name: '' });
+    expect(obj.counts).toEqual(new Map<CelValue, CelValue>([['nested', 5n]]));
+  });
+
+  it('still coerces scalar / repeated / nested fields as before', () => {
+    const type = descriptorBuiltMsgType();
+    const msg = coerceObjectToMessage(type, {
+      s: 'US',
+      tags: ['a', 'b'],
+      user: { id: 1, name: 'ada' },
+    });
+    const obj = messageToObject(msg);
+    expect(obj.s).toBe('US');
+    expect(obj.tags).toEqual(['a', 'b']);
+    expect(obj.user).toEqual({ id: 1n, name: 'ada' });
+  });
+
+  it('accepts bigint for 32-bit and 64-bit fields (the CelInput int form)', () => {
+    // fromObject's generated converters reject bigint on 32-bit fields
+    // ("Cannot mix BigInt and other types") and lose uint64 unsignedness
+    // (a signed Long reads back as -1); the coercion rewrites bigints
+    // through encodeScalar first.
+    const type = descriptorBuiltMsgType();
+    const msg = coerceObjectToMessage(type, {
+      i32: -7n,
+      i64: 99n,
+      u64: 18446744073709551615n,
+      user: { id: 5n },
+    });
+    const obj = messageToObject(msg);
+    expect(obj.i32).toBe(-7n);
+    expect(obj.i64).toBe(99n);
+    expect(obj.u64).toBe(18446744073709551615n);
+    expect(obj.user).toEqual({ id: 5n, name: '' });
+  });
+
+  it('accepts bigint map values inside the normalized entry array', () => {
+    const type = descriptorBuiltMsgType();
+    const msg = coerceObjectToMessage(type, { counts: { a: 7n } });
+    expect(messageToObject(msg).counts).toEqual(
+      new Map<CelValue, CelValue>([['a', 7n]]),
+    );
+  });
+
+  it('range-checks a bigint that overflows a 32-bit field', () => {
+    const type = descriptorBuiltMsgType();
+    expect(() => coerceObjectToMessage(type, { i32: 2147483648n })).toThrow(
+      ProtoFieldRangeError,
+    );
   });
 });
 

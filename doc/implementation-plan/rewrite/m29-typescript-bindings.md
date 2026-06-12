@@ -552,9 +552,10 @@ so they run **fully in parallel**.
   → call `eval` → decode the result slot resolving externref kinds.  The
   host-fn `cel_fn.*` trampoline and the message-var marshal/coercion path
   are unit-pinned (`buildCelFnImports` round-trip; `marshal.test.ts`
-  message coercion); the e2e paths driving them from inside a compiled
-  Program are a follow-up gated on a compiled `@host` / message-typed
-  fixture (no such fixture is reachable in the TS test toolchain yet).
+  message coercion) **and, since 2026-06-12, e2e-driven from compiled
+  `@host` / message-typed Programs** (`eval/e2e/host-fns.test.ts`,
+  `eval/e2e/message-vars.test.ts` — see "Future work" below for the
+  closure note).
 
 ### Phase 2 — The C ABI + compiler binding
 
@@ -750,10 +751,33 @@ one and integration in WI-1.5 is wiring, not redesign.
 - **N-API and emscripten compile backends** behind the existing
   `CompileBackend` interface (subprocess is v1; emscripten is the
   conditional-GO spike — protobuf-to-wasm is the ~3–5 day long pole).
-- **Host-fn and message-var e2e fixtures** — the `cel_fn.*` and
+- ~~**Host-fn and message-var e2e fixtures** — the `cel_fn.*` and
   message-typed-variable paths are unit-pinned but not yet driven from a
   compiled `@host` / message Program (the CLI backend has no `@host`-decl
-  flag; a compiled message-typed fixture is needed).
+  flag; a compiled message-typed fixture is needed).~~ **Closed
+  2026-06-12** — the in-process wasm compile backend's `fns` +
+  `descriptorSetBytes` options unblocked both: `eval/e2e/host-fns.test.ts`
+  compiles `@host` Programs and drives the `cel_fn.*` trampoline across
+  the full IDL-expressible type matrix; `eval/e2e/message-vars.test.ts`
+  compiles against the conformance FileDescriptorSet and covers scalar /
+  nested / repeated / map field reads, `has()`, and message equality over
+  plain-object and protobufjs bindings.  Driving them surfaced and fixed
+  three binding bugs: (1) `defineFunction` keyed the `cel_fn` import on
+  the bare name while the Program imports `cel_fn.<overload_id>` — a
+  compiled `@host` Program could never link; `eval/src/celfn-decl.ts` now
+  synthesizes the overload id from the same `.celfn` decl string passed
+  to `compile()`'s `fns`.  (2) A `uint`-declared host-fn return / proto
+  uint field read stamped CEL_INT (a JS bigint has no int/uint
+  distinction), corrupting values ≥ 2^63 at the result surface; the
+  trampolines now re-stamp CEL_UINT from the declared type (the C++
+  mirror is `HostCallContext::ReturnUint` / the FieldDescriptor-driven
+  kind).  (3) `coerceObjectToMessage` was a bare `fromObject`, which
+  rejects the JSON-natural `{K: V}` map shape on descriptor-built roots
+  and bigints on 32-bit fields — it now normalizes both.  Still open
+  (skip-pinned in `host-fns.test.ts`): a message-typed host-fn *return*
+  has no TS surface (`HostFunction` returns `CelValue`, which has no
+  protobufjs-Message arm; a plain object re-interns as a host map, not a
+  CEL_MESSAGE).
 - The `typecheck` gate (`tsc --noEmit` incl tests, added this milestone)
   catches the test-only type-error class the build/lint/vitest gate
   missed — keep it in CI.

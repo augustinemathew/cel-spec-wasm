@@ -84,6 +84,7 @@ const ROOT_JSON = {
               },
             },
             Int32Value: { fields: { value: { type: 'int32', id: 1 } } },
+            UInt64Value: { fields: { value: { type: 'uint64', id: 1 } } },
             StringValue: { fields: { value: { type: 'string', id: 1 } } },
           },
         },
@@ -157,6 +158,9 @@ function makeCodec(mem: TestMemory, refs: ExternrefTable): ProtoCodec {
     },
     writeMessageSlot: (slot, messageSlot) => {
       writeMessageSlot(mem, slot, messageSlot);
+    },
+    markUint: (slot) => {
+      mem.view.setUint32(slot + CEL_VALUE_KIND_OFFSET, CelKind.UINT, true);
     },
   };
 }
@@ -296,6 +300,7 @@ const FIELDS: readonly FieldEntry[] = [
   { id: 5, fieldNumber: 14, name: 'cnt', ownerFqn: 'test.Msg' },
   { id: 6, fieldNumber: 0, name: 'name', ownerFqn: 'test.User' },
   { id: 7, fieldNumber: 99, name: 'nope', ownerFqn: 'test.Msg' },
+  { id: 8, fieldNumber: 2, name: 'u64', ownerFqn: 'test.Msg' },
 ];
 const F_I64 = 1;
 const F_S = 2;
@@ -304,6 +309,7 @@ const F_TS = 4;
 const F_CNT = 5;
 const F_USER_NAME = 6;
 const F_UNKNOWN = 7;
+const F_U64 = 8;
 
 const TYPES: readonly TypeEntry[] = [
   { id: 0, fullyQualifiedName: '' },
@@ -381,6 +387,17 @@ describe('cel_get_field', () => {
     internMsg(h, A, { s: 'hello' });
     h.tramps.cel_get_field(OUT, A, F_S, 0);
     expect(read(h, OUT)).toBe('hello');
+  });
+
+  it('stamps CEL_UINT for a uint64 field (UINT64_MAX survives)', () => {
+    // The decoded JS bigint would encode CEL_INT by shape; the field's
+    // wire type says uint, so cel_get_field re-stamps CEL_UINT
+    // (ProtoCodec.markUint) -- without it, values >= 2^63 decode signed
+    // (UINT64_MAX read back as -1).
+    internMsg(h, A, { u64: '18446744073709551615' });
+    h.tramps.cel_get_field(OUT, A, F_U64, 0);
+    expect(h.mem.view.getUint32(OUT, true)).toBe(CelKind.UINT);
+    expect(read(h, OUT)).toBe(18446744073709551615n);
   });
 
   it('reads an unset proto3 scalar as the default', () => {
@@ -668,6 +685,18 @@ describe('cel_wkt_unwrap_wrapper', () => {
     internWrapper(A, 'google.protobuf.StringValue', { value: 'wrapped' });
     h.tramps.cel_wkt_unwrap_wrapper(OUT, A, CelKind.STRING);
     expect(read(h, OUT)).toBe('wrapped');
+  });
+
+  it('peels a UInt64Value to a UINT scalar (UINT64_MAX survives)', () => {
+    // wrapper_kind UINT re-stamps the decoded bigint's slot to CEL_UINT
+    // (ProtoCodec.markUint) -- the bigint would otherwise encode CEL_INT
+    // and a >= 2^63 value would decode signed.
+    internWrapper(A, 'google.protobuf.UInt64Value', {
+      value: '18446744073709551615',
+    });
+    h.tramps.cel_wkt_unwrap_wrapper(OUT, A, CelKind.UINT);
+    expect(h.mem.view.getUint32(OUT, true)).toBe(CelKind.UINT);
+    expect(read(h, OUT)).toBe(18446744073709551615n);
   });
 
   it('errors TYPE_MISMATCH for a non-wrapper message', () => {

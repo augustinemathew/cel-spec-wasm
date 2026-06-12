@@ -273,7 +273,10 @@ describe('buildCelFnImports — host-fn round-trip', () => {
       const [a, b] = args;
       return (a as bigint) + (b as bigint);
     };
-    const imports = buildCelFnImports(env, new Map([['add', impl]]));
+    const imports = buildCelFnImports(
+      env,
+      new Map([['add', { impl, returnsUint: false }]]),
+    );
 
     // Slots: out @0, arg0 @24, arg1 @48.
     const outSlot = 0;
@@ -300,7 +303,10 @@ describe('buildCelFnImports — host-fn round-trip', () => {
       const who = args[0];
       return `hello ${typeof who === 'string' ? who : ''}`;
     };
-    const imports = buildCelFnImports(env, new Map([['greet', impl]]));
+    const imports = buildCelFnImports(
+      env,
+      new Map([['greet', { impl, returnsUint: false }]]),
+    );
     encodeCelValue(env, CEL_VALUE_SIZE, 'world');
     imports.greet?.(0, CEL_VALUE_SIZE);
     expect(env.view().getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(
@@ -314,6 +320,43 @@ describe('buildCelFnImports — host-fn round-trip', () => {
     expect(Object.keys(buildCelFnImports(env, new Map()))).toEqual([]);
   });
 
+  it('re-stamps a uint-declared bigint return as CEL_UINT', () => {
+    // A JS bigint carries no int/uint distinction, so encodeCelValue
+    // stamps CEL_INT; a `uint`-declared return must surface as CEL_UINT
+    // (the C++ mirror is HostCallContext::ReturnUint) or downstream uint
+    // overloads reject it with no-matching-overload.
+    const { env } = makeCodecHarness();
+    const impl: HostFunction = (): CelValue => 7n;
+    const imports = buildCelFnImports(
+      env,
+      new Map([['seven_u', { impl, returnsUint: true }]]),
+    );
+    imports.seven_u?.(0);
+    expect(env.view().getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(
+      CelKind.UINT,
+    );
+    expect(resolveCelValue(env, 0)).toBe(7n);
+  });
+
+  it('does not re-stamp a non-bigint return of a uint-declared fn', () => {
+    // The patch is gated on the impl actually returning a bigint — an
+    // error value (or any mismatched shape) keeps its own kind.
+    const { env } = makeCodecHarness();
+    const impl: HostFunction = (): CelValue => ({
+      kind: 'error',
+      code: 41,
+      message: 'host adapter error',
+    });
+    const imports = buildCelFnImports(
+      env,
+      new Map([['bad_u', { impl, returnsUint: true }]]),
+    );
+    imports.bad_u?.(0);
+    expect(env.view().getUint32(CEL_VALUE_KIND_OFFSET, true)).toBe(
+      CelKind.ERROR,
+    );
+  });
+
   it('passes a CelError value the impl returns straight through', () => {
     const { env } = makeCodecHarness();
     const impl: HostFunction = (): CelValue => ({
@@ -321,7 +364,10 @@ describe('buildCelFnImports — host-fn round-trip', () => {
       code: 41,
       message: 'host adapter error',
     });
-    const imports = buildCelFnImports(env, new Map([['boom', impl]]));
+    const imports = buildCelFnImports(
+      env,
+      new Map([['boom', { impl, returnsUint: false }]]),
+    );
     imports.boom?.(0);
     const out = resolveCelValue(env, 0) as { kind: string; code: number };
     expect(out.kind).toBe('error');
