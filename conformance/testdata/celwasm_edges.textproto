@@ -1,0 +1,585 @@
+# proto-file: ../../proto/cel/expr/conformance/test/simple.proto
+# proto-message: cel.expr.conformance.test.SimpleTestFile
+#
+# FIRST-PARTY fixture (celwasm, not upstream cel-spec): regression
+# rows pinning the eval-path edge cases that the 2026-06 optimization
+# series could plausibly have broken.  One section per optimization:
+#
+#   select_chain_batching        - batched proto select chains
+#                                  (cel_get_field_path, one host
+#                                  crossing per contiguous chain)
+#   field_classification_cache   - per-field descriptor + read-class
+#                                  cache keyed by message Descriptor
+#   string_view_dedup            - view-based (non-owning) string /
+#                                  bytes field reads + proto-identity
+#                                  backing dedup
+#   memory_grow                  - mid-$eval memory.grow stability
+#                                  (base-pointer + size-snapshot
+#                                  refresh contract)
+#   unchecked_abi_error_paths    - CEL eval errors surfacing through
+#                                  the unchecked wasmtime call path
+#                                  ($eval entry + all 21 cel_host
+#                                  trampolines)
+#
+# Every expected value/error below is confirmed against the REAL
+# cel-cpp pipeline by conformance/celwasm_edges_oracle_test.cc, which
+# loads this file and differentially evaluates every row through
+# testdata/cel_cpp_oracle (EvalWithCelCpp for binding-free rows,
+# PartialEvalWithCelCpp for rows with bindings).  Keep that test
+# green when editing this file.
+#
+# Expressibility notes (no silent omissions):
+#   - `select_chain_batching/any_intermediate_per_hop` selects through
+#     a google.protobuf.Any field -- one of the shapes EXCLUDED from
+#     chain batching (per-hop lowering kept).  It PASSES end-to-end
+#     in both link modes (verified 2026-06-12), pinning the per-hop
+#     semantics of the excluded shape.
+#   - Wrapper / WKT fields cannot appear as chain INTERMEDIATES in any
+#     type-checked CEL program (wrappers unwrap to scalars; Struct /
+#     Value selects are dyn) -- the excluded-intermediate shapes are
+#     covered as chain LEAVES (wrapper set/unset rows) plus the Any
+#     row above.
+#   - eval_error matchers compare error KIND only (harness contract,
+#     conformance/runner.cc CompareEvalError); messages here are
+#     informational and mirror cel-cpp's text.
+
+name: "celwasm_edges"
+description: "celwasm first-party edge-case pins for the 2026-06 eval optimization series (batched selects, descriptor cache, view reads, memory grow, unchecked ABI)."
+
+section {
+  name: "select_chain_batching"
+  description: "Contiguous proto select chains lower to one cel_get_field_path host crossing; semantics must stay byte-identical to per-hop reads."
+
+  test {
+    name: "batch_depth2"
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{child: NestedTestAllTypes{payload: TestAllTypes{single_int64: 21}}}.child.payload.single_int64"
+    value: { int64_value: 21 }
+  }
+  test {
+    name: "batch_depth4"
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{child: NestedTestAllTypes{child: NestedTestAllTypes{child: NestedTestAllTypes{payload: TestAllTypes{single_int64: 44}}}}}.child.child.child.payload.single_int64"
+    value: { int64_value: 44 }
+  }
+  test {
+    name: "batch_depth8_bound"
+    description: "8-hop chain over a BOUND message (host-marshalled, not constructed in-expression)."
+    expr: "x.child.child.child.child.child.child.child.payload.single_int64"
+    type_env: {
+      name: "x"
+      ident: { type: { message_type: "cel.expr.conformance.proto3.NestedTestAllTypes" } }
+    }
+    bindings: {
+      key: "x"
+      value: {
+        value: {
+          object_value: {
+            [type.googleapis.com/cel.expr.conformance.proto3.NestedTestAllTypes] {
+              child {
+                child {
+                  child {
+                    payload { single_int64: 33 }
+                    child { child { child { child { payload { single_int64: 88 } } } } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    value: { int64_value: 88 }
+  }
+  test {
+    name: "unset_intermediate_default_int"
+    description: "proto3 default-instance walk: every unset intermediate yields the default instance; leaf reads its zero value."
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{}.child.child.child.payload.single_int64"
+    value: { int64_value: 0 }
+  }
+  test {
+    name: "unset_intermediate_default_string"
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{}.child.child.payload.single_string"
+    value: { string_value: "" }
+  }
+  test {
+    name: "set_intermediates_unset_leaf"
+    description: "Intermediates present, leaf scalar unset: zero value, NOT an error."
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{child: NestedTestAllTypes{child: NestedTestAllTypes{}}}.child.child.payload.single_int32"
+    value: { int64_value: 0 }
+  }
+  test {
+    name: "unset_chain_wrapper_leaf_null"
+    description: "Wrapper LEAF at the end of an unset chain: default-instance walk ends at an unset wrapper, which reads null."
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{}.child.child.payload.single_int64_wrapper"
+    value: { null_value: NULL_VALUE }
+  }
+  test {
+    name: "set_chain_wrapper_leaf"
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{child: NestedTestAllTypes{payload: TestAllTypes{single_int64_wrapper: 7}}}.child.payload.single_int64_wrapper"
+    value: { int64_value: 7 }
+  }
+  test {
+    name: "has_message_intermediate_set"
+    description: "has() over a deep chain must keep per-hop presence semantics (has() never batches)."
+    container: "cel.expr.conformance.proto3"
+    expr: "has(NestedTestAllTypes{child: NestedTestAllTypes{child: NestedTestAllTypes{}}}.child.child)"
+    value: { bool_value: true }
+  }
+  test {
+    name: "has_unset_intermediate"
+    container: "cel.expr.conformance.proto3"
+    expr: "has(NestedTestAllTypes{}.child.child.payload)"
+    value: { bool_value: false }
+  }
+  test {
+    name: "has_scalar_leaf_default"
+    description: "proto3 scalar set to its zero value: has() is false even though intermediates are present."
+    container: "cel.expr.conformance.proto3"
+    expr: "has(NestedTestAllTypes{child: NestedTestAllTypes{payload: TestAllTypes{single_int64: 0}}}.child.payload.single_int64)"
+    value: { bool_value: false }
+  }
+  test {
+    name: "has_scalar_leaf_set"
+    container: "cel.expr.conformance.proto3"
+    expr: "has(NestedTestAllTypes{child: NestedTestAllTypes{payload: TestAllTypes{single_int64: 5}}}.child.payload.single_int64)"
+    value: { bool_value: true }
+  }
+  test {
+    name: "nested_message_chain"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_nested_message: TestAllTypes.NestedMessage{bb: 1234}}.single_nested_message.bb"
+    value: { int64_value: 1234 }
+  }
+  test {
+    name: "chain_then_map_dot_sugar"
+    description: "Map dot-sugar tail is EXCLUDED from batching; the message-hop prefix may batch, the map hop stays per-hop."
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{payload: TestAllTypes{map_string_string: {'k': 'v'}}}.payload.map_string_string.k"
+    value: { string_value: "v" }
+  }
+  test {
+    name: "chain_as_ternary_condition"
+    container: "cel.expr.conformance.proto3"
+    expr: "NestedTestAllTypes{child: NestedTestAllTypes{payload: TestAllTypes{single_bool: true}}}.child.payload.single_bool ? 'then' : 'else'"
+    value: { string_value: "then" }
+  }
+  test {
+    name: "same_chain_twice"
+    description: "Identical chain evaluated twice in one program (two path-table hits over the same bound message)."
+    expr: "x.child.child.child.payload.single_int64 + x.child.child.child.payload.single_int64"
+    type_env: {
+      name: "x"
+      ident: { type: { message_type: "cel.expr.conformance.proto3.NestedTestAllTypes" } }
+    }
+    bindings: {
+      key: "x"
+      value: {
+        value: {
+          object_value: {
+            [type.googleapis.com/cel.expr.conformance.proto3.NestedTestAllTypes] {
+              child {
+                child {
+                  child {
+                    payload { single_int64: 33 }
+                    child { child { child { child { payload { single_int64: 88 } } } } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    value: { int64_value: 66 }
+  }
+  test {
+    name: "overlapping_chains_one_eval"
+    description: "A chain and a longer chain sharing its prefix, both in one Eval."
+    expr: "x.child.child.child.payload.single_int64 == 33 && x.child.child.child.child.child.child.child.payload.single_int64 == 88"
+    type_env: {
+      name: "x"
+      ident: { type: { message_type: "cel.expr.conformance.proto3.NestedTestAllTypes" } }
+    }
+    bindings: {
+      key: "x"
+      value: {
+        value: {
+          object_value: {
+            [type.googleapis.com/cel.expr.conformance.proto3.NestedTestAllTypes] {
+              child {
+                child {
+                  child {
+                    payload { single_int64: 33 }
+                    child { child { child { child { payload { single_int64: 88 } } } } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    value: { bool_value: true }
+  }
+  test {
+    name: "any_intermediate_per_hop"
+    description: "Any intermediates are EXCLUDED from chain batching (per-hop lowering kept); semantics must match cel-cpp (oracle-confirmed: 1)."
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_any: TestAllTypes{single_int64: 1}}.single_any.single_int64"
+    value: { int64_value: 1 }
+  }
+}
+
+section {
+  name: "field_classification_cache"
+  description: "Per-field {FieldDescriptor*, read-class} cache: wrapper / WKT / repeated / map classifications must dispatch identically on cached reads."
+
+  test {
+    name: "wrapper_int32_set"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper"
+    value: { int64_value: 5 }
+  }
+  test {
+    name: "wrapper_int32_unset"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{}.single_int32_wrapper"
+    value: { null_value: NULL_VALUE }
+  }
+  test {
+    name: "wrapper_string_set"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_string_wrapper: 'w'}.single_string_wrapper"
+    value: { string_value: "w" }
+  }
+  test {
+    name: "wrapper_bool_set"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_bool_wrapper: true}.single_bool_wrapper"
+    value: { bool_value: true }
+  }
+  test {
+    name: "wrapper_unset_eq_null"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{}.single_int64_wrapper == null"
+    value: { bool_value: true }
+  }
+  test {
+    name: "timestamp_field_eq"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_timestamp: timestamp('2009-02-13T23:31:30Z')}.single_timestamp == timestamp('2009-02-13T23:31:30Z')"
+    value: { bool_value: true }
+  }
+  test {
+    name: "timestamp_field_get_seconds"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_timestamp: timestamp('2009-02-13T23:31:30Z')}.single_timestamp.getSeconds()"
+    value: { int64_value: 30 }
+  }
+  test {
+    name: "duration_field_eq"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_duration: duration('123s')}.single_duration == duration('123s')"
+    value: { bool_value: true }
+  }
+  test {
+    name: "repeated_string_index"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{repeated_string: ['a', 'b', 'c']}.repeated_string[2]"
+    value: { string_value: "c" }
+  }
+  test {
+    name: "repeated_string_size"
+    container: "cel.expr.conformance.proto3"
+    expr: "size(TestAllTypes{repeated_string: ['a', 'b', 'c']}.repeated_string)"
+    value: { int64_value: 3 }
+  }
+  test {
+    name: "repeated_nested_message_chain"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{repeated_nested_message: [TestAllTypes.NestedMessage{bb: 5}]}.repeated_nested_message[0].bb"
+    value: { int64_value: 5 }
+  }
+  test {
+    name: "map_bool_key"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{map_bool_int64: {true: 7}}.map_bool_int64[true]"
+    value: { int64_value: 7 }
+  }
+  test {
+    name: "map_int32_key"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{map_int32_int64: {42: 7}}.map_int32_int64[42]"
+    value: { int64_value: 7 }
+  }
+  test {
+    name: "map_int64_key"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{map_int64_int64: {-42: 7}}.map_int64_int64[-42]"
+    value: { int64_value: 7 }
+  }
+  test {
+    name: "map_uint32_key"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{map_uint32_uint64: {3u: 4u}}.map_uint32_uint64[3u]"
+    value: { uint64_value: 4 }
+  }
+  test {
+    name: "map_uint64_key"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{map_uint64_uint64: {18446744073709551615u: 4u}}.map_uint64_uint64[18446744073709551615u]"
+    value: { uint64_value: 4 }
+  }
+  test {
+    name: "map_string_key"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{map_string_string: {'k': 'v'}}.map_string_string['k']"
+    value: { string_value: "v" }
+  }
+  test {
+    name: "same_field_two_sites"
+    description: "Same FieldDescriptor read at two access sites against two distinct messages in one Eval (the cache is keyed by Descriptor, shared across sites)."
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_int64: 6}.single_int64 + TestAllTypes{single_int64: 7}.single_int64"
+    value: { int64_value: 13 }
+  }
+}
+
+section {
+  name: "string_view_dedup"
+  description: "View-based (non-owning) string/bytes field reads and proto-identity backing dedup: embedded NULs, empty / large payloads, repeat reads."
+
+  test {
+    name: "string_embedded_nul"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_string: 'a\\u0000b'}.single_string"
+    value: { string_value: "a\000b" }
+  }
+  test {
+    name: "string_embedded_nul_size"
+    container: "cel.expr.conformance.proto3"
+    expr: "size(TestAllTypes{single_string: 'a\\u0000b'}.single_string)"
+    value: { int64_value: 3 }
+  }
+  test {
+    name: "bytes_embedded_nul"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_bytes: b'\\x00\\x01\\x00'}.single_bytes"
+    value: { bytes_value: "\000\001\000" }
+  }
+  test {
+    name: "empty_string_field"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_string: ''}.single_string"
+    value: { string_value: "" }
+  }
+  test {
+    name: "large_string_field_roundtrip"
+    description: "2 KiB field value read through a view and marshalled out byte-exactly."
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_string: 'LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL'}.single_string"
+    value: { string_value: "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL" }
+  }
+  test {
+    name: "large_string_field_size"
+    container: "cel.expr.conformance.proto3"
+    expr: "size(TestAllTypes{single_string: 'LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL'}.single_string)"
+    value: { int64_value: 2048 }
+  }
+  test {
+    name: "repeated_string_element_nul"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{repeated_string: ['', 'x\\u0000y', 'zz']}.repeated_string[1]"
+    value: { string_value: "x\000y" }
+  }
+  test {
+    name: "string_concat_after_read"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_string: 'foo'}.single_string + 'bar'"
+    value: { string_value: "foobar" }
+  }
+  test {
+    name: "string_compare_after_read"
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{single_string: 'abc'}.single_string < 'abd'"
+    value: { bool_value: true }
+  }
+  test {
+    name: "submessage_dedup_eq"
+    description: "Same submessage hop read twice and compared to itself (dedup returns the same backing; equality must still be value equality)."
+    expr: "x.child == x.child"
+    type_env: {
+      name: "x"
+      ident: { type: { message_type: "cel.expr.conformance.proto3.NestedTestAllTypes" } }
+    }
+    bindings: {
+      key: "x"
+      value: {
+        value: {
+          object_value: {
+            [type.googleapis.com/cel.expr.conformance.proto3.NestedTestAllTypes] {
+              child { payload { single_string: "same" } }
+              payload { single_string: "same" }
+            }
+          }
+        }
+      }
+    }
+    value: { bool_value: true }
+  }
+  test {
+    name: "equal_values_different_fields"
+    description: "Two DIFFERENT fields holding equal string payloads (distinct backings, equal bytes)."
+    expr: "x.child.payload.single_string == x.payload.single_string"
+    type_env: {
+      name: "x"
+      ident: { type: { message_type: "cel.expr.conformance.proto3.NestedTestAllTypes" } }
+    }
+    bindings: {
+      key: "x"
+      value: {
+        value: {
+          object_value: {
+            [type.googleapis.com/cel.expr.conformance.proto3.NestedTestAllTypes] {
+              child { payload { single_string: "same" } }
+              payload { single_string: "same" }
+            }
+          }
+        }
+      }
+    }
+    value: { bool_value: true }
+  }
+  test {
+    name: "map_lookup_concat_key"
+    description: "Map lookup keyed by a string BUILT AT EVAL TIME (arena-resident key decoded through the host view)."
+    container: "cel.expr.conformance.proto3"
+    expr: "TestAllTypes{map_string_string: {'key': 'v'}}.map_string_string[k + 'y']"
+    type_env: {
+      name: "k"
+      ident: { type: { primitive: STRING } }
+    }
+    bindings: {
+      key: "k"
+      value: { value: { string_value: "ke" } }
+    }
+    value: { string_value: "v" }
+  }
+}
+
+section {
+  name: "memory_grow"
+  description: "Intermediates force memory.grow mid-$eval well past the 64 KiB seed arena; results must stay byte-exact (base-pointer stability + size-snapshot refresh)."
+
+  test {
+    name: "grow_concat_size"
+    description: "64-leaf balanced concat tree over a 1 KiB bound string (balanced: 64 left-assoc terms exceed the parser's recursion depth of 32): ~384 KiB of arena intermediates past the 64 KiB seed, 64 KiB result."
+    expr: "size(((((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s)))) + ((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s))))) + (((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s)))) + ((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s)))))))"
+    type_env: {
+      name: "s"
+      ident: { type: { primitive: STRING } }
+    }
+    bindings: {
+      key: "s"
+      value: { value: { string_value: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+    }
+    value: { int64_value: 65536 }
+  }
+  test {
+    name: "grow_concat_byte_exact"
+    description: "Two independently built 32 KiB strings, concatenated and compared byte-for-byte against a third 64 KiB build."
+    expr: "((((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s)))) + ((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s))))) + (((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s)))) + ((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s)))))) == ((((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s)))) + ((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s))))) + (((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s)))) + ((((s + s) + (s + s)) + ((s + s) + (s + s))) + (((s + s) + (s + s)) + ((s + s) + (s + s))))))"
+    type_env: {
+      name: "s"
+      ident: { type: { primitive: STRING } }
+    }
+    bindings: {
+      key: "s"
+      value: { value: { string_value: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+    }
+    value: { bool_value: true }
+  }
+  test {
+    name: "grow_map_key_lookup"
+    description: "Map key built by a 16-term concat (~135 KiB of intermediates, key in pages grown mid-$eval) decoded through the host view on lookup."
+    expr: "{(s + s + s + s + s + s + s + s + s + s + s + s + s + s + s + s): 7}[(s + s + s + s + s + s + s + s + s + s + s + s + s + s + s + s)]"
+    type_env: {
+      name: "s"
+      ident: { type: { primitive: STRING } }
+    }
+    bindings: {
+      key: "s"
+      value: { value: { string_value: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+    }
+    value: { int64_value: 7 }
+  }
+}
+
+section {
+  name: "unchecked_abi_error_paths"
+  description: "CEL eval errors must surface as errors (not traps / wrong values) through the unchecked wasmtime call path.  Error messages are informational; the harness matches kind only."
+
+  test {
+    name: "div_zero"
+    expr: "7 / 0"
+    eval_error: { errors: { message: "divide by zero" } }
+  }
+  test {
+    name: "mod_zero"
+    expr: "7 % 0"
+    eval_error: { errors: { message: "modulus by zero" } }
+  }
+  test {
+    name: "int64_min_div_neg_one"
+    expr: "(-9223372036854775808) / -1"
+    eval_error: { errors: { message: "return error for overflow" } }
+  }
+  test {
+    name: "int64_min_mod_neg_one"
+    description: "INT64_MIN % -1 must overflow-error, not return 0 (regression pin for the runtime fix; absent from the upstream corpus)."
+    expr: "(-9223372036854775808) % -1"
+    eval_error: { errors: { message: "return error for overflow" } }
+  }
+  test {
+    name: "add_overflow"
+    expr: "9223372036854775807 + 1"
+    eval_error: { errors: { message: "return error for overflow" } }
+  }
+  test {
+    name: "sub_overflow"
+    expr: "-9223372036854775808 - 1"
+    eval_error: { errors: { message: "return error for overflow" } }
+  }
+  test {
+    name: "mul_overflow"
+    expr: "9223372036854775807 * 2"
+    eval_error: { errors: { message: "return error for overflow" } }
+  }
+  test {
+    name: "double_to_int_range"
+    expr: "int(1e99)"
+    eval_error: { errors: { message: "range" } }
+  }
+  test {
+    name: "double_to_int_min_boundary"
+    description: "int(-2^63 as double) is a range error in cel-cpp (oracle-settled; see CLAUDE.md oracle section)."
+    expr: "int(-9223372036854775808.0)"
+    eval_error: { errors: { message: "range" } }
+  }
+  test {
+    name: "uint_negative"
+    expr: "uint(-1)"
+    eval_error: { errors: { message: "range" } }
+  }
+  test {
+    name: "int_parse_error"
+    expr: "int('forty-two')"
+    eval_error: { errors: { message: "cannot convert string to int" } }
+  }
+}

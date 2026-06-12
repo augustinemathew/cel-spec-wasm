@@ -112,6 +112,28 @@ cc_test(
     ],
 )
 
+# Differential confirmation for the first-party
+# `testdata/celwasm_edges.textproto` fixture: every row's expected
+# value / error kind is re-derived from the REAL cel-cpp pipeline via
+# //testdata:cel_cpp_oracle on every run.  Oracle-only TU — does NOT
+# link our pipeline; the conformance runner covers the celwasm side.
+cc_test(
+    name = "celwasm_edges_oracle_test",
+    size = "small",
+    srcs = ["celwasm_edges_oracle_test.cc"],
+    data = ["testdata/celwasm_edges.textproto"],
+    deps = [
+        "//testdata:cel_cpp_oracle",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_cel_spec//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "@com_google_cel_spec//proto/cel/expr/conformance/test:simple_cc_proto",
+        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # Textproto fixtures fan in via `data`; the runner ifstreams them
 # from workspace-relative paths (Bazel lands them at
 # runfiles/_main/tests/...).
@@ -128,6 +150,12 @@ cc_test(
 # Future work: replace these three with a single source of truth
 # (a genrule emitting a .inc) — tracked in `README.md::Future work`.
 SIMPLE_TESTDATA = [
+    # First-party fixture (celwasm-owned, NOT upstream cel-spec):
+    # edge-case pins for the eval optimization series.  Lives under
+    # conformance/testdata/ so the upstream heritage corpus in
+    # spec/tests/ stays purely vendored.  Every row is differentially
+    # confirmed against cel-cpp by :celwasm_edges_oracle_test.
+    "testdata/celwasm_edges.textproto",
     "//spec/tests/simple:testdata/basic.textproto",
     "//spec/tests/simple:testdata/bindings_ext.textproto",
     "//spec/tests/simple:testdata/block_ext.textproto",

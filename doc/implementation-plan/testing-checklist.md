@@ -3246,6 +3246,50 @@ rules + exclusions (optional / map / WKT intermediates, test_only):
         ParentPathUnknown/WildcardMidPath cases now exercise the
         batched path).
 
+## First-party conformance fixture — optimization-series edge pins (2026-06-12)
+
+`conformance/testdata/celwasm_edges.textproto` (62 rows, first
+celwasm-owned corpus file — upstream heritage stays untouched under
+`spec/tests/`) pins the edge cases the 2026-06 eval optimization
+series (unchecked-ABI cutover, descriptor cache, view reads,
+memory-grow caching, batched select chains, unchecked $eval entry)
+could plausibly have broken, so the conformance gate — not
+benchmarks — guards them permanently.  Every row's expected value /
+error kind is differentially re-derived from cel-cpp on every run by
+`conformance/celwasm_edges_oracle_test.cc`.  Both link modes:
+62/62 PASS; baselines bumped 1973 → 2035.
+
+  - [x] batched select chains (`select_chain_batching`, 18 rows) —
+        depth 2/4/8 (inline + bound message), unset-intermediate
+        default walk, unset leaf, wrapper leaf set/unset, deep
+        has() (set / unset-intermediate / scalar-default / scalar-set),
+        nested-message chain, map dot-sugar tail, chain as ternary
+        condition, same chain twice, overlapping chains, Any
+        intermediate (excluded-from-batching shape, per-hop parity).
+  - [x] per-field descriptor/classification cache
+        (`field_classification_cache`, 18 rows) — wrapper fields
+        set + unset (int32/string/bool/int64), timestamp + duration
+        message fields, repeated string/message reads, map index for
+        every key kind (bool / int32 / int64 / uint32 / uint64 /
+        string, incl. UINT64_MAX key), same field at two access
+        sites in one Eval.
+  - [x] view-based string/bytes reads + dedup (`string_view_dedup`,
+        12 rows) — embedded-NUL string/bytes, empty string, 2 KiB
+        round-trip + size, repeated element with NUL, concat /
+        compare / size after read, `x.child == x.child` dedup
+        identity, equal values in different fields, map lookup keyed
+        by an eval-time concat.
+  - [x] mid-$eval memory.grow (`memory_grow`, 3 rows) — 64-leaf
+        balanced concat (64 KiB result well past the 64 KiB seed
+        arena), byte-exact equality of independently built 64 KiB
+        strings, map key decoded from pages grown mid-$eval.
+  - [x] unchecked-ABI error paths (`unchecked_abi_error_paths`,
+        11 rows) — div/mod by zero, INT64_MIN / -1, INT64_MIN % -1
+        (regression pin for the runtime fix; absent upstream),
+        add/sub/mul overflow, double→int range (incl. the
+        `int(-2^63.0)` oracle-settled boundary), uint(-1),
+        int('forty-two').
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

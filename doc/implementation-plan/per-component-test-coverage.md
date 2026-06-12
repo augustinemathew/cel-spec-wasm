@@ -364,6 +364,13 @@ For each new feature touching parse / check:
     fail` table in `README.md` refreshes.  Pass-count movement
     is documented in the milestone doc's "What this milestone
     unlocked in the conformance suite" subsection.
+  - **First-party fixture:** `conformance/testdata/celwasm_edges.textproto`
+    (celwasm-owned edge pins; the upstream heritage corpus under
+    `spec/tests/` stays purely vendored).  Every row in it is
+    differentially re-derived from cel-cpp on every run by
+    `conformance/celwasm_edges_oracle_test.cc` — when adding or
+    editing rows there, keep that test green; if it disagrees with
+    the fixture, the fixture is wrong.
 
 ### 3.13 WAT prototyping (`tools/wat_runner_test.cc`)
 

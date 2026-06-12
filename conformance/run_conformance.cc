@@ -62,6 +62,10 @@ namespace {
 // `conformance/README.md`'s "Future work" section.
 const std::vector<std::string>& DefaultCorpus() {
   static const auto* files = new std::vector<std::string>{
+      // First-party fixture (celwasm-owned, not upstream cel-spec) —
+      // edge-case pins for the eval optimization series; see the file
+      // header and conformance/celwasm_edges_oracle_test.cc.
+      "conformance/testdata/celwasm_edges.textproto",
       "spec/tests/simple/testdata/basic.textproto",
       "spec/tests/simple/testdata/bindings_ext.textproto",
       "spec/tests/simple/testdata/block_ext.textproto",
