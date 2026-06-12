@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +16,9 @@
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
+#include "google/protobuf/descriptor.h"
+#include "google/protobuf/descriptor.pb.h"
+#include "google/protobuf/descriptor_database.h"
 #include "shared/type.h"
 
 namespace {
@@ -207,6 +211,18 @@ struct CelCompileOpts {
   int optimize_level = 0;
   celwasm::CompilerOptions::LinkMode link_mode =
       celwasm::CompilerOptions::LinkMode::kStatic;
+
+  // Descriptor pool built from a caller-supplied FileDescriptorSet (see
+  // cel_compile_opts_set_descriptor_set), layered over the generated pool
+  // so well-known types resolve.  The owning databases + pool live here so
+  // they outlive the Compile in cel_compile; `descriptor_pool` is the
+  // borrowed pointer handed to the Builder.  Declared last so they destruct
+  // first (the pool references merged_db, which references the two dbs).
+  std::unique_ptr<google::protobuf::SimpleDescriptorDatabase> schema_db;
+  std::unique_ptr<google::protobuf::DescriptorPoolDatabase> generated_db;
+  std::unique_ptr<google::protobuf::MergedDescriptorDatabase> merged_db;
+  std::unique_ptr<google::protobuf::DescriptorPool> owned_pool;
+  const google::protobuf::DescriptorPool* descriptor_pool = nullptr;
 };
 
 namespace {
@@ -221,6 +237,9 @@ absl::StatusOr<celwasm::Compiler> BuildCompiler(const CelCompileOpts* opts) {
     }
     for (const auto& fn : opts->host_fns) {
       builder.AddFunction(fn);
+    }
+    if (opts->descriptor_pool != nullptr) {
+      builder.SetDescriptorPool(opts->descriptor_pool);
     }
   }
   return std::move(builder).Build();
@@ -308,6 +327,47 @@ void cel_compile_opts_set_link_mode(CelCompileOpts* opts, CelLinkMode mode) {
   opts->link_mode = mode == CEL_LINK_MODE_DYNAMIC
                         ? celwasm::CompilerOptions::LinkMode::kDynamic
                         : celwasm::CompilerOptions::LinkMode::kStatic;
+}
+
+CelStatus cel_compile_opts_set_descriptor_set(CelCompileOpts* opts,
+                                              const uint8_t* fds, int len) {
+  if (opts == nullptr) return CEL_STATUS_INVALID_ARGUMENT;
+  // A null / empty set clears any previously-supplied pool (→ generated).
+  if (fds == nullptr || len <= 0) {
+    opts->owned_pool.reset();
+    opts->merged_db.reset();
+    opts->generated_db.reset();
+    opts->schema_db.reset();
+    opts->descriptor_pool = nullptr;
+    return CEL_STATUS_OK;
+  }
+  google::protobuf::FileDescriptorSet set;
+  if (!set.ParseFromArray(fds, len)) {
+    return CEL_STATUS_INVALID_ARGUMENT;
+  }
+  // Build a pool that resolves the supplied files first, falling back to the
+  // generated pool (so well-known types resolve) — the caller-builds-the-
+  // fallback contract the compiler expects.
+  auto schema_db = std::make_unique<google::protobuf::SimpleDescriptorDatabase>();
+  for (const auto& file : set.file()) {
+    if (!schema_db->Add(file)) {
+      return CEL_STATUS_INVALID_ARGUMENT;  // duplicate file name
+    }
+  }
+  auto generated_db =
+      std::make_unique<google::protobuf::DescriptorPoolDatabase>(
+          *google::protobuf::DescriptorPool::generated_pool());
+  auto merged_db = std::make_unique<google::protobuf::MergedDescriptorDatabase>(
+      schema_db.get(), generated_db.get());
+  auto owned_pool =
+      std::make_unique<google::protobuf::DescriptorPool>(merged_db.get());
+
+  opts->schema_db = std::move(schema_db);
+  opts->generated_db = std::move(generated_db);
+  opts->merged_db = std::move(merged_db);
+  opts->owned_pool = std::move(owned_pool);
+  opts->descriptor_pool = opts->owned_pool.get();
+  return CEL_STATUS_OK;
 }
 
 CelStatus cel_compile(const char* source, const CelCompileOpts* opts,

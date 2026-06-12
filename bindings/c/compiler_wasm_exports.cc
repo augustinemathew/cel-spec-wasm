@@ -95,6 +95,16 @@ bool ApplyOneOption(CelCompileOpts* opts, std::uint8_t kind,
             opts, val[0] != 0 ? CEL_LINK_MODE_STATIC : CEL_LINK_MODE_DYNAMIC);
       }
       return true;
+    case 'd':
+      // A binary FileDescriptorSet for proto-typed expressions; the C ABI
+      // builds a pool over the generated pool from these bytes.
+      if (cel_compile_opts_set_descriptor_set(opts, val,
+                                              static_cast<int>(rlen)) !=
+          CEL_STATUS_OK) {
+        g_error = DupError("compile options: invalid descriptor set");
+        return false;
+      }
+      return true;
     default:
       g_error = DupError("compile options: unknown record kind");
       return false;
@@ -102,7 +112,8 @@ bool ApplyOneOption(CelCompileOpts* opts, std::uint8_t kind,
 }
 
 // Applies a sequence of compile-option records to `opts`. Each record is
-//   u8  kind     'v' var | 'f' fn | 'c' container | 'o' optimize | 'l' link
+//   u8  kind     'v' var | 'f' fn | 'c' container | 'o' optimize | 'l' link |
+//                'd' descriptor-set (binary FileDescriptorSet bytes)
 //   u32 len      (little-endian) — the value byte count
 //   u8  value[len]
 // Returns false and sets g_error on a malformed record or a declaration

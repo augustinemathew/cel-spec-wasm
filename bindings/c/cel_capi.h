@@ -119,6 +119,18 @@ void cel_compile_opts_set_optimize_level(CelCompileOpts* opts, int level);
 // Set the runtime link mode (default CEL_LINK_MODE_STATIC).
 void cel_compile_opts_set_link_mode(CelCompileOpts* opts, CelLinkMode mode);
 
+// Supply a binary-serialized `google.protobuf.FileDescriptorSet` (the bytes
+// `protoc --descriptor_set_out` emits) describing the message types a
+// proto-typed expression / declaration references.  The bytes are parsed
+// and built into a descriptor pool layered over the process-wide generated
+// pool (so well-known types resolve), copied into `opts`; the caller may
+// free `fds` after the call.  A null `fds` or non-positive `len` clears any
+// previously-supplied set (resolution falls back to the generated pool).
+// Returns CEL_STATUS_INVALID_ARGUMENT if the bytes are not a valid
+// FileDescriptorSet (or contain a duplicate file name).
+CelStatus cel_compile_opts_set_descriptor_set(CelCompileOpts* opts,
+                                              const uint8_t* fds, int len);
+
 // Compile a CEL `source` expression to a wasm Program.
 //
 // `opts` may be null (uses the compiler defaults).  On success the

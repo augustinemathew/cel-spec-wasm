@@ -5,9 +5,31 @@
 #include <cstring>
 #include <string>
 
+#include "google/protobuf/descriptor.pb.h"
 #include "gtest/gtest.h"
 
 namespace {
+
+// Serialized FileDescriptorSet for `celwasm.test.Widget { string label = 1; }`
+// — a message defined ONLY in these bytes (never in the generated pool), so a
+// compile that resolves it proves cel_compile_opts_set_descriptor_set is
+// load-bearing.
+std::string BuildWidgetFds() {
+  using google::protobuf::FieldDescriptorProto;
+  google::protobuf::FileDescriptorSet fds;
+  google::protobuf::FileDescriptorProto* file = fds.add_file();
+  file->set_name("widget.proto");
+  file->set_package("celwasm.test");
+  file->set_syntax("proto3");
+  google::protobuf::DescriptorProto* widget = file->add_message_type();
+  widget->set_name("Widget");
+  FieldDescriptorProto* label = widget->add_field();
+  label->set_name("label");
+  label->set_number(1);
+  label->set_type(FieldDescriptorProto::TYPE_STRING);
+  label->set_label(FieldDescriptorProto::LABEL_OPTIONAL);
+  return fds.SerializeAsString();
+}
 
 // The wasm magic number: "\0asm".  A successfully compiled Program's
 // bytes begin with this (abi_decode.cc locates the cel.abi section
@@ -258,6 +280,64 @@ TEST(CelCapi, FreeAndOptsFreeAcceptNull) {
   cel_free(nullptr);
   cel_compile_opts_free(nullptr);
   SUCCEED();
+}
+
+// A supplied descriptor set makes a message type referenced by a declared
+// variable resolve — Widget lives only in the FDS, not the generated pool.
+TEST(CelCapi, DescriptorSetResolvesMessageType) {
+  CelCompileOpts* opts = cel_compile_opts_new();
+  ASSERT_NE(opts, nullptr);
+  const std::string fds = BuildWidgetFds();
+  ASSERT_EQ(cel_compile_opts_set_descriptor_set(
+                opts, reinterpret_cast<const uint8_t*>(fds.data()),
+                static_cast<int>(fds.size())),
+            CEL_STATUS_OK);
+  char* decl_err = nullptr;
+  ASSERT_EQ(cel_compile_opts_declare_var(opts, "w:celwasm.test.Widget",
+                                         &decl_err),
+            CEL_STATUS_OK);
+  cel_free(decl_err);
+
+  uint8_t* wasm = nullptr;
+  size_t len = 0;
+  char* err = nullptr;
+  const CelStatus st = cel_compile("w.label", opts, &wasm, &len, &err);
+  cel_compile_opts_free(opts);
+  ASSERT_EQ(st, CEL_STATUS_OK) << (err != nullptr ? err : "");
+  FreeGuard wasm_guard(wasm);
+  FreeGuard err_guard(err);
+  EXPECT_TRUE(StartsWithWasmMagic(wasm, len));
+}
+
+// Without the descriptor set the supplied-only message type is undeclared.
+TEST(CelCapi, WithoutDescriptorSetMessageTypeFails) {
+  CelCompileOpts* opts = cel_compile_opts_new();
+  ASSERT_NE(opts, nullptr);
+  char* decl_err = nullptr;
+  ASSERT_EQ(cel_compile_opts_declare_var(opts, "w:celwasm.test.Widget",
+                                         &decl_err),
+            CEL_STATUS_OK);
+  cel_free(decl_err);
+
+  uint8_t* wasm = nullptr;
+  size_t len = 0;
+  char* err = nullptr;
+  const CelStatus st = cel_compile("w.label", opts, &wasm, &len, &err);
+  cel_compile_opts_free(opts);
+  FreeGuard err_guard(err);
+  EXPECT_EQ(st, CEL_STATUS_INVALID_ARGUMENT);
+}
+
+// Bytes that are not a valid FileDescriptorSet are rejected at set time.
+TEST(CelCapi, MalformedDescriptorSetFails) {
+  CelCompileOpts* opts = cel_compile_opts_new();
+  ASSERT_NE(opts, nullptr);
+  const uint8_t garbage[] = {0xff, 0xff, 0xff, 0xff};
+  EXPECT_EQ(cel_compile_opts_set_descriptor_set(opts, garbage, sizeof(garbage)),
+            CEL_STATUS_INVALID_ARGUMENT);
+  // A null/empty set is a no-op clear, not an error.
+  EXPECT_EQ(cel_compile_opts_set_descriptor_set(opts, nullptr, 0), CEL_STATUS_OK);
+  cel_compile_opts_free(opts);
 }
 
 }  // namespace
