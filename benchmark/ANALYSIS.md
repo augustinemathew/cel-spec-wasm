@@ -7,6 +7,27 @@ medians, idle machine; full tables in
 Re-run `BENCH_REPS=3 benchmark/eval/run.sh` and rewrite the
 conclusions here when they materially change.
 
+## Series scoreboard (2026-06-12, end of optimization loop)
+
+Six profile-driven commits in ~7 hours, each A/B-validated and
+flame-justified (25129eb unchecked trampolines, 4ffefd3 descriptor
+cache, 36cc0d2 copy/intern elimination, 879ec66 view cache + grow
+pin, aa8bcf4 batched select paths + ABI v3, e1b84a9 unchecked entry).
+Same-minute head-to-head vs cel-cpp at the end of the series:
+
+| cell | start of day | end of day | vs cel-cpp |
+|---|---:|---:|---|
+| `policy.mega100` | 21.3 us (2.2x slower) | ~6.7 us | **1.5x faster** |
+| `proto.select_depth16` | 1.72 us (2.5x slower) | ~0.26 us | **2.4x faster** |
+| `lit.int` (per-Eval floor) | 67 ns (1.6x slower) | ~30 ns | **faster** |
+| `policy.authz_deep8` | 3.1 us | ~0.6 us | parity-to-faster |
+| conformance | 1973 PASS | 1973 PASS | unchanged |
+
+Remaining micro-candidates the final flames name: hoist the
+empty-unknown-pattern check above the path-walk loop; `ProtoMap::Get`
+per-lookup entry scan; `GetMetadata` (irreducible per-read pair).
+The published 2026-06-12 results tables reflect HEAD.
+
 ## Reading guide
 
 - **celwasm-static vs celwasm-dynamic**: static links the runtime
