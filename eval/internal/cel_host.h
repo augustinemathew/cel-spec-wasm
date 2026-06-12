@@ -419,6 +419,35 @@ class ExternrefTable {
   virtual const HostListBacking* absl_nullable LookupList(
       uint32_t slot) const = 0;
 
+  // Proto-identity intern entry points.  Semantically equivalent to
+  // `Intern(std::make_shared<ProtoBacking>(msg))` (resp. `InternMap`
+  // over a `ProtoMap`, `InternList` over a `ProtoList`) — the
+  // defaults below ARE exactly that.  An implementation may override
+  // to dedup by the underlying proto identity: the pointer(s) fully
+  // determine the backing's observable behaviour (the wrappers are
+  // stateless beyond them), so re-interning the same message — or
+  // the same (owner, field) map/list — may return the
+  // previously-issued slot with no allocation.  Lifetime contract a
+  // deduping implementation relies on: every pointer handed in stays
+  // valid until the next `Reset()`.  Trampoline callers satisfy it —
+  // their messages are anchored by an Activation binding (outlives
+  // the Eval by contract) or by an already-interned owning backing
+  // (held by this table until `Reset()`).
+  virtual uint32_t InternProtoMessage(
+      const google::protobuf::Message* absl_nonnull msg) {
+    return Intern(std::make_shared<ProtoBacking>(msg));
+  }
+  virtual uint32_t InternProtoMapField(
+      const google::protobuf::Message* absl_nonnull owner,
+      const google::protobuf::FieldDescriptor* absl_nonnull field) {
+    return InternMap(std::make_shared<ProtoMap>(owner, field));
+  }
+  virtual uint32_t InternProtoListField(
+      const google::protobuf::Message* absl_nonnull owner,
+      const google::protobuf::FieldDescriptor* absl_nonnull field) {
+    return InternList(std::make_shared<ProtoList>(owner, field));
+  }
+
   virtual void Reset() = 0;
 };
 

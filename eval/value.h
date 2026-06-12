@@ -93,6 +93,18 @@ class Value {
   static Value Double(double v);
   static Value String(std::string v);
   static Value Bytes(std::string v);
+  // Non-owning view counterparts to `String` / `Bytes`.  The Value
+  // carries only the (ptr, len) view — the caller guarantees the
+  // referenced bytes outlive every read of the Value.  Eval-internal
+  // use only: proto field reads view the bound message's own storage
+  // (the message outlives the Eval per the `ProtoBacking` lifetime
+  // contract), and trampoline key decodes view wasm linear memory
+  // (the shared-memory base pointer is stable for the Instance's
+  // lifetime).  Values handed across the embedder boundary — Eval
+  // results, host-callback arguments, Activation bindings — must
+  // stay owning; use `String` / `Bytes` there.
+  static Value StringView(absl::string_view v);
+  static Value BytesView(absl::string_view v);
   static Value Duration(absl::Duration v);
   static Value Timestamp(absl::Time v);
   // type-of-types.  `name` is the spec type-name (`"int"`,
@@ -251,7 +263,13 @@ class Value {
                    std::shared_ptr<ErrorPayload>,  // Error
                    std::shared_ptr<celwasm::HostMessageBacking>,  // Message
                    std::shared_ptr<celwasm::HostMapBacking>,      // Map
-                   std::shared_ptr<celwasm::HostListBacking>>;    // List
+                   std::shared_ptr<celwasm::HostListBacking>,     // List
+                   // String/Bytes non-owning view (StringView /
+                   // BytesView factories).  Same kind tags as the
+                   // owning std::string alternative — accessors and
+                   // equality treat the two representations
+                   // identically.
+                   absl::string_view>;
 
   Kind kind_;
   Payload payload_;
@@ -267,6 +285,9 @@ class Value {
   Value(StringTag, std::string s);
   Value(BytesTag, std::string s);
   Value(TypeTag, std::string s);
+  // View-payload counterparts (StringView / BytesView factories).
+  Value(StringTag, absl::string_view s);
+  Value(BytesTag, absl::string_view s);
 };
 
 absl::string_view ValueKindName(Value::Kind k);

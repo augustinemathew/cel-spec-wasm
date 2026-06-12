@@ -87,6 +87,7 @@ cc_test(
         ":value",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest_main",
     ],
@@ -691,6 +692,27 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@com_google_protobuf//:protobuf",
         "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+# HostExternrefTable slot issuance + proto-identity dedup coverage
+# (Intern by message(), InternProto{Message,MapField,ListField},
+# Reset dropping slots AND dedup indexes).
+cc_test(
+    name = "cel_host_wasmtime_test",
+    size = "small",
+    srcs = ["internal/cel_host_wasmtime_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_wasmtime",
+        ":value",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
     ],
 )
 

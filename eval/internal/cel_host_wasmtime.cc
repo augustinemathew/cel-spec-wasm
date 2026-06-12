@@ -36,6 +36,22 @@ HostExternrefTable::HostExternrefTable() {
 
 uint32_t HostExternrefTable::Intern(
     std::shared_ptr<const HostMessageBacking> backing) {
+  // Dedup proto-exposing backings by the underlying Message identity
+  // (see the class comment for the lifetime argument).  A hit drops
+  // `backing` — for an already-recorded message the existing backing
+  // is observably identical, and an owning backing can never hit
+  // (its freshly-allocated message cannot alias a recorded pointer
+  // that is still anchored).  Non-proto custom backings
+  // (`message() == nullptr`) intern unconditionally, as before.
+  const google::protobuf::Message* msg =
+      backing != nullptr ? backing->message() : nullptr;
+  if (msg != nullptr) {
+    auto [it, inserted] = msg_slots_.try_emplace(msg, 0);
+    if (!inserted) return it->second;
+    backings_.push_back(std::move(backing));
+    it->second = static_cast<uint32_t>(backings_.size() - 1);
+    return it->second;
+  }
   backings_.push_back(std::move(backing));
   return static_cast<uint32_t>(backings_.size() - 1);
 }
@@ -67,6 +83,37 @@ const HostListBacking* absl_nullable HostExternrefTable::LookupList(
   return slot < list_backings_.size() ? list_backings_[slot].get() : nullptr;
 }
 
+uint32_t HostExternrefTable::InternProtoMessage(
+    const google::protobuf::Message* absl_nonnull msg) {
+  // Hot select-chain path: a repeat hop over the same sub-message
+  // within an Eval returns the issued slot with no allocation at
+  // all — the dedup check runs BEFORE the ProtoBacking is built.
+  if (auto it = msg_slots_.find(msg); it != msg_slots_.end()) {
+    return it->second;
+  }
+  // Miss: `Intern` allocates the backing and records msg → slot
+  // (ProtoBacking::message() returns `msg`).
+  return Intern(std::make_shared<ProtoBacking>(msg));
+}
+
+uint32_t HostExternrefTable::InternProtoMapField(
+    const google::protobuf::Message* absl_nonnull owner,
+    const google::protobuf::FieldDescriptor* absl_nonnull field) {
+  auto [it, inserted] = map_field_slots_.try_emplace({owner, field}, 0);
+  if (!inserted) return it->second;
+  it->second = InternMap(std::make_shared<ProtoMap>(owner, field));
+  return it->second;
+}
+
+uint32_t HostExternrefTable::InternProtoListField(
+    const google::protobuf::Message* absl_nonnull owner,
+    const google::protobuf::FieldDescriptor* absl_nonnull field) {
+  auto [it, inserted] = list_field_slots_.try_emplace({owner, field}, 0);
+  if (!inserted) return it->second;
+  it->second = InternList(std::make_shared<ProtoList>(owner, field));
+  return it->second;
+}
+
 void HostExternrefTable::Reset() {
   backings_.clear();
   backings_.push_back(nullptr);
@@ -74,6 +121,9 @@ void HostExternrefTable::Reset() {
   map_backings_.push_back(nullptr);
   list_backings_.clear();
   list_backings_.push_back(nullptr);
+  msg_slots_.clear();
+  map_field_slots_.clear();
+  list_field_slots_.clear();
 }
 
 // ═══════════ BuildCelHostBindings ═══════════

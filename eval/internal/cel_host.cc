@@ -702,10 +702,22 @@ absl::StatusOr<celwasm::Value> ReadScalarField(
   if (field.cpp_type() == FD::CPPTYPE_STRING) {
     std::string scratch;
     const std::string& s = refl->GetStringReference(msg, &field, &scratch);
-    if (field.type() == FD::TYPE_BYTES) {
-      return celwasm::Value::Bytes(std::string(s));
+    const bool is_bytes = field.type() == FD::TYPE_BYTES;
+    if (&s == &scratch) {
+      // Reflection materialised the payload into the scratch (e.g.
+      // cord-backed storage) — the bytes do NOT live in the message,
+      // so hand the scratch's ownership to the Value.
+      return is_bytes ? celwasm::Value::Bytes(std::move(scratch))
+                      : celwasm::Value::String(std::move(scratch));
     }
-    return celwasm::Value::String(std::string(s));
+    // Common case: `s` aliases the message's own storage.  Every
+    // caller reads from a message anchored for the rest of the Eval
+    // (the ProtoBacking lifetime contract), and the result is
+    // consumed before the trampoline returns — return a non-owning
+    // view and skip the per-read heap copy; `EncodeSpan` memcpys
+    // straight from the proto's storage into the wasm arena.
+    return is_bytes ? celwasm::Value::BytesView(s)
+                    : celwasm::Value::StringView(s);
   }
   if (field.cpp_type() == FD::CPPTYPE_MESSAGE) {
     return ReadSingularMessageField(*refl, msg, field);
@@ -1006,7 +1018,10 @@ namespace {
 // Decode a scalar CelValue into a celwasm::Value.  Map-key kinds only
 // (bool/int/uint/string) — every other kind returns nullopt and the
 // caller surfaces a TYPE_MISMATCH error to the wasm side.  Strings
-// dereference through the MemoryView so the celwasm::Value owns a copy.
+// stay a non-owning view over linear memory: the shared-memory base
+// pointer is stable (wasmtime shared memories never remap on grow)
+// and the key Value is consumed by `Get` / `ContainsKey` before the
+// trampoline returns — no backing stores it past the call.
 std::optional<celwasm::Value> DecodeKey(const CelValue& cv,
                                         const MemoryView& mem) {
   switch (cv.kind) {
@@ -1016,11 +1031,9 @@ std::optional<celwasm::Value> DecodeKey(const CelValue& cv,
       return celwasm::Value::Int(cv.payload.i);
     case CEL_UINT:
       return celwasm::Value::Uint(cv.payload.u);
-    case CEL_STRING: {
-      absl::string_view bytes =
-          mem.ReadSpan(cv.payload.s.ptr, cv.payload.s.len);
-      return celwasm::Value::String(std::string(bytes));
-    }
+    case CEL_STRING:
+      return celwasm::Value::StringView(
+          mem.ReadSpan(cv.payload.s.ptr, cv.payload.s.len));
     default:
       return std::nullopt;
   }
@@ -1699,10 +1712,17 @@ absl::StatusOr<celwasm::Value> ReadRepeatedElement(
       std::string scratch;
       const std::string& s =
           refl.GetRepeatedStringReference(msg, &field, i, &scratch);
-      if (field.type() == FD::TYPE_BYTES) {
-        return celwasm::Value::Bytes(std::string(s));
+      const bool is_bytes = field.type() == FD::TYPE_BYTES;
+      if (&s == &scratch) {
+        // Bytes were materialised into the scratch — hand over
+        // ownership (same contract as `ReadScalarField`).
+        return is_bytes ? celwasm::Value::Bytes(std::move(scratch))
+                        : celwasm::Value::String(std::move(scratch));
       }
-      return celwasm::Value::String(std::string(s));
+      // View into the anchored message's element storage — see the
+      // `ReadScalarField` string arm for the lifetime argument.
+      return is_bytes ? celwasm::Value::BytesView(s)
+                      : celwasm::Value::StringView(s);
     }
     case FD::CPPTYPE_MESSAGE: {
       const google::protobuf::Message& sub =
@@ -1910,6 +1930,52 @@ absl::StatusOr<FieldDispatchPrelude> RunFieldPrelude(
   return FieldDispatchPrelude{/*sentinel_handled=*/false, backing, field};
 }
 
+// Fast-path encoder for aggregate-shaped proto field reads (plain
+// nested message / map field / repeated field).  Skips the
+// intermediate `celwasm::Value` and its per-read
+// `make_shared<Proto{Backing,Map,List}>` by interning through the
+// proto-identity ExternrefTable entry points, which may dedup — a
+// repeat hop over the same sub-object within an Eval reuses the
+// already-issued slot with no allocation.  Returns nullopt when the
+// classification is not one of the three aggregate classes (or the
+// message lacks reflection); the caller falls through to
+// `ReadFieldClassified`, whose kMessagePlain / kMap / kRepeated arms
+// remain the semantics of record for non-trampoline callers.
+std::optional<absl::Status> TryEncodeAggregateFieldFast(
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, const ResolvedFieldCache& c,
+    uint32_t out_slot, const TrampolineContext& ctx) {
+  using RC = ProtoFieldReadClass;
+  CelValue cv{};
+  switch (c.read_class) {
+    case RC::kMessagePlain: {
+      const google::protobuf::Reflection* refl = msg.GetReflection();
+      if (refl == nullptr) return std::nullopt;
+      const google::protobuf::Message& sub = refl->GetMessage(msg, &field);
+      cv.kind = CEL_MESSAGE;
+      cv.payload.msg_slot = ctx.refs.InternProtoMessage(&sub);
+      break;
+    }
+    case RC::kMap:
+      cv.kind = CEL_MAP_HOST;
+      cv.payload.ref_slot = ctx.refs.InternProtoMapField(&msg, &field);
+      break;
+    case RC::kRepeated:
+      cv.kind = CEL_LIST_HOST;
+      cv.payload.ref_slot = ctx.refs.InternProtoListField(&msg, &field);
+      break;
+    case RC::kScalar:
+    case RC::kMessageWrapper:
+    case RC::kMessageAny:
+    case RC::kMessageTimestamp:
+    case RC::kMessageDuration:
+    case RC::kMessageJson:
+      return std::nullopt;
+  }
+  ctx.mem.WriteCelValue(out_slot, cv);
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 absl::Status EncodeUnknownSet(absl::Span<const uint32_t> ids,
@@ -1965,6 +2031,11 @@ absl::Status CelGetFieldImpl(uint32_t out_slot, uint32_t msg_slot,
     if (field == nullptr) {
       return EncodeFieldResult(FieldNotFound(prelude_or->field->field_name),
                                out_slot, ctx);
+    }
+    if (auto fast = TryEncodeAggregateFieldFast(
+            *msg, *field, prelude_or->field->resolved, out_slot, ctx);
+        fast.has_value()) {
+      return *std::move(fast);
     }
     auto v_or = ReadFieldClassified(*msg, *field, prelude_or->field->resolved);
     if (!v_or.ok()) return v_or.status();

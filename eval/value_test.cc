@@ -6,6 +6,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "eval/attribute.h"
 #include "eval/error.h"
@@ -75,6 +76,55 @@ TEST(ValueTest, BytesRoundTrips) {
   EXPECT_EQ(v.kind(), Value::Kind::kBytes);
   // Bytes stored as std::string; AsBytes tags-guarded.
   EXPECT_THAT(v.AsBytes(), IsOkAndHolds(payload));
+}
+
+TEST(ValueTest, StringViewRoundTripsWithoutOwning) {
+  const std::string storage = "hello view";
+  auto v = Value::StringView(storage);
+  EXPECT_EQ(v.kind(), Value::Kind::kString);
+  auto sv = v.AsString();
+  ASSERT_TRUE(sv.ok());
+  EXPECT_EQ(*sv, "hello view");
+  // Non-owning: the accessor returns a view over the caller's
+  // storage, not a copy held by the Value.
+  EXPECT_EQ(sv->data(), storage.data());
+}
+
+TEST(ValueTest, EmptyStringViewRoundTrips) {
+  EXPECT_THAT(Value::StringView(absl::string_view()).AsString(),
+              IsOkAndHolds(""));
+}
+
+TEST(ValueTest, BytesViewRoundTripsEmbeddedNul) {
+  const std::string payload("\x00\x01\x02", 3);
+  auto v = Value::BytesView(payload);
+  EXPECT_EQ(v.kind(), Value::Kind::kBytes);
+  EXPECT_THAT(v.AsBytes(), IsOkAndHolds(payload));
+}
+
+TEST(ValueTest, ViewAndOwnedFactoriesShareKindRules) {
+  EXPECT_THAT(Value::StringView("x").AsBytes(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected bytes, got string")));
+  EXPECT_THAT(Value::BytesView("x").AsString(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("expected string, got bytes")));
+}
+
+TEST(ValueTest, StructurallyEqualsAcrossOwnedAndViewRepresentations) {
+  const std::string storage = "abc";
+  // Representation (owning string vs non-owning view) is invisible
+  // to equality — only kind + bytes matter.
+  EXPECT_TRUE(Value::StringView(storage).StructurallyEquals(
+      Value::String("abc")));
+  EXPECT_TRUE(Value::String("abc").StructurallyEquals(
+      Value::StringView(storage)));
+  EXPECT_TRUE(Value::BytesView(storage).StructurallyEquals(
+      Value::Bytes("abc")));
+  EXPECT_FALSE(Value::StringView(storage).StructurallyEquals(
+      Value::String("abd")));
+  EXPECT_FALSE(Value::StringView(storage).StructurallyEquals(
+      Value::Bytes("abc")));  // kind still distinguishes
 }
 
 TEST(ValueTest, StringAndBytesDoNotCrossAccessors) {

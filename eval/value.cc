@@ -37,6 +37,10 @@ Value::Value(BytesTag, std::string s)
     : kind_(Kind::kBytes), payload_(std::move(s)) {}
 Value::Value(TypeTag, std::string s)
     : kind_(Kind::kType), payload_(std::move(s)) {}
+Value::Value(StringTag, absl::string_view s)
+    : kind_(Kind::kString), payload_(s) {}
+Value::Value(BytesTag, absl::string_view s)
+    : kind_(Kind::kBytes), payload_(s) {}
 
 Value Value::Null() {
   return {};
@@ -70,6 +74,12 @@ Value Value::String(std::string v) {
 }
 Value Value::Bytes(std::string v) {
   return Value(BytesTag{}, std::move(v));
+}
+Value Value::StringView(absl::string_view v) {
+  return Value(StringTag{}, v);
+}
+Value Value::BytesView(absl::string_view v) {
+  return Value(BytesTag{}, v);
 }
 Value Value::Duration(absl::Duration v) {
   Value r;
@@ -160,10 +170,16 @@ absl::StatusOr<double> Value::AsDouble() const {
 }
 absl::StatusOr<absl::string_view> Value::AsString() const {
   if (kind_ != Kind::kString) return KindMismatch("string", kind_);
+  if (const auto* view = std::get_if<absl::string_view>(&payload_)) {
+    return *view;
+  }
   return absl::string_view(std::get<std::string>(payload_));
 }
 absl::StatusOr<absl::string_view> Value::AsBytes() const {
   if (kind_ != Kind::kBytes) return KindMismatch("bytes", kind_);
+  if (const auto* view = std::get_if<absl::string_view>(&payload_)) {
+    return *view;
+  }
   return absl::string_view(std::get<std::string>(payload_));
 }
 absl::StatusOr<absl::Duration> Value::AsDuration() const {
@@ -242,12 +258,20 @@ bool Value::StructurallyEquals(const Value& other) const {
       return std::get<double>(payload_) == std::get<double>(other.payload_);
     case Kind::kString:
     case Kind::kBytes:
-    case Kind::kType:
+    case Kind::kType: {
       // kType shares the std::string Payload alternative; the kind
       // tag (already checked above) disambiguates.  Byte-equality per
-      // langdef §"Equality" + m9-type-subsystem.md §3.4.
-      return std::get<std::string>(payload_) ==
-             std::get<std::string>(other.payload_);
+      // langdef §"Equality" + m9-type-subsystem.md §3.4.  kString /
+      // kBytes payloads may be owning (std::string) or non-owning
+      // (absl::string_view) — compare the bytes either way.
+      const auto bytes_of = [](const Payload& p) -> absl::string_view {
+        if (const auto* view = std::get_if<absl::string_view>(&p)) {
+          return *view;
+        }
+        return std::get<std::string>(p);
+      };
+      return bytes_of(payload_) == bytes_of(other.payload_);
+    }
     case Kind::kDuration:
       return std::get<absl::Duration>(payload_) ==
              std::get<absl::Duration>(other.payload_);

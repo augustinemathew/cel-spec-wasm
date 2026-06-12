@@ -12,11 +12,13 @@
 
 #include <cstring>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "abi/cel_abi.pb.h"
 #include "absl/base/attributes.h"
 #include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "eval/internal/cel_host.h"
@@ -28,6 +30,17 @@ namespace celwasm {
 // Production ExternrefTable — vector-backed, slot 0 sentinel.
 // Matches the test fake's shape 1:1; promoted here for reuse by
 // Layer 3 (test fake stays local to cel_host_test).
+//
+// Proto-backed interns are deduplicated by the underlying proto
+// identity (see `ExternrefTable::InternProtoMessage`'s contract):
+// re-interning the same `Message*` — or the same (owner, field)
+// map/list pair — returns the previously-issued slot instead of
+// allocating a fresh backing + vector entry.  Safe because every
+// recorded pointer is anchored until the next `Reset()` (Activation
+// bindings outlive the Eval; eval-constructed messages are held by
+// their interned owning backing in this very table), so a recorded
+// pointer can never be freed-and-reused for a different message
+// within one Eval.  The dedup maps reset with the slots.
 class HostExternrefTable final : public ExternrefTable {
  public:
   HostExternrefTable();
@@ -44,12 +57,32 @@ class HostExternrefTable final : public ExternrefTable {
   uint32_t InternList(std::shared_ptr<const HostListBacking> backing) override;
   const HostListBacking* absl_nullable LookupList(uint32_t slot) const override;
 
+  // Deduping proto-identity interns (class comment above).
+  uint32_t InternProtoMessage(
+      const google::protobuf::Message* absl_nonnull msg) override;
+  uint32_t InternProtoMapField(
+      const google::protobuf::Message* absl_nonnull owner,
+      const google::protobuf::FieldDescriptor* absl_nonnull field) override;
+  uint32_t InternProtoListField(
+      const google::protobuf::Message* absl_nonnull owner,
+      const google::protobuf::FieldDescriptor* absl_nonnull field) override;
+
   void Reset() override;
 
  private:
+  using ProtoFieldKey = std::pair<const google::protobuf::Message*,
+                                  const google::protobuf::FieldDescriptor*>;
+
   std::vector<std::shared_ptr<const HostMessageBacking>> backings_;
   std::vector<std::shared_ptr<const HostMapBacking>> map_backings_;
   std::vector<std::shared_ptr<const HostListBacking>> list_backings_;
+  // Per-Eval dedup indexes over the slot vectors above.  `Intern`
+  // records every proto-exposing message backing (`message()` non-
+  // null) here; the InternProto* fast paths consult the index before
+  // allocating.  Cleared by `Reset()`.
+  absl::flat_hash_map<const google::protobuf::Message*, uint32_t> msg_slots_;
+  absl::flat_hash_map<ProtoFieldKey, uint32_t> map_field_slots_;
+  absl::flat_hash_map<ProtoFieldKey, uint32_t> list_field_slots_;
 };
 
 // Per-Instance payload the cel_host.cel_get_field trampoline reads.
