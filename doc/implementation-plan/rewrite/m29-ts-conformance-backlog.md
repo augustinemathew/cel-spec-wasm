@@ -16,8 +16,51 @@ change to refresh the numbers.
 
 | Implementation | Corpus | pass | skip | fail |
 | --- | --- | ---: | ---: | ---: |
-| **TS bindings** (`@cel-wasm/*`) | 2454 rows | **1902** | 552 | **0** |
+| **TS bindings** (`@cel-wasm/*`) | 2454 rows | **1920** | 534 | **0** |
 | **C++** (`conformance/.baseline`, dynamic mode) | 2454 rows | **1973** | — | 0 |
+
+> Update 2026-06-12 (d): the **final parity sweep** shipped — every
+> remaining C++-passes-but-TS-skips cluster closed or reclassified
+> (+18 PASS, 1902 → 1920, **0 fail**; `.baseline` ratcheted to 1920):
+>
+>   - **timestamp tz-string accessors** (1 row, `timestamps` now
+>     76/76): `computeCivilField` (`eval/src/host/stubs.ts`) resolves
+>     fixed-offset zones (`UTC`/`Z`/sign-optional `HH:MM`) arithmetically,
+>     mirroring `ResolveTimeZone` (eval/internal/cel_host.cc) — `Intl`
+>     rejects the unsigned `'02:00'` form; IANA names keep the
+>     `Intl.DateTimeFormat` path.  Runner tz predicate removed.
+>   - **NaN-field message equality** (2 rows, `comparisons`):
+>     `messagesEqual` (`eval/src/host/proto.ts`) forces inequality when a
+>     byte-equal message tree carries a NaN float/double anywhere
+>     (singular / nested / repeated / map value) —
+>     `MessageDifferencer::Equals` parity.  Runner NaN predicate removed.
+>   - **enums "undeclared references"** (18 rows, root-caused): the rows
+>     are the strong-enum conversions (`TestAllTypes.NestedEnum(...)`,
+>     `GlobalEnum(...)`) — a compiler gap **the C++ harness shares**
+>     (cel-cpp issues/119).  12 are on the C++ harness's per-row
+>     spec-unimpl list (`conformance/runner.cc::IsSpecUnimplSection`) —
+>     now mirrored name-for-name as a pre-compile `spec_unimpl` skip
+>     (`classify.ts::isSpecUnimplRow`, replacing the compare-stage
+>     carve-out); the other 6 carry error matchers and now **PASS** via
+>     the compile-error-satisfies-error-matcher arm, reordered before the
+>     proto reclassification to match the C++
+>     `ClassifyCompileFailure` order.
+>   - **type_env declared variables** (19 rows → 2): the renderer now
+>     passes non-time `google.protobuf.*` WKTs through as message FQNs
+>     (the C++ `CelTypeFromProtoType` message_type arm), and the eval
+>     marshal peels a wrapper-message binding into its collapsed scalar
+>     slot (`marshal.ts::peelWrapperBinding`, mirroring
+>     `TryEncodeWktWrapperMessage` / `TryReadWktStringWrapperValue`,
+>     eval/instance.cc) — the 9 `dynamic/<wrapper>/var` rows PASS; the
+>     Struct/Value/ListValue vars flow to `static_subset` (the C++
+>     harness skips them identically).  Residual 2: the `null`-declared
+>     variable (C++ also skips, `CelTypeFromProtoType` has no null arm)
+>     and `dynamic/any/var` (Any out of scope by design, §A.3).
+>
+> After this sweep the TS↔C++ gap (1973 − 1920 = 53) is, on the TS side,
+> dominated by **by-design scope cuts** (Any rows, the optionals
+> extension, proto2 extension-field bindings protobufjs cannot set) —
+> there is no remaining "C++ passes it and TS could too" cluster known.
 
 > Update 2026-06-12 (c): the **`eval_unimpl` proto-semantics sweep** shipped —
 > 50 of the 53 remaining `eval_unimpl` rows closed (+51 PASS with one
@@ -255,7 +298,7 @@ and are excluded here.
 | 3 | **36** | envelope | **type_value matcher** — a `type(...)` result decodes to CEL_TYPE, which is outside the binding's value surface (no comparator) | conversions, enums, timestamps |
 | 4 | **22** | envelope | **typed_result matcher (no-eval check)** — a check-only typed-result expectation reaching the eval comparator | type_deduction |
 | 5 | **18** | ext_unimpl | **block_ext undeclared references** — `cel.block`/`cel.index`/`cel.iterVar` decls not registered | block_ext |
-| 5 | **18** | proto_unimpl | **enums undeclared references** — enum value refs the descriptor path does not resolve | enums |
+| 5 | ~~18~~ **CLOSED 2026-06-12 (+6 pass, 12 → spec_unimpl)** | proto_unimpl | **enums undeclared references** — root-caused as the strong-enum conversions the C++ harness also can't compile (cel-cpp issues/119): 12 mirrored onto the spec-unimpl list (`isSpecUnimplRow`), 6 error-matcher rows pass via the compile-error arm | enums |
 | 7 | **14** | proto_unimpl | **google.protobuf.Any beyond supplied descriptors** — out of scope (§A.3): cannot resolve packed type-url at eval | comparisons, dynamic, proto2, proto3, wrappers |
 | 8 | **10** | eval_unimpl | **proto field-presence (repeated/map/proto3-default)** differs from cel-cpp | proto2, proto3 |
 | 9 | ~~9~~ **SHIPPED 2026-06-12 (+9 pass)** | cli_limitation | **embedded NUL byte in expression** — a `b'\x00'` literal couldn't cross the CLI process-arg boundary, then (as `embedded_nul`) the wasm shim's NUL-terminated source. m30 slice F's proto `CompileRequest` made the source length-delimited; the rows PASS and the skip category is removed | comparisons |
@@ -266,13 +309,13 @@ and are excluded here.
 | 12 | **4** | eval_unimpl | **out-of-range enum-field assignment not range-checked** | enums |
 | 12 | **4** | eval_unimpl | **sub-field read through an unset nested message** unimplemented | parse, proto2, proto3 |
 | 16 | **2** | eval_unimpl | **host-aggregate equality overload** (`==`/`!=` literal vs host map/list) unimplemented | comparisons |
-| 16 | **2** | eval_unimpl | **proto message equality with a NaN field** (NaN-inequality propagation) | comparisons |
+| 16 | ~~2~~ **SHIPPED 2026-06-12 (+2 pass)** | eval_unimpl | **proto message equality with a NaN field** — `messagesEqual` forces inequality on a NaN float/double anywhere in a byte-equal tree (`host/proto.ts`); runner predicate removed | comparisons |
 | 16 | **2** | eval_unimpl | **unset nested-message field reads as null** (cel-cpp yields default message) | proto2, proto3 |
 | 19 | **1** | eval_unimpl | **FloatValue field narrowing** (float precision) unimplemented | dynamic |
 | 19 | **1** | ext_unimpl | **optionals / extension construct** unimplemented in eval | optionals |
-| 19 | **1** | eval_unimpl | **timestamp timezone-string accessor overload** unimplemented | timestamps |
+| 19 | ~~1~~ **SHIPPED 2026-06-12 (+1 pass)** | eval_unimpl | **timestamp timezone-string accessor** — fixed-offset zones (`UTC`/`Z`/sign-optional `HH:MM`) resolve arithmetically in `computeCivilField` (`host/stubs.ts`); runner predicate removed | timestamps |
 | 19 | **1** | envelope | **unrecognized cel.expr.Value kind** | fp_math |
-| 19 | **1** | type_env | **unrenderable primitive type** declared variable | comparisons |
+| 19 | **1** | type_env | **unrenderable primitive type** declared variable (a `null`-typed decl; the C++ harness skips it too — `CelTypeFromProtoType` has no null arm) | comparisons |
 
 ### Backlog reading
 
@@ -301,6 +344,26 @@ The schedulable work concentrates in three themes:
 descriptors") — it appears in the fixable table because the category is
 nominally fixable, but the specific Any blocker is not schedulable.
 Treat the Any rows as quasi-permanent.
+
+### Fixable vs out-of-scope, post-parity-sweep (2026-06-12)
+
+After update (d), the residual 534 skips decompose as:
+
+- **By design / spec-shared (≈460):** `static_subset` 227 (dyn rows,
+  RejectDyn), `disable_check` 144, `check_only` 25, `spec_unimpl` 18
+  (the strong-enum list the C++ harness also skips), the 22
+  `proto_unimpl` Any rows, the `envelope` 23 (typed_result check-path +
+  one unrecognized Value kind), and the 2 `type_env` rows (null-decl —
+  C++ skips it too — and the Any-typed variable).
+- **Nominally fixable but blocked on protobufjs (36):** the `bindings`
+  proto2 extension-field bodies `fromObject` cannot set.
+- **Extension libraries not registered (37):** `ext_unimpl` — block_ext
+  (decls) + optionals (runtime) + the two block-rewrite shapes.
+
+There is **no remaining cluster where the C++ harness passes and a TS
+harness/binding fix is known to be available** — the C++ 1973 floor's
+edge over 1920 lives in the by-design buckets above (chiefly Any
+handling, optionals, and the extension-field bindings).
 
 ## How to regenerate
 

@@ -639,7 +639,11 @@ function peelDurationOf(backing: ProtoMessageBacking): CelValue {
  * protobufjs encodings (`Type.encode` over each), which is the cheapest
  * field-by-field structural compare protobufjs offers and matches the
  * langdef message-equality contract for the static subset.  Differing
- * types are unequal.
+ * types are unequal.  A NaN float/double field anywhere in the tree
+ * forces inequality: NaN serialises to stable bytes, but field-wise
+ * equality treats NaN as unequal to NaN — `MessageDifferencer::Equals`
+ * parity (`CompareProtoMessages`, eval/internal/cel_host.cc) and
+ * langdef §"Equality" (NaN compares unequal to itself).
  */
 function messagesEqual(
   a: ProtoMessageBacking,
@@ -649,7 +653,53 @@ function messagesEqual(
     return false;
   }
   const type = a.raw.$type;
-  return bytesEqual(type.encode(a.raw).finish(), type.encode(b.raw).finish());
+  if (!bytesEqual(type.encode(a.raw).finish(), type.encode(b.raw).finish())) {
+    return false;
+  }
+  // Byte-equal: the messages are field-wise identical, so a NaN in `a`
+  // pairs with the same NaN in `b` — unequal under exact float compare.
+  return !messageContainsNaN(type, a.raw);
+}
+
+// Scalar field types whose values can carry NaN.
+const FLOATING_FIELD_TYPES: ReadonlySet<string> = new Set(['double', 'float']);
+
+// Walks every set field of a message (declared by `type`) — singular,
+// repeated, and map values, recursing through nested messages — and
+// reports whether any float/double value is NaN.  Walks the declared
+// field types rather than `$type` so plain-object nested values (the
+// `fromObject` / direct-assignment shapes) are covered too.
+function messageContainsNaN(type: protobuf.Type, msg: unknown): boolean {
+  if (typeof msg !== 'object' || msg === null) {
+    return false;
+  }
+  const rec = msg as Record<string, unknown>;
+  for (const f of type.fieldsArray) {
+    const value = rec[f.name];
+    if (value === undefined || value === null) {
+      continue;
+    }
+    const values: unknown[] = f.map
+      ? Object.values(value as Record<string, unknown>)
+      : f.repeated
+        ? (value as unknown[])
+        : [value];
+    if (fieldValuesContainNaN(f, values)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function fieldValuesContainNaN(f: protobuf.Field, values: unknown[]): boolean {
+  if (FLOATING_FIELD_TYPES.has(f.type)) {
+    return values.some((v) => typeof v === 'number' && Number.isNaN(v));
+  }
+  if (f.resolvedType instanceof protobuf.Type) {
+    const nested = f.resolvedType;
+    return values.some((v) => messageContainsNaN(nested, v));
+  }
+  return false;
 }
 
 /**

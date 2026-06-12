@@ -295,6 +295,56 @@ export type CivilFieldResult =
   | { readonly ok: true; readonly value: number }
   | { readonly ok: false; readonly code: CelErrorCode };
 
+// The civil fields a timestamp projects to in some zone.  `month` /
+// `day` are 1-based (the accessor switch applies CEL's 0-based
+// adjustments); `weekday` is 0=Sunday..6=Saturday.
+interface CivilFields {
+  readonly year: number;
+  readonly month: number;
+  readonly day: number;
+  readonly weekday: number;
+  readonly hours: number;
+  readonly minutes: number;
+  readonly seconds: number;
+}
+
+// Parse a fixed-offset TZ string to signed seconds east of UTC,
+// mirroring the C++ host's `ResolveTimeZone`
+// (`eval/internal/cel_host.cc`): `UTC` / `Z` → 0; sign-optional
+// `HH:MM` (HH ≤ 23, MM ≤ 59; no sign = `+`, the form cel-cpp admits
+// per `runtime/standard/time_functions.cc`) → ±seconds.  Anything
+// else (an IANA name) → `undefined`, deferring to the Intl path.
+// Spec: doc/langdef.md §"Timezones" (fixed offsets vs IANA names).
+function parseFixedOffsetSeconds(zone: string): number | undefined {
+  if (zone === 'UTC' || zone === 'Z') return 0;
+  let sign = 1;
+  let rest = zone;
+  if (rest.startsWith('+') || rest.startsWith('-')) {
+    sign = rest.startsWith('-') ? -1 : 1;
+    rest = rest.slice(1);
+  }
+  if (!/^\d\d:\d\d$/.test(rest)) return undefined;
+  const hours = Number(rest.slice(0, 2));
+  const minutes = Number(rest.slice(3, 5));
+  if (hours > 23 || minutes > 59) return undefined;
+  return sign * (hours * 3600 + minutes * 60);
+}
+
+// A fixed offset is pure arithmetic: shift the instant by the offset
+// and read the civil fields with the UTC accessors.
+function civilFromFixedOffset(ms: number, offsetSeconds: number): CivilFields {
+  const d = new Date(ms + offsetSeconds * 1000);
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
+    weekday: d.getUTCDay(),
+    hours: d.getUTCHours(),
+    minutes: d.getUTCMinutes(),
+    seconds: d.getUTCSeconds(),
+  };
+}
+
 // Parts cache: one `Intl.DateTimeFormat` per (zone) is reused.
 const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
@@ -347,11 +397,38 @@ function dayOfYear(year: number, month: number, day: number): number {
   return Math.floor((dayUtc - startUtc) / 86_400_000) + 1;
 }
 
+// Resolve the civil fields of the instant at `ms` in `zone`: a
+// fixed-offset form is arithmetic; an IANA name goes through
+// `Intl.DateTimeFormat` (full ICU carries the zone's offset + DST
+// rules).  An unrecognised zone → `undefined`.
+function civilFromZone(ms: number, zone: string): CivilFields | undefined {
+  const offsetSeconds = parseFixedOffsetSeconds(zone);
+  if (offsetSeconds !== undefined) {
+    return civilFromFixedOffset(ms, offsetSeconds);
+  }
+  const fmt = zoneFormatter(zone);
+  if (fmt === undefined) return undefined;
+  const f = partsToFields(fmt.formatToParts(new Date(ms)));
+  const num = (t: Intl.DateTimeFormatPartTypes): number => Number(f.get(t));
+  return {
+    year: num('year'),
+    month: num('month'),
+    day: num('day'),
+    weekday: WEEKDAY_INDEX[f.get('weekday') ?? ''] ?? 0,
+    // `hourCycle: 'h23'` can still render midnight as "24" on some ICU
+    // builds; normalise into [0, 24).
+    hours: num('hour') % 24,
+    minutes: num('minute'),
+    seconds: num('second'),
+  };
+}
+
 /**
  * Projects a timestamp (`epochSeconds`/`nanos` since the Unix epoch)
- * into the IANA `zone` and returns the civil field selected by `kind`.
- * Backed by `Intl.DateTimeFormat` for the zone's UTC offset + DST.  An
- * unrecognised zone yields INVALID_ARGUMENT.
+ * into `zone` — a fixed offset (`UTC` / `Z` / sign-optional `HH:MM`)
+ * or an IANA name — and returns the civil field selected by `kind`.
+ * An unrecognised zone yields INVALID_ARGUMENT.
+ * Spec: doc/langdef.md §"Timezones".
  */
 export function computeCivilField(
   epochSeconds: bigint,
@@ -359,37 +436,33 @@ export function computeCivilField(
   zone: string,
   kind: CelTzAccessorKind,
 ): CivilFieldResult {
-  const fmt = zoneFormatter(zone);
-  if (fmt === undefined) {
+  // Milliseconds since epoch; the civil projection operates at ms
+  // resolution, so the sub-millisecond nanos only matter for the
+  // MILLISECONDS accessor.
+  const ms = Number(epochSeconds) * 1000 + Math.floor(nanos / 1_000_000);
+  const f = civilFromZone(ms, zone);
+  if (f === undefined) {
     return { ok: false, code: CelErrorCode.INVALID_ARGUMENT };
   }
-  // Milliseconds since epoch; `Intl` operates at ms resolution, so the
-  // sub-millisecond nanos only matter for the MILLISECONDS accessor.
-  const ms = Number(epochSeconds) * 1000 + Math.floor(nanos / 1_000_000);
-  const f = partsToFields(fmt.formatToParts(new Date(ms)));
-  const num = (t: Intl.DateTimeFormatPartTypes): number => Number(f.get(t));
-  const year = num('year');
-  const month = num('month');
-  const day = num('day');
   switch (kind) {
     case CelTzAccessorKind.YEAR:
-      return { ok: true, value: year };
+      return { ok: true, value: f.year };
     case CelTzAccessorKind.MONTH:
-      return { ok: true, value: month - 1 };
+      return { ok: true, value: f.month - 1 };
     case CelTzAccessorKind.DAY_OF_MONTH_1:
-      return { ok: true, value: day };
+      return { ok: true, value: f.day };
     case CelTzAccessorKind.DAY_OF_MONTH:
-      return { ok: true, value: day - 1 };
+      return { ok: true, value: f.day - 1 };
     case CelTzAccessorKind.DAY_OF_YEAR:
-      return { ok: true, value: dayOfYear(year, month, day) - 1 };
+      return { ok: true, value: dayOfYear(f.year, f.month, f.day) - 1 };
     case CelTzAccessorKind.DAY_OF_WEEK:
-      return { ok: true, value: WEEKDAY_INDEX[f.get('weekday') ?? ''] ?? 0 };
+      return { ok: true, value: f.weekday };
     case CelTzAccessorKind.HOURS:
-      return { ok: true, value: num('hour') % 24 };
+      return { ok: true, value: f.hours };
     case CelTzAccessorKind.MINUTES:
-      return { ok: true, value: num('minute') };
+      return { ok: true, value: f.minutes };
     case CelTzAccessorKind.SECONDS:
-      return { ok: true, value: num('second') };
+      return { ok: true, value: f.seconds };
     case CelTzAccessorKind.MILLISECONDS:
       return { ok: true, value: Math.floor(nanos / 1_000_000) };
   }

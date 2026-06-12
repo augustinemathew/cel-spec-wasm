@@ -155,13 +155,49 @@ export function totalActivationBufferBytes(
   return total;
 }
 
+// The WKT wrapper FQNs that collapse to each scalar Repr (the
+// `compiler/ir/typed_ast.cc:56` mapping).  A variable DECLARED as a
+// wrapper type (`google.protobuf.Int32Value`, …) carries the collapsed
+// scalar repr, so when the embedder binds the wrapper MESSAGE the
+// encoder that fires is the scalar one — peel the inner `value` field
+// first, mirroring the C++ wrapper-coercion at activation bind
+// (`TryEncodeWktWrapperMessage` / `TryReadWktStringWrapperValue`,
+// eval/instance.cc).
+const WRAPPER_FQNS_BY_REPR: ReadonlyMap<Repr, readonly string[]> = new Map([
+  [Repr.BOOL, ['google.protobuf.BoolValue']],
+  [Repr.INT, ['google.protobuf.Int32Value', 'google.protobuf.Int64Value']],
+  [Repr.UINT, ['google.protobuf.UInt32Value', 'google.protobuf.UInt64Value']],
+  [Repr.DOUBLE, ['google.protobuf.FloatValue', 'google.protobuf.DoubleValue']],
+  [Repr.STRING, ['google.protobuf.StringValue']],
+  [Repr.BYTES, ['google.protobuf.BytesValue']],
+]);
+
+// Peel a wrapper-message binding to its inner scalar when the declared
+// repr is the wrapper's collapsed scalar family; anything else passes
+// through untouched (a mismatched wrapper still hits the writer's kind
+// check).  `readField(1)` applies the descriptor decode rules (int64 →
+// bigint, float32 narrowing, bytes → Uint8Array) — the same rules a
+// field read of the wrapper's `value` would apply.
+function peelWrapperBinding(repr: Repr, bound: CelInput): CelInput {
+  if (!isProtobufMessage(bound)) {
+    return bound;
+  }
+  const message = bound as protobuf.Message;
+  const backing = new ProtoMessageBacking(message.$type, message);
+  if (WRAPPER_FQNS_BY_REPR.get(repr)?.includes(backing.typeName) !== true) {
+    return bound;
+  }
+  return backing.readField(1) as CelInput;
+}
+
 function marshalOne(
   env: MarshalEnv,
   variable: VariableEntry,
-  bound: CelInput,
+  rawBound: CelInput,
 ): void {
   const repr = variable.repr as Repr;
   const slot = variable.slotOffset;
+  const bound = peelWrapperBinding(repr, rawBound);
   switch (repr) {
     case Repr.NULL: {
       writeNull(env, slot, variable);

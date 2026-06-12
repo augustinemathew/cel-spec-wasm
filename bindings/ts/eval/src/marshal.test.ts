@@ -304,6 +304,149 @@ describe('marshalActivation — message variables', () => {
   });
 });
 
+// ── Wrapper-message peel at activation bind ─────────────────────────
+// A wrapper-DECLARED variable carries the collapsed scalar repr
+// (`compiler/ir/typed_ast.cc:56`), so binding the wrapper MESSAGE
+// (`Int32Value{value: 5}`) peels the inner `value` field — the mirror
+// of the C++ wrapper-coercion at activation bind
+// (`TryEncodeWktWrapperMessage`, eval/instance.cc).  Pins the
+// conformance `dynamic/<wrapper>/var` rows.
+
+const WRAPPER_ROOT = protobuf.Root.fromJSON({
+  nested: {
+    google: {
+      nested: {
+        protobuf: {
+          nested: {
+            BoolValue: { fields: { value: { type: 'bool', id: 1 } } },
+            Int32Value: { fields: { value: { type: 'int32', id: 1 } } },
+            Int64Value: { fields: { value: { type: 'int64', id: 1 } } },
+            UInt32Value: { fields: { value: { type: 'uint32', id: 1 } } },
+            UInt64Value: { fields: { value: { type: 'uint64', id: 1 } } },
+            FloatValue: { fields: { value: { type: 'float', id: 1 } } },
+            DoubleValue: { fields: { value: { type: 'double', id: 1 } } },
+            StringValue: { fields: { value: { type: 'string', id: 1 } } },
+            BytesValue: { fields: { value: { type: 'bytes', id: 1 } } },
+          },
+        },
+      },
+    },
+  },
+});
+
+function wrapperMsg(fqn: string, value: unknown): protobuf.Message {
+  return WRAPPER_ROOT.lookupType(fqn).create({ value });
+}
+
+describe('marshalActivation — wrapper-message peel', () => {
+  it('peels BoolValue into a BOOL slot', () => {
+    const h = makeHarness();
+    marshalActivation(h.env, [variable('b', Repr.BOOL, 0)], {
+      b: wrapperMsg('google.protobuf.BoolValue', true),
+    });
+    expect(kindAt(h.view, 0)).toBe(CelKind.BOOL);
+    expect(h.view.getInt32(CEL_VALUE_PAYLOAD_OFFSET, true)).toBe(1);
+  });
+
+  it.each([
+    ['google.protobuf.Int32Value', -123, -123n],
+    ['google.protobuf.Int64Value', 2000000, 2000000n],
+  ])('peels %s into an INT slot', (fqn, value, want) => {
+    const h = makeHarness();
+    marshalActivation(h.env, [variable('i', Repr.INT, 0)], {
+      i: wrapperMsg(fqn, value),
+    });
+    expect(kindAt(h.view, 0)).toBe(CelKind.INT);
+    expect(h.view.getBigInt64(CEL_VALUE_PAYLOAD_OFFSET, true)).toBe(want);
+  });
+
+  it.each([
+    ['google.protobuf.UInt32Value', 4294967295, 4294967295n],
+    ['google.protobuf.UInt64Value', 7, 7n],
+  ])('peels %s into a UINT slot', (fqn, value, want) => {
+    const h = makeHarness();
+    marshalActivation(h.env, [variable('u', Repr.UINT, 0)], {
+      u: wrapperMsg(fqn, value),
+    });
+    expect(kindAt(h.view, 0)).toBe(CelKind.UINT);
+    expect(h.view.getBigUint64(CEL_VALUE_PAYLOAD_OFFSET, true)).toBe(want);
+  });
+
+  it('peels DoubleValue into a DOUBLE slot', () => {
+    const h = makeHarness();
+    marshalActivation(h.env, [variable('d', Repr.DOUBLE, 0)], {
+      d: wrapperMsg('google.protobuf.DoubleValue', 3.5),
+    });
+    expect(kindAt(h.view, 0)).toBe(CelKind.DOUBLE);
+    expect(h.view.getFloat64(CEL_VALUE_PAYLOAD_OFFSET, true)).toBe(3.5);
+  });
+
+  it('peels FloatValue with float32 narrowing', () => {
+    const h = makeHarness();
+    marshalActivation(h.env, [variable('d', Repr.DOUBLE, 0)], {
+      d: wrapperMsg('google.protobuf.FloatValue', 3.1416),
+    });
+    expect(h.view.getFloat64(CEL_VALUE_PAYLOAD_OFFSET, true)).toBe(
+      Math.fround(3.1416),
+    );
+  });
+
+  it('peels StringValue into the activation arena', () => {
+    const h = makeHarness();
+    marshalActivation(h.env, [variable('s', Repr.STRING, 0)], {
+      s: wrapperMsg('google.protobuf.StringValue', 'wrapped'),
+    });
+    expect(kindAt(h.view, 0)).toBe(CelKind.STRING);
+    const ptr = h.view.getUint32(CEL_VALUE_PAYLOAD_OFFSET, true);
+    const len = h.view.getUint32(CEL_VALUE_PAYLOAD_OFFSET + 4, true);
+    expect(new TextDecoder().decode(h.bytes.subarray(ptr, ptr + len))).toBe(
+      'wrapped',
+    );
+  });
+
+  it('peels BytesValue into a BYTES slot', () => {
+    const h = makeHarness();
+    marshalActivation(h.env, [variable('y', Repr.BYTES, 0)], {
+      y: wrapperMsg('google.protobuf.BytesValue', Uint8Array.from([9, 8])),
+    });
+    expect(kindAt(h.view, 0)).toBe(CelKind.BYTES);
+    const ptr = h.view.getUint32(CEL_VALUE_PAYLOAD_OFFSET, true);
+    expect([...h.bytes.subarray(ptr, ptr + 2)]).toEqual([9, 8]);
+  });
+
+  it('rejects a wrapper from the WRONG scalar family', () => {
+    const h = makeHarness();
+    expect(() => {
+      marshalActivation(h.env, [variable('b', Repr.BOOL, 0)], {
+        b: wrapperMsg('google.protobuf.Int32Value', 1),
+      });
+    }).toThrow(CelMarshalError);
+  });
+
+  it('does NOT peel a wrapper bound to a MESSAGE-declared variable', () => {
+    const types: TypeEntry[] = [{ id: 0, fullyQualifiedName: 'x' }];
+    const h = makeHarness(DescriptorSet.fromRoot(WRAPPER_ROOT), types);
+    marshalActivation(h.env, [variable('p', Repr.MESSAGE, 0)], {
+      p: wrapperMsg('google.protobuf.Int32Value', 5),
+    });
+    expect(kindAt(h.view, 0)).toBe(CelKind.MESSAGE);
+    const backing = h.refs.message.lookup(
+      refAt(h.view, 0),
+    ) as ProtoMessageBacking;
+    expect(backing.typeName).toBe('google.protobuf.Int32Value');
+  });
+
+  it('still rejects a non-wrapper message bound to a scalar variable', () => {
+    const h = makeHarness();
+    const Person = TEST_ROOT.lookupType('test.Person');
+    expect(() => {
+      marshalActivation(h.env, [variable('i', Repr.INT, 0)], {
+        i: Person.create({ name: 'x' }),
+      });
+    }).toThrow(CelMarshalError);
+  });
+});
+
 // ── Errors / boundaries ─────────────────────────────────────────────
 
 describe('marshalActivation — errors', () => {

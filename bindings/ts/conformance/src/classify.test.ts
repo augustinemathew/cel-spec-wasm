@@ -69,9 +69,22 @@ describe('renderType', () => {
     ).toBeUndefined();
   });
 
-  it('returns undefined for a JSON-value well-known type', () => {
+  it('renders a non-time well-known type as its message FQN', () => {
+    // The pass-through the C++ harness uses
+    // (conformance/binding_marshal.cc::CelTypeFromProtoType): wrappers /
+    // Struct / Value / ListValue / Any declare as message FQNs and
+    // resolve against the descriptor set.
     expect(
       renderType({ kind: 'wellKnown', name: 'google.protobuf.Value' }),
+    ).toBe('google.protobuf.Value');
+    expect(
+      renderType({ kind: 'wellKnown', name: 'google.protobuf.Int32Value' }),
+    ).toBe('google.protobuf.Int32Value');
+  });
+
+  it('returns undefined for google.protobuf.Any (out of scope, §A.3)', () => {
+    expect(
+      renderType({ kind: 'wellKnown', name: 'google.protobuf.Any' }),
     ).toBeUndefined();
   });
 });
@@ -80,6 +93,36 @@ describe('classifyScope', () => {
   it('skips a disable_check row', () => {
     const d = classifyScope(row({ disableCheck: true }));
     expect(d.kind === 'skip' && d.category).toBe('disable_check');
+  });
+
+  it('pre-skips a spec-unimplemented strong-enum row as spec_unimpl', () => {
+    // Mirrors the C++ harness's per-row list
+    // (conformance/runner.cc::IsSpecUnimplSection, cel-cpp issues/119).
+    const d = classifyScope(
+      row({ file: 'enums', section: 'strong_proto3', name: 'convert_string' }),
+    );
+    expect(d.kind === 'skip' && d.category).toBe('spec_unimpl');
+  });
+
+  it('does NOT pre-skip strong-enum rows off the spec-unimpl list', () => {
+    // Rows in strong_proto2/3 not on the list (e.g. the error-matcher
+    // conversions) stay live — they pass via compile/eval.
+    const d = classifyScope(
+      row({
+        file: 'enums',
+        section: 'strong_proto2',
+        name: 'convert_string_bad',
+        matcher: { kind: 'evalError' },
+      }),
+    );
+    expect(d.kind).toBe('proceed');
+  });
+
+  it('does NOT pre-skip listed names outside the enums strong sections', () => {
+    const d = classifyScope(
+      row({ file: 'basic', section: 'self_eval', name: 'convert_string' }),
+    );
+    expect(d.kind).toBe('proceed');
   });
 
   it('skips a check_only row', () => {

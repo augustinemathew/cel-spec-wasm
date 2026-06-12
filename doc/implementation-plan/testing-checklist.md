@@ -3331,6 +3331,55 @@ ratcheted to 1902.
         residual `eval_unimpl` predicates (NaN message equality ×2, tz
         accessor ×1) stay with verified reasons.
 
+## Rewrite M29 follow-up — TS-conformance parity sweep (2026-06-12)
+
+The final C++-passes-but-TS-skips sweep: tz-string timestamp accessors,
+NaN-field message equality, the strong-enum spec-unimpl reclassification
+(mirroring the C++ harness's `IsSpecUnimplSection` list), and the
+wrapper-typed declared-variable path (renderer pass-through + the
+activation-bind wrapper peel).  Conformance 1902 → **1920 pass / 0
+fail**, `.baseline` ratcheted.
+
+  - [x] fixed-offset timezone accessors (langdef §"Timezones") —
+        `eval/src/host/stubs.test.ts`: unsigned `'02:00'`, `Z`,
+        `-00:00`, negative half-hour `-02:30`, `+05:45`, day/weekday
+        rollover, malformed/out-of-range offsets reject
+        INVALID_ARGUMENT; DST-crossing instant in an IANA zone (the
+        US spring-forward second, hours 1 → 3).  Mirrors
+        `ResolveTimeZone` (eval/internal/cel_host.cc).  Corpus
+        `timestamps/timestamp_selectors_tz/getHours_tz` (1 row);
+        runner tz predicate removed.
+  - [x] NaN-field proto message inequality (langdef §"Equality") —
+        `eval/src/host/proto.test.ts`: NaN double field unequal on
+        byte-identical messages; nested-message NaN; repeated-double
+        NaN; map-value NaN (descriptor-path entry-message shape);
+        finite/Infinity stay equal.  Mirrors
+        `MessageDifferencer::Equals` via `CompareProtoMessages`
+        (eval/internal/cel_host.cc).  Corpus
+        `comparisons/eq_wrapper/eq_proto_nan_equal` +
+        `ne_literal/ne_proto_nan_not_equal` (2 rows); runner NaN
+        predicate removed.
+  - [x] strong-enum spec-unimpl pre-skip — `classify.test.ts`
+        (listed row skips `spec_unimpl`, off-list row in the same
+        section proceeds, listed name outside enums proceeds) +
+        `runner.test.ts` (error-matcher conversion row PASSes via the
+        compile-error arm, reordered before the proto reclassify to
+        match `ClassifyCompileFailure`).  12 rows reclassified
+        proto_unimpl → spec_unimpl; 6 error-matcher rows
+        (`convert_int_too_big/too_neg`, `convert_string_bad` ×
+        proto2/proto3) flip to PASS.
+  - [x] wrapper-typed declared variables — `classify.test.ts`
+        (non-time WKT renders as its message FQN; Any stays
+        unrenderable, §A.3) + `eval/src/marshal.test.ts`
+        wrapper-peel matrix: all 9 wrapper FQNs peel into their
+        scalar slots (bool/int/uint/double/string/bytes, float32
+        narrowing via `Math.fround`), wrong-family wrapper rejects,
+        MESSAGE-declared wrapper does NOT peel, non-wrapper message
+        on a scalar var still rejects.  Mirrors
+        `TryEncodeWktWrapperMessage` /
+        `TryReadWktStringWrapperValue` (eval/instance.cc).  Corpus
+        `dynamic/<wrapper>/var` (9 rows).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

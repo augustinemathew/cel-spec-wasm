@@ -43,6 +43,7 @@ const ROOT_JSON = {
           fields: {
             id: { type: 'int64', id: 1 },
             name: { type: 'string', id: 2 },
+            score: { type: 'double', id: 3 },
           },
         },
         Msg: {
@@ -60,6 +61,8 @@ const ROOT_JSON = {
             dur: { type: 'google.protobuf.Duration', id: 13 },
             cnt: { type: 'google.protobuf.Int32Value', id: 14 },
             nm: { type: 'google.protobuf.StringValue', id: 15 },
+            ds: { rule: 'repeated', type: 'double', id: 16 },
+            dm: { keyType: 'string', type: 'double', id: 17 },
           },
         },
       },
@@ -728,6 +731,61 @@ describe('cel_message_eq', () => {
     writeError(h.mem, B, CelErrorCode.OVERFLOW);
     h.tramps.cel_message_eq(OUT, A, B);
     expect((read(h, OUT) as { code: number }).code).toBe(CelErrorCode.OVERFLOW);
+  });
+
+  // NaN never equals NaN (langdef §"Equality"), and that propagates
+  // through proto message equality: two byte-identical messages with a
+  // NaN float/double field anywhere are UNEQUAL — MessageDifferencer
+  // parity with the C++ host (`CompareProtoMessages`,
+  // eval/internal/cel_host.cc).  Pins conformance rows
+  // comparisons/eq_wrapper/eq_proto_nan_equal +
+  // ne_proto_nan_not_equal.
+  describe('NaN-field inequality propagation', () => {
+    it('a NaN double field makes identical messages unequal', () => {
+      internMsg(h, A, { d: NaN });
+      internMsg(h, B, { d: NaN });
+      h.tramps.cel_message_eq(OUT, A, B);
+      expect(read(h, OUT)).toBe(false);
+    });
+
+    it('a NaN in a NESTED message makes identical messages unequal', () => {
+      internMsg(h, A, { user: { id: 1, score: NaN } });
+      internMsg(h, B, { user: { id: 1, score: NaN } });
+      h.tramps.cel_message_eq(OUT, A, B);
+      expect(read(h, OUT)).toBe(false);
+    });
+
+    it('a NaN in a REPEATED double makes identical messages unequal', () => {
+      internMsg(h, A, { ds: [1.0, NaN, 3.0] });
+      internMsg(h, B, { ds: [1.0, NaN, 3.0] });
+      h.tramps.cel_message_eq(OUT, A, B);
+      expect(read(h, OUT)).toBe(false);
+    });
+
+    it('a NaN map VALUE makes identical messages unequal', () => {
+      // protobufjs' descriptor round-trip surfaces map fields as
+      // repeated `{key, value}` entry messages (fromDescriptor loses
+      // the map flag), so this is the shape the production
+      // DescriptorSet path feeds the walker.
+      internMsg(h, A, { dm: [{ key: 'k', value: NaN }] });
+      internMsg(h, B, { dm: [{ key: 'k', value: NaN }] });
+      h.tramps.cel_message_eq(OUT, A, B);
+      expect(read(h, OUT)).toBe(false);
+    });
+
+    it('finite doubles (incl. zero) still compare equal', () => {
+      internMsg(h, A, { d: 1.5, ds: [0.0], user: { score: 2.5 } });
+      internMsg(h, B, { d: 1.5, ds: [0.0], user: { score: 2.5 } });
+      h.tramps.cel_message_eq(OUT, A, B);
+      expect(read(h, OUT)).toBe(true);
+    });
+
+    it('Infinity is not NaN — identical Inf fields stay equal', () => {
+      internMsg(h, A, { d: Infinity });
+      internMsg(h, B, { d: Infinity });
+      h.tramps.cel_message_eq(OUT, A, B);
+      expect(read(h, OUT)).toBe(true);
+    });
   });
 });
 

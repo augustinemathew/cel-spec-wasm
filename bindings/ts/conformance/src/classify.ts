@@ -57,6 +57,14 @@ export interface CompileVar {
  * variables for an in-scope row.
  */
 export function classifyScope(test: SimpleTest): ScopeDecision {
+  if (isSpecUnimplRow(test)) {
+    return skip(
+      'spec_unimpl',
+      `section '${test.section}' row '${test.name}' is spec-acknowledged ` +
+        'unimplemented: strong enum typing (cel-cpp issues/119); ' +
+        'cel-cpp’s own conformance harness skips it',
+    );
+  }
   if (test.disableCheck) {
     return skip('disable_check', 'parse-only eval out of conformance scope');
   }
@@ -82,6 +90,37 @@ export function classifyScope(test: SimpleTest): ScopeDecision {
     vars.push({ name: decl.name, type: rendered });
   }
   return { kind: 'proceed', compileVars: vars };
+}
+
+// Spec-acknowledged unimplemented rows: strong-typed enum support is a
+// CEL-spec feature flagged "specified but not implemented" upstream
+// (cel-cpp BUILD `_TESTS_TO_SKIP`, issues/119) — `type(<enum>)` must
+// yield the enum FQN and the enum name must resolve as a callable
+// int→enum / string→enum conversion, neither of which cel-cpp's checker
+// implements.  Mirrors the C++ harness's per-row list
+// (`conformance/runner.cc::IsSpecUnimplSection`) name-for-name; rows in
+// these sections NOT on the list pass (or are satisfied by their error
+// matcher) and must stay live.
+const SPEC_UNIMPL_ENUM_ROWS: ReadonlySet<string> = new Set([
+  'type_global',
+  'type_nested',
+  'field_type',
+  'assign_standalone_int',
+  'assign_standalone_int_big',
+  'assign_standalone_int_neg',
+  'convert_int_inrange',
+  'convert_int_big',
+  'convert_int_neg',
+  'convert_string',
+]);
+
+/** Is this row on the spec-unimplemented list the C++ harness also skips? */
+export function isSpecUnimplRow(test: SimpleTest): boolean {
+  return (
+    test.file === 'enums' &&
+    (test.section === 'strong_proto2' || test.section === 'strong_proto3') &&
+    SPEC_UNIMPL_ENUM_ROWS.has(test.name)
+  );
 }
 
 function classifyMatcher(test: SimpleTest): ScopeDecision | undefined {
@@ -150,15 +189,21 @@ function renderPrimitive(name: string): string | undefined {
 }
 
 // Well-known types the compiler resolves natively: the time types map to
-// the CLI primitives; the JSON-value / wrapper WKTs need descriptor
-// resolution the harness does not wire up (out of scope, §A.3).
+// the CLI primitives; every other `google.protobuf.*` WKT (the wrappers,
+// Struct / Value / ListValue) is declared as its message FQN and
+// resolves against the descriptor set — the same pass-through the C++
+// harness uses (`conformance/binding_marshal.cc::CelTypeFromProtoType`,
+// message_type arm).  `google.protobuf.Any` stays out: resolving a
+// packed type-url beyond the supplied descriptors is out of binding
+// scope by design (§A.3), so an Any-typed variable cannot round-trip.
 const WELL_KNOWN_NAMES: ReadonlyMap<string, string> = new Map([
   ['google.protobuf.Duration', 'duration'],
   ['google.protobuf.Timestamp', 'timestamp'],
 ]);
 
 function renderWellKnown(name: string): string | undefined {
-  return WELL_KNOWN_NAMES.get(name);
+  if (name === 'google.protobuf.Any') return undefined;
+  return WELL_KNOWN_NAMES.get(name) ?? name;
 }
 
 function unsupportedReason(type: DeclaredType): string {

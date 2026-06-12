@@ -306,6 +306,77 @@ describe('computeCivilField (cel_timestamp_tz_accessor math)', () => {
     const r = computeCivilField(T, 0, 'Not/AZone', CelTzAccessorKind.YEAR);
     expect(r).toEqual({ ok: false, code: CelErrorCode.INVALID_ARGUMENT });
   });
+
+  // Fixed-offset zones (doc/langdef.md §"Timezones": explicit hour/minute
+  // offsets from UTC) are arithmetic, mirroring the C++ host's
+  // `ResolveTimeZone` (eval/internal/cel_host.cc): sign-optional `HH:MM`
+  // (the unsigned form is `+`, per cel-cpp's time_functions.cc), `Z`,
+  // and `UTC`.
+  describe('fixed-offset zones', () => {
+    const f = (zone: string, k: CelTzAccessorKind): number => {
+      const r = computeCivilField(T, 0, zone, k);
+      if (!r.ok) throw new Error(`unexpected error for zone '${zone}'`);
+      return r.value;
+    };
+
+    it("accepts the unsigned form '02:00' as +02:00 (conformance timestamps/timezones)", () => {
+      // 23:31:30Z + 02:00 = 01:31:30 the next day.
+      expect(f('02:00', CelTzAccessorKind.HOURS)).toBe(1);
+      expect(f('02:00', CelTzAccessorKind.DAY_OF_MONTH_1)).toBe(14);
+      expect(f('02:00', CelTzAccessorKind.DAY_OF_WEEK)).toBe(6); // Saturday
+    });
+
+    it("treats 'Z' and '-00:00' as UTC", () => {
+      expect(f('Z', CelTzAccessorKind.HOURS)).toBe(23);
+      expect(f('-00:00', CelTzAccessorKind.HOURS)).toBe(23);
+    });
+
+    it('handles a negative half-hour offset (-02:30)', () => {
+      // 23:31:30Z - 02:30 = 21:01:30 same day.
+      expect(f('-02:30', CelTzAccessorKind.HOURS)).toBe(21);
+      expect(f('-02:30', CelTzAccessorKind.MINUTES)).toBe(1);
+      expect(f('-02:30', CelTzAccessorKind.DAY_OF_MONTH_1)).toBe(13);
+    });
+
+    it('handles a positive 45-minute offset (+05:45, Kathmandu-shaped)', () => {
+      // 23:31:30Z + 05:45 = 05:16:30 the next day.
+      expect(f('+05:45', CelTzAccessorKind.HOURS)).toBe(5);
+      expect(f('+05:45', CelTzAccessorKind.MINUTES)).toBe(16);
+      expect(f('+05:45', CelTzAccessorKind.DAY_OF_MONTH_1)).toBe(14);
+    });
+
+    it('rejects out-of-range and malformed offsets with INVALID_ARGUMENT', () => {
+      for (const zone of [
+        '24:00',
+        '02:60',
+        '2:00',
+        '+2:00',
+        '02:0',
+        '++02:00',
+      ]) {
+        expect(computeCivilField(T, 0, zone, CelTzAccessorKind.HOURS)).toEqual({
+          ok: false,
+          code: CelErrorCode.INVALID_ARGUMENT,
+        });
+      }
+    });
+  });
+
+  it('projects across a DST transition in an IANA zone (America/Los_Angeles)', () => {
+    // The US spring-forward instant: 2023-03-12 02:00 PST → 03:00 PDT
+    // (10:00:00Z).  One second before, local civil time is 01:59:59
+    // (UTC-8); at the instant it is 03:00:00 (UTC-7).
+    const before = 1678615199n; // 2023-03-12T09:59:59Z
+    const after = 1678615200n; // 2023-03-12T10:00:00Z
+    const zone = 'America/Los_Angeles';
+    expect(computeCivilField(before, 0, zone, CelTzAccessorKind.HOURS)).toEqual(
+      { ok: true, value: 1 },
+    );
+    expect(computeCivilField(after, 0, zone, CelTzAccessorKind.HOURS)).toEqual({
+      ok: true,
+      value: 3,
+    });
+  });
 });
 
 describe('makeTimestampTzAccessor trampoline', () => {

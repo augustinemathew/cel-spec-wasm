@@ -30,7 +30,6 @@ import {
   compareEvalError,
   compareValue,
   isCelError,
-  isCelType,
 } from './compare.js';
 import type { ExpectedValue, SimpleTest } from './corpus.js';
 import { buildExpectedMessage } from './proto-compare.js';
@@ -52,7 +51,6 @@ export interface ProtoEnv {
 // CEL error codes (`CelErrorCode`, `eval/src/types.ts`).  Inlined as
 // literals rather than imported because `CelErrorCode` is a cross-package
 // `const enum`, not importable by value under `isolatedModules`.
-const CEL_ERROR_INVALID_ARGUMENT = 18;
 const CEL_ERROR_UNKNOWN_TYPE = 30;
 
 /** The classified outcome of one row. */
@@ -119,6 +117,15 @@ function classifyCompileFailure(test: SimpleTest, err: unknown): RowResult {
   if (isExtensionCompileFailure(test.expr, err.diagnostics)) {
     return skip('ext_unimpl', firstDiagnostic(err.diagnostics));
   }
+  // A compile error satisfies an error matcher (cel-cpp run.cc treats any
+  // error — compile OR eval — as matching an error matcher).  Checked
+  // BEFORE the proto reclassification, matching the C++ harness order
+  // (`conformance/runner.cc::ClassifyCompileFailure`): a proto row whose
+  // matcher expects an error and whose program fails to type-check IS the
+  // error the row asserts (e.g. `TestAllTypes.NestedEnum(5000000000)`).
+  if (test.matcher.kind === 'evalError') {
+    return { outcome: 'pass', detail: 'compile error satisfies error matcher' };
+  }
   // A proto message construction / field read that fails to resolve
   // because the harness loads no descriptor set (§A.3).
   if (
@@ -126,13 +133,6 @@ function classifyCompileFailure(test: SimpleTest, err: unknown): RowResult {
     text.includes('undeclared reference')
   ) {
     return skip('proto_unimpl', firstDiagnostic(err.diagnostics));
-  }
-  // A compile error satisfies an error matcher (cel-cpp run.cc treats any
-  // error — compile OR eval — as matching an error matcher).  A row with
-  // no error matcher that fails to compile for a non-carve-out reason is
-  // a genuine FAIL.
-  if (test.matcher.kind === 'evalError') {
-    return { outcome: 'pass', detail: 'compile error satisfies error matcher' };
   }
   return {
     outcome: 'fail',
@@ -280,11 +280,7 @@ function compareResult(
         'proto / WKT construction with no descriptor (UNKNOWN_TYPE)',
       );
     }
-    const evalGap = classifyEvalBindingGap(test, result.code);
-    if (evalGap !== undefined) {
-      return evalGap;
-    }
-    const protoErrGap = classifyProtoMismatchGap(test, result);
+    const protoErrGap = classifyProtoMismatchGap(test);
     if (protoErrGap !== undefined) {
       return protoErrGap;
     }
@@ -293,44 +289,11 @@ function compareResult(
       detail: `eval error where a value was expected (code=${String(result.code)})`,
     };
   }
-  const protoGap = classifyProtoMismatchGap(test, result);
+  const protoGap = classifyProtoMismatchGap(test);
   if (protoGap !== undefined) {
     return protoGap;
   }
-  const strongEnumGap = classifyStrongEnumTypeGap(test, result, want);
-  if (strongEnumGap !== undefined) {
-    return strongEnumGap;
-  }
   return { outcome: 'fail', detail: `compare: ${reason}` };
-}
-
-// Strong-typed enums are a CEL-spec feature flagged "specified but not
-// implemented" upstream (cel-cpp BUILD `_TESTS_TO_SKIP`, issues/119); the
-// compiler lowers proto enums to int, so `type(<enum value>)` yields the
-// TYPE `int` where the corpus's strong_proto2/3 sections expect the enum
-// FQN.  Mirrors the C++ harness's per-row skip (`conformance/runner.cc::
-// IsSpecUnimplSection`).  Anchored to exactly that shape — an enums-file
-// strong-enum section, a type matcher wanting an enum FQN, and the binding
-// reporting TYPE int — so any other type mismatch still FAILs.
-function classifyStrongEnumTypeGap(
-  test: SimpleTest,
-  result: CelValue,
-  want: ExpectedValue,
-): RowResult | undefined {
-  if (
-    test.file === 'enums' &&
-    (test.section === 'strong_proto2' || test.section === 'strong_proto3') &&
-    want.kind === 'type' &&
-    want.name.includes('.') &&
-    isCelType(result) &&
-    result.name === 'int'
-  ) {
-    return skip(
-      'spec_unimpl',
-      'strong enum typing (type(<enum>) → enum FQN) specified but not implemented (cel-cpp issues/119); enums lower to int',
-    );
-  }
-  return undefined;
 }
 
 // A proto row that EXPECTED an error but the binding returned a value.  The
@@ -364,10 +327,7 @@ function isAnyRow(test: SimpleTest): boolean {
   );
 }
 
-function classifyProtoMismatchGap(
-  test: SimpleTest,
-  result: CelValue,
-): RowResult | undefined {
+function classifyProtoMismatchGap(test: SimpleTest): RowResult | undefined {
   if (isAnyRow(test)) {
     return skip(
       'proto_unimpl',
@@ -382,22 +342,6 @@ function classifyProtoMismatchGap(
     return skip(
       'ext_unimpl',
       'optionals / extension construct unimplemented in @cel-wasm/eval',
-    );
-  }
-  // Proto message equality where a field is NaN: cel-cpp propagates
-  // NaN-never-equals through message equality (so two messages with a NaN
-  // double field are unequal); the binding compares serialized bytes, which
-  // are equal.  A proto-message `==` / `!=` over a `NaN`-valued field is that
-  // gap.
-  if (
-    typeof result === 'boolean' &&
-    /\bNaN\b/i.test(test.expr) &&
-    /[!=]=/.test(test.expr) &&
-    looksLikeProtoRow(test.expr, test.container)
-  ) {
-    return skip(
-      'eval_unimpl',
-      'proto message equality with a NaN field (NaN-inequality propagation) unimplemented in @cel-wasm/eval',
     );
   }
   return undefined;
@@ -451,41 +395,6 @@ function compareObjectResult(
     return { outcome: 'pass', detail: '' };
   }
   return { outcome: 'fail', detail: `object compare: ${reason}` };
-}
-
-// Known, verified gaps in the `@cel-wasm/eval` runtime that surface as a
-// returned CEL_ERROR where a value was expected.  These are NOT harness
-// bugs and NOT regressions — they are missing eval overloads, confirmed
-// by driving the binding directly:
-//
-//   - A timestamp accessor with a timezone-string argument
-//     (`getHours('02:00')`) returns code 18 "invalid argument" (the
-//     bare `getHours()` overload works; the tz-string overload is
-//     unimplemented).
-//
-// Scoped narrowly (specific code + specific shape) so a genuinely wrong
-// result still FAILs.  Returns a SKIP when the error matches a known
-// gap, else `undefined` (caller FAILs).
-function classifyEvalBindingGap(
-  test: SimpleTest,
-  code: number,
-): RowResult | undefined {
-  if (code === CEL_ERROR_INVALID_ARGUMENT && isTimestampTzAccessor(test.expr)) {
-    return skip(
-      'eval_unimpl',
-      'timestamp timezone-string accessor overload unimplemented in @cel-wasm/eval',
-    );
-  }
-  return undefined;
-}
-
-// A timestamp accessor (`getHours` / `getMinutes` / …) called with a
-// timezone-string argument: `<...>.getHours('02:00')`.
-const TIMESTAMP_TZ_ACCESSOR_RE =
-  /\.get(FullYear|Month|Date|DayOfYear|DayOfMonth|DayOfWeek|Hours|Minutes|Seconds|Milliseconds)\(\s*['"]/;
-
-function isTimestampTzAccessor(expr: string): boolean {
-  return TIMESTAMP_TZ_ACCESSOR_RE.test(expr);
 }
 
 // ───────────────────────────────────────────────────────────────────

@@ -111,13 +111,15 @@ describe('runRow — classification', () => {
 
   it('skips a strong-enum type row as spec_unimpl (cel-cpp issues/119)', async () => {
     // Strong enum typing: the corpus expects type(<enum>) → the enum FQN;
-    // enums lower to int, so the binding reports TYPE int.  Anchored to
-    // the enums strong_proto2/3 sections (`classifyStrongEnumTypeGap`).
+    // enums lower to int.  The row is on the spec-unimplemented list the
+    // C++ harness also skips (`classify.ts::isSpecUnimplRow`, mirroring
+    // conformance/runner.cc::IsSpecUnimplSection), so it pre-skips.
     const r = await run(
       row({
         file: 'enums',
         section: 'strong_proto2',
-        expr: 'type(1)',
+        name: 'type_global',
+        expr: 'type(GlobalEnum.GAZ)',
         matcher: {
           kind: 'value',
           value: {
@@ -128,6 +130,26 @@ describe('runRow — classification', () => {
       }),
     );
     expect(r).toMatchObject({ outcome: 'skip', category: 'spec_unimpl' });
+  });
+
+  it('passes a strong-enum error row via the compile-error/error-matcher arm', async () => {
+    // `TestAllTypes.NestedEnum(5000000000)` fails to type-check (the
+    // enum name is not a callable conversion — strong enums are
+    // unimplemented), and the row asserts an error: the compile error
+    // satisfies the error matcher, matching the C++ harness
+    // (`conformance/runner.cc::ClassifyCompileFailure`), which checks
+    // the error matcher BEFORE the proto reclassification.
+    const r = await run(
+      row({
+        file: 'enums',
+        section: 'strong_proto2',
+        name: 'convert_int_too_big',
+        container: 'cel.expr.conformance.proto2',
+        expr: 'TestAllTypes.NestedEnum(5000000000)',
+        matcher: { kind: 'evalError' },
+      }),
+    );
+    expect(r.outcome).toBe('pass');
   });
 
   it('skips a disable_check row before compiling', async () => {
