@@ -60,12 +60,18 @@ bazel build -c opt \
   //benchmark/eval:celwasm_bench \
   //benchmark/eval:celcpp_bench
 
+# Resolve the opt output tree directly: the `bazel-bin` convenience
+# symlink is repointed by ANY concurrent bazel invocation in another
+# configuration (a fastbuild test run mid-benchmark left this script
+# pointing at a tree without the opt binaries — observed 2026-06-12).
+OPT_BIN="$(bazel info -c opt bazel-bin)"
+
 REPORT_ARGS=()
 
 for mode in "${MODES[@]}"; do
   out_json="/tmp/benchmark_eval_celwasm_$mode.json"
   echo "==> celwasm_bench --link_mode=$mode (min_time=$MIN_TIME, reps=$REPS)"
-  bazel-bin/benchmark/eval/celwasm_bench \
+  "$OPT_BIN"/benchmark/eval/celwasm_bench \
     --link_mode="$mode" \
     "${COMMON_FLAGS[@]}" \
     --benchmark_out="$out_json"
@@ -74,7 +80,7 @@ done
 
 CPP_JSON=/tmp/benchmark_eval_celcpp.json
 echo "==> celcpp_bench (min_time=$MIN_TIME, reps=$REPS)"
-bazel-bin/benchmark/eval/celcpp_bench \
+"$OPT_BIN"/benchmark/eval/celcpp_bench \
   "${COMMON_FLAGS[@]}" \
   --benchmark_out="$CPP_JSON"
 REPORT_ARGS+=(--json "cel-cpp=$CPP_JSON" --baseline cel-cpp)
