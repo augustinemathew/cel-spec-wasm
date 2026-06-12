@@ -1,13 +1,38 @@
 # cel-wasm
 
 [![CI](https://github.com/augustinemathew/cel-spec-wasm/actions/workflows/ci.yml/badge.svg)](https://github.com/augustinemathew/cel-spec-wasm/actions/workflows/ci.yml)
+[![Docs](https://github.com/augustinemathew/cel-spec-wasm/actions/workflows/pages.yml/badge.svg)](https://augustinemathew.github.io/cel-spec-wasm/)
 [![Tests](https://img.shields.io/badge/tests-159%20targets%20·%203.6k%20cases-success)](doc/implementation-plan/testing-checklist.md)
-[![Conformance](https://img.shields.io/badge/CEL%20conformance-100%25%20attempted%20·%200%20fail-success)](conformance/README.md)
+[![Conformance](https://img.shields.io/badge/CEL%20conformance-1973%20pass%20·%200%20fail-success)](conformance/README.md)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Compile [CEL](https://github.com/google/cel-spec) to WebAssembly,
-ahead of time. JIT it to native code. Run the same artifact on every
-host — sandboxed.**
+📖 **[Documentation site →](https://augustinemathew.github.io/cel-spec-wasm/)**
+
+**[CEL](https://github.com/google/cel-spec) is the expression language
+Kubernetes, Envoy, and IAM already use to decide *"is this allowed?"*.
+cel-wasm compiles it *ahead of time* into a sandboxed WebAssembly
+artifact — so you can evaluate sensitive or untrusted policy expressions
+at native speed, on every host, with no way for the expression to escape
+the sandbox, read host memory, do I/O, or hang the process.**
+
+Up to **25× faster** than the `cel-cpp` interpreter on repeated
+evaluation, **0 conformance failures**, and one portable artifact that
+runs byte-for-byte everywhere.
+
+**Built for two shapes of workload:**
+
+- 🔐 **Security-critical & regulated** — banking, fintech, healthcare,
+  multi-tenant SaaS. Evaluate sensitive business rules or
+  *customer-authored* predicates — a fraud check, an entitlement rule, a
+  transaction-limit policy — without the expression seeing more than you
+  marshal in, escaping the sandbox, or being able to crash or hang your
+  service. The compiled expression *physically cannot* call a syscall,
+  touch the network, or loop forever; even custom functions can run as
+  isolated WebAssembly components you don't have to trust.
+- ⚡ **Lightweight & at the edge** — Envoy / API-gateway filters, request
+  routing, rate-limit and access decisions, feature flags. One tiny,
+  deterministic `.wasm`: compile it once and run identical bytes at every
+  proxy or node at native speed, with no per-host interpreter to drift.
 
 > Status: **beta**. The pipeline, sandbox, benchmarks, and conformance
 > numbers below are real and reproducible; the remaining hardening gaps
@@ -246,12 +271,15 @@ Not yet — and we'd rather tell you exactly why than have you find out:
 
 - **Constant list/map literals are rebuilt every Eval** (the 44× loss
   row above); const-aggregate folding is the planned fix.
-- **Oversized literal aggregates can trap the runtime** instead of
-  returning a graceful error (tracked, with a pinned regression test).
+- **Very large literal aggregates don't compile** (a capability limit,
+  not a crash) — a multi-thousand-element literal list/map is rejected
+  *at compile* with a graceful `ResourceExhausted`; put large constant
+  data in an activation-bound variable instead. Pinned by
+  `KnownBugs.LiteralIntListInScanRejectedAtCompileAt10K`.
 - **Language bindings beyond C++ are designed, not built** — the
   `.wasm` + `cel.abi` already carry everything a Go/TS/Rust shim needs.
-- **General hardening** — fuzzing, allocator caps, CI gates, release
-  versioning.
+- **General hardening** — broader fuzzing, allocator caps, release
+  versioning (a sanitizer gate and property-based testing already ship).
 
 Every known gap is pinned by a skipped-with-reason test
 (`e2e/known_bugs_test.cc`) or a backlog entry

@@ -1,137 +1,203 @@
 # Security model
 
-What the sandbox actually guarantees, who you have to trust, and the
-known holes — stated precisely, so you can make a real deployment
-decision. Updated 2026-06-09; every claim below is checked against the
-code cited next to it.
+You're about to run an expression you may not have written — a customer's
+access policy, a tenant's routing rule, an analyst's fraud predicate —
+over data you can't afford to leak, on a host you can't afford to hang.
+This doc is the precise answer to *"what can that expression actually do
+to me?"*
 
-## 1. What the sandbox gives you
+The short version: a compiled expression becomes native code trapped in a
+sandbox. It can compute over **only what you hand it** and return **only a
+value**. It *cannot* read your memory, make a syscall, touch the disk or
+network, read the clock, or loop forever. There are exactly **three trust
+decisions** you make, and **one** known sharp edge. The rest is detail.
 
-A compiled expression executes as Cranelift-JIT'd native code inside a
-wasmtime store. Concretely:
+*Updated 2026-06-11; every claim is checked against the code cited next
+to it.*
 
-- **Bounded linear memory.** The expression and the runtime kernel
-  share one wasm linear memory, sized by
-  `CompilerOptions::mem_size_bytes` (default 128 KiB, two wasm pages —
-  `compiler/compiler.h`). All wasm loads/stores are bounds-checked by
-  wasmtime; the expression cannot read or write embedder memory.
-- **No I/O, no syscalls.** The runtime kernel links wasi-libc, so its
-  module *imports* a handful of WASI preview1 functions — but the
-  engine wires them to a deliberately empty WASI context: no
-  filesystem preopens, no inherited environment, no inherited stdio
-  (`eval/engine.cc::InitStore`, `RegisterWasiStubs`). There is no path
-  from CEL evaluation to the filesystem, network, clock-as-capability,
-  or process control.
-- **No recursion, no unbounded control flow in emitted code.** CEL is
-  a total language; comprehensions lower to counted loops, and
-  recursive `@native` function bodies are rejected at compile time.
-- **`@component` custom functions are isolated harder still.** Each
-  component instantiates with its **own linear memory** — it cannot
-  read the expression's memory, let alone the embedder's. Every import
-  it declares is wired as a trap stub
-  (`wasmtime_component_linker_define_unknown_imports_as_traps`), with
-  exactly one exception: `wasi:random/random@0.2.0#get-random-bytes`
-  gets a deterministic stub so libc++'s hash-seed init works
-  (`eval/engine.cc::InstallWasiRandomStubAndTrapStubs`). A component
-  that tries to touch `wasi:filesystem`, `wasi:clocks`, `wasi:io`, or
-  `wasi:cli` traps with a named error. Components are supplied as
-  bytes at runtime (`Engine::AddComponent`), so updating one means
-  handing the engine new bytes — no embedder re-link or redeploy.
+## 1. The boundary — what the expression can and can't do
 
-A guest failure (trap, panic in a component) surfaces as a non-OK
-`absl::Status` or a CEL error value — it unwinds, it does not corrupt
-the host. (With one known exception; see §3.)
+A compiled expression runs as Cranelift-JIT'd native code inside a
+wasmtime store. Picture the boundary:
 
-## 2. The trust model
+```
+ ┌─ YOUR process ──────────────────────────────────────────────────────┐
+ │                                                                      │
+ │   your heap · your secrets · your file handles · your network        │
+ │        ▲                                                             │
+ │        │  in:  only the values you Bind()  ───────────────┐         │
+ │        │  out: only the result Value  ◄───────────────────┤         │
+ │   ┌────┴─────────────  wasmtime sandbox  ──────────────────┴─────┐   │
+ │   │                                                              │   │
+ │   │   the compiled expression  (native code, via Cranelift)      │   │
+ │   │                                                              │   │
+ │   │   ✓ CAN:   arithmetic, comparisons, field reads, read        │   │
+ │   │            marshaled-in vars, build values in its own arena  │   │
+ │   │                                                              │   │
+ │   │   ✗ CANNOT: read/write your memory · call a syscall ·        │   │
+ │   │            open a file · hit the network · read a clock ·    │   │
+ │   │            recurse · loop unbounded · hang the process       │   │
+ │   │                                                              │   │
+ │   └──────────────────────────────────────────────────────────────┘   │
+ │                                                                      │
+ │   the ONE door out: @host functions you registered (see §2) ─────────┤
+ └──────────────────────────────────────────────────────────────────────┘
+```
 
-| Input | Trust required | Why |
+The guarantees, precisely:
+
+- **Bounded linear memory.** The expression and the runtime kernel share
+  one wasm linear memory, sized by `CompilerOptions::mem_size_bytes`
+  (default 128 KiB). Every load/store is bounds-checked by wasmtime — the
+  expression physically cannot read or write your process memory.
+- **No I/O, no syscalls.** The runtime links wasi-libc, so it *imports* a
+  few WASI calls — but the engine wires them to a deliberately empty WASI
+  context: no filesystem preopens, no environment, no stdio
+  (`eval/engine.cc::InitStore`). There is no path from CEL evaluation to
+  the filesystem, network, clock-as-capability, or process control.
+- **No unbounded control flow.** CEL is a *total* language. Comprehensions
+  lower to counted loops; recursive `@native` bodies are rejected at
+  compile. An expression cannot spin forever.
+- **Failures unwind, they don't corrupt.** A guest trap or a panic in a
+  component surfaces as a non-OK `absl::Status` or a CEL error value — the
+  host stays intact. (One residual exception, at *compile* time, in §3.)
+
+## 2. The trust model — three decisions
+
+Everything you feed cel-wasm falls into one of four buckets, and only one
+of them needs real thought:
+
+| What you provide | Trust required | The one-liner |
 |---|---|---|
-| **CEL expression source** | **Semi-trusted** | The sandbox contains the *compiled code*, but compilation itself runs in your process, and one known bug lets pathological source crash the host (§3). Until that's fixed, don't compile arbitrary hostile source in-process. |
-| **`@host` functions** | **Fully trusted** | They are your C++ lambdas, running in your address space with your privileges. This is the same posture as stock cel-cpp/cel-go custom functions. The sandbox does nothing for you here. |
-| **`@component` functions** | **Untrusted OK** | Own memory, trap-stubbed imports, failures become CEL errors. This is the path for third-party plugins and customer-authored predicates. |
-| **`Program` bytes** | **Trusted compiler only** | See below. |
+| **CEL expression source** | 🟡 **Semi-trusted** | Sandboxed once compiled — but *compilation* runs in your process, and one input shape can still crash the compiler (§3). Compile untrusted source in a separate worker (§4). |
+| **`@host` functions** | 🔴 **Fully trusted** | Your C++ lambdas, your address space, your privileges. The sandbox does nothing for you here. |
+| **`@component` functions** | 🟢 **Untrusted OK** | Own memory, trap-stubbed imports, failures become CEL errors. The path for third-party / customer code. |
+| **`Program` bytes** | 🔴 **Trusted compiler only** | Treat like a shared library; see below. |
 
-**Why Program bytes must come from a compiler you trust.**
-`Engine::Plan` validates structure, not provenance: wasmtime validates
-the wasm module, the `cel.abi` custom section is decoded as a proto
-(`eval/internal/abi_decode.h`), its runtime-ABI version is checked,
-and the link-mode label is cross-checked against the module's import
-list (`eval/engine.cc`). Nothing verifies that the wasm *code* matches
-what the ABI *declares*. A malicious Program is therefore arbitrary
-wasm running inside the sandbox — it can't escape linear memory (the
-host's slot reads and writes are bounds-checked against memory size,
-`eval/instance.cc`), but it can:
+The decision that matters most is **how you let an expression call back
+into your code** — and that's exactly the `@host` vs `@component` split:
 
-- lie about its ABI (declared variables, slot offsets, result kind),
-- return any value it likes for any input, and
-- call every host import the engine wires — including the
-  `cel_host.*` trampolines and **any `@host` function you registered**
-  — with arguments of its choosing.
+```
+   @host  function                     @component  function
+   ════════════════                    ══════════════════════
+   your C++ lambda                     a WebAssembly component
+   ┌──────────────────────┐            ┌──────────────────────┐
+   │ runs in YOUR memory  │            │ runs in its OWN linear│
+   │ with YOUR privileges │            │ memory — can't see    │
+   │                      │            │ the expression's, let │
+   │ can do anything your │            │ alone yours           │
+   │ process can do       │            │                      │
+   │                      │            │ every import is a     │
+   │ = same posture as    │            │ trap stub (no I/O)    │
+   │   stock cel-cpp fns  │            │                      │
+   └──────────────────────┘            └──────────────────────┘
+        FULLY TRUSTED                       UNTRUSTED OK
+   (you wrote it, you own it)          (3rd-party plugins,
+                                        customer-authored predicates)
+```
 
-Treat Program bytes like you treat a shared library: load them only
-from a build pipeline you control. Signing/validation of Program
-artifacts is future work.
+So the rule of thumb: **a function body you wrote → `@host`; a function
+body you didn't → `@component`.** A component is supplied as bytes at
+runtime (`Engine::AddComponent`), so swapping one means handing the engine
+new bytes — no re-link, no redeploy. Its only capability is one
+deterministic `wasi:random` stub (for libc++'s hash seed); touching
+`wasi:filesystem` / `clocks` / `io` / `cli` traps with a named error.
 
-## 3. Known limitations — the honest list
+**Why `Program` bytes need a compiler you trust.** `Engine::Plan`
+validates *structure, not provenance* — it checks the wasm is valid, the
+`cel.abi` decodes, the ABI version matches, the link-mode label is
+consistent. Nothing verifies the wasm *code* matches what the ABI
+*declares*. A malicious Program is therefore arbitrary wasm in the
+sandbox: it still can't escape linear memory, but it can lie about its
+ABI, return anything, and **call every host import you wired — including
+your `@host` functions — with arguments of its choosing**. So:
 
-Each of these is pinned by a skipped-with-reason regression test or a
-tracked backlog entry; none is silent.
+```
+   trusted compiler ──► Program(bytes) ──► Engine.Plan ──► Eval
+        ▲                                                          
+        └── load Program bytes ONLY from a build pipeline you control.
+            They are executable input, like a .so — not data.
+```
 
-- **An oversized literal aggregate can crash the host process.** A
-  literal int list of ~10,000 elements compiles and Plans fine, then
-  **panics wasmtime on Eval** (`store.rs:2440 assertion failed:
-  fault.is_none()`) — a Rust panic that aborts the embedding process,
-  not a graceful status.
-  (`e2e/known_bugs_test.cc::KnownBugs.LiteralIntListInScanTrapsAt10K`,
-  cleanup-backlog #16, P0.) **This is why expression source is
-  "semi-trusted" above**: until the arena-OOM fix lands, source you
-  don't control can take down your process. Smaller cliffs in the same
-  family fail gracefully: a ~4,000-element intermediate returns a CEL
-  overflow error
-  (`KnownBugs.ExpressionIntermediatesArenaCliff`), and a bound list of
-  10,000 strings returns `FAILED_PRECONDITION: arena OOM`
-  (`KnownBugs.BoundStringListInScanArenaOomAt10K`, backlog #17).
-- **The per-Instance arena is a fixed 64 KiB** (`runtime/cel_layout.h`
-  `CELWASM_ARENA_CAPACITY_BYTES`); it does not grow on demand. Heavy
-  string concatenation or large aggregate construction inside a single
-  Eval hits it. `CompilerOptions::mem_size_bytes` raises the linear
-  memory, but the arena cap is separate and not yet configurable.
-- **Fuzzing is early.** The m27 property-based-testing machinery
-  (FuzzTest) has landed — the compiler pipeline and grammar have
-  property/generator suites that run randomised iterations under
-  `bazel test` and turn into coverage-guided fuzzers under
-  `--config=fuzztest`. Coverage is not yet comprehensive (the ABI
-  decoder and runtime kernel have no dedicated targets), and the
-  conformance corpus (1966 passing rows) is broad but not adversarial
-  input — so treat fuzz coverage as in-progress, not a guarantee.
-- **Incidental guardrail, not a defense:** the vendored parser caps
-  source at 100,000 codepoints
-  (`KnownBugs.ParserSourceCodepointLimitNotConfigurable`, backlog
-  #15). That bounds source *length*, but the #16 crash needs only
-  ~10,000 list elements — well under the cap.
+Signing/validation of Program artifacts is future work.
 
-## 4. Hardening recommendations for embedders today
+## 3. The honest list — known limitations
 
-If you embed cel-wasm now, with expression source you don't fully
-control:
+Every item here is pinned by a passing or skipped-with-reason regression
+test, or a tracked backlog entry. None is silent.
 
-1. **Cap expression source length** well below the parser's 100 k
-   default — real policy expressions rarely exceed a few thousand
-   codepoints.
-2. **Restrict literal aggregate sizes before compiling.** A cheap
-   pre-compile scan (or a post-parse AST walk) rejecting list/map
-   literals beyond a few hundred elements keeps you clear of the #16
-   crash and the arena cliffs — and large constant data belongs in an
-   activation-bound variable anyway, which also evaluates faster.
-3. **Compile untrusted source in a separate process.** The Program is
-   pure bytes; run the Compiler in a short-lived sandboxed worker,
-   ship the bytes back, and `Plan`/`Eval` in your serving process.
-   This contains both compiler bugs and the Eval-time panic.
-4. **Set `mem_size_bytes` deliberately.** The default 128 KiB is the
-   floor; pin it to what your expressions actually need rather than
-   raising it reflexively — it bounds what any one Instance can
-   consume.
+**🔴 The one open host-crash — deeply *bracket*-nested source.** Source
+like `[[[…]]]` nested ~2,000 levels overflows the 8 MiB parser thread
+stack inside cel-cpp's ANTLR stage, *before* the depth gate can return a
+graceful error (cleanup-backlog #47). It takes hostile, hand-built input
+far beyond any real expression — but on a default-stack thread it's a
+crash, which is exactly why §4's "compile in a separate worker" is
+load-bearing. Fix: size the parse stack to the limit.
+
+**🟢 Everything else fails *gracefully* — by design:**
+
+- **Deep expressions are capped, not crashed.** The parser, codegen, and
+  the JIT each recurse one stack frame per nesting level, so an unbounded
+  `a+b+c+…` chain would overflow the native stack (~10k terms). The
+  compiler caps nesting at `kMaxExpressionNestingDepth` (2048) and rejects
+  deeper input with a graceful `ResourceExhausted` — it never reaches
+  codegen or the JIT. Clears realistic policies with wide margin
+  (cleanup-backlog #45).
+- **Very large literal aggregates don't compile** (a capability limit).
+  A multi-thousand-element literal list/map is rejected at compile with
+  `ResourceExhausted` (boundary N=327 OK / 328 rejected,
+  `KnownBugs.LiteralIntListInScanRejectedAtCompileAt10K`). Put large
+  constant data in an activation-bound variable — it compiles *and* runs
+  faster.
+- **The arena grows on demand, bounded by memory.** A chained,
+  malloc-backed bump allocator (`runtime/cel_arena.c`); exhaustion is a
+  graceful `ResourceExhausted` / `FAILED_PRECONDITION`, never a crash.
+  Residual gap: a bound `list<string>` of ≥10k strings scanned by `in`
+  returns an arena-OOM error instead of `true` — graceful, but a
+  functional gap for big permission sets (cleanup-backlog #17).
+
+**🟡 Maturity, not safety:**
+
+- **Fuzzing is early.** Property-based testing (FuzzTest) ships — the
+  compiler pipeline and grammar have generator suites that become
+  coverage-guided fuzzers under `--config=fuzztest`. But the ABI decoder
+  and runtime kernel have no dedicated targets yet, and the conformance
+  corpus (1973 passing rows) is broad but not adversarial — so treat fuzz
+  coverage as in-progress, not a guarantee.
+- **The 100k-codepoint parser cap is a coarse fence, not the boundary.**
+  The real safety gates are the static-region and depth checks above; the
+  codepoint cap just bounds source *length*. Size your own input cap to
+  your workload.
+
+## 4. If you embed this today
+
+For expression source you don't fully control, in priority order:
+
+```
+   ① cap source length         ── bound compile cost (the gates do safety)
+   ② bound vars > big literals  ── compiles, and runs faster
+   ③ COMPILE IN A SEPARATE      ── contains the #47 parser crash + any
+      WORKER  ◄── load-bearing      future compiler bug on hostile source
+   ④ set mem_size_bytes         ── cap what one Instance can consume
+   ⑤ audit @host functions      ── the Program can call them with
+                                   arbitrary args; validate inside the
+                                   lambda — or use @component instead
+```
+
+1. **Cap expression source length** well below the 100k default — real
+   policies rarely exceed a few thousand codepoints. This bounds compile
+   *cost*; safety is enforced regardless.
+2. **Prefer activation-bound variables to large literal aggregates** — it
+   sidesteps the static-region limit and evaluates faster.
+3. **Compile untrusted source in a separate process.** This is the
+   load-bearing one while #47 is open: a separate, short-lived worker
+   contains the parser-crash blast radius (and insures against any
+   future compiler bug on hostile input). The `Program` is pure bytes —
+   compile in the worker, ship the bytes back, `Plan`/`Eval` in your
+   serving process.
+4. **Set `mem_size_bytes` deliberately.** The default 128 KiB is a floor;
+   pin it to what your expressions need rather than raising it reflexively.
 5. **Audit your `@host` functions as attack surface.** Anything you
-   register is callable by the Program with arbitrary arguments;
-   validate inputs inside the lambda. Prefer `@component` for any
-   function body you didn't write yourself.
+   register is callable by the Program with arbitrary arguments — validate
+   inputs inside the lambda, and prefer `@component` for any body you
+   didn't write yourself.
