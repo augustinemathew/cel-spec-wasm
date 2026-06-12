@@ -135,27 +135,36 @@ step 1 into `/tmp/fuzz_baseline.txt`.
 
 ## Step 4 — catalogs regrouped by family  **[pure]**
 
-- [ ] Split/regroup `grammar_scalars.cc` + `grammar_aggregates.cc`
+- [x] Split/regroup `grammar_scalars.cc` + `grammar_aggregates.cc`
       into `catalog_{leaves,ops,strings,temporal,aggregates}.cc`
-      along semantic lines:
-      - leaves (all adversarial values incl. list/map leaf literals)
-      - ops (arith total+fallible, comparisons incl. temporal,
-        logic, ternary, conversions)
-      - strings (all string fns **incl. split/join**, format,
-        encoders)
-      - temporal (accessors + tz table)
-      - aggregates (constructors, size, in, comprehensions, nested)
-- [ ] `catalog.h/.cc`: `BuildGrammar()` composes the five Register
-      fns; activation schema moves here (fixes the generator→catalog
-      dep inversion).
-- [ ] Rows move verbatim — production names/format strings unchanged;
-      leaf rationale comments relocate verbatim.
+      along semantic lines (function bodies moved VERBATIM via
+      scripted extraction — zero retyping).
+      > Delta: list/map leaf literals stayed in
+      > `catalog_aggregates.cc` (they share the `ScalarVocab` /
+      > `MapVocab` internals with the constructors; a shared-internal
+      > header for one move wasn't worth it).  Temporal comparisons
+      > stayed inside `RegisterTemporal` in `catalog_temporal.cc` —
+      > arguably more semantic than relocating rows out of their
+      > function.
+- [x] `catalog.h/.cc`: activation schema + `NewGenCtx` +
+      `BuildGrammar()` composition.
+      > Delta: the historical registration order INTERLEAVES families
+      > (strings register at two points), and order is
+      > generation-affecting (rules-vector order feeds
+      > `PickProduction`).  So `BuildGrammar` calls the fine-grained
+      > Register fns in the exact historical sequence — family files
+      > group the *definitions*; the composition documents
+      > "append at the end, never re-sort."
+- [x] Rows moved verbatim — production names/format strings unchanged;
+      leaf rationale comments relocated verbatim.
 - [ ] Comparison-sextet helper + math table where they collapse
-      copy-paste *within* a family (names preserved).
-- [ ] Delete `grammar_scalars.{h,cc}`, `grammar_aggregates.{h,cc}`;
-      BUILD: one `:catalog` target.
-- [ ] Baseline diff: byte-identical.  `grammar_test` green.
-- [ ] Lint; commit.
+      copy-paste *within* a family (names preserved) — DEFERRED to a
+      follow-up; the move itself stayed pure.
+- [x] Delete `grammar_scalars.{h,cc}`, `grammar_aggregates.{h,cc}`;
+      BUILD: one `:catalog` target (6 srcs, 1 hdr).
+- [x] Baseline diff: byte-identical.  `grammar_test` /
+      `verdict_test` / `targets_test` green.
+- [x] Lint (all 7 new files clean); commit.
 
 ## Step 5 — close out
 

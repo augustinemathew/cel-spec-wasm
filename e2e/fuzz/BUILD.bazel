@@ -9,9 +9,8 @@ cc_binary(
     srcs = ["dump_samples.cc"],
     tags = ["manual"],
     deps = [
+        ":catalog",
         ":grammar",
-        ":grammar_aggregates",
-        ":grammar_scalars",
         ":targets",
         "//shared:type",
         "@com_google_absl//absl/strings:string_view",
@@ -53,29 +52,23 @@ cc_library(
     ],
 )
 
-# Scalar catalog — bool/int/uint/double/string/bytes productions +
-# the activation schema + NewGenCtx.  See `grammar_scalars.h`.
+# The catalog — WHAT generated expressions look like.  Data rows
+# grouped by family (catalog_<family>.cc); catalog.cc's
+# BuildGrammar() composes them in a fixed, generation-affecting
+# order.  See `catalog.h`.
 cc_library(
-    name = "grammar_scalars",
-    srcs = ["grammar_scalars.cc"],
-    hdrs = ["grammar_scalars.h"],
-    deps = [
-        ":grammar",
-        "//shared:type",
-        "@com_google_absl//absl/log:absl_check",
+    name = "catalog",
+    srcs = [
+        "catalog.cc",
+        "catalog_aggregates.cc",
+        "catalog_leaves.cc",
+        "catalog_ops.cc",
+        "catalog_strings.cc",
+        "catalog_temporal.cc",
     ],
-)
-
-# Aggregate catalog — list / map literals, size, _in_,
-# comprehension macros over scalar lists and maps; composes the
-# scalar catalog into BuildGrammar().  See `grammar_aggregates.h`.
-cc_library(
-    name = "grammar_aggregates",
-    srcs = ["grammar_aggregates.cc"],
-    hdrs = ["grammar_aggregates.h"],
+    hdrs = ["catalog.h"],
     deps = [
         ":grammar",
-        ":grammar_scalars",
         "//shared:type",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
@@ -95,9 +88,8 @@ cc_library(
     srcs = ["oracle_harness.cc"],
     hdrs = ["oracle_harness.h"],
     deps = [
+        ":catalog",
         ":grammar",
-        ":grammar_aggregates",
-        ":grammar_scalars",
         "//compiler:compiler",
         "//eval:activation",
         "//eval:engine",
@@ -218,9 +210,8 @@ cc_test(
     size = "large",
     srcs = ["grammar_test.cc"],
     deps = [
+        ":catalog",
         ":grammar",
-        ":grammar_scalars",
-        ":grammar_aggregates",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:typed_ast",
         "//shared:type",

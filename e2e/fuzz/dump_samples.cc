@@ -11,8 +11,8 @@
 
 #include "absl/strings/string_view.h"
 #include "e2e/fuzz/grammar.h"
-#include "e2e/fuzz/grammar_aggregates.h"
-#include "e2e/fuzz/grammar_scalars.h"
+
+#include "e2e/fuzz/catalog.h"
 #include "e2e/fuzz/targets.h"
 #include "shared/type.h"
 

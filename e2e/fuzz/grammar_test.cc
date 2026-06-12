@@ -30,8 +30,8 @@
 #include "compiler/frontend/parse_and_check.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
-#include "e2e/fuzz/grammar_aggregates.h"
-#include "e2e/fuzz/grammar_scalars.h"
+
+#include "e2e/fuzz/catalog.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 

@@ -14,8 +14,8 @@
 #include "cel/expr/value.pb.h"
 #include "compiler/compiler.h"
 #include "e2e/fuzz/grammar.h"
-#include "e2e/fuzz/grammar_aggregates.h"
-#include "e2e/fuzz/grammar_scalars.h"
+
+#include "e2e/fuzz/catalog.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"

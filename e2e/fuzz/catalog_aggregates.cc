@@ -1,4 +1,4 @@
-#include "e2e/fuzz/grammar_aggregates.h"
+#include "e2e/fuzz/catalog.h"
 
 #include <string>
 #include <utility>
@@ -6,11 +6,14 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "e2e/fuzz/grammar.h"
-#include "e2e/fuzz/grammar_scalars.h"
 #include "shared/type.h"
 
 namespace celwasm::fuzz {
+
+// Aggregate catalog: list/map leaf literals, constructors, size,
+// _in_, comprehension macros, and the one-level-nested targets.
 
 namespace {
 
@@ -58,6 +61,8 @@ const std::vector<MapKV>& MapVocab() {
   };
   return *kV;
 }
+
+}  // namespace
 
 // Literal-only list leaves (depth-0 eligible) so L1's leaf
 // coverage check passes.  Several leaf shapes per element type so
@@ -157,21 +162,6 @@ void RegisterMapConstructors(GrammarBuilder& b) {
     b.Binary(CelType::Map(kv.k, kv.v), absl::StrCat("map_", tag, "_lit_1"),
              "{%0: %1}", kv.k, kv.v);
   }
-}
-
-// String functions that bridge string ↔ list<string>: `split`
-// (string → list<string>) and `join` (list<string> → string).
-// Total over their typed inputs (an empty separator splits into
-// characters; join concatenates).  The scalar-returning string
-// functions (contains/indexOf/matches/…) live in the scalar
-// catalog.
-void RegisterStringAggregateFunctions(GrammarBuilder& b) {
-  const CelType ls = CelType::List(CelType::String());
-  b.Binary(ls, "string_split", "(%0).split(%1)", CelType::String(),
-           CelType::String());
-  b.Unary(CelType::String(), "list_join", "(%0).join()", ls);
-  b.Binary(CelType::String(), "list_join_sep", "(%0).join(%1)", ls,
-           CelType::String());
 }
 
 void RegisterSizeProductions(GrammarBuilder& b) {
@@ -301,34 +291,6 @@ void RegisterNestedAggregates(GrammarBuilder& b) {
                   /*body_type=*/CelType::Bool());
   b.Comprehension(CelType::Bool(), "comp_all_list_list_int", "(%0).all(v, %1)",
                   CelType::List(li), {"v", li}, CelType::Bool());
-}
-
-}  // namespace
-
-Grammar BuildGrammar() {
-  GrammarBuilder b;
-
-  // Layer the scalar productions first so the full grammar is a
-  // strict superset — any scalar-catalog regression still lights up
-  // through the same name.
-  RegisterScalarProductions(b);
-
-  // Then the aggregate additions.
-  RegisterListLeaves(b);
-  RegisterListConstructors(b);
-  RegisterMapConstructors(b);
-  RegisterSizeProductions(b);
-  RegisterInProductions(b);
-  RegisterListComprehensions(b);
-  RegisterMapComprehensions(b);
-  RegisterNestedAggregates(b);
-  RegisterStringAggregateFunctions(b);
-
-  Grammar g = std::move(b).Build();
-  ABSL_CHECK_OK(g.Validate())
-      << "full grammar failed L1 validation; the catalog in "
-         "grammar_aggregates.cc is malformed";
-  return g;
 }
 
 }  // namespace celwasm::fuzz
