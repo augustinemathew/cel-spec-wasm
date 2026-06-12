@@ -60,6 +60,38 @@ absl::Status WasmTrapToStatus(absl::string_view context, wasm_trap_t* trap) {
   return absl::InternalError(absl::StrCat(context, ": ", text));
 }
 
+// One-time signature proof for the exports the per-Eval hot path
+// invokes through `wasmtime_func_call_unchecked` (Instance::Eval's
+// `$eval`, the activation-buffer `malloc`, WasmtimeArenaAllocator's
+// `arena_alloc`).  The unchecked entry skips wasmtime's per-call
+// type/arity checking, so the check runs exactly once, here at Plan:
+// `fn` must be `[i32 x want_params] -> [i32 x want_results]`.  A
+// mismatched export fails Plan with FailedPrecondition instead of
+// becoming undefined behaviour on the first Eval.
+absl::Status CheckAllI32FuncSignature(wasmtime_context_t* ctx,
+                                      const wasmtime_func_t& fn,
+                                      size_t want_params, size_t want_results,
+                                      absl::string_view name) {
+  wasm_functype_t* ty = wasmtime_func_type(ctx, &fn);
+  const wasm_valtype_vec_t* params = wasm_functype_params(ty);
+  const wasm_valtype_vec_t* results = wasm_functype_results(ty);
+  bool ok = params->size == want_params && results->size == want_results;
+  for (size_t i = 0; ok && i < params->size; ++i) {
+    ok = wasm_valtype_kind(params->data[i]) == WASM_I32;
+  }
+  for (size_t i = 0; ok && i < results->size; ++i) {
+    ok = wasm_valtype_kind(results->data[i]) == WASM_I32;
+  }
+  wasm_functype_delete(ty);
+  if (!ok) {
+    return absl::FailedPreconditionError(
+        absl::StrCat("`", name, "` export signature must be [i32 x ",
+                     want_params, "] -> [i32 x ", want_results,
+                     "] (the per-Eval hot path calls it unchecked)"));
+  }
+  return absl::OkStatus();
+}
+
 // Phase C: register wasmtime's built-in WASI preview1 implementation
 // onto the linker.  Replaces the hand-rolled random_get / sched_yield
 // stubs once absl + cctz are linked into cel_runtime.wasm — those
@@ -307,6 +339,14 @@ absl::Status BindRuntimeFuncHandles(celwasm::InstanceImpl* impl,
   if (alloc_ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError("`arena_alloc` is not a function");
   }
+  // `arena_alloc(i32 size) -> i32 offset`; WasmtimeArenaAllocator::
+  // Alloc calls it unchecked, so prove the signature once here.
+  if (auto s = CheckAllI32FuncSignature(ctx, alloc_ext.of.func,
+                                        /*want_params=*/1, /*want_results=*/1,
+                                        "arena_alloc");
+      !s.ok()) {
+    return s;
+  }
   impl->host_env.arena_alloc_fn = alloc_ext.of.func;
 
   // M7: handle for the runtime's `malloc` (wasi-libc dlmalloc).
@@ -320,6 +360,15 @@ absl::Status BindRuntimeFuncHandles(celwasm::InstanceImpl* impl,
   }
   if (malloc_ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError("`malloc` is not a function");
+  }
+  // `malloc(i32 size) -> i32 offset`; EnsureActivationBuffer
+  // (instance.cc) calls it unchecked, so prove the signature once
+  // here.
+  if (auto s = CheckAllI32FuncSignature(ctx, malloc_ext.of.func,
+                                        /*want_params=*/1, /*want_results=*/1,
+                                        "malloc");
+      !s.ok()) {
+    return s;
   }
   impl->host_env.malloc_fn = malloc_ext.of.func;
   return absl::OkStatus();
@@ -1267,6 +1316,15 @@ absl::Status InstantiateExpr(celwasm::InstanceImpl* impl) {
   if (ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError(
         "expr module's `eval` export is not a function");
+  }
+  // `$eval() -> i32 result_offset`; Instance::Eval calls it
+  // unchecked on every evaluation, so prove the signature once here
+  // — Program bytes can come from disk, and a wrong-shaped `eval`
+  // export must fail Plan, not become UB at the first Eval.
+  if (auto s = CheckAllI32FuncSignature(ctx, ext.of.func, /*want_params=*/0,
+                                        /*want_results=*/1, "eval");
+      !s.ok()) {
+    return s;
   }
   impl->eval_fn = ext.of.func;
   return absl::OkStatus();

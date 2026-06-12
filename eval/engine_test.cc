@@ -23,6 +23,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "bazel/link_mode_test_helpers.h"
@@ -144,6 +145,38 @@ TEST(EnginePlanTest, PlanFailsOnMalformedBytes) {
   auto inst_or = engine.Plan(garbage);
   EXPECT_FALSE(inst_or.ok());
   EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+// Instance::Eval invokes the `eval` export through
+// `wasmtime_func_call_unchecked` assuming the fixed `[] -> [i32]`
+// shape, so Plan must prove that shape once and reject anything
+// else — a wrong-shaped export reaching the unchecked call would be
+// undefined behaviour, not a graceful error.
+TEST(EnginePlanTest, PlanRejectsWrongShapedEvalExport) {
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  const auto expect_rejected = [&](absl::string_view eval_func_wat) {
+    const std::string wat = absl::StrCat(
+        R"WAT((module
+  (import "cel" "memory" (memory 1 1024 shared))
+)WAT",
+        eval_func_wat, ")");
+    Program program{Wat2Wasm(wat)};
+    auto inst_or = engine_or->Plan(program);
+    EXPECT_FALSE(inst_or.ok()) << "Plan accepted: " << eval_func_wat;
+    EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition)
+        << inst_or.status();
+    EXPECT_TRUE(
+        absl::StrContains(inst_or.status().message(), "export signature"))
+        << inst_or.status();
+  };
+  // Wrong result type ([] -> [i64]).
+  expect_rejected(R"WAT((func (export "eval") (result i64) (i64.const 0)))WAT");
+  // Wrong arity ([i32] -> [i32]).
+  expect_rejected(
+      R"WAT((func (export "eval") (param i32) (result i32) (i32.const 0)))WAT");
+  // No results ([] -> []).
+  expect_rejected(R"WAT((func (export "eval")))WAT");
 }
 
 // ── Plan-time ABI slot-extent validation ───────────────────────────
@@ -283,7 +316,7 @@ TEST(EnginePlanTest, InstanceOutlivesEngineAndCompilerWithEvalProof) {
   // its own store / linker / instance were always Instance-owned.
   //
   // Proof of life via Eval: the Eval call goes through
-  // wasmtime_func_call against the cached eval_fn, which in turn
+  // wasmtime_func_call_unchecked against the cached eval_fn, which in turn
   // dispatches into the runtime instance (which holds an internal
   // ref to the runtime module via the shared_ptr).  If any of
   // {engine, runtime module, store, linker, helpers_instance,

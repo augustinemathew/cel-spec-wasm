@@ -446,14 +446,19 @@ absl::Status EnsureActivationBuffer(wasmtime_context_t* ctx,
 
   // Allocate a 4-KB-rounded buffer; for very small activations this
   // is one malloc and we never grow.
+  //
+  // Unchecked invocation: wasi-libc's `malloc` export has the fixed
+  // signature `[i32 size] -> [i32 offset]`, proven once at Plan by
+  // `CheckAllI32FuncSignature` in engine.cc::BindRuntimeFuncHandles.
+  // raw[0] carries the size in and the offset out (results overwrite
+  // arguments per the unchecked-call contract); traps still surface
+  // through the same `wasm_trap_t` out-param.
   const uint32_t new_capacity = RoundUpTo4K(needed);
-  wasmtime_val_t arg;
-  arg.kind = WASMTIME_I32;
-  arg.of.i32 = static_cast<int32_t>(new_capacity);
-  wasmtime_val_t result;
+  wasmtime_val_raw_t raw[1];
+  raw[0].i32 = static_cast<int32_t>(new_capacity);
   wasm_trap_t* trap = nullptr;
-  wasmtime_error_t* err =
-      wasmtime_func_call(ctx, &malloc_fn, &arg, 1, &result, 1, &trap);
+  wasmtime_error_t* err = wasmtime_func_call_unchecked(
+      ctx, &malloc_fn, raw, /*args_and_results_len=*/1, &trap);
   if (err != nullptr) {
     return WasmtimeErrorToStatus(absl::StrCat("Activation[", first_var_name,
                                               "]: malloc(", new_capacity, ")"),
@@ -463,12 +468,12 @@ absl::Status EnsureActivationBuffer(wasmtime_context_t* ctx,
     return WasmTrapToStatus(
         absl::StrCat("Activation[", first_var_name, "]: malloc trap"), trap);
   }
-  if (result.kind != WASMTIME_I32 || result.of.i32 == 0) {
+  if (raw[0].i32 == 0) {
     return absl::ResourceExhaustedError(absl::StrCat(
         "Activation[", first_var_name, "]: malloc returned NULL (needed ",
         new_capacity, " bytes)"));
   }
-  *buf_offset = static_cast<uint32_t>(result.of.i32);
+  *buf_offset = static_cast<uint32_t>(raw[0].i32);
   *buf_capacity = new_capacity;
   // A15 (DESIGN §5): the malloc'd buffer must sit above the
   // reserved low region (where the expr rodata + wasi-libc data
@@ -1267,20 +1272,23 @@ absl::StatusOr<Value> Instance::Eval() {
   impl_->host_env.mem_size =
       static_cast<uint32_t>(wasmtime_sharedmemory_data_size(impl_->memory));
   wasmtime_func_t fn = impl_->eval_fn;
-  wasmtime_val_t result{};
+  // Unchecked invocation: `$eval`'s signature is the fixed export
+  // contract `[] -> [i32 result_offset]`, proven once at Plan by
+  // `CheckAllI32FuncSignature` in engine.cc::InstantiateExpr — so the
+  // per-call type/arity checking (and the RegisteredType refcount
+  // churn it drags in) that `wasmtime_func_call` performs proves
+  // nothing new here.  The raw buffer needs capacity
+  // max(nparams, nresults) = 1; the i32 result lands at raw[0].
+  // Traps still surface through the same `wasm_trap_t` out-param,
+  // so the trap → Status conversion below is unchanged.
+  wasmtime_val_raw_t raw[1] = {};
   wasm_trap_t* trap = nullptr;
-  wasmtime_error_t* err =
-      wasmtime_func_call(ctx, &fn, /*args=*/nullptr, /*nargs=*/0, &result,
-                         /*nresults=*/1, &trap);
+  wasmtime_error_t* err = wasmtime_func_call_unchecked(
+      ctx, &fn, raw, /*args_and_results_len=*/1, &trap);
   if (err != nullptr) return WasmtimeErrorToStatus("Eval (func_call)", err);
   if (trap != nullptr) return WasmTrapToStatus("Eval trapped", trap);
-  if (result.kind != WASMTIME_I32) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "Eval: $eval returned non-i32 (kind=", static_cast<int>(result.kind),
-        ")"));
-  }
   return DecodeCelValueAt(ctx, impl_->memory, impl_->host_env.refs,
-                          static_cast<uint32_t>(result.of.i32));
+                          static_cast<uint32_t>(raw[0].i32));
 }
 
 absl::StatusOr<Value> Instance::Eval(const Activation& activation) {

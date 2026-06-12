@@ -44,10 +44,10 @@ class FakeJsonBacking final : public HostMessageBacking {
   }
 };
 
-const google::protobuf::FieldDescriptor* FieldOf(const Customer& c,
+const google::protobuf::FieldDescriptor* FieldOf(const Customer& /*unused*/,
                                                  absl::string_view name) {
   const google::protobuf::FieldDescriptor* f =
-      c.GetDescriptor()->FindFieldByName(std::string(name));
+      Customer::GetDescriptor()->FindFieldByName(std::string(name));
   ABSL_CHECK(f != nullptr) << "missing test field " << name;
   return f;
 }
@@ -161,6 +161,45 @@ TEST(HostExternrefTableTest, ResetDropsSlotsAndDedupIndexes) {
   EXPECT_EQ(table.InternProtoMessage(&c), 1u);
   EXPECT_EQ(table.InternProtoMapField(&c, metadata), 1u);
   EXPECT_EQ(table.InternProtoListField(&c, tags), 1u);
+}
+
+TEST(HostExternrefTableTest, ResetOnEmptyTableIsANoOpKeepingSentinels) {
+  // Per-Eval entry path: an Eval that interned nothing hits Reset's
+  // empty early-out.  The sentinel contract must hold across
+  // repeated empty Resets — slot 0 stays unresolvable, the first
+  // intern still issues slot 1.
+  HostExternrefTable table;
+  table.Reset();
+  table.Reset();
+  EXPECT_EQ(table.Lookup(0), nullptr);
+  EXPECT_EQ(table.LookupMap(0), nullptr);
+  EXPECT_EQ(table.LookupList(0), nullptr);
+  Customer c;
+  EXPECT_EQ(table.InternProtoMessage(&c), 1u);
+}
+
+TEST(HostExternrefTableTest, ResetClearsWhenOnlyOneSlotKindIsPopulated) {
+  // The empty early-out requires ALL THREE slot vectors at sentinel
+  // size; a table where only one kind was interned must still clear.
+  Customer c;
+  {
+    HostExternrefTable table;
+    const uint32_t slot = table.InternProtoMessage(&c);
+    table.Reset();
+    EXPECT_EQ(table.Lookup(slot), nullptr);
+  }
+  {
+    HostExternrefTable table;
+    const uint32_t slot = table.InternProtoMapField(&c, FieldOf(c, "metadata"));
+    table.Reset();
+    EXPECT_EQ(table.LookupMap(slot), nullptr);
+  }
+  {
+    HostExternrefTable table;
+    const uint32_t slot = table.InternProtoListField(&c, FieldOf(c, "tags"));
+    table.Reset();
+    EXPECT_EQ(table.LookupList(slot), nullptr);
+  }
 }
 
 }  // namespace

@@ -115,6 +115,16 @@ uint32_t HostExternrefTable::InternProtoListField(
 }
 
 void HostExternrefTable::Reset() {
+  // Per-Eval entry path: an Eval that interned nothing (every
+  // scalar-only expression) leaves all three slot vectors at their
+  // sentinel-only size — nothing to clear.  The dedup indexes can
+  // only be non-empty when a slot vector grew past the sentinel
+  // (every index insert pairs with a slot push), so the three size
+  // checks imply the indexes are empty too.
+  if (backings_.size() == 1 && map_backings_.size() == 1 &&
+      list_backings_.size() == 1) {
+    return;
+  }
   backings_.clear();
   backings_.push_back(nullptr);
   map_backings_.clear();
@@ -344,13 +354,20 @@ struct HostTrampoline {
 
 uint8_t* absl_nullable WasmtimeArenaAllocator::Alloc(
     size_t len, uint32_t* absl_nonnull out_offset) {
-  wasmtime_val_t arg;
-  arg.kind = WASMTIME_I32;
-  arg.of.i32 = static_cast<int32_t>(len);
-  wasmtime_val_t result;
+  // Unchecked invocation: the runtime's `arena_alloc` export has the
+  // fixed signature `[i32 size] -> [i32 offset]`, proven once at Plan
+  // by `CheckAllI32FuncSignature` in engine.cc::BindRuntimeFuncHandles
+  // — this is a hot reentry (every span payload encode crosses here),
+  // so skip wasmtime's per-call type/arity checking.  raw[0] carries
+  // the size in and the offset out (results overwrite arguments per
+  // the unchecked-call contract).  Error/trap reporting is unchanged
+  // (`wasm_trap_t` out-param); both still map to nullptr, which the
+  // callers surface as ResourceExhausted ("arena OOM ...").
+  wasmtime_val_raw_t raw[1];
+  raw[0].i32 = static_cast<int32_t>(len);
   wasm_trap_t* trap = nullptr;
-  wasmtime_error_t* err =
-      wasmtime_func_call(ctx_, &fn_, &arg, 1, &result, 1, &trap);
+  wasmtime_error_t* err = wasmtime_func_call_unchecked(
+      ctx_, &fn_, raw, /*args_and_results_len=*/1, &trap);
   if (err != nullptr) {
     wasmtime_error_delete(err);
     return nullptr;
@@ -359,10 +376,10 @@ uint8_t* absl_nullable WasmtimeArenaAllocator::Alloc(
     wasm_trap_delete(trap);
     return nullptr;
   }
-  if (result.kind != WASMTIME_I32 || result.of.i32 == 0) {
+  if (raw[0].i32 == 0) {
     return nullptr;
   }
-  const auto offset = static_cast<uint32_t>(result.of.i32);
+  const auto offset = static_cast<uint32_t>(raw[0].i32);
   *out_offset = offset;
   return wasmtime_sharedmemory_data(mem_) + offset;
 }
