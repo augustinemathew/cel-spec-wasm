@@ -183,46 +183,20 @@ cc_test(
     ],
 )
 
-# lists, maps, nested) + printable renders for divergence logs.
-cc_library(
-    name = "compare",
-    testonly = True,
-    srcs = ["compare.cc"],
-    hdrs = ["compare.h"],
-    deps = [
-        "//eval:cel_host",
-        "//eval:value",
-        "//shared:type",
-        "@com_google_absl//absl/strings",
-        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
-    ],
-)
-
-cc_test(
-    name = "compare_test",
-    size = "small",
-    srcs = ["compare_test.cc"],
-    deps = [
-        ":compare",
-        "//eval:value",
-        "//shared:type",
-        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
 # The ONE verdict path: classify a generate→eval-both-sides
 # round-trip, compare payloads, render the outcome.  Every driver
 # (miner, property test) judges through RunOne so they cannot
-# disagree about what a failure is.
+# disagree about what a failure is.  Payload comparison is
+# `conformance::CompareValue` — the same comparator the conformance
+# gate scores with; there is deliberately only one in the repo.
 cc_library(
     name = "verdict",
     testonly = True,
     srcs = ["verdict.cc"],
     hdrs = ["verdict.h"],
     deps = [
-        ":compare",
         ":oracle_harness",
+        "//conformance:runner",
         "//shared:type",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",

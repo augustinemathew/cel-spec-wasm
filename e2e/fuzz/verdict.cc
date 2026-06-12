@@ -6,7 +6,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "e2e/fuzz/compare.h"
+#include "conformance/runner.h"
 #include "e2e/fuzz/oracle_harness.h"
 #include "shared/type.h"
 
@@ -17,7 +17,7 @@ std::string Verdict::Report(absl::string_view label) const {
   switch (kind) {
     case VerdictKind::kValueDiverged:
       return absl::StrCat("DIVERGE ", at, "\n  source = ", source,
-                          "\n  ours   = ", ours, "\n  oracle = ", oracle, "\n");
+                          "\n  mismatch = ", detail, "\n");
     case VerdictKind::kOracleErrorOnly:
       return absl::StrCat("ERROR-DIVERGE (oracle errored, ours is a value) ",
                           at, " ", detail, "\n  source = ", source, "\n");
@@ -38,9 +38,8 @@ std::string Verdict::Report(absl::string_view label) const {
   return absl::StrCat("<bad VerdictKind> ", at, "\n");
 }
 
-Verdict Judge(const CelType& target, uint64_t seed, int depth,
-              GenAndEvalStatus status, const GenAndEvalResult& result,
-              const std::string& error) {
+Verdict Judge(uint64_t seed, int depth, GenAndEvalStatus status,
+              const GenAndEvalResult& result, const std::string& error) {
   Verdict v;
   v.seed = seed;
   v.depth = depth;
@@ -48,10 +47,16 @@ Verdict Judge(const CelType& target, uint64_t seed, int depth,
   v.detail = error;
   switch (status) {
     case GenAndEvalStatus::kOk: {
-      const CompareResult c = Compare(result.ours, result.oracle, target);
-      v.kind = c.equal ? VerdictKind::kAgreed : VerdictKind::kValueDiverged;
-      v.ours = c.ours;
-      v.oracle = c.oracle;
+      // The conformance gate's own comparator: NaN-matches-NaN,
+      // list/map recursion, kind mismatch fails.  Any non-OK status
+      // (including InvalidArgument for a kind it has no comparator
+      // for) is a divergence — a comparator gap must never
+      // masquerade as agreement.  Its message carries the want/got
+      // diff, which is the divergence render.
+      const absl::Status cmp =
+          conformance::CompareValue(result.ours, result.oracle);
+      v.kind = cmp.ok() ? VerdictKind::kAgreed : VerdictKind::kValueDiverged;
+      if (!cmp.ok()) v.detail = std::string(cmp.message());
       return v;
     }
     case GenAndEvalStatus::kSourceTooLarge:
@@ -86,7 +91,7 @@ Verdict RunOne(const CelType& target, uint64_t seed, int depth) {
   std::string error;
   const GenAndEvalStatus status =
       GenAndEvalFull(target, seed, depth, result, &error);
-  return Judge(target, seed, depth, status, result, error);
+  return Judge(seed, depth, status, result, error);
 }
 
 }  // namespace celwasm::fuzz

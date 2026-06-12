@@ -91,17 +91,25 @@ step 1 into `/tmp/fuzz_baseline.txt`.
 
 ## Step 2 — delete `compare.{h,cc}`: one comparator in the repo
 
-- [ ] Verify semantic parity where it matters before swapping: NaN
-      (`runner.cc:173` NaN-matches-NaN), ±0.0, int/uint distinctness,
-      list/map recursion, error-vs-value.  Settle any uncertainty by
-      adding a case to the oracle/conformance tests, not by reading
-      alone.
-- [ ] Swap `verdict.cc`'s comparison to `conformance::CompareValue`;
-      divergence render = the Status message.
-- [ ] Delete `e2e/fuzz/compare.{h,cc}`, `compare_test.cc`; BUILD edit.
-- [ ] Mine the 13 targets at the fixed seeds: all counts identical to
-      baseline (see protocol — any delta is a STOP).
-- [ ] Lint; commit.
+- [x] Verify semantic parity where it matters before swapping.
+      Verified: doubles use the IDENTICAL algorithm on both sides
+      (NaN-matches-NaN then C++ `==`, so ±0.0 equal in both —
+      `runner.cc:173` vs old `compare.cc` ScalarsEqual); kind
+      mismatch fails in both; list/map recursion exists
+      (`CompareList`/`CompareMap`, `runner.cc:477-480` — the same
+      comparator that scores all 1973 conformance rows).
+- [x] Swap `verdict.cc`'s comparison to `conformance::CompareValue`;
+      divergence render = the Status message (`mismatch =` line in
+      the DIVERGE report).  Any non-OK status — including
+      InvalidArgument for a kind it has no comparator for — is a
+      divergence, preserving the never-agree-on-a-gap discipline.
+      Dead `Verdict::{ours,oracle}` fields and Judge's unused
+      `target` param removed.
+- [x] Delete `e2e/fuzz/compare.{h,cc}`, `compare_test.cc`; BUILD edit
+      (`:verdict` deps on `//conformance:runner`).
+- [x] Mine the 13 targets at the fixed seeds: all counts identical to
+      baseline.  Property test (~6000 iterations) green.
+- [x] Lint; commit.
 
 ## Step 3 — one grammar, one test suite  **[pure]**
 

@@ -35,17 +35,14 @@ enum class VerdictKind : std::uint8_t {
   kSourceTooLarge,       // generated source exceeded kMaxSourceBytes
 };
 
-// One judged round-trip.  `ours`/`oracle` carry printable renders of
-// the two sides (populated for the compared outcomes); `detail`
-// carries the rejecting/erroring status text (populated for the
-// reject/error outcomes).
+// One judged round-trip.  `detail` carries the outcome's diagnostic
+// text: the want/got mismatch diff on kValueDiverged, the
+// rejecting/erroring status text on the reject/error outcomes.
 struct Verdict {
   VerdictKind kind = VerdictKind::kAgreed;
   uint64_t seed = 0;
   int depth = 0;
   std::string source;
-  std::string ours;
-  std::string oracle;
   std::string detail;
 
   // The two engines disagree about the result of a valid expression
@@ -71,12 +68,12 @@ struct Verdict {
 };
 
 // Pure classification: fold a `GenAndEvalFull` outcome into a
-// Verdict (comparing payloads via the value comparator when both
-// sides produced one).  Exposed separately from `RunOne` so the
-// classification matrix is unit-testable with synthetic results.
-Verdict Judge(const CelType& target, uint64_t seed, int depth,
-              GenAndEvalStatus status, const GenAndEvalResult& result,
-              const std::string& error);
+// Verdict (comparing payloads via the conformance gate's
+// `CompareValue` when both sides produced one).  Exposed separately
+// from `RunOne` so the classification matrix is unit-testable with
+// synthetic results.
+Verdict Judge(uint64_t seed, int depth, GenAndEvalStatus status,
+              const GenAndEvalResult& result, const std::string& error);
 
 // Generate one expression of `target` at (seed, depth), evaluate it
 // through both pipelines, and judge the outcome.
