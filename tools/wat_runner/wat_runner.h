@@ -110,17 +110,6 @@ struct WatRunInput {
   CelHostThreeArgStub cel_host_cel_map_lookup_stub;
   CelHostThreeArgStub cel_host_cel_list_at_stub;
 
-  // `cel_host.cel_get_field_path(out_slot, msg_slot, path_ref_id)` —
-  // the batched proto select-chain read (one host crossing for a
-  // contiguous message-typed kSelect chain; see
-  // `wat/71_get_field_path.wat`).  The CelHostThreeArgStub signature
-  // carries `path_ref_id` in the `key_or_index_slot` arg slot — same
-  // i32 wire shape, different semantic role of the third arg (matches
-  // the wkt_unwrap_wrapper / set_field repurposing below).  The stub
-  // simulates the host-side hop walk by writing the FINAL hop's
-  // CelValue at out_slot.
-  CelHostThreeArgStub cel_host_cel_get_field_path_stub;
-
   // `cel_host.cel_wkt_unwrap_wrapper(out_slot, msg_slot,
   // wrapper_kind)` stub.  Mirrors the `cel_wkt_unwrap_time` shape
   // but with a third `wrapper_kind` i32 carrying the CelKind tag

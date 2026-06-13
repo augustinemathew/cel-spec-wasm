@@ -104,18 +104,7 @@ absl::string_view AbiModuleName(AbiModule m);
 // catalogues below.  The cel.abi custom section in every emitted
 // expr module carries this constant; the engine checks it against
 // the runtime's at instantiate time.
-//
-// Note on "additive" helpers: because the compiler installs the full
-// `cel_host` import set on every emitted module (no lazy import
-// tracking), adding a host trampoline makes every NEW module import
-// it immediately — an older engine without the trampoline would fail
-// instantiate with an opaque wasmtime "unknown import" error.  So a
-// new `cel_host` row IS a bump event here; the no-bump additive case
-// only applies to helpers no emitted module imports unconditionally.
-//
-// v3: added `cel_host.cel_get_field_path` (batched proto select
-// chains; cel.abi gained the paths[] table).
-constexpr uint32_t kRuntimeAbiVersion = 3;
+constexpr uint32_t kRuntimeAbiVersion = 2;
 
 // All helpers exported by `cel_runtime.wasm` (module name "cel").
 // Loaded once from the generated, embedded `CelRuntimeCatalogue`

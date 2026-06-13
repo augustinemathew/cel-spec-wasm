@@ -41,7 +41,7 @@ void EmitVariables(const StaticLayout& layout, celwasm::abi::CelAbi& abi) {
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs,
-    absl::Span<const PathRefRow> path_refs, celwasm::abi::LinkMode link_mode) {
+    celwasm::abi::LinkMode link_mode) {
   celwasm::abi::CelAbi abi;
   abi.set_version(kCelAbiVersion);
   // Link-mode marker for embedder tooling; the engine routes on
@@ -68,29 +68,6 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     entry->set_field_number(row.field_number);
     entry->set_name(row.name);
     entry->set_owner_fqn(row.owner_fqn);
-  }
-
-  // paths[]: one row per batched select chain (the
-  // `cel_get_field_path` call sites).  Index 0 is the sentinel
-  // (empty hop list); emitted so the host-side table indices line up
-  // 1:1 with the path_ref_id call args.  A sentinel-ONLY table (no
-  // batched chains in the program) is omitted entirely — no call
-  // references it, and chain-free programs stay wire-identical to
-  // pre-paths emitters (tooling that byte-inspects the trailing
-  // link_mode record relies on that; see
-  // eval/engine_test.cc::PatchStaticLinkModeByte).
-  const bool has_real_paths = path_refs.size() > 1;
-  abi.mutable_paths()->Reserve(
-      has_real_paths ? static_cast<int>(path_refs.size()) : 0);
-  for (uint32_t i = 0; has_real_paths && i < path_refs.size(); ++i) {
-    const PathRefRow& row = path_refs[i];
-    celwasm::abi::PathEntry* entry = abi.add_paths();
-    entry->set_id(i);
-    for (const PathHopRow& hop : row.hops) {
-      celwasm::abi::PathHop* h = entry->add_hops();
-      h->set_field_ref_id(hop.field_ref_id);
-      h->set_attribute_id(hop.attribute_id);
-    }
   }
 
   // attributes[]: one row per distinct attribute path.

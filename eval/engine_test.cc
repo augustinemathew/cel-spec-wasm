@@ -1080,12 +1080,9 @@ std::vector<uint8_t> CompileToBytes(CompilerOptions::LinkMode mode) {
 
 // Rewrites the wire value of the trailing `link_mode` field in a
 // STATIC Program's cel.abi payload.  The emitter serializes fields
-// in number order and `link_mode` (field 7) is the only non-default
-// trailing field a static compile of a chain-free expression adds —
-// `paths` (field 8) is omitted when the program has no batched
-// select chains (BuildCelAbi skips a sentinel-only table), and the
-// `42` fixture below has none — so the payload ends with the 2-byte
-// record `0x38 0x01` (tag fld7/varint, value 1).
+// in number order and `link_mode` (field 7, the highest) is the only
+// non-default trailing field a static compile adds, so the payload
+// ends with the 2-byte record `0x38 0x01` (tag fld7/varint, value 1).
 // Patching the value byte in place flips the label without resizing
 // any section, keeping all wasm framing intact.
 std::vector<uint8_t> PatchStaticLinkModeByte(std::vector<uint8_t> bytes,

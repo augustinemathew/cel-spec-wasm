@@ -1337,67 +1337,6 @@ TEST(WatRunnerProtoFieldTest, SetFieldPoisonsOnOutOfRangeAndPropagates) {
   EXPECT_EQ((*calls)[1].field_ref_id, 101u);
 }
 
-// ─────────────────────────────────────────────────────────
-// 71_get_field_path.wat — batched proto select chain
-// (`m.inner.inner.i64` as ONE `cel_host.cel_get_field_path`
-// crossing).  Locks the 3 × i32 `(out_slot, msg_slot,
-// path_ref_id)` ABI: the per-hop (field_ref_id, attribute_id)
-// pairs live in the interned cel.abi.paths[] row, NOT in call
-// args, so the wasm side is one call regardless of depth.
-// ─────────────────────────────────────────────────────────
-TEST(WatRunnerSelectPathTest, GetFieldPathStubRoundTripsThreeArgAbi) {
-  auto wat = LoadWat("71_get_field_path.wat");
-  ASSERT_THAT(wat, IsOk());
-
-  struct Capture {
-    int calls = 0;
-    uint32_t out_slot = 0;
-    uint32_t msg_slot = 0;
-    uint32_t path_ref_id = 0;
-  };
-  auto capture = std::make_shared<Capture>();
-
-  WatRunInput in;
-  in.wat = *wat;
-  // Pre-write the root message CelValue into m's slot.
-  in.pre_writes = {{16u, EncodeMessageCelValue(0x1234)}};
-  // Stub simulates the host-side hop walk: reads msg_slot, writes the
-  // FINAL hop's scalar (i64 = 7) at out_slot.  In production the
-  // trampoline walks cel.abi.paths[path_ref_id] hop-by-hop in C++.
-  in.cel_host_cel_get_field_path_stub =
-      [capture](uint32_t out_slot, uint32_t msg_slot, uint32_t path_ref_id,
-                uint8_t* memory, size_t /*mem_size*/) {
-        ++capture->calls;
-        capture->out_slot = out_slot;
-        capture->msg_slot = msg_slot;
-        capture->path_ref_id = path_ref_id;
-
-        CelValue incoming;
-        std::memcpy(&incoming, memory + msg_slot, sizeof(incoming));
-        EXPECT_EQ(incoming.kind, CEL_MESSAGE);
-        EXPECT_EQ(incoming.payload.msg_slot, 0x1234u);
-
-        CelValue out{};
-        out.kind = CEL_INT;
-        out.payload.i = 7;
-        std::memcpy(memory + out_slot, &out, sizeof(out));
-      };
-
-  auto result = RunWat(in);
-  ASSERT_THAT(result, IsOk());
-
-  // ONE crossing for the whole 3-hop chain, args verbatim.
-  EXPECT_EQ(capture->calls, 1);
-  EXPECT_EQ(capture->out_slot, 40u);
-  EXPECT_EQ(capture->msg_slot, 16u);
-  EXPECT_EQ(capture->path_ref_id, 1u);
-
-  EXPECT_EQ(result->eval_return, 40u);
-  CelValue cv = DecodeCelValue(result->memory_after, result->eval_return);
-  EXPECT_EQ(cv.kind, CEL_INT);
-  EXPECT_EQ(cv.payload.i, 7);
-}
-
 // m23_native_quad_inline.wat — Model-A `@native` inlining.  `$eval` calls
 // a LOCAL `$quad_int`, which calls a LOCAL `$double_int` twice.  Proves
 // (1) a `@native` body lowers to a local func on the `(out_slot, arg0)`

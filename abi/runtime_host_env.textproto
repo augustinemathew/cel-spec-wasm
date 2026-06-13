@@ -30,17 +30,6 @@ functions {
   num_args: 4
   returns_i32: false
 }
-# get(msg.a.b...z): batched proto select chain — ONE host crossing for a
-# contiguous message-typed kSelect chain. args: out, msg_slot, path_ref_id
-# (dense index into cel.abi.paths[]; the per-hop field_ref_id/attribute_id
-# pairs live in the interned path row, not in call args).  See
-# doc/implementation-plan/rewrite/wat/71_get_field_path.wat.
-functions {
-  name: "cel_get_field_path"
-  module: CEL_HOST
-  num_args: 3
-  returns_i32: false
-}
 # has(msg.field): proto field presence. args: out, msg_slot, field_ref_id,
 # attribute_id.
 functions {

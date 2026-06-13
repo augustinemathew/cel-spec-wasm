@@ -776,36 +776,6 @@ TEST_F(MessagePartialEvalTest, WildcardMidPathUnknown) {
       << "c.*.city wildcard matches c.billing_address.city";
 }
 
-TEST_F(MessagePartialEvalTest, ExactLeafPathUnknownOnBatchedChain) {
-  // The 2-hop chain lowers to ONE cel_get_field_path crossing; the
-  // pattern names the FULL leaf path, so the kFull match fires at the
-  // final hop (effective attribute c.billing_address ⊕ city) — the
-  // per-hop attribute ids riding in the path row are what make this
-  // identical to the per-hop lowering.
-  auto instance = CompilePlan(compiler_, "c.billing_address.city");
-  Customer msg;
-  msg.mutable_billing_address()->set_city("Seattle");
-  Activation a;
-  a.Bind("c", Value::Message(msg));
-  AttributePattern patterns[] = {MakePattern("c.billing_address.city")};
-  auto v = PartialEvalOk(instance, a, patterns);
-  EXPECT_EQ(v.kind(), Value::Kind::kUnknown);
-}
-
-TEST_F(MessagePartialEvalTest, SiblingLeafPatternOnBatchedChainStaysConcrete) {
-  // Same batched chain, pattern names a sibling leaf — no hop
-  // matches, the chain reads concretely.
-  auto instance = CompilePlan(compiler_, "c.billing_address.city");
-  Customer msg;
-  msg.mutable_billing_address()->set_city("Seattle");
-  Activation a;
-  a.Bind("c", Value::Message(msg));
-  AttributePattern patterns[] = {MakePattern("c.billing_address.country")};
-  auto v = PartialEvalOk(instance, a, patterns);
-  ASSERT_EQ(v.kind(), Value::Kind::kString);
-  EXPECT_EQ(*v.AsString(), "Seattle");
-}
-
 TEST_F(MessagePartialEvalTest, SiblingFieldPatternStaysConcrete) {
   // Pattern names the sibling field `c.name` while we evaluate the int
   // `c.age`; distinct field paths, so the read stays concrete.

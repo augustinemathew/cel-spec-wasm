@@ -100,12 +100,6 @@ void InstallCelHostImports(WasmModule& mod) {
                         "cel_get_field", host4, BinaryenTypeNone());
   mod.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
                         "cel_has_field", host4, BinaryenTypeNone());
-  // Batched select-chain arm — one host crossing per contiguous
-  // message-typed kSelect chain.  `(out_slot, msg_slot, path_ref_id)`;
-  // see wat/71_get_field_path.wat.
-  mod.AddFunctionImport(std::string(kCelHostGetFieldPathInternalName),
-                        "cel_host", "cel_get_field_path", host3,
-                        BinaryenTypeNone());
 
   // Struct arm — kStructExpr (proto / WKT message literals).
   mod.AddFunctionImport(std::string(kCelHostMakeMessageInternalName),
@@ -440,9 +434,8 @@ namespace {
 // §6).
 absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
                                  absl::Span<const FieldRefRow> field_refs,
-                                 absl::Span<const PathRefRow> path_refs,
                                  celwasm::abi::LinkMode link_mode) {
-  auto abi_or = BuildCelAbi(layout, field_refs, path_refs, link_mode);
+  auto abi_or = BuildCelAbi(layout, field_refs, link_mode);
   if (!abi_or.ok()) return abi_or.status();
   std::string abi_bytes;
   if (!abi_or->SerializeToString(&abi_bytes)) {
@@ -632,9 +625,9 @@ absl::StatusOr<CompiledArtifact> LowerExportAndFinalise(
 
   out.module.ExportFunction(opts.eval_internal_name, opts.eval_export_name);
 
-  if (auto s = AttachCelAbiSection(
-          out.module, out.layout, absl::MakeConstSpan(out.eval_fn.field_refs),
-          absl::MakeConstSpan(out.eval_fn.path_refs), link_mode);
+  if (auto s = AttachCelAbiSection(out.module, out.layout,
+                                   absl::MakeConstSpan(out.eval_fn.field_refs),
+                                   link_mode);
       !s.ok()) {
     return s;
   }
