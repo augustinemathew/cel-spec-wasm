@@ -68,9 +68,49 @@ void BytesEvalAgreesWithOracle(uint64_t seed, int depth) {
   EXPECT_FALSE(v.IsFailure()) << v.Report("Bytes");
 }
 
+void ListIntEvalAgreesWithOracle(uint64_t seed, int depth) {
+  const Verdict v = RunOne(CelType::List(CelType::Int()), seed, depth);
+  EXPECT_FALSE(v.IsFailure()) << v.Report("ListInt");
+}
+
+void ListBoolEvalAgreesWithOracle(uint64_t seed, int depth) {
+  const Verdict v = RunOne(CelType::List(CelType::Bool()), seed, depth);
+  EXPECT_FALSE(v.IsFailure()) << v.Report("ListBool");
+}
+
+void ListDoubleEvalAgreesWithOracle(uint64_t seed, int depth) {
+  const Verdict v = RunOne(CelType::List(CelType::Double()), seed, depth);
+  EXPECT_FALSE(v.IsFailure()) << v.Report("ListDouble");
+}
+
+void ListStringEvalAgreesWithOracle(uint64_t seed, int depth) {
+  const Verdict v = RunOne(CelType::List(CelType::String()), seed, depth);
+  EXPECT_FALSE(v.IsFailure()) << v.Report("ListString");
+}
+
+void MapStringIntEvalAgreesWithOracle(uint64_t seed, int depth) {
+  const Verdict v =
+      RunOne(CelType::Map(CelType::String(), CelType::Int()), seed, depth);
+  EXPECT_FALSE(v.IsFailure()) << v.Report("MapStringInt");
+}
+
+void ListListIntEvalAgreesWithOracle(uint64_t seed, int depth) {
+  const Verdict v =
+      RunOne(CelType::List(CelType::List(CelType::Int())), seed, depth);
+  EXPECT_FALSE(v.IsFailure()) << v.Report("ListListInt");
+}
+
+void MapStringListIntEvalAgreesWithOracle(uint64_t seed, int depth) {
+  const Verdict v =
+      RunOne(CelType::Map(CelType::String(), CelType::List(CelType::Int())),
+             seed, depth);
+  EXPECT_FALSE(v.IsFailure()) << v.Report("MapStringListInt");
+}
+
 // ── FUZZ_TEST registrations ──────────────────────────────────────
 //
-// Six properties, one per scalar target type.  Each runs ~1000
+// One property per mineable target — all 13, aggregates included
+// (keep in sync with `targets.cc::AllTargets()`).  Each runs ~1000
 // random iterations in unit-test mode; under `--config=fuzztest`
 // the same registration becomes a coverage-guided fuzzer over
 // that target.  Depth 0..8: 7-8 are the deep-nesting band
@@ -91,6 +131,20 @@ FUZZ_TEST(CelOracleProperty, DoubleEvalAgreesWithOracle)
 FUZZ_TEST(CelOracleProperty, StringEvalAgreesWithOracle)
     .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
 FUZZ_TEST(CelOracleProperty, BytesEvalAgreesWithOracle)
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
+FUZZ_TEST(CelOracleProperty, ListIntEvalAgreesWithOracle)
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
+FUZZ_TEST(CelOracleProperty, ListBoolEvalAgreesWithOracle)
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
+FUZZ_TEST(CelOracleProperty, ListDoubleEvalAgreesWithOracle)
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
+FUZZ_TEST(CelOracleProperty, ListStringEvalAgreesWithOracle)
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
+FUZZ_TEST(CelOracleProperty, MapStringIntEvalAgreesWithOracle)
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
+FUZZ_TEST(CelOracleProperty, ListListIntEvalAgreesWithOracle)
+    .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
+FUZZ_TEST(CelOracleProperty, MapStringListIntEvalAgreesWithOracle)
     .WithDomains(fuzztest::Arbitrary<uint64_t>(), fuzztest::InRange<int>(0, 8));
 // NOLINTEND(bugprone-throwing-static-initialization)
 

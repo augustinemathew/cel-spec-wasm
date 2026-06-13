@@ -118,9 +118,19 @@ int RunMine(absl::string_view target_str, const CelType& target,
 }  // namespace
 
 int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
+  // `--list-targets` prints the canonical target names, one per
+  // line — scripts/fuzz.sh derives its sweep list from this so the
+  // shell never carries its own copy.
+  if (argc == 2 && absl::string_view(argv[1]) == "--list-targets") {
+    for (const celwasm::fuzz::NamedTarget& t : celwasm::fuzz::AllTargets()) {
+      std::cout << t.name << "\n";
+    }
+    return 0;
+  }
   if (argc < 4 || argc > 5) {
     std::cerr << "usage: " << argv[0]
-              << " <target> <max_seeds> <depth> [stop_after=5]\n";
+              << " <target> <max_seeds> <depth> [stop_after=5]\n"
+              << "       " << argv[0] << " --list-targets\n";
     return 1;
   }
   const absl::string_view target_str = argv[1];
