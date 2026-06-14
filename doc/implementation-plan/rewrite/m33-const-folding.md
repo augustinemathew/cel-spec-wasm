@@ -424,3 +424,206 @@ a new IR pass:
    zero-new-ABI baseline; the peephole is a follow-up perf slice.
 4. **Dedup identical folded constants** into one rodata frame /
    materialization (cheap, shares m31 §9 #2's question).
+
+## 10. Three compile-time execution engines compared — cel-cpp folder vs. Binaryen `precompute` vs. Binaryen `wasm-ctor-eval`
+
+The user raised a third avenue: "Binaryen has a way to partially run a
+wasm module." There are in fact two distinct Binaryen mechanisms, and
+this section evaluates BOTH head-to-head against the cel-cpp host-side
+folder (§3–§4, the recommended primary path). They are **not mutually
+exclusive** — the recommendation at the end is a layered pipeline that
+uses two of the three.
+
+> **Label note.** The `(a)/(b)/(c)` in this section label the three
+> execution *mechanisms* below (cel-cpp folder / `precompute` /
+> `wasm-ctor-eval`) — distinct from §4's `(a)/(b)` *evaluator-backend*
+> options (cel-cpp runtime vs. our own kernels), which live *inside*
+> mechanism (a).
+
+> **Verifiability note.** Binaryen's source is **not on disk** in this
+> checkout. `MODULE.bazel:83-91` pins it as an `http_archive` of the
+> GitHub release tarball `binaryen-version_129`, fetched on demand and
+> built via CMake through `rules_foreign_cc`
+> (`third_party/binaryen/BUILD.external.bazel:20-35`). So every claim
+> below about the C API and the CLI tools is grounded in **what our
+> BUILD files demonstrably expose/consume** plus the well-known shape
+> of Binaryen's API as of v129; where a claim depends on Binaryen
+> *internals* not read here (the `precompute` interpreter's effect
+> model, ctor-eval's import handling), it is flagged as an
+> **assumption to verify by fetching the tarball** (then read
+> `src/passes/Precompute.cpp` and `src/tools/wasm-ctor-eval.cpp`).
+
+### 10.1 What we link today (the API-surface fact)
+
+`BUILD.external.bazel:6-8` is explicit: **"We consume only the
+officially stable C API (`binaryen-c.h`). The C++ API is not part of
+the cmake install target."** The CMake invocation sets
+`BUILD_TOOLS=OFF` (`:24`) and `out_static_libs = ["libbinaryen.a"]`
+(`:31`) — so we link the library and **none of the standalone CLI
+tools are built**. The only optimization-driver call our codegen makes
+today is the whole-module optimize pipeline (`module.cc:309-311`:
+`BinaryenSetOptimizeLevel` / `BinaryenSetShrinkLevel` /
+`BinaryenModuleOptimize`). The C API also exposes
+`BinaryenModuleRunPasses(module, passes[], count)` for a **named** pass
+list (assumption: confirm the exact symbol on fetch) — the hook through
+which mechanism (b) is reachable without leaving the C API.
+
+### 10.2 Mechanism (b): the `precompute` / `precompute-propagate` pass
+
+**What it is.** Binaryen's `precompute` pass interprets *pure* constant
+expressions in place and replaces them with their constant result —
+`(i32.add (i32.const 1) (i32.const 1))` → `(i32.const 2)`;
+`precompute-propagate` additionally propagates known-constant locals.
+It runs entirely inside the module's own function bodies.
+
+**Reachability.** Through the C API we already link, via
+`BinaryenModuleRunPasses(module_, {"precompute"}, 1)` (assumption: pass
+name string is `"precompute"` in v129 — verify on fetch). Zero new
+dependency, zero CLI shell-out; slots into `WasmModule::Optimize`
+(`module.cc:294`).
+
+**The decisive limit.** `precompute` models the **wasm core** and
+**stops at any operation it cannot prove pure** — including **every call
+to an import**. Our aggregate-construction sequence is a run of imports
+(`cel.cel_list_create`, `cel.cel_map_insert`, `cel.cel_map_index_build`,
+…, per `expr_lower_test.cc:155-208`, design.md:563-635) that **write
+linear memory through the imported arena allocator**. `precompute` folds
+none of them — it can model neither the import effect nor the
+cross-module memory write. The user's intuition is correct. What it
+*can* tidy is a pure-wasm scalar-arithmetic tail — but after the cel-cpp
+folder (§4) collapses the semantic scalar layer to `kConstant`, little
+remains. **Verdict (b):** cheap, additive, low-value once (a) is in
+place; a downstream scalar tidy, not an aggregate materializer, and it
+does nothing for the m31/m32 byte-layout.
+
+### 10.3 Mechanism (c): `wasm-ctor-eval` linear-memory snapshot
+
+**What it is (the important one).** `wasm-ctor-eval` interprets entire
+functions at compile time and **snapshots the resulting linear-memory +
+global state into the module's data segments**, replacing the evaluated
+work with the constant result. If our aggregate-construction sequence
+could be ctor-eval'd, the arena bytes it writes — list/map headers,
+entry runs, AND the m32 SwissTable index built by the **real runtime
+kernel** — would be snapshotted automatically, uniformly for every
+result type.
+
+**Why it is attractive (assessed).**
+
+- *It could subsume m31's hand-written byte layout AND m32's
+  shared-hash-kernel problem.* Real and large **if feasible**. m32 §6
+  requires a **shared hash kernel** (`runtime/cel_map_hash.h`) compiled
+  into BOTH runtime and compiler with **byte-identical** hashing as a
+  load-bearing invariant, existing *only* to avoid compiler↔runtime
+  drift. Under ctor-eval the index is built by the **actual kernel** and
+  snapshotted — so the whole `cel_map_hash.h` apparatus + its test
+  **would not need to exist**, and m31's `StaticMemoryBuilder` byte
+  emitters shrink to "call the real kernel under the interpreter." This
+  is the single biggest m31+m32 simplification — it removes the
+  highest-risk correctness surface (hand-mirrored layout + hand-mirrored
+  hashing).
+- *Uniform across all types* — ctor-eval snapshots whatever memory/return
+  the wasm produced, scalar through map. Matches the "all expressions" ask.
+
+**The make-or-break blocker: ctor-eval stops at imports, and our
+construction path is nothing but imports into a separate module.** Three
+compounding, independently-fatal problems:
+
+1. **Two-module split.** The expr module **imports**
+   `arena_alloc`/`cel_list_create`/`cel_map_insert`/`cel_map_index_build`/
+   `cel.memory` from the **separately built** `cel_runtime.wasm`, linked
+   **at instantiation time by wasmtime**, never merged at compile time
+   (design.md:354-356, :563, :2274). ctor-eval interprets *one* module and
+   **cannot follow a call into an import** — the first
+   `call $cel.cel_list_create` stops it cold. Using ctor-eval at all would
+   first require **statically linking runtime + expr into one module at
+   compile time** — a reversal of the Phase C memory design that
+   deliberately moved *away* from expr-owned memory (design.md:293-305).
+2. **Allocator + memory state.** Even merged, ctor-eval must interpret the
+   bump arena allocator and wasi-libc static data; anything touching
+   `memory.grow`, WASI imports, or **threads** (the runtime is
+   `wasm32-wasi-threads`, design.md:22) likely makes it bail. The threads
+   build is a specific red flag for an interpreter (verify on fetch).
+3. **Host imports.** The path can call `cel_log` (host trampoline) — a
+   no-op stub is *probably* sound, but every import touched needs a
+   faithful model or a proven-sound stub (per-import work).
+
+**Error subtrees don't come free.** A wasm trap → ctor-eval abandons that
+ctor and leaves it in the module (≈ "leave unfolded", aligns with §5). But
+a kernel that returns a well-formed CEL **error value** (`1/0`) would be
+snapshotted as a frozen error value — exactly wrong (§5: an error must
+propagate with runtime semantics, e.g. absorbable by a higher `?:`). So
+even feasible ctor-eval still needs the §5 eligibility gate in front.
+
+**Determinism.** Snapshotting concrete bytes means baked arena offsets,
+uninitialized struct padding (the SwissTable control region, map-entry
+padding), and host/clock/threads influence all threaten reproducible
+builds — the same byte-zeroing discipline m31's `StaticMemoryBuilder`
+applies by hand, relocated into "trust the kernel + interpreter." LE is
+already guarded (removes the endianness axis, none of the others).
+
+**Reachability.** `wasm-ctor-eval` is a **standalone CLI tool**
+(`src/tools/wasm-ctor-eval.cpp`); with `BUILD_TOOLS=OFF` it is **not
+built and not exposed through `binaryen-c.h`**. Integration is one of:
+(i) shell out to a built binary (flip `BUILD_TOOLS=ON`, marshal wasm via
+temp files — a process boundary in the compile hot path); (ii) vendor the
+tool's internals (couples us to churning Binaryen internals the C-API
+discipline avoids); (iii) reimplement an interpreter (non-starter). All
+materially more expensive than (a)/(b).
+
+**Verdict (c):** the *idea* is the strongest of the three — the only one
+that could erase m32's shared-hash-kernel risk and unify all types under
+one materializer. But against the **as-built two-module, wasi-threads,
+instantiate-time-linked** architecture it is blocked by the import
+boundary, needs a compile-time static-link reversal, per-import
+models/stubs, still needs the §5 error gate, and is reachable only via
+CLI shell-out or internals-vendoring. A **large speculative bet**, not a
+near-term simplification — worth a dedicated feasibility probe before it
+is ever scheduled.
+
+### 10.4 Side-by-side
+
+| | (a) cel-cpp host folder (§3–§4) | (b) Binaryen `precompute` | (c) Binaryen `wasm-ctor-eval` |
+|---|---|---|---|
+| **Reachable via API we link** | yes (vendored cel-cpp runtime, like the oracle) | yes (`BinaryenModuleRunPasses`, C API) | **no** (CLI tool; `BUILD_TOOLS=OFF`) |
+| **Folds scalars** | yes (value-exact via cel-cpp) | only pure-wasm arithmetic tails | yes (if feasible) |
+| **Folds aggregates (list/map bytes)** | yes — literal `kCreateList/Map`, m31 bakes | **no** (stops at kernel-call imports) | yes in principle — **but blocked** |
+| **Builds m32 SwissTable index** | no — relies on m32's shared hash kernel | no | **yes**, via the real kernel — would erase m32 §6 |
+| **Byte-exact semantics** | exact (same cel-cpp runtime) | n/a (numeric only) | exact (real kernel) — error-value snapshot is a hazard |
+| **Error semantics (§5)** | handled — erroring subtree left unfolded | n/a | **not free** — needs §5 gate; trap≈unfold, error-*value* snapshots wrongly |
+| **Blocking issues** | none (recommended) | low value once (a) runs | import boundary + 2-module split + wasi-threads interp + per-import stubs + CLI integration |
+| **Net effect on m31/m32 complexity** | unchanged | unchanged | **large reduction** *if* feasible |
+
+### 10.5 Recommended pipeline
+
+**Primary: (a) the cel-cpp host-side folder, per §3–§4.** Reachable
+through deps we already link, value/byte-exact against cel-cpp by
+construction (the conformance requirement), handles the §5 error
+semantics, folds every in-subset scalar and aggregate. The only option
+with no blocking issue.
+
+**Adjunct, optional: (b) `precompute` as a post-codegen scalar cleanup.**
+After (a) + codegen, optionally `BinaryenModuleRunPasses(module_,
+{"precompute"}, 1)` in `WasmModule::Optimize` to mop up residual pure-wasm
+arithmetic. Near-zero cost, strictly additive, guarded behind the existing
+`level > 0` gate so level-0 golden tests stay byte-stable. Low priority.
+
+**Not now, but track: (c) `wasm-ctor-eval`.** Do **not** schedule against
+the current architecture. Its prize (erasing m32's shared hash kernel,
+unifying all types) is real but gated on reversing the Phase C two-module
+split into a compile-time static-link plus per-import interpreter
+feasibility — a milestone-sized investigation, not an m33 deliverable.
+The correct next step is a **throwaway feasibility probe** (per CLAUDE.md
+probe discipline) *before* any design commits to it:
+
+> Probe (only if/when the user asks to pursue (c)): fetch the Binaryen
+> tarball, read `src/tools/wasm-ctor-eval.cpp` and
+> `src/passes/Precompute.cpp` to confirm (1) ctor-eval's behavior on
+> imports / traps / `memory.grow` / threads, (2) whether any C-API entry
+> exposes it, (3) whether a wasm-merge of `cel_runtime.wasm` + a trivial
+> expr module calling `cel_list_create` can be ctor-eval'd at all. Record
+> findings with `file:line` citations in a new `mNN-ctor-eval.md` if
+> promising; otherwise note the dead-end here.
+
+The recommended shipping shape is **(a) + optional (b)**, with **(c)
+deferred** behind that probe. (a) remains load-bearing; nothing in this
+section changes the §3–§4 recommendation or the m31/m32 seam in §6.2.
