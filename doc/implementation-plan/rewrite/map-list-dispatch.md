@@ -456,7 +456,10 @@ implemented.
      lookup goes quadratic across repeated indexing.  Open
      `ArenaMapHeader._pad` is reserved for a bucket-table
      offset if a bench motivates adding one.  Decision deferred
-     to M6 with a bench target.
+     to M6 with a bench target.  *Addressed by the m32 plan
+     (`rewrite/m32-swisstable-map-index.md`): a codegen-baked
+     SwissTable index over the entries run, reusing `_pad` as
+     `index_offset`. Resolves when m32 ships — open until then.*
   2. **Comprehensions that produce maps of unknown initial
      capacity.**  `list.reduce(acc, x, acc + {x.k: x.v}, {})`
      starts empty and grows.  `cel_map_create(out, 4)` + growth

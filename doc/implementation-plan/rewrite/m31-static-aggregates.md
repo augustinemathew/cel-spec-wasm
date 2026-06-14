@@ -202,6 +202,14 @@ m31.B — sorted-run binary-search lookup for materialized maps above
 ~32 entries (`cel_map_lookup_arena` gains a sorted-flag arm or a
 header bit).  Compile-time sorting in §5 already produces the input.
 
+> **Superseded-pending by m32** (`rewrite/m32-swisstable-map-index.md`).
+> m32 bakes an O(1) SwissTable hash index into static memory at codegen
+> time — extending this milestone's `MaterializeMap` to append a control-
+> byte + slot array after the entries run (m32.B depends on m31). Its
+> O(1) lookup subsumes m31.B's O(log n) binary search and keeps the
+> entries run in insertion order (m31.B required a sorted run). If m32
+> ships, m31.B is dropped; reconcile this section when m32 lands.
+
 ## 9. Open questions
 
 1. Exact new window size (256 KB proposed; measure instantiate cost

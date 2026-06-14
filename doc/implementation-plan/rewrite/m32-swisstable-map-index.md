@@ -19,10 +19,12 @@ operation: `cel_map_lookup_arena`, `cel_map_in_arena`, the
 duplicate-key check in `cel_map_insert`, the collision check in
 `cel_map_insert_at`, and the inner match loop of `cel_map_eq_arena`
 (making map `==` O(n²)). This is `map-list-dispatch.md` §10
-open-question #1 ("hash table for larger maps; linear scan is fine for
-≤20 entries; past that lookup goes quadratic across repeated
-indexing"), with `ArenaMapHeader._pad` explicitly reserved (`cel_data.h:75`)
-"for a bucket-table offset when hashing is added."
+open-question #1 ("Hash table for larger maps. Linear scan in
+`cel_map_lookup_arena` is fine for ≤20 entries; past that, lookup goes
+quadratic across repeated indexing"), which already reserves the
+`ArenaMapHeader._pad` field (`cel_data.h:75`) "for a bucket-table offset
+if a bench motivates adding one" (`map-list-dispatch.md` §10 #1,
+mirrored in the struct comment at lines 232–233).
 
 m31 (compile-time materialization) fixes the *rebuild* cost of constant
 literals but leaves every *lookup* O(n). A comprehension like
@@ -86,9 +88,11 @@ index_offset + align_up_4(...)    : slot[0 .. num_slots-1]      (u32 each = entr
   full slot (undefined for empty slots — emptiness is decided solely by
   the control byte). u32 (not u16) keeps it simple; ~5 bytes/slot total.
 
-`num_slots` = smallest power of two ≥ `ceil(count / (7/8))`, floored to
-`kGroupWidth = 8`. Power-of-two so `H1 & (num_slots-1)` replaces a
-modulo. Max load factor **7/8** (Abseil's `kMaxLoadFactor`). Because
+`num_slots` = smallest power of two ≥ `ceil(count / (7/8))`, with a
+floor of `kGroupWidth = 8` (so one group is always a full load). Worked:
+count 8→16, 14→16, 15→32, 56→64, 64→128. Power-of-two so
+`H1 & (num_slots-1)` replaces a modulo. Max load factor **7/8**
+(Abseil's `kMaxLoadFactor`). Because
 arena maps are pre-sized and never grow, `num_slots` is computed once
 from the final `count` — **no rehash, no tombstones, `kDeleted` is
 never written** (the hardest half of a general SwissTable drops out).
@@ -123,7 +127,9 @@ static inline uint64_t group_match(uint64_t ctrl, uint8_t h2) {
   uint64_t x = ctrl ^ (kLsbs * (uint64_t)h2);
   return (x - kLsbs) & ~x & kMsbs;
 }
-// Abseil MaskEmptyOrDeleted (empty-only here, since no deletes).
+// Abseil GroupPortableImpl::MaskEmpty (shift-6: matches kEmpty only).
+// We never write kDeleted, so MaskEmpty — not MaskEmptyOrDeleted
+// (shift-7, which also matches kDeleted) — is the correct stop test.
 static inline uint64_t group_match_empty(uint64_t ctrl) {
   return ctrl & (~ctrl << 6) & kMsbs;
 }
@@ -148,8 +154,8 @@ group exactly once on a power-of-two table; load factor < 1 guarantees a
 SwissTable invariant is absolute: **keys that compare equal MUST hash
 identically**, or `1.0 in {1:'a'}` probes the wrong group and returns a
 spurious `no_such_key`. Stored keys are only bool/int/uint/string
-(`is_valid_map_key_kind` rejects double on insert), but a **lookup** key
-may be a double (`cel_runtime.c:30-33`).
+(`is_valid_map_key_kind`, `cel_runtime.c:18`, rejects double on insert),
+but a **lookup** key may be a double (`cel_runtime.c:29-34`).
 
 **Canonicalization rule** (hash all numerics by their mathematical
 integer value when integral):
@@ -161,9 +167,11 @@ integer value when integral):
   `double(2^63)` take the same token.
 - Non-integral / NaN / ±Inf / out-of-range doubles → a fixed
   non-matching sentinel hash. Sound because such a double **cannot
-  compare equal to any stored int/uint key** (`cmp_int_vs_double` /
-  `cmp_uint_vs_double` only report equal when `(double)stored == d`,
-  forcing `d` integral and in range), so it probes, finds no
+  compare equal to any stored int/uint key** (`cmp_int_vs_double`
+  `cel_compare.c:135` / `cmp_uint_vs_double` `:142` reduce to
+  `cmp_double((double)stored, d)` only after range-guarding, so they
+  report equal only when `(double)stored == d` — i.e. `d` is a
+  representable in-range integer), so it probes, finds no
   `map_keys_equal` confirmation, and correctly misses.
 - `bool` → canonical `0`/`1` with a kind salt (collides harmlessly with
   numeric `0`/`1`; `map_keys_equal` rejects across the bool boundary).
@@ -327,7 +335,10 @@ Freeze the index layout in WAT before any codegen C++.
   units; hash-canonicalization matrix — `int N`/`uint N`/`double N.0`
   collide for N ∈ {0, 1, -1, INT64_MAX, INT64_MIN, 2^53, UINT64_MAX};
   bool 0/1; embedded-NUL + multibyte-UTF-8 string keys; the `2^53` edge;
-  `num_slots` sizing boundaries (count = 7, 8, 9 → 16).
+  `num_slots` sizing boundaries — `num_slots = max(8, next_pow2(ceil(8·count/7)))`,
+  so count = 8, 9, …, 14 → 16 and count = 15 → 32 (count < `kIndexThreshold`
+  = 8 builds no index, so the smallest indexed map sits at num_slots 16,
+  load 0.5).
 - `runtime/cel_map_test.cc` additions: index-vs-linear **parity** over
   the full key matrix (every assertion holds with and without the
   index); probe-collision (two keys whose H1 collide, both findable);
@@ -355,8 +366,9 @@ Freeze the index layout in WAT before any codegen C++.
 - `doc/.../wat/NN_map_swisstable_index.wat` + `wat-traces.md`.
 - `runtime/cel_map_hash_test.cc`, `runtime/cel_map_test.cc` additions,
   oracle + e2e cases.
-- Reconcile: `map-list-dispatch.md` §10 #1 (tick), `m31` cross-ref,
-  `testing-checklist.md` rows.
+- Reconcile (on ship): resolve `map-list-dispatch.md` §10 #1, drop
+  `m31` §8 (m31.B), tick `testing-checklist.md` rows. (As a plan, m32
+  only forward-references these today.)
 
 ## 14. Open questions (for the user — not pre-committed)
 
@@ -374,3 +386,11 @@ Freeze the index layout in WAT before any codegen C++.
   scan changes).
 - u16 slot array for `capacity < 64k` to shave index memory.
 - Selective index suppression (open question #1).
+
+> **Supersedes m31 §8 (m31.B).** m31's follow-up proposed a sorted-run
+> binary-search lookup (`cel_map_lookup_arena` gains a sorted-flag arm)
+> as the >32-entry accelerator. m32's O(1) SwissTable subsumes that O(log
+> n) path and keeps the entries run in insertion order (m31.B would have
+> required compile-time sorting). If m32 ships, m31.B is dropped; if m32
+> slips, m31.B remains the interim option. Reconcile m31 §8 when m32
+> lands.
