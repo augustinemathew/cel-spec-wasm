@@ -1,0 +1,18 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Throwaway probe: generated-getter ("native") vs reflection per-field
+# read cost, across scalar / repeated / map shapes.  `manual`, -c opt:
+#   bazel run -c opt //benchmark/proto_read:proto_read_bench
+cc_binary(
+    name = "proto_read_bench",
+    srcs = ["proto_read_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//testdata:host_fixture_proto3_cc_proto",
+        "@com_google_benchmark//:benchmark_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
