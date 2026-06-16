@@ -87,6 +87,29 @@ link_mode_e2e_cc_test(
     ],
 )
 
+# Compilation-limit boundaries (literal count, …): a passing case just
+# inside each fixed memory budget and a failing case past it.  See the
+# "Compilation limits" section in the repo CLAUDE.md.
+link_mode_e2e_cc_test(
+    name = "e2e_limits",
+    size = "large",
+    srcs = ["limits_test.cc"],
+    deps = [
+        ":link_mode_e2e_helpers",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M17 encoders e2e: compile + plan + eval base64.encode / base64.decode
 # end-to-end.  Tracks `tests/simple/testdata/encoders_ext.textproto`.
 link_mode_e2e_cc_test(
