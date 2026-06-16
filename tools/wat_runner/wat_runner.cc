@@ -964,23 +964,25 @@ std::vector<uint8_t> SnapshotMemory(RunState& s) {
   return {data, data + size};
 }
 
-}  // namespace
-
-// NOLINTNEXTLINE(misc-use-internal-linkage) — public API, declared in the header.
-absl::StatusOr<WatRunOutput> RunWat(const WatRunInput& input) {
+absl::Status SetUpRun(RunState& s, const WatRunInput& input) {
   auto expr_bytes_or = Wat2Wasm(input.wat);
   if (!expr_bytes_or.ok()) return expr_bytes_or.status();
-
-  RunState s;
   if (auto st = InitEngineAndModules(s, *expr_bytes_or); !st.ok()) return st;
   if (auto st = InitStore(s); !st.ok()) return st;
   if (auto st = InitLinker(s, input); !st.ok()) return st;
   if (auto st = InstantiateRuntime(s); !st.ok()) return st;
   if (auto st = InstantiateExpr(s); !st.ok()) return st;
-  if (auto st = ApplyPreWrites(s, input); !st.ok()) return st;
+  return ApplyPreWrites(s, input);
+}
+
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage) — public API, declared in the header.
+absl::StatusOr<WatRunOutput> RunWat(const WatRunInput& input) {
+  RunState s;
+  if (auto st = SetUpRun(s, input); !st.ok()) return st;
   auto ret_or = CallEval(s);
   if (!ret_or.ok()) return ret_or.status();
-
   return WatRunOutput{*ret_or, SnapshotMemory(s)};
 }
 
