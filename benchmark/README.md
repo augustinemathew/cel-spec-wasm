@@ -140,24 +140,25 @@ enumeration live from the corpus (with cell counts); the standing set:
 ## Results
 
 <!-- BEGIN AUTO-GENERATED RESULTS (benchmark/eval/report.py) -->
-_Last run: 2026-06-12 on Mac (full tables: `benchmark/eval/results/`)._
+_Last run: 2026-06-16 on Mac (full tables: `benchmark/eval/results/`)._
 
 ### Per-operator headline — T(N) = setup + N·per_op
 
 Linear regression over each length-sweep family; slope is the steady-state cost of one more operation, crossover is the expression length where the comparator overtakes cel-cpp.
 
-| surface | operator family | points | celwasm-dynamic slope | celwasm-dynamic setup | celwasm-static slope | celwasm-static setup | cel-cpp slope | cel-cpp setup | celwasm-dynamic crossover vs cel-cpp | celwasm-static crossover vs cel-cpp |
-|---|---|---|---|---|---|---|---|---|---|---|
-| arithmetic | doubleAdd | 5 | 87.8 | 85 | 2.3 | 170 | 35.4 | -140 | never wins | N ≈ 9 |
-| arithmetic | intAdd | 5 | 94.3 | -434 | 2.6 | 162 | 34.6 | -44 | never wins | N ≈ 6 |
-| arithmetic | intMul | 5 | 88.0 | 173 | 3.9 | 164 | 34.7 | -18 | never wins | N ≈ 6 |
-| arithmetic | intSub | 5 | 83.3 | 617 | 2.5 | 163 | 33.7 | 9 | never wins | N ≈ 5 |
-| comprehensions | all | 4 | 1,122.8 | -1,188 | 22.7 | 141 | 72.9 | 111 | never wins | N ≈ 1 |
-| lists | bound | 5 | 8.7 | -611 | 3.5 | -1,221 | 3.8 | -795 | never wins | always wins |
-| long_strings | containsLong_N | 4 | 2.0 | 643 | 0.8 | 50 | 0.0 | 70 | never wins | never wins |
-| proto | select_depth | 5 | 14.3 | 225 | 10.6 | 72 | 34.7 | 39 | N ≈ 9 | N ≈ 1 |
-| size | list | 3 | n/a | n/a | n/a | n/a | 9.4 | 125 | n/a | n/a |
-| strings | concatChain | 3 | n/a | n/a | n/a | n/a | 156.9 | -4,008 | n/a | n/a |
+| surface | operator family | points | cel-cpp slope | cel-cpp setup | celwasm-static slope | celwasm-static setup | celwasm-static crossover vs cel-cpp |
+|---|---|---|---|---|---|---|---|
+| arithmetic | doubleAdd | 5 | 30.8 | -30 | 1.5 | 116 | N ≈ 5 |
+| arithmetic | intAdd | 5 | 34.0 | -197 | 1.7 | 112 | N ≈ 10 |
+| arithmetic | intMul | 5 | 32.9 | -115 | 2.7 | 111 | N ≈ 7 |
+| arithmetic | intSub | 5 | 33.1 | -184 | 1.7 | 116 | N ≈ 10 |
+| comprehensions | all | 4 | 66.5 | 117 | 6.2 | 60 | always wins |
+| lists | bound | 5 | 3.3 | -1,062 | 3.2 | -297 | N ≈ 8,102 |
+| long_strings | containsLong_N | 4 | 0.0 | 64 | 0.1 | 48 | never wins |
+| proto | reads | 3 | 64.2 | 21 | 20.6 | 45 | N ≈ 1 |
+| proto | select_depth | 5 | 33.3 | 35 | 40.0 | 29 | never wins |
+| size | list | 3 | 8.5 | 130 | n/a | n/a | n/a |
+| strings | concatChain | 3 | 125.0 | -3,336 | n/a | n/a | n/a |
 
 
 <!-- END AUTO-GENERATED RESULTS -->
