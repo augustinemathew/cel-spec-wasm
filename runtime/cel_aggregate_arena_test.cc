@@ -61,6 +61,31 @@ class AggregateArenaTest : public ::testing::Test {
     return list;
   }
 
+  // Typed list builders mirroring MakeIntList, for the needle-kind
+  // dispatch in cel_list_in_arena (numeric / string / bool fast scans
+  // + the generic fallback).
+  uint32_t MakeStringList(std::initializer_list<const char*> elems) {
+    uint32_t list = MakeOut();
+    cel_list_create(list, static_cast<uint32_t>(elems.size()));
+    for (const char* s : elems) {
+      cel_list_append_at(list,
+                         cel_make_string(s, static_cast<uint32_t>(strlen(s))));
+    }
+    return list;
+  }
+  uint32_t MakeBoolList(std::initializer_list<int32_t> elems) {
+    uint32_t list = MakeOut();
+    cel_list_create(list, static_cast<uint32_t>(elems.size()));
+    for (int32_t b : elems) cel_list_append_at(list, cel_make_bool(b));
+    return list;
+  }
+  uint32_t MakeDoubleList(std::initializer_list<double> elems) {
+    uint32_t list = MakeOut();
+    cel_list_create(list, static_cast<uint32_t>(elems.size()));
+    for (double d : elems) cel_list_append_at(list, cel_make_double(d));
+    return list;
+  }
+
   // Same shape for an empty arena map (post-create, ready for
   // assertions on size/in/eq).  Pass `capacity=0` to mirror a
   // genuinely-empty literal.
@@ -425,6 +450,83 @@ TEST_F(AggregateArenaTest, ListInUintNeedleAcrossInt) {
   uint32_t out = MakeOut();
   cel_list_in_arena(out, cel_make_uint(2), l);
   EXPECT_TRUE(ReadBool(out));
+}
+
+// ── cel_list_in_arena needle-kind dispatch (arena_list_scan_*) ────
+// Each needle kind routes to its specialized scan; the homogeneous
+// same-kind path is the hot one (fix: inlined payload compare).
+
+// Numeric scan, DOUBLE arm: IEEE edges.  NaN is never `in` a list
+// (NaN != NaN); -0.0 and +0.0 compare equal.
+TEST_F(AggregateArenaTest, ListInDoubleNaNNeverFound) {
+  uint32_t l = MakeDoubleList({0.0, 1.0});
+  uint32_t out = MakeOut();
+  const double nan = __builtin_nan("");
+  cel_list_in_arena(out, cel_make_double(nan), l);
+  EXPECT_FALSE(ReadBool(out));
+  uint32_t lnan = MakeDoubleList({nan});
+  uint32_t out2 = MakeOut();
+  cel_list_in_arena(out2, cel_make_double(nan), lnan);
+  EXPECT_FALSE(ReadBool(out2));  // NaN not in [NaN]
+}
+TEST_F(AggregateArenaTest, ListInDoubleSignedZeroEqual) {
+  uint32_t l = MakeDoubleList({-0.0});
+  uint32_t out = MakeOut();
+  cel_list_in_arena(out, cel_make_double(0.0), l);
+  EXPECT_TRUE(ReadBool(out));  // +0.0 in [-0.0]
+}
+
+// String scan: found / absent / empty-string / embedded-NUL, plus a
+// string needle skipping non-string elements in a mixed list.
+TEST_F(AggregateArenaTest, ListInStringFoundAndAbsent) {
+  uint32_t l = MakeStringList({"a", "bb", "ccc"});
+  uint32_t hit = MakeOut();
+  cel_list_in_arena(hit, cel_make_string("bb", 2), l);
+  EXPECT_TRUE(ReadBool(hit));
+  uint32_t miss = MakeOut();
+  cel_list_in_arena(miss, cel_make_string("zz", 2), l);
+  EXPECT_FALSE(ReadBool(miss));
+}
+TEST_F(AggregateArenaTest, ListInStringEmbeddedNul) {
+  uint32_t l = MakeOut();
+  cel_list_create(l, 1);
+  cel_list_append_at(l, cel_make_string("a\0b", 3));
+  uint32_t out = MakeOut();
+  cel_list_in_arena(out, cel_make_string("a\0b", 3), l);
+  EXPECT_TRUE(ReadBool(out));  // span compare, not C-string
+}
+
+// Bool scan: found / absent / empty.  No prior coverage existed.
+TEST_F(AggregateArenaTest, ListInBoolScan) {
+  uint32_t l = MakeBoolList({0, 0, 1});
+  uint32_t found = MakeOut();
+  cel_list_in_arena(found, cel_make_bool(1), l);
+  EXPECT_TRUE(ReadBool(found));
+  uint32_t absent = MakeOut();
+  cel_list_in_arena(absent, cel_make_bool(1), MakeBoolList({0, 0}));
+  EXPECT_FALSE(ReadBool(absent));
+}
+
+// Empty list: every needle kind returns false, no scan body runs.
+TEST_F(AggregateArenaTest, ListInEmptyAlwaysFalse) {
+  uint32_t out = MakeOut();
+  cel_list_in_arena(out, cel_make_int(1), EmptyList());
+  EXPECT_FALSE(ReadBool(out));
+}
+
+// Generic-fallback needle (bytes): not a numeric/string/bool needle,
+// so it routes through deep_values_equal.
+TEST_F(AggregateArenaTest, ListInBytesNeedleGenericPath) {
+  uint32_t l = MakeOut();
+  cel_list_create(l, 2);
+  cel_list_append_at(l, cel_make_bytes("xy", 2));
+  cel_list_append_at(l, cel_make_bytes("zz", 2));
+  uint32_t found = MakeOut();
+  cel_list_in_arena(found, cel_make_bytes("zz", 2), l);
+  EXPECT_TRUE(ReadBool(found));
+  uint32_t miss = MakeOut();
+  cel_list_in_arena(miss, cel_make_bytes("aa", 2), l);
+  EXPECT_FALSE(ReadBool(miss));
 }
 
 // Verifies the concatenated list's element-walk: indices 0..3

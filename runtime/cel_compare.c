@@ -2,12 +2,9 @@
 // double/bool, cross-type numeric ladder, null equality, and the
 // polymorphic equality dispatcher.
 //
-// Carved out of cel_runtime.c per
-// `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md` (P8).
-// `numeric_compare_kernel` + `is_numeric_kind` are promoted to
-// internal-extern in cel_internal.h so cel_value_eq_polymorphic /
-// map_keys_equal (which live in cel_runtime.c alongside the
-// entangled list/map operations) can continue to reach them.
+// `numeric_compare_kernel` + `is_numeric_kind` are internal-extern in
+// cel_internal.h so `cel_value_eq` (which lives in cel_runtime.c
+// alongside the entangled list/map operations) can reach them.
 //
 // cel-cpp parity:
 //   third_party/cel-cpp/runtime/standard/equality_functions.cc

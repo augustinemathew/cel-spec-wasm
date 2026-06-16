@@ -6,7 +6,7 @@
 
 // ---- map runtime ---------------------------------------------------------
 //
-// Three-path dispatch design (`map-list-dispatch.md`):
+// Three-path dispatch by map origin (see `map-list-dispatch.md`):
 //   - kArena   : `cel_map_lookup_arena`    (pure wasm, called directly)
 //   - kHost    : `cel_host.cel_map_lookup` (host trampoline, called direct)
 //   - kDynamic : `cel_map_lookup`          (this dispatcher, tail-calls)
@@ -14,36 +14,13 @@
 // Map literals construct via `cel_map_create` + `cel_map_insert`; both
 // only ever produce CEL_MAP_ARENA values — kHost values originate from
 // proto reflection or `Activation::Bind`, never from emitted codegen.
+//
+// `CmpResult`, `numeric_compare_kernel`, `is_numeric_kind`, and
+// `cel_value_eq` come from cel_internal.h (defined in cel_compare.c).
 
 static int is_valid_map_key_kind(uint32_t kind) {
   return kind == CEL_BOOL || kind == CEL_INT || kind == CEL_UINT ||
          kind == CEL_STRING;
-}
-
-// `CmpResult` + `numeric_compare_kernel` + `is_numeric_kind` come
-// from cel_internal.h (defined in cel_compare.c).
-
-// Slice 1.6: numeric-key map equality consults the polymorphic
-// `numeric_compare_kernel` — handles every {int, uint, double}
-// pair, including double-typed *queries* against int/uint keys.
-// `double` is NOT a valid map-key kind (`is_valid_map_key_kind`
-// rejects it on `cel_map_insert`), but it CAN appear on the
-// query side: `1.0 in {1: "a"}` is allowed.  `numeric_keys_equal`
-// already handled the int↔uint cross-kind case via mathematical
-// comparison; the polymorphic kernel adds double↔int / double↔uint.
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int map_keys_equal(const CelValue* a, const CelValue* b) {
-  if (a->kind == CEL_BOOL && b->kind == CEL_BOOL) {
-    return (a->payload.b != 0) == (b->payload.b != 0);
-  }
-  if (a->kind == CEL_STRING && b->kind == CEL_STRING) {
-    return spans_equal(a->payload.s, b->payload.s);
-  }
-  if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
-    return numeric_compare_kernel(a, b) == kCmpEqual;
-  }
-  return 0;
 }
 
 static ArenaMapHeader* arena_map_header(const CelValue* m) {
@@ -118,9 +95,7 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   // (map construction is strict, matching list literals via
   // `cel_list_append_at` and cel-cpp's create-map step) — checked
   // BEFORE the key-kind gate so `{1/0: 'a'}` surfaces divide_by_zero,
-  // not type_mismatch.  Without this, `{'a': 1/0}` constructed a map
-  // CONTAINING an error value and comprehensions/size over it
-  // silently produced normal-looking results.
+  // not type_mismatch.
   if (key->kind == CEL_ERROR || key->kind == CEL_UNKNOWN) {
     *m = *key;
     return;
@@ -135,7 +110,7 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   }
   ArenaMapHeader* hdr = arena_map_header(m);
   for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (map_keys_equal(arena_map_entry_key(hdr, i), key)) {
+    if (cel_value_eq(arena_map_entry_key(hdr, i), key)) {
       poison(m, CEL_ERR_DUPLICATE_KEY);
       return;
     }
@@ -154,19 +129,16 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   hdr->count++;
 }
 
-// Dynamic-map insert for `transformMap` / `transformMapEntry`
-// comprehension accumulators.  Differs from `cel_map_insert` in
-// three ways:
-//   1. Geometric growth (2× capacity, min 4) when full; copies
-//      existing entries into the new bucket array.  Old run is
-//      abandoned in the forward-only arena (same trade-off as
-//      cel_list_append_at).
-//   2. Key-collision OVERWRITES the existing entry's value
+// Insert for `transformMap` / `transformMapEntry` comprehension
+// accumulators.  Differs from `cel_map_insert` in two ways:
+//   1. Key-collision OVERWRITES the existing entry's value
 //      (last-write-wins, matching cel-cpp's transformMap runtime
-//      behaviour — see design §9.6).
-//   3. CEL_ERROR / CEL_UNKNOWN in either key OR value propagates
+//      behaviour).
+//   2. CEL_ERROR / CEL_UNKNOWN in either key OR value propagates
 //      the error verbatim into the map slot; subsequent inserts
 //      are silent no-ops (error sticks).
+// Like `cel_map_insert`, capacity is a codegen pre-size invariant —
+// there is no growth path; exceeding it traps (PRESIZE_INVARIANT).
 void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
                        uint32_t value_slot) {
   CEL_LOG("enter");
@@ -188,7 +160,7 @@ void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
   }
   ArenaMapHeader* hdr = arena_map_header(m);
   for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (map_keys_equal(arena_map_entry_key(hdr, i), key)) {
+    if (cel_value_eq(arena_map_entry_key(hdr, i), key)) {
       *arena_map_entry_val(hdr, i) = *val;
       return;
     }
@@ -221,7 +193,7 @@ void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
   }
   ArenaMapHeader* hdr = arena_map_header(m);
   for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (map_keys_equal(arena_map_entry_key(hdr, i), key)) {
+    if (cel_value_eq(arena_map_entry_key(hdr, i), key)) {
       *out = *arena_map_entry_val(hdr, i);
       return;
     }
@@ -281,7 +253,7 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot) {
 
 // ---- list runtime --------------------------------------------------------
 //
-// Three-path dispatch design (`map-list-dispatch.md §4.2 / §6 / §7`):
+// Three-path dispatch by list origin (see `map-list-dispatch.md`):
 //   - kArena   : `cel_list_at_arena`        (pure wasm, called directly)
 //   - kHost    : `cel_host.cel_list_at`     (host trampoline, called direct)
 //   - kDynamic : `cel_list_at`              (this dispatcher, tail-calls)
@@ -291,22 +263,20 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot) {
 // `cel_list_append_at(out, elem)`.  Literals: codegen knows the
 // element count statically, passes it as capacity, then emits N
 // appends in index order; final count == capacity.  Comprehension
-// accus: codegen loads `iter_range.count` at runtime, passes it
-// as capacity (collection-producing macros are bounded above by
-// source size; see `rewrite/m5-comprehensions-followon.md` §10.A); appends
-// run per-iter; final count ≤ capacity.  No growth path — the
-// capacity is sufficient by construction, and the append's
-// `count >= capacity` invariant traps via `__builtin_trap` if
-// codegen ever drops the pre-size.
+// accus: codegen loads `iter_range.count` at runtime, passes it as
+// capacity (collection-producing macros are bounded above by source
+// size); appends run per-iter; final count ≤ capacity.  No growth
+// path — the capacity is sufficient by construction, and the append's
+// `count >= capacity` invariant traps via `__builtin_trap` if codegen
+// ever drops the pre-size.
 
 // Host trampoline: snapshots a CEL_LIST_HOST source into an
 // arena-allocated ArenaListHeader + N×24-byte elements run, then
 // writes a synthetic CelValue at `out_slot` of shape
 // `{kind: CEL_LIST_ARENA, payload.arena_list.header_ptr = ...}`.
 // On empty / OOM, writes a synthetic empty arena list.  Lets the
-// existing inline arena prologue walk host lists unchanged.  Sees
-// the same iter-snapshot pattern as `cel_host.cel_map_iter_open`
-// (m5b §CCF-8).
+// existing inline arena prologue walk host lists unchanged.  Same
+// iter-snapshot pattern as `cel_host.cel_map_iter_open`.
 #ifdef __wasm__
 extern void cel_host_cel_list_iter_open(uint32_t out_slot, uint32_t list_slot)
     __attribute__((import_module("cel_host"),
@@ -468,8 +438,8 @@ void cel_list_create(uint32_t out_slot, uint32_t capacity) {
 // for arena lists — used by both literal codegen (N appends in
 // index order, final count == capacity) and comprehension accu
 // codegen (per-iter, final count ≤ capacity).  Capacity is a
-// codegen invariant; see `cel_list_create` above and followon
-// §10.A.  PRESIZE_INVARIANT: trap if `count >= capacity`.
+// codegen invariant; see `cel_list_create` above.
+// PRESIZE_INVARIANT: trap if `count >= capacity`.
 void cel_list_append_at(uint32_t list_slot, uint32_t value_slot) {
   CEL_LOG("enter");
   CelValue* l = cel_value_at(list_slot);
@@ -480,8 +450,8 @@ void cel_list_append_at(uint32_t list_slot, uint32_t value_slot) {
   }
   CelValue* v = cel_value_at(value_slot);
   if (v->kind == CEL_ERROR || v->kind == CEL_UNKNOWN) {
-    // Per design §3.2: any error in `loop_step` aborts the
-    // comprehension and becomes the result.
+    // Any error in a comprehension's loop_step aborts the
+    // comprehension and becomes its result.
     *l = *v;
     return;
   }
@@ -525,15 +495,15 @@ void cel_list_append_at_if_bool(uint32_t list_slot, uint32_t pred_slot,
 // transformMap / transformMapEntry steps.  Mirrors
 // cel_list_append_at_if_bool exactly:
 //   - pred ERROR / UNKNOWN: propagate verbatim into the map slot
-//     (aborts the comprehension per design §3.2).
+//     (aborts the comprehension).
 //   - pred not CEL_BOOL: poison map with CEL_ERR_TYPE_MISMATCH.
 //   - pred false: silent no-op.
 //   - pred true: delegate to cel_map_insert_at (which performs
 //     its own 3VL on key + value).
-// Surfaced by macros2/transformMap/error_filter conformance row:
-// `{...}.transformMap(k, v, k=='baz' && 4/v==0, v)` where v=0
-// produces a divide-by-zero ERROR predicate that must propagate
-// rather than being interpreted as a bool.
+// The ERROR-predicate arm is what makes
+// `{...}.transformMap(k, v, k=='baz' && 4/v==0, v)` (v==0 yields a
+// divide-by-zero predicate) propagate the error instead of coercing
+// it to a bool.
 void cel_map_insert_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
                                uint32_t key_slot, uint32_t value_slot) {
   CEL_LOG("enter");
@@ -589,7 +559,7 @@ void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
     // Integral check: must be finite, within int64 range, and
     // bit-equal to its int64 truncation.  cel-cpp's
     // ConvertDoubleToInt does the same range/integrality check.
-    if (!(d == d) || d != d || d > 9.2233720368547758e18 ||
+    if (d != d || d > 9.2233720368547758e18 ||
         d < -9.2233720368547758e18) {  // NaN / inf / OOR
       poison(out, CEL_ERR_INVALID_ARGUMENT);
       return;
@@ -659,12 +629,13 @@ void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
 
 // 3VL absorbers + write_* writers come from cel_internal.h.
 
-// Polymorphic element-equality matcher.  Routes any numeric pair
-// (cross-kind included) through `numeric_compare_kernel` (defined
-// in cel_compare.c, visible via cel_internal.h's extern) so
-// `1 in [1.0]` / `dyn(3) in [1u, 3u]` return true per langdef
-// §"List Membership (in)" + §"Equality" and the conformance
-// corpus' `int_in_doubles` / `uint_in_ints` rows.
+// Single-layer scalar equality matcher.  Any numeric pair (cross-kind
+// included) routes through `numeric_compare_kernel` (defined in
+// cel_compare.c, visible via cel_internal.h's extern) so `1 in [1.0]`
+// / `dyn(3) in [1u, 3u]` return true per langdef §"List Membership
+// (in)" + §"Equality".  The common scan-element kinds (numeric,
+// string, bool) come first so a homogeneous `in`-list / map scan hits
+// its arm with the fewest failed branches.
 //
 // Returns 1 (equal), 0 (unequal-or-different-shape).  Caller has
 // already absorbed 3VL on the operands; this matcher does not
@@ -676,11 +647,20 @@ void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
 // which recurses into the polymorphic equality kernel (and from
 // there into the cel_host trampolines for message / host-origin
 // pairs).  Comparing them here would silently report `false` for
-// equal values — the wrong-answer class cleanup-backlog #40's
-// latent-gap note documented.
-static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
+// equal values.
+//
+// Other TUs reach this via the `cel_value_eq` extern in
+// cel_internal.h; the non-static definition is required for that.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int cel_value_eq(const CelValue* a, const CelValue* b) {
   if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
     return numeric_compare_kernel(a, b) == kCmpEqual;
+  }
+  if (a->kind == CEL_STRING && b->kind == CEL_STRING) {
+    return spans_equal(a->payload.s, b->payload.s);
+  }
+  if (a->kind == CEL_BOOL && b->kind == CEL_BOOL) {
+    return (a->payload.b != 0) == (b->payload.b != 0);
   }
   if (a->kind == CEL_BYTES && b->kind == CEL_BYTES) {
     return spans_equal(a->payload.s, b->payload.s);
@@ -688,11 +668,9 @@ static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
   if (a->kind == CEL_NULL && b->kind == CEL_NULL) {
     return 1;
   }
-  // m7b.B — duration / timestamp equality is a 12-byte payload
-  // compare on the sign-correlated (seconds, nanos) CelDurTs arm
-  // (per the proto Duration / Timestamp text format Probe D pinned).
+  // Duration / timestamp equality compares the (seconds, nanos) pair.
   // CEL_DURATION and CEL_TIMESTAMP are distinct kinds; cross-kind
-  // returns 0 via the kind guards below.
+  // returns 0 via the kind guards.
   if (a->kind == CEL_DURATION && b->kind == CEL_DURATION) {
     return a->payload.dur.seconds == b->payload.dur.seconds &&
            a->payload.dur.nanos == b->payload.dur.nanos;
@@ -707,21 +685,7 @@ static int cel_value_eq_polymorphic(const CelValue* a, const CelValue* b) {
   if (a->kind == CEL_CIDR && b->kind == CEL_CIDR) {
     return net_cidr_eq(a, b);
   }
-  // Bool / string / cross-kind non-numeric fall through to
-  // `map_keys_equal` which itself routes numerics polymorphically
-  // and returns 0 for kind mismatches.
-  return map_keys_equal(a, b);
-}
-
-// Pre-Slice-1.6 same-kind matcher.  Retained as a thin alias around
-// the polymorphic matcher so other callers (cel_list_eq_arena /
-// cel_map_eq_arena value comparison) inherit the polymorphic
-// behaviour automatically — list equality is element-wise polymorphic
-// per langdef §"Equality" too.  No callsites depend on the old
-// "no implicit promotion" behaviour.
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int cel_value_eq(const CelValue* a, const CelValue* b) {
-  return cel_value_eq_polymorphic(a, b);
+  return 0;
 }
 
 // Polymorphic equality kernel — defined with the equality dispatcher
@@ -803,6 +767,82 @@ void cel_list_size_arena(uint32_t out_slot, uint32_t list_slot) {
   write_int(out, (int64_t)hdr->count);
 }
 
+// Type-specialized `in`-list scans.  The needle's kind is decided once
+// by the caller (`cel_list_in_arena`), so each per-element body is a
+// single kind guard + payload compare — no re-dispatch through the
+// `deep_values_equal` → `cel_value_eq` layers every element would
+// otherwise pay.  Numeric scan keeps cross-kind
+// promotion (`1 in [1.0, 2u]` is true per langdef §"Equality") by
+// routing every numeric element through `numeric_compare_kernel`;
+// non-matching-kind elements are simply skipped (a scalar is never
+// equal to a different-typed value), which preserves the generic
+// path's unequal verdict.  Return 1 if found, 0 otherwise.
+static int arena_list_scan_numeric(const ArenaListHeader* hdr,
+                                   const CelValue* needle) {
+  // Same-kind elements — the overwhelmingly common homogeneous-list
+  // shape — compare by a single inlinable payload test; only genuinely
+  // cross-kind numeric elements (a uint/double in an int-needle scan,
+  // etc.) fall to the out-of-line `numeric_compare_kernel`, which owns
+  // the cross-type promotion ladder.  INT and UINT share the 64-bit
+  // payload, so a bitwise `payload.u ==` decides equality for both;
+  // DOUBLE must use IEEE `==` (NaN != NaN — a NaN is never `in` a
+  // list; ±0.0 compare equal — matching `cmp_double`'s verdict).
+  const uint32_t nk = needle->kind;
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    const CelValue* e = cv_at(arena_list_element_off(hdr, i));
+    if (e->kind == nk) {
+      const int eq = (nk == CEL_DOUBLE) ? (e->payload.d == needle->payload.d)
+                                        : (e->payload.u == needle->payload.u);
+      if (eq) return 1;
+    } else if (is_numeric_kind(e->kind) &&
+               numeric_compare_kernel(e, needle) == kCmpEqual) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int arena_list_scan_string(const ArenaListHeader* hdr,
+                                  const CelValue* needle) {
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    const CelValue* e = cv_at(arena_list_element_off(hdr, i));
+    if (e->kind == CEL_STRING && spans_equal(e->payload.s, needle->payload.s)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int arena_list_scan_bool(const ArenaListHeader* hdr,
+                                const CelValue* needle) {
+  const int want = needle->payload.b != 0;
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    const CelValue* e = cv_at(arena_list_element_off(hdr, i));
+    if (e->kind == CEL_BOOL && (e->payload.b != 0) == want) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+// Generic deep-equality scan for needle kinds the typed scans don't
+// cover (bytes, temporal, net, null, or a non-scalar).  Routes every
+// element through `deep_values_equal`, which recurses into nested
+// aggregates and allocates a scratch cell for the equality kernel.
+// Returns 1 (found), 0 (not found), -1 (scratch alloc failed — caller
+// must poison CEL_ERR_OVERFLOW, never degrade to a false verdict).
+static int arena_list_scan_generic(const ArenaListHeader* hdr,
+                                   uint32_t value_slot) {
+  uint32_t scratch = 0;
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    const int eq =
+        deep_values_equal(&scratch, arena_list_element_off(hdr, i), value_slot);
+    if (eq < 0) return -1;
+    if (eq) return 1;
+  }
+  return 0;
+}
+
 void cel_list_in_arena(uint32_t out_slot, uint32_t value_slot,
                        uint32_t list_slot) {
   CEL_LOG("enter");
@@ -815,20 +855,30 @@ void cel_list_in_arena(uint32_t out_slot, uint32_t value_slot,
     return;
   }
   ArenaListHeader* hdr = arena_list_header(l);
-  uint32_t scratch = 0;
-  for (uint32_t i = 0; i < hdr->count; ++i) {
-    const int eq =
-        deep_values_equal(&scratch, arena_list_element_off(hdr, i), value_slot);
-    if (eq < 0) {
-      poison(out, CEL_ERR_OVERFLOW);
-      return;
-    }
-    if (eq) {
-      write_bool(out, 1);
-      return;
-    }
+
+  // Decide the scan once by needle kind.  The hot homogeneous needles
+  // (numeric / string / bool) take a tight typed scan; every other
+  // needle (bytes, temporal, net, null, or a non-scalar) falls to the
+  // generic deep-equality scan, which handles cross-kind aggregate
+  // recursion and the scratch allocation its kernel needs.
+  if (is_numeric_kind(v->kind)) {
+    write_bool(out, arena_list_scan_numeric(hdr, v));
+    return;
   }
-  write_bool(out, 0);
+  if (v->kind == CEL_STRING) {
+    write_bool(out, arena_list_scan_string(hdr, v));
+    return;
+  }
+  if (v->kind == CEL_BOOL) {
+    write_bool(out, arena_list_scan_bool(hdr, v));
+    return;
+  }
+  const int found = arena_list_scan_generic(hdr, value_slot);
+  if (found < 0) {
+    poison(out, CEL_ERR_OVERFLOW);
+    return;
+  }
+  write_bool(out, found);
 }
 
 void cel_list_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
@@ -954,7 +1004,7 @@ void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
   }
   ArenaMapHeader* hdr = arena_map_header(m);
   for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (map_keys_equal(arena_map_entry_key(hdr, i), k)) {
+    if (cel_value_eq(arena_map_entry_key(hdr, i), k)) {
       write_bool(out, 1);
       return;
     }
@@ -973,7 +1023,7 @@ static int arena_map_entry_matches(ArenaMapHeader* ha, uint32_t i,
                                    ArenaMapHeader* hb, uint32_t* scratch) {
   const CelValue* ka = arena_map_entry_key(ha, i);
   for (uint32_t j = 0; j < hb->count; ++j) {
-    if (map_keys_equal(ka, arena_map_entry_key(hb, j))) {
+    if (cel_value_eq(ka, arena_map_entry_key(hb, j))) {
       return deep_values_equal(scratch, arena_map_entry_val_off(ha, i),
                                arena_map_entry_val_off(hb, j));
     }
@@ -1160,10 +1210,10 @@ void cel_list_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
     *cel_value_at(out_slot) = *b;
     return;
   }
-  // Both arena → fast path; otherwise host trampoline materialises
+  // Both arena → fast path; otherwise the host trampoline materialises
   // both sides via the appropriate backing methods.  Cross-origin
-  // (one arena, one host) routes to the host trampoline which
-  // POISONs with TYPE_MISMATCH for now (M6 follow-up).
+  // (one arena, one host) routes to the host trampoline, which
+  // currently POISONs with TYPE_MISMATCH.
   if (a->kind == CEL_LIST_ARENA && b->kind == CEL_LIST_ARENA) {
     __attribute__((musttail)) return cel_list_eq_arena(out_slot, a_slot,
                                                        b_slot);
@@ -1192,10 +1242,9 @@ void cel_list_concat(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
     __attribute__((musttail)) return cel_list_concat_arena(out_slot, a_slot,
                                                            b_slot);
   }
-  // Mixed-origin or both-host: route to host trampoline.  For this
-  // slice the host trampoline POISONs with TYPE_MISMATCH on either
-  // mixed origins or both-host (full materialisation lands as a
-  // follow-up).  Documented in CelListConcatImpl.
+  // Mixed-origin or both-host: route to the host trampoline, which
+  // currently POISONs with TYPE_MISMATCH (full materialisation is not
+  // yet wired).  See CelListConcatImpl.
   if ((a->kind == CEL_LIST_ARENA || a->kind == CEL_LIST_HOST) &&
       (b->kind == CEL_LIST_ARENA || b->kind == CEL_LIST_HOST)) {
     __attribute__((musttail)) return cel_host_cel_list_concat(out_slot, a_slot,
@@ -1267,7 +1316,7 @@ void cel_map_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
 }
 
 // =====================================================================
-// Map-key iteration helpers (Option β; see cel_map.h).
+// Map-key iteration helpers (see cel_map.h).
 //
 // The iterator handle is the arena offset of a 16-byte state struct.
 // Two shapes:
@@ -1316,9 +1365,8 @@ static MapIterState* map_iter_state(uint32_t handle) {
 }
 
 // Return the iteration count for the supplied state — ARENA reads the
-// header live (lets `arena_map_insert` grow the source mid-iteration
-// without invalidating the iter, preserving M3's contract); HOST uses
-// the count cached at snapshot time.
+// header live (so a source that grows mid-iteration does not
+// invalidate the iter); HOST uses the count cached at snapshot time.
 static uint32_t map_iter_count(const MapIterState* state) {
   if (state->kind == MAP_ITER_KIND_ARENA) {
     return ((ArenaMapHeader*)(cel_memory_base_() + state->payload))->count;
@@ -1540,13 +1588,6 @@ void cel_map_iter_value_at(uint32_t out_slot, uint32_t iter_handle) {
 //   third_party/cel-cpp/runtime/standard/equality_functions.cc
 // =====================================================================
 
-// 1 if `kind` is one of the three numeric kinds: int, uint, double.
-// Lifted to a dedicated helper so the polymorphic dispatcher's
-// branch table reads as a single conjunction per ladder rung.
-static int is_numeric(uint32_t kind) {
-  return kind == CEL_INT || kind == CEL_UINT || kind == CEL_DOUBLE;
-}
-
 // 1 if both operands are list-shaped (arena or host).  Mixed-origin
 // pairs route through `cel_list_eq` which absorbs the origin
 // difference via its dispatcher.
@@ -1569,10 +1610,10 @@ static int both_maps(uint32_t ka, uint32_t kb) {
 // or propagates 3VL.  Aggregate / message arms tail-call into their
 // dispatchers, which write CEL_BOOL themselves; `cel_not_equals`
 // re-reads `out_slot` after a tail-call'd helper returns and flips.
-// CEL_TYPE × CEL_TYPE equality — memcmp on `payload.s` bytes,
-// the type-name string in linear memory.  Extracted from
-// `equality_kernel` to keep that function under the function-size
-// gate; per langdef §"Equality" and `rewrite/m9-type-subsystem.md` §3.4.
+// CEL_TYPE × CEL_TYPE equality — byte compare on `payload.s`, the
+// type-name string in linear memory (langdef §"Equality").  Extracted
+// from `equality_kernel` to keep that function under the
+// function-size gate.
 static void type_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* a = cel_value_at(a_slot);
@@ -1647,8 +1688,8 @@ static int equal_same_kind(uint32_t kind, uint32_t out_slot, uint32_t a_slot,
       return 1;
     case CEL_DURATION:
     case CEL_TIMESTAMP: {
-      // m7b.B: 12-byte payload compare on the sign-correlated CelDurTs
-      // arm.  `dur` and `ts` are the same union arm.
+      // (seconds, nanos) payload compare; `dur` and `ts` share the
+      // same union arm.
       const CelValue* a = cel_value_at(a_slot);
       const CelValue* b = cel_value_at(b_slot);
       write_bool(cel_value_at(out_slot),
@@ -1675,7 +1716,7 @@ static void equality_kernel(uint32_t out_slot, uint32_t a_slot,
   const CelValue* a = cel_value_at(a_slot);
   const CelValue* b = cel_value_at(b_slot);
   if (absorb_3vl_binary(out, a, b)) return;
-  if (is_numeric(a->kind) && is_numeric(b->kind)) {
+  if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
     cel_numeric_eq_at_vv(out_slot, a_slot, b_slot);
     return;
   }
