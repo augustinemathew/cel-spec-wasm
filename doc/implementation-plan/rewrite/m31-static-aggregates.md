@@ -1,6 +1,8 @@
 # m31 — compile-time materialization of constant aggregate literals
 
-Status: plan — drafted 2026-06-12, not yet started.
+Status: plan — drafted 2026-06-12, not yet started.  Updated
+2026-06-16: window size settled (§10) and the footprint probe data
+folded in (§4); implementation still queued.
 
 ## 1. Problem
 
@@ -110,6 +112,26 @@ The boundary raise is `-Wl,--global-base` in `runtime/BUILD.bazel` +
 ANALYSIS.md).  Wasm memory is virtually reserved on 64-bit hosts, so
 the larger min footprint is address space, not resident pages.
 
+> Probe-confirmed (2026-06-12, throwaway footprint probe — `dynamic`
+> link mode, 32→256 instances, vmmap; the probe binary was disposable
+> and has since been removed, but the data it produced is recorded
+> here): raising the base 8 KiB → 256 KiB moved `__heap_base`
+> 283,424 → 537,376 and the declared memory min 5 → 9 pages, but
+> per-instance **dirty** memory was byte-identical (VM_ALLOCATE dirty
+> 14.0 MB → 87.5 MB in both builds; ~328 KB/inst dirty). The inserted
+> window is demand-zero and never written for expressions that don't
+> materialize aggregates, and wasmtime does not eagerly commit
+> shared-memory minimums.  The resident cost of the raise is zero
+> until an expression actually fills the window; §9's open question 1
+> reduces to instantiate latency only.
+>
+> Per-instance footprint (same probe, static vs dynamic link): static
+> ~5.2 MB resident/instance, dynamic ~0.55 MB resident/instance
+> (dynamic shares the runtime → ~10× cheaper); virtual reservation is
+> ~4 GiB/instance regardless of link mode (wasmtime reserves the full
+> wasm32 address range per linear memory — reservation, not resident,
+> so it does not OOM a 64-bit box).
+
 > Deferred alternative (recorded, NOT in scope): a per-module data
 > segment above `__heap_base` with either an ABI-pinned base or
 > relocation at instantiate.  Strictly more capable (no fixed cap at
@@ -204,9 +226,51 @@ header bit).  Compile-time sorting in §5 already produces the input.
 
 ## 9. Open questions
 
-1. Exact new window size (256 KB proposed; measure instantiate cost
-   at 1 MB before choosing).
-2. Dedup identical literals into one materialization (cheap win,
-   decide during implementation).
+1. ~~Exact new window size~~ — **settled 2026-06-16, see §10.**  256 KiB,
+   sized for 10K literal elements; resident-safe (demand-zero).
+2. Dedup identical literals into one materialization — **promoted to a
+   companion of §10** (cheap, orthogonal; collapses `1+1+…+1` with no
+   window change).
 3. Duplicate-key const maps: compile-error vs runtime-path (settle
    with the oracle, §6).
+
+## 10. Queued: rodata window raise (calculated 2026-06-16)
+
+Empirically grounded sizing (cel CLI `compile`, M4):
+
+  - Each scalar literal occupies a **24-byte `CelValue` frame** in
+    rodata (`kCelValueSize`); identical literals are **not deduped**,
+    so `1+1+…+1` costs 24 B/term.  Workspace is flat (~32 B — the
+    add-chain recycles one slot).
+  - Today's window `[16, 8192)` minus the 256 B guard leaves ~7900 B →
+    **~330 scalar literals max** (verified: N=340 fails with
+    `rodata at [16, 8176)`).
+  - **10K literal elements** ≈ `10000 × 24 + 40 (header+outer frame)` ≈
+    **240 KiB** rodata.  Round the window to **256 KiB** (4 pages) for
+    headroom.  100K ≈ 2.4 MB.
+
+Resident cost (probe data, §4): the inserted window is **demand-zero**
+— raising `--global-base` raises the *declared* memory minimum
+(address space) but wasmtime does not eagerly commit it; pages go
+resident only when written.  8 KiB→256 KiB left per-instance dirty
+memory byte-identical (~328 KB/inst).  On 64-bit hosts each linear
+memory already reserves ~4 GiB virtual, so the bigger min is noise.
+**Static vs dynamic:** baseline differs ~10× (static ~5.2 MB/inst,
+runtime merged; dynamic ~0.55 MB/inst, runtime shared) — but the
+window raise adds ~0 resident in both, and a materialized 10K list
+costs 240 KB resident **per instance that uses it** in both modes
+(expr rodata is per-instance regardless of link mode).
+
+Concrete change set (one focused commit, ABI bump):
+
+  - `runtime/cel_layout.h`: `CELWASM_RESERVED_LOW_MEMORY_BYTES`
+    8192 → 262144; `CELWASM_INITIAL_MEMORY_PAGES` 2 → 5 (keeps the
+    `_Static_assert reserved < initial_pages × 64K`: 262144 < 327680 ✓).
+  - `runtime/BUILD.bazel`: `-Wl,--global-base=8192` → `=262144`.
+  - `MemoryLayout` mirrors (eval/compiler) + `kRuntimeAbiVersion` bump.
+  - Un-skip every `celwasm-skip-rodata` corpus cell; full conformance.
+
+Companion (no window/ABI change): **dedup identical literal frames**
+in `StaticMemoryBuilder` — `1+1+…+1` (10K identical) collapses
+240 KB → 24 B.  Does nothing for 10K *distinct* elements (those need
+the window); orthogonal, ship either order.
