@@ -39,6 +39,11 @@ cells:
     expected: { type: int, value: 16 }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: bytesConst
+    source: 'size(b"0123456789abcdef")'
+    expected: { type: int, value: 16 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: list10
     source: 'size([1,2,3,4,5,6,7,8,9,10])'
     expected: { type: int, value: 10 }

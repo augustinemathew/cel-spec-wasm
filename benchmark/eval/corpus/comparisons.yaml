@@ -126,6 +126,21 @@ cells:
     expected: { type: bool, value: true }
     tags: [phase1, adoption-core]
 
+  # Literal-operand mirrors of the bound-variable cells above.  These
+  # isolate the per-op + 3VL cost from variable-marshalling cost: a
+  # constant `<` chain has zero activation, so (const cell − var cell)
+  # is the cost of the bound variables.  Kept as permanent corpus —
+  # the const-vs-var delta is a useful standing measurement.
+  - id: intLtConst
+    source: "1 < 2"
+    expected: { type: bool, value: true }
+    tags: [phase1, adoption-core]
+
+  - id: intLtChain20Const
+    source: "1<2 && 2<3 && 3<4 && 4<5 && 5<6 && 6<7 && 7<8 && 8<9 && 9<10 && 10<11 && 11<12 && 12<13 && 13<14 && 14<15 && 15<16 && 16<17 && 17<18 && 18<19 && 19<20 && 20<21"
+    expected: { type: bool, value: true }
+    tags: [phase1, adoption-core]
+
   # ── == / != across every comparable type ──
   # (int and string ==/!= are covered above; these fill the grid.)
   - id: boolEq
@@ -415,5 +430,173 @@ cells:
 
   - id: durGe
     source: 'duration("1m") >= duration("60s")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  # ── literal-operand twins (`…Const`) of every scalar-comparison var
+  # cell above.  Each mirrors its sibling's operator + result; the
+  # (var − const) delta isolates the per-Eval variable-binding cost.
+  # timestamp/duration/list/map/null operands stay literal-only (the
+  # loader cannot bind those types) and have no `…Const` twin — they
+  # ARE the literal form already.
+  # int
+  - id: intEqConst
+    source: "42 == 42"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: intNeConst
+    source: "42 != 43"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: intLeConst
+    source: "2 <= 2"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: intGtConst
+    source: "3 > 2"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: intGeConst
+    source: "3 >= 3"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  # uint
+  - id: uintEqConst
+    source: "42u == 42u"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: uintNeConst
+    source: "42u != 43u"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: uintLtConst
+    source: "1u < 2u"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: uintLeConst
+    source: "2u <= 2u"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: uintGtConst
+    source: "3u > 2u"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: uintGeConst
+    source: "3u >= 3u"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  # double
+  - id: doubleEqConst
+    source: "1.5 == 1.5"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: doubleNeConst
+    source: "1.5 != 2.5"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: doubleLtConst
+    source: "1.5 < 2.5"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: doubleLeConst
+    source: "2.5 <= 2.5"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: doubleGtConst
+    source: "3.5 > 2.5"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: doubleGeConst
+    source: "3.5 >= 3.5"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  # bool
+  - id: boolEqConst
+    source: "true == true"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: boolNeConst
+    source: "true != false"
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  # string
+  - id: stringEqConst
+    source: '"a" == "a"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: stringNeConst
+    source: '"a" != "b"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: stringLtConst
+    source: '"a" < "b"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: stringLeConst
+    source: '"a" <= "a"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: stringGtConst
+    source: '"b" > "a"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  - id: stringGeConst
+    source: '"b" >= "b"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]
+
+  # bytes — `b"…"` literals carry skip-source-check: the loader's
+  # identifier heuristic reads the `b` prefix as an unbound variable.
+  - id: bytesEqConst
+    source: 'b"a" == b"a"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: bytesNeConst
+    source: 'b"a" != b"b"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: bytesLtConst
+    source: 'b"a" < b"b"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: bytesLeConst
+    source: 'b"a" <= b"a"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: bytesGtConst
+    source: 'b"b" > b"a"'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
+  - id: bytesGeConst
+    source: 'b"b" >= b"b"'
     expected: { type: bool, value: true }
     tags: [phase2, bench-shape, const-only, skip-source-check]
