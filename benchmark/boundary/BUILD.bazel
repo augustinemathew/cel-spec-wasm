@@ -23,3 +23,19 @@ cc_binary(
         "@com_google_benchmark//:benchmark",
     ],
 )
+
+# Host-side proto field-read cost breakdown (no wasm boundary): cracks
+# open the ~26 ns host work inside each cel_get_field crossing —
+# descriptor lookup (cached in prod), reflection Get, CelValue encode.
+#   bazel run -c opt //benchmark/boundary:proto_read_bench
+cc_binary(
+    name = "proto_read_bench",
+    srcs = ["proto_read_bench.cc"],
+    copts = ["-std=c++17"],
+    tags = ["manual"],
+    deps = [
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_benchmark//:benchmark",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
