@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -2008,6 +2009,99 @@ absl::Status EncodeUnknownSet(absl::Span<const uint32_t> ids,
   return absl::OkStatus();
 }
 
+// Marshals a proto string/bytes field's payload into the per-Eval arena
+// and stamps the resulting span (offset + length) onto `cv`.  The wasm
+// guest only sees linear memory, so the payload is copied in — the same
+// copy `EncodeSpan` does, minus the `celwasm::Value` round-trip.
+ABSL_ATTRIBUTE_ALWAYS_INLINE static absl::Status
+WriteProtoStringFieldToCelValue(const google::protobuf::Message& msg,
+                                const google::protobuf::FieldDescriptor& field,
+                                ArenaAllocator& alloc, CelValue* cv) {
+  using FD = google::protobuf::FieldDescriptor;
+  std::string scratch;
+  absl::string_view s =
+      msg.GetReflection()->GetStringReference(msg, &field, &scratch);
+  uint32_t off = 0;
+  uint8_t* p = alloc.Alloc(s.size(), &off);
+  if (p == nullptr && !s.empty()) {
+    return absl::ResourceExhaustedError(
+        "arena OOM marshalling proto string/bytes field");
+  }
+  if (!s.empty()) std::memcpy(p, s.data(), s.size());
+  cv->kind = field.type() == FD::TYPE_BYTES ? CEL_BYTES : CEL_STRING;
+  cv->payload.s.ptr = off;
+  cv->payload.s.len = static_cast<uint32_t>(s.size());
+  return absl::OkStatus();
+}
+
+// Reads a scalar proto field via reflection and writes the CelValue
+// straight into `out_slot`, skipping the `celwasm::Value` variant
+// middleman.  Profiling showed ~75% of a field read's cost was the
+// Value build + StatusOr move + EncodeValue visitation, NOT the
+// reflection (~3ns) or the crossing (~3ns); writing the CelValue
+// directly removes it.  Every scalar read is total (proto3 unset ->
+// default; no error path), so the direct write is exact.  Precondition:
+// `field` is `kScalar` (its cpp_type is never MESSAGE — message fields
+// classify to a kMessage* class and go through
+// `ReadClassifiedMessageField`).  Force-inlined into its sole caller
+// (`CelGetFieldImpl`) so extracting it for readability does not
+// re-introduce a per-field-read call: the codegen matches the original
+// inline switch (verified by the proto field-read benches).
+ABSL_ATTRIBUTE_ALWAYS_INLINE static absl::Status WriteScalarFieldToSlot(
+    const google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, uint32_t out_slot,
+    const TrampolineContext& ctx) {
+  using FD = google::protobuf::FieldDescriptor;
+  const google::protobuf::Reflection* refl = msg.GetReflection();
+  CelValue cv{};
+  switch (field.cpp_type()) {
+    case FD::CPPTYPE_INT32:
+      cv.kind = CEL_INT;
+      cv.payload.i = refl->GetInt32(msg, &field);
+      break;
+    case FD::CPPTYPE_INT64:
+      cv.kind = CEL_INT;
+      cv.payload.i = refl->GetInt64(msg, &field);
+      break;
+    case FD::CPPTYPE_UINT32:
+      cv.kind = CEL_UINT;
+      cv.payload.u = refl->GetUInt32(msg, &field);
+      break;
+    case FD::CPPTYPE_UINT64:
+      cv.kind = CEL_UINT;
+      cv.payload.u = refl->GetUInt64(msg, &field);
+      break;
+    case FD::CPPTYPE_BOOL:
+      cv.kind = CEL_BOOL;
+      cv.payload.b = refl->GetBool(msg, &field) ? 1 : 0;
+      break;
+    case FD::CPPTYPE_DOUBLE:
+      cv.kind = CEL_DOUBLE;
+      cv.payload.d = refl->GetDouble(msg, &field);
+      break;
+    case FD::CPPTYPE_FLOAT:
+      cv.kind = CEL_DOUBLE;
+      cv.payload.d = refl->GetFloat(msg, &field);
+      break;
+    case FD::CPPTYPE_ENUM:
+      // CEL surfaces an enum field as its int value.
+      cv.kind = CEL_INT;
+      cv.payload.i = refl->GetEnumValue(msg, &field);
+      break;
+    case FD::CPPTYPE_STRING:
+      if (auto s = WriteProtoStringFieldToCelValue(msg, field, ctx.alloc, &cv);
+          !s.ok()) {
+        return s;
+      }
+      break;
+    case FD::CPPTYPE_MESSAGE:
+      ABSL_CHECK(false) << "WriteScalarFieldToSlot: message field `"
+                        << field.name() << "` is not a scalar";
+  }
+  ctx.mem.WriteCelValue(out_slot, cv);
+  return absl::OkStatus();
+}
+
 absl::Status CelGetFieldImpl(uint32_t out_slot, uint32_t msg_slot,
                              uint32_t field_ref_id, uint32_t attribute_id,
                              const TrampolineContext& ctx) {
@@ -2032,12 +2126,27 @@ absl::Status CelGetFieldImpl(uint32_t out_slot, uint32_t msg_slot,
       return EncodeFieldResult(FieldNotFound(prelude_or->field->field_name),
                                out_slot, ctx);
     }
-    if (auto fast = TryEncodeAggregateFieldFast(
-            *msg, *field, prelude_or->field->resolved, out_slot, ctx);
+    // Dispatch on the resolved read class.  Map/list intern a host
+    // backing; scalars (numerics/bool/enum/string/bytes) write their
+    // CelValue straight into the slot via `WriteScalarFieldToSlot`,
+    // skipping the celwasm::Value variant; only message/WKT classes
+    // need the Value path (`ReadClassifiedMessageField` + encode), since
+    // their decode (Any unpack, timestamp/duration, wrapper peel) is
+    // genuinely more than a scalar read.
+    const ResolvedFieldCache& rc = prelude_or->field->resolved;
+    if (auto fast =
+            TryEncodeAggregateFieldFast(*msg, *field, rc, out_slot, ctx);
         fast.has_value()) {
-      return *std::move(fast);
+      return *std::move(fast);  // kMap / kRepeated
     }
-    auto v_or = ReadFieldClassified(*msg, *field, prelude_or->field->resolved);
+    if (rc.read_class == ProtoFieldReadClass::kScalar) {
+      return WriteScalarFieldToSlot(*msg, *field, out_slot, ctx);
+    }
+    const google::protobuf::Reflection* refl = msg->GetReflection();
+    if (refl == nullptr) {
+      return absl::InternalError("CelGetFieldImpl: message has no reflection");
+    }
+    auto v_or = ReadClassifiedMessageField(*refl, *msg, *field, rc);
     if (!v_or.ok()) return v_or.status();
     return EncodeFieldResult(*v_or, out_slot, ctx);
   }

@@ -673,6 +673,41 @@ TEST(Layer2DispatchTest, ScalarDoubleField) {
   EXPECT_DOUBLE_EQ(out.payload.d, 725.5);
 }
 
+TEST(Layer2DispatchTest, ScalarUintField) {
+  HostMsg3 m;
+  m.set_u64(1'000'000uLL);
+  Layer2Fixture f;
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 5, "u64");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_UINT);
+  EXPECT_EQ(out.payload.u, 1'000'000uLL);
+}
+
+// A float field widens to a CEL double (langdef: CEL has no float32).
+TEST(Layer2DispatchTest, ScalarFloatFieldWidensToDouble) {
+  HostMsg3 m;
+  m.set_f32(3.5f);  // exactly representable, so == holds after widening
+  Layer2Fixture f;
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 12, "f32");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_DOUBLE);
+  EXPECT_DOUBLE_EQ(out.payload.d, 3.5);
+}
+
+// An enum field surfaces as its int value (langdef §2.4.7).
+TEST(Layer2DispatchTest, ScalarEnumFieldReadsAsInt) {
+  HostMsg3 m;
+  m.set_kind(HostMsg3::KIND_SEVEN);
+  Layer2Fixture f;
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 16, "kind");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_INT);
+  EXPECT_EQ(out.payload.i, 7);
+}
+
 TEST(Layer2DispatchTest, StringFieldAllocatesArenaSpan) {
   Customer c;
   c.set_name("Ada");
