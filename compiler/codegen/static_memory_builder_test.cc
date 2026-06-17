@@ -279,9 +279,10 @@ TEST(StaticMemoryBuilderTest, MaterializeListInts) {
   const std::vector<uint8_t> buf = std::move(builder).Finalize();
 
   // Header.
-  EXPECT_EQ(ReadU32LE(buf, 0), 3u);   // count
-  EXPECT_EQ(ReadU32LE(buf, 4), 3u);   // capacity
-  EXPECT_EQ(ReadU32LE(buf, 8), 32u);  // elements_offset = base(16) + run_local(16)
+  EXPECT_EQ(ReadU32LE(buf, 0), 3u);  // count
+  EXPECT_EQ(ReadU32LE(buf, 4), 3u);  // capacity
+  EXPECT_EQ(ReadU32LE(buf, 8),
+            32u);  // elements_offset = base(16) + run_local(16)
   EXPECT_EQ(ReadU32LE(buf, 12), 0u);  // _pad
   // Run: element[i] frame at local 16 + 24*i, INT payload at +8 within.
   EXPECT_EQ(ReadU32LE(buf, 16), static_cast<uint32_t>(CEL_INT));
@@ -320,7 +321,7 @@ TEST(StaticMemoryBuilderTest, MaterializeListMixedKinds) {
 TEST(StaticMemoryBuilderTest, MaterializeListStringElement) {
   StaticMemoryBuilder builder(/*base_offset=*/16);
   const uint32_t str_frame = builder.AllocateString("hi");  // → 16
-  const uint32_t payload_ptr = str_frame + 24;              // bytes follow frame
+  const uint32_t payload_ptr = str_frame + 24;  // bytes follow frame
   CelValue elem{};
   elem.kind = CEL_STRING;
   elem.payload.s.ptr = payload_ptr;
@@ -367,7 +368,7 @@ TEST(StaticMemoryBuilderTest, MaterializeListBaseOffsetPropagates) {
   const std::vector<CelValue> elems = {MakeInt(5)};
   const auto r = builder.MaterializeList(elems);
   const std::vector<uint8_t> buf = std::move(builder).Finalize();
-  EXPECT_EQ(ReadU32LE(buf, 8), 256u + 16u);   // elements_offset
+  EXPECT_EQ(ReadU32LE(buf, 8), 256u + 16u);  // elements_offset
   EXPECT_EQ(r.frame.payload.arena_list.header_ptr, 256u);
   EXPECT_EQ(r.frame_offset, 256u + 16u + 24u);  // base + header + 1 run frame
   EXPECT_EQ(r.frame_offset % 8u, 0u);

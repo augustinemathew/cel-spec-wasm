@@ -365,7 +365,9 @@ TEST(CompileStaticTest, StaticModeStampsLinkModeStaticInCelAbi) {
 // codepoint cap.
 std::string IntListLiteral(int n) {
   std::string expr = "[1";
-  for (int i = 2; i <= n; ++i) absl::StrAppend(&expr, ", ", i);
+  for (int i = 2; i <= n; ++i) {
+    absl::StrAppend(&expr, ", ", i);
+  }
   absl::StrAppend(&expr, "]");
   return expr;
 }

@@ -125,12 +125,11 @@ bool IsConstMaterializable(const cel::Expr& e, const WasmAnnotations& ann) {
              c.has_string_value() || c.has_bytes_value();
     }
     case cel::ExprKindCase::kListExpr:
-      return std::all_of(e.list_expr().elements().begin(),
-                         e.list_expr().elements().end(),
-                         [&ann](const cel::ListExprElement& el) {
-                           return !el.optional() &&
-                                  IsConstMaterializable(el.expr(), ann);
-                         });
+      return std::all_of(
+          e.list_expr().elements().begin(), e.list_expr().elements().end(),
+          [&ann](const cel::ListExprElement& el) {
+            return !el.optional() && IsConstMaterializable(el.expr(), ann);
+          });
     default:
       return false;
   }
@@ -222,8 +221,7 @@ class ConstAggregateVisitor : public cel::AstVisitorBase {
     const auto stride = static_cast<uint32_t>(sizeof(CelValue));
     for (uint32_t i = 0; i < l.elements().size(); ++i) {
       annotations_[l.elements()[i].expr().id()].storage =
-          Storage{StorageKind::kStaticRodata,
-                  r.elements_offset + (i * stride)};
+          Storage{StorageKind::kStaticRodata, r.elements_offset + (i * stride)};
     }
     frames_.emplace(expr.id(), r.frame);
     return r.frame;
