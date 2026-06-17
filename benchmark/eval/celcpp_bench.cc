@@ -52,6 +52,7 @@
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
 #include "runtime/activation.h"
+#include "runtime/constant_folding.h"
 #include "runtime/runtime.h"
 #include "runtime/runtime_options.h"
 #include "runtime/standard_runtime_builder_factory.h"
@@ -88,6 +89,13 @@ std::unique_ptr<const cel::Runtime> BuildRuntimeOrDie() {
   opts.enable_heterogeneous_equality = true;
   auto builder = cel::CreateStandardRuntimeBuilder(pool, opts);
   ABSL_CHECK_OK(builder);
+  // Fairness toggle: CELCPP_FOLD=1 enables cel-cpp's plan-time constant
+  // folding, so constant subexpressions (a whole `size([…])`, or the
+  // `[…]` operand of `x in […]`) are precomputed once instead of rebuilt
+  // every Eval — the cel-cpp analogue of our compile-time materialization.
+  if (std::getenv("CELCPP_FOLD") != nullptr) {
+    ABSL_CHECK_OK(cel::extensions::EnableConstantFolding(*builder));
+  }
   auto runtime = std::move(*builder).Build();
   ABSL_CHECK_OK(runtime);
   return std::move(*runtime);

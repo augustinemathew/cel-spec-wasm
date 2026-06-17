@@ -26,7 +26,7 @@
 // dead-strip or the runtime regressed below its documented design
 // minimum.  Memory grows beyond this floor as needed via
 // dlmalloc + memory.grow.
-#define CELWASM_INITIAL_MEMORY_PAGES 2u
+#define CELWASM_INITIAL_MEMORY_PAGES 5u
 
 // First N bytes of linear memory are reserved for the expr module's
 // active data segments (rodata + workspace).  Set via
@@ -34,7 +34,7 @@
 // static data + stack + heap above this offset.  8 KiB is well above
 // the typical expr rodata footprint; bump if a real expression needs
 // more.
-#define CELWASM_RESERVED_LOW_MEMORY_BYTES 8192u
+#define CELWASM_RESERVED_LOW_MEMORY_BYTES 262144u
 
 // Default size of the per-Instance arena buffer that backs
 // `arena_alloc`.  Malloc'd once per Instance via `arena_init`.

@@ -669,90 +669,29 @@ TEST(KnownBugs, ParserSourceCodepointLimitNotConfigurable) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// REGRESSION (cleanup-backlog #16, formerly **P0**): literal
+// FIXED (cleanup-backlog #16, formerly **P0**): literal
 // `x in [0..9999]` used to compile + plan cleanly and then PANIC
-// wasmtime at Eval (`store.rs:2440 assertion failed:
-// fault.is_none()`, Rust abort, host process dies).  Root cause:
-// neither Compile arm validated the expression's static region
-// (rodata + workspace) against the 8192-byte low-memory window the
-// runtime reserves for it (`-Wl,--global-base=8192`,
-// runtime/cel_layout.h `CELWASM_RESERVED_LOW_MEMORY_BYTES`) — the
-// 240 KB rodata segment was applied over the runtime's static data
-// / heap in the SHARED memory at instantiate time.  After the
-// memory-ownership flip the same corruption surfaced as
-// `wasm trap: unaligned atomic` (clobbered dlmalloc state) instead
-// of the panic; both shapes are closed by the compile-time gate
-// (`ValidateExprStaticRegion`, compiler/internal/compile.cc): the
-// expression is now REJECTED AT COMPILE with ResourceExhausted in
-// BOTH link modes.
-//
-// ASPIRATION (future arena/region work): the original want was
-// OK + true — a 10 K-element literal list is a legitimate
-// expression.  Supporting it needs a relocatable / growable static
-// region (and the arena grow/spill noted at the top of this file),
-// at which point these assertions flip back to value checks.
+// wasmtime at Eval (`store.rs:2440 assertion failed: fault.is_none()`,
+// Rust abort).  Root cause: neither Compile arm validated the
+// expression's static region against the (then 8 KiB) low-memory
+// window, so the ~240 KB rodata clobbered the runtime's static data in
+// the shared memory.  Two changes closed it: the compile-time
+// static-region gate (`ValidateExprStaticRegion`), and the m31 §10
+// window raise to 256 KiB — which makes a 10 K-element literal list a
+// legitimate, materialized expression that evaluates correctly (the
+// original "OK + true" aspiration).  The exact rodata-window boundary
+// (10909 / 10910 elements) is pinned in `e2e/limits_test.cc`.
 // ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, LiteralIntListInScanRejectedAtCompileAt10K) {
+TEST(KnownBugs, LiteralIntListInScan10KEvals) {
   constexpr int kN = 10'000;
   const std::string source = MakeIntListInSource(kN);
   auto v = TryEvalActivated(
       source,
-      [](Compiler::Builder& b) {
-        b.DeclareVariable("x", CelType::Int());
-      },
-      [](Activation& a) {
-        a.Bind("x", Value::Int(kN - 2));
-      });
-  // Graceful compile-time rejection — NOT a wasmtime panic, NOT a
-  // mid-eval corruption trap.
-  ASSERT_FALSE(v.ok()) << "10K-element literal list unexpectedly evaluated — "
-                          "if the static-region budget grew, update the "
-                          "boundary tests below too";
-  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
-      << v.status();
-}
-
-// Boundary pin for the static-region gate, both modes.  For a literal
-// `x in [0..N-1]` the rodata grows ~24 bytes per int constant, and the
-// slot-exhaustion gate (LayoutPass::MaxWorkspaceBytes) reserves a
-// `kGuardBytes`=256-byte guard band below wasi-libc's static data at
-// `kReservedLowMemoryBytes`=8192 — so the workspace the `in`-scan needs
-// must fit in `8192 - 256 - rodata_end`.  Empirically (re-probed
-// 2026-06-10 via tools/cel after the slot-reuse merge) N=327 is the
-// largest list whose rodata still leaves room for the scan workspace;
-// N=328 is the smallest that overflows.  Unlike the deep `+`-chain,
-// this ceiling is rodata-bound, so slot reuse does NOT raise it — the
-// constants themselves consume the window.
-TEST(KnownBugs, LiteralIntListInScanLargestFittingEvals) {
-  constexpr int kN = 327;  // largest N whose region fits the window
-  const std::string source = MakeIntListInSource(kN);
-  auto v = TryEvalActivated(
-      source,
-      [](Compiler::Builder& b) {
-        b.DeclareVariable("x", CelType::Int());
-      },
-      [](Activation& a) {
-        a.Bind("x", Value::Int(kN - 2));
-      });
+      [](Compiler::Builder& b) { b.DeclareVariable("x", CelType::Int()); },
+      [](Activation& a) { a.Bind("x", Value::Int(kN - 2)); });
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
-  EXPECT_TRUE(*v->AsBool());
-}
-
-TEST(KnownBugs, LiteralIntListInScanJustOverWindowRejectedAtCompile) {
-  constexpr int kN = 328;  // smallest N whose region overflows the window
-  const std::string source = MakeIntListInSource(kN);
-  auto v = TryEvalActivated(
-      source,
-      [](Compiler::Builder& b) {
-        b.DeclareVariable("x", CelType::Int());
-      },
-      [](Activation& a) {
-        a.Bind("x", Value::Int(kN - 2));
-      });
-  ASSERT_FALSE(v.ok());
-  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
-      << v.status();
+  EXPECT_TRUE(*v->AsBool());  // kN-2 is a member of [0..kN-1]
 }
 
 // ──────────────────────────────────────────────────────────────────

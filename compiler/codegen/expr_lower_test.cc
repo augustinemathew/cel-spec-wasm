@@ -846,23 +846,10 @@ TEST(ExprLowerMapTest, KCallLogicalOrLowersToHelper) {
 // M4.F — kListExpr + kCallExpr(`_[_]`) on lists
 // --------------------------------------------------------------
 
-TEST(ExprLowerListTest, EmptyListLiteralLowers) {
-  // `dyn([])` would slip past the static checker; use a simple
-  // typed literal to lock the empty-list path.  The kCreateList
-  // call must emit; no kListSet calls since N=0.
-  Pipeline p = RunPipeline("[1][0]");  // `[1]` exercises a 1-element create.
-  WasmModule m;
-  PrepareHostModule(m, p.layout);
-  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
-  ASSERT_THAT(lowered, IsOk());
-  EXPECT_THAT(m.Validate(), IsOk());
-  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
-                                 "cel_list_create"));
-  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
-                                 "cel_list_append_at"));
-}
-
-TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndAppends) {
+TEST(ExprLowerListTest, ConstListLiteralLowersToI32ConstNoBuild) {
+  // m31: an all-constant list is materialized into rodata, so the
+  // kListExpr lowers to a single i32.const of its frame offset — no
+  // cel_list_create, no per-element appends.
   Pipeline p = RunPipeline("[10, 20, 30]");
   WasmModule m;
   PrepareHostModule(m, p.layout);
@@ -870,7 +857,26 @@ TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndAppends) {
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
-  // The kListExpr root materialises as:
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_create"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_append_at"));
+  // The root expression is a bare i32.const (the rodata frame offset).
+  BinaryenExpressionRef root =
+      BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);
+  EXPECT_EQ(BinaryenExpressionGetId(root), BinaryenConstId());
+}
+
+TEST(ExprLowerListTest, NonConstListLiteralEmitsCreateAndAppends) {
+  // A list with a non-constant element (variable `a`) is ineligible for
+  // materialization and keeps the per-Eval build path.
+  Pipeline p = RunPipelineWithVars("[a, 20, 30]", {"a:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  // The kListExpr root lowers as:
   //   (block (call $cel_list_create out N)        ;; capacity=N, count=0
   //          (call $cel_list_append_at out e0)
   //          (call $cel_list_append_at out e1)
@@ -957,11 +963,11 @@ TEST(ExprLowerComprehensionTest, CelBindLowersThroughGenericPath) {
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
-  // Generic path emits the list-create call for the empty
-  // iter_range literal, even though the loop body never runs.
-  // A surviving ShapeC fast path would skip this entirely.
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_create"));
-  // The arithmetic in the body (`x + 1`) still lowers normally.
+  // The empty iter_range literal `[]` is materialized into rodata
+  // (m31), so no cel_list_create is emitted for it; the generic
+  // comprehension scaffold still drives the (zero-iteration) loop and
+  // the body arithmetic (`x + 1`) lowers normally.
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_create"));
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_add_at_vv"));
 }
 
@@ -1512,7 +1518,11 @@ TEST(ExprLowerOptionalLiteralTest, NonOptionalMapLiteralEmitsOnlyPlainInsert) {
 }
 
 TEST(ExprLowerOptionalLiteralTest, NonOptionalListLiteralEmitsOnlyPlainAppend) {
-  Pipeline p = RunPipeline("[1, 2, 3]");
+  // A non-constant element (`a`) forces the build path; the
+  // non-optional elements must use the plain append, not the
+  // append-if-present variant.  (An all-const list would materialize
+  // and emit no appends — see ConstListLiteralLowersToI32ConstNoBuild.)
+  Pipeline p = RunPipelineWithVars("[a, 2, 3]", {"a:int"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
   auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);

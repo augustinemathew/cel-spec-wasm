@@ -53,8 +53,10 @@ struct MemoryLayout {
 
   // Initial linear-memory pages declared by `cel_runtime.wasm`.
   // The runtime grows beyond this via dlmalloc + `memory.grow` up
-  // to `kMaxMemoryBytes` (a wasm32-wasi-threads link flag).
-  static constexpr uint32_t kInitialMemoryPages = 2;
+  // to `kMaxMemoryBytes` (a wasm32-wasi-threads link flag).  5 because
+  // the reserved low region is 256 KiB (4 pages) and wasi-libc's static
+  // data sits above it (see kReservedLowMemoryBytes).
+  static constexpr uint32_t kInitialMemoryPages = 5;
 
   // Hard ceiling on linear-memory growth (`-Wl,--max-memory=` on
   // the wasi-threads toolchain).  The runtime may not grow past
@@ -68,7 +70,7 @@ struct MemoryLayout {
   // `-Wl,--global-base=N` on the runtime build pins wasi-libc's
   // static data + stack + heap above this offset — anything the
   // expr module writes at or past this byte falls into wasi-libc.
-  static constexpr uint32_t kReservedLowMemoryBytes = 8192;
+  static constexpr uint32_t kReservedLowMemoryBytes = 262144;
 
   // Slack between the last workspace cell and
   // `kReservedLowMemoryBytes`.  Workspace bytes must not extend

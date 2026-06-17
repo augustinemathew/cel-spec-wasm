@@ -2693,6 +2693,51 @@ Expected result: eval returns 88; the CelValue there is
 {CEL_UNKNOWN, payload.unk=7} — payload byte-identical to the seeded
 range value.
 
+## 72. `[10, 20, 30][1]` — compile-time-materialized constant list (m31)
+
+File: `wat/72_static_aggregate.wat`.  Status: assembles under
+`wasm-as`; runs end-to-end through `tools/wat_runner` against the real
+`cel_runtime.wasm`, no host stubs
+(`wat_runner_test.cc::WatRunnerListTest.MaterializedListIndexedProducesValue`).
+
+Freezes the byte layout `StaticMemoryBuilder::MaterializeList` must
+reproduce, and proves the read kernel cannot distinguish a materialized
+list from an arena-built one (m31 §2, §5).  Unlike
+`12_list_index_arena.wat`, which builds `[1,2,3]` at eval time
+(`cel_list_create` + `cel_list_append_at` per element), here the entire
+list value is written into the module's data segment at compile time and
+`$eval` performs no construction — only `cel_list_at_arena` over the
+static layout:
+
+```
+[ 16, 32)  ArenaListHeader { count=3, capacity=3, elements_offset=32 }
+[ 32,104)  element run: {CEL_INT,10} {CEL_INT,20} {CEL_INT,30}  (3×24 B)
+[104,128)  outer frame   {CEL_LIST_ARENA, arena_list.header_ptr=16}
+[128,152)  lookup index  {CEL_INT, 1}
+[152,176)  workspace: cel_list_at_arena out_slot
+```
+
+Layout per `runtime/cel_data.h`: `CelValue` 24 B `{kind:u32@0, _pad@4,
+payload@8}`; `ArenaListHeader` 16 B `{count, capacity, elements_offset,
+_pad}`; element stride 24 B; `CEL_INT = 2`, `CEL_LIST_ARENA = 7`.  The
+header sits before its run (m31 §5 innermost-first ordering); a flat
+list has a single header→run→frame triple.
+
+Invariants the shape locks:
+
+  - The aggregate lives in the low static window (offsets < the runtime
+    `--global-base`), not the arena above `__heap_base`; the read kernel
+    only dereferences linear-memory offsets, so origin is invisible to
+    it — the m31 premise.
+  - `elements_offset` and `arena_list.header_ptr` are absolute
+    linear-memory offsets, identical in meaning to an arena-built list's
+    pointers; the keystone byte-identity test (m31 §7) will `memcmp` the
+    materialized region against the `cel_make_*` arena build to catch any
+    layout drift.
+  - The materialized aggregate is effectively rodata: read-only kernels
+    must never mutate an operand (concat allocates fresh; iterators keep
+    state in the arena), so a materialized list is safe to share.
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

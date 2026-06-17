@@ -222,5 +222,165 @@ TEST(StaticMemoryBuilderTest, BaseOffsetIsAppliedToReturnedOffsetAndSpanPtr) {
   EXPECT_EQ(ReadU32LE(buf, 8), 152u);
 }
 
+// MaterializeList ------------------------------------------------------
+//
+// Layout under test (header-first, then contiguous run, then frame —
+// byte-identical to cel_list_create + N×cel_list_append_at):
+//   ArenaListHeader is 16 B { count@0, capacity@4, elements_offset@8,
+//   _pad@12 }; the run is N × 24-B CelValue frames; the outer frame is a
+//   CelValue { CEL_LIST_ARENA@0, _pad@4, arena_list.header_ptr@8 }.
+
+CelValue MakeInt(int64_t v) {
+  CelValue c{};
+  c.kind = CEL_INT;
+  c.payload.i = v;
+  return c;
+}
+CelValue MakeBool(bool v) {
+  CelValue c{};
+  c.kind = CEL_BOOL;
+  c.payload.b = v ? 1 : 0;
+  return c;
+}
+CelValue MakeDouble(double v) {
+  CelValue c{};
+  c.kind = CEL_DOUBLE;
+  c.payload.d = v;
+  return c;
+}
+
+// `[]` → header { count=0, capacity=0, elements_offset=0 } + frame; no
+// run, matching cel_list_create(out, 0).
+TEST(StaticMemoryBuilderTest, MaterializeListEmpty) {
+  StaticMemoryBuilder builder(/*base_offset=*/16);
+  const auto r = builder.MaterializeList({});
+  const std::vector<uint8_t> buf = std::move(builder).Finalize();
+
+  // Header at local 0.
+  EXPECT_EQ(ReadU32LE(buf, 0), 0u);   // count
+  EXPECT_EQ(ReadU32LE(buf, 4), 0u);   // capacity
+  EXPECT_EQ(ReadU32LE(buf, 8), 0u);   // elements_offset (empty → 0)
+  EXPECT_EQ(ReadU32LE(buf, 12), 0u);  // _pad
+  // Frame at local 16 (immediately after the 16-B header, no run).
+  EXPECT_EQ(ReadU32LE(buf, 16), static_cast<uint32_t>(CEL_LIST_ARENA));
+  EXPECT_EQ(ReadU32LE(buf, 24), 16u);  // header_ptr = base + 0
+  EXPECT_EQ(buf.size(), 40u);          // 16 header + 24 frame
+
+  EXPECT_EQ(r.frame_offset, 32u);  // base(16) + frame_local(16)
+  EXPECT_EQ(r.frame.kind, static_cast<uint32_t>(CEL_LIST_ARENA));
+  EXPECT_EQ(r.frame.payload.arena_list.header_ptr, 16u);
+}
+
+// `[10, 20, 30]` → header { count=3, cap=3 } + 3-frame run + frame.
+TEST(StaticMemoryBuilderTest, MaterializeListInts) {
+  StaticMemoryBuilder builder(/*base_offset=*/16);
+  const std::vector<CelValue> elems = {MakeInt(10), MakeInt(20), MakeInt(30)};
+  const auto r = builder.MaterializeList(elems);
+  const std::vector<uint8_t> buf = std::move(builder).Finalize();
+
+  // Header.
+  EXPECT_EQ(ReadU32LE(buf, 0), 3u);   // count
+  EXPECT_EQ(ReadU32LE(buf, 4), 3u);   // capacity
+  EXPECT_EQ(ReadU32LE(buf, 8), 32u);  // elements_offset = base(16) + run_local(16)
+  EXPECT_EQ(ReadU32LE(buf, 12), 0u);  // _pad
+  // Run: element[i] frame at local 16 + 24*i, INT payload at +8 within.
+  EXPECT_EQ(ReadU32LE(buf, 16), static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(static_cast<int64_t>(ReadU64LE(buf, 24)), 10);
+  EXPECT_EQ(ReadU32LE(buf, 40), static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(static_cast<int64_t>(ReadU64LE(buf, 48)), 20);
+  EXPECT_EQ(ReadU32LE(buf, 64), static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(static_cast<int64_t>(ReadU64LE(buf, 72)), 30);
+  // Frame at local 88 (after 16 header + 72 run).
+  EXPECT_EQ(ReadU32LE(buf, 88), static_cast<uint32_t>(CEL_LIST_ARENA));
+  EXPECT_EQ(ReadU32LE(buf, 96), 16u);  // header_ptr = base + 0
+  EXPECT_EQ(buf.size(), 112u);
+
+  EXPECT_EQ(r.frame_offset, 104u);  // base(16) + 88
+  EXPECT_EQ(r.frame.payload.arena_list.header_ptr, 16u);
+}
+
+// Heterogeneous element kinds are copied frame-for-frame in order.
+TEST(StaticMemoryBuilderTest, MaterializeListMixedKinds) {
+  StaticMemoryBuilder builder(/*base_offset=*/16);
+  const std::vector<CelValue> elems = {MakeInt(7), MakeBool(true),
+                                       MakeDouble(3.5)};
+  builder.MaterializeList(elems);
+  const std::vector<uint8_t> buf = std::move(builder).Finalize();
+  // element0 INT(7) @16, element1 BOOL(true) @40, element2 DOUBLE(3.5) @64.
+  EXPECT_EQ(ReadU32LE(buf, 16), static_cast<uint32_t>(CEL_INT));
+  EXPECT_EQ(static_cast<int64_t>(ReadU64LE(buf, 24)), 7);
+  EXPECT_EQ(ReadU32LE(buf, 40), static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(ReadU32LE(buf, 48), 1u);  // bool payload @ +8
+  EXPECT_EQ(ReadU32LE(buf, 64), static_cast<uint32_t>(CEL_DOUBLE));
+  EXPECT_EQ(ReadDoubleLE(buf, 72), 3.5);
+}
+
+// A string element's CelSpan, pointing at rodata bytes allocated earlier
+// in the same builder, survives verbatim into the run.
+TEST(StaticMemoryBuilderTest, MaterializeListStringElement) {
+  StaticMemoryBuilder builder(/*base_offset=*/16);
+  const uint32_t str_frame = builder.AllocateString("hi");  // → 16
+  const uint32_t payload_ptr = str_frame + 24;              // bytes follow frame
+  CelValue elem{};
+  elem.kind = CEL_STRING;
+  elem.payload.s.ptr = payload_ptr;
+  elem.payload.s.len = 2;
+  const std::vector<CelValue> elems = {elem};
+  builder.MaterializeList(elems);
+  const std::vector<uint8_t> buf = std::move(builder).Finalize();
+
+  // AllocateString consumed 32 bytes (24 frame + 2 + 6 pad); the list
+  // starts at local 32: header @32, run @48.
+  EXPECT_EQ(ReadU32LE(buf, 48), static_cast<uint32_t>(CEL_STRING));
+  EXPECT_EQ(ReadU32LE(buf, 56), payload_ptr);  // span.ptr @ frame+8
+  EXPECT_EQ(ReadU32LE(buf, 60), 2u);           // span.len @ frame+12
+  // The pointed-at bytes are the original "hi".
+  EXPECT_EQ(buf[payload_ptr - 16], 'h');  // local = abs - base
+  EXPECT_EQ(buf[payload_ptr - 16 + 1], 'i');
+}
+
+// `[1, [2, 3]]`: the inner list's returned frame embeds as the outer
+// list's element, its header_ptr pointing at the inner header.
+TEST(StaticMemoryBuilderTest, MaterializeNestedList) {
+  StaticMemoryBuilder builder(/*base_offset=*/16);
+  const std::vector<CelValue> inner_elems = {MakeInt(2), MakeInt(3)};
+  const auto inner = builder.MaterializeList(inner_elems);
+  // inner: header@0, run@16 (2×24=48), frame@64 → header_ptr = base+0 = 16.
+  EXPECT_EQ(inner.frame.payload.arena_list.header_ptr, 16u);
+
+  const std::vector<CelValue> outer_elems = {MakeInt(1), inner.frame};
+  const auto outer = builder.MaterializeList(outer_elems);
+  const std::vector<uint8_t> buf = std::move(builder).Finalize();
+
+  // Outer header starts after inner (16+48+24 = 88): header@88, run@104.
+  EXPECT_EQ(ReadU32LE(buf, 88), 2u);    // count
+  EXPECT_EQ(ReadU32LE(buf, 96), 120u);  // elements_offset = base(16)+104
+  // Outer run element1 (the nested list) at local 128.
+  EXPECT_EQ(ReadU32LE(buf, 128), static_cast<uint32_t>(CEL_LIST_ARENA));
+  EXPECT_EQ(ReadU32LE(buf, 136), 16u);  // header_ptr → inner header (base+0)
+  EXPECT_EQ(outer.frame.payload.arena_list.header_ptr, 104u);  // base + 88
+}
+
+// elements_offset and header_ptr are absolute (include base_offset).
+TEST(StaticMemoryBuilderTest, MaterializeListBaseOffsetPropagates) {
+  StaticMemoryBuilder builder(/*base_offset=*/256);
+  const std::vector<CelValue> elems = {MakeInt(5)};
+  const auto r = builder.MaterializeList(elems);
+  const std::vector<uint8_t> buf = std::move(builder).Finalize();
+  EXPECT_EQ(ReadU32LE(buf, 8), 256u + 16u);   // elements_offset
+  EXPECT_EQ(r.frame.payload.arena_list.header_ptr, 256u);
+  EXPECT_EQ(r.frame_offset, 256u + 16u + 24u);  // base + header + 1 run frame
+  EXPECT_EQ(r.frame_offset % 8u, 0u);
+}
+
+// The cursor stays 8-byte aligned, so a following Allocate is aligned.
+TEST(StaticMemoryBuilderTest, MaterializeListLeavesCursorAligned) {
+  StaticMemoryBuilder builder(/*base_offset=*/16);
+  const std::vector<CelValue> elems = {MakeInt(1), MakeInt(2)};
+  builder.MaterializeList(elems);
+  const uint32_t next = builder.AllocateInt(99);
+  EXPECT_EQ(next % 8u, 0u);
+}
+
 }  // namespace
 }  // namespace celwasm

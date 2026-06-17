@@ -10,6 +10,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "binaryen-c.h"
 #include "gtest/gtest.h"
@@ -350,17 +351,28 @@ TEST(CompileStaticTest, StaticModeStampsLinkModeStaticInCelAbi) {
 // The runtime — bundled into the Program (kStatic) or instantiated
 // alongside it (kDynamic, where the expr module's `cel.memory` import
 // resolves to the runtime instance's exported memory) — is linked
-// with `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (8 KiB).
+// with `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (256 KiB).
 // The expression's static region (rodata + workspace slots) must end
 // at or below that boundary in EITHER mode, or its instantiate-time
 // data segment / marshal-time slot writes silently overwrite the
 // runtime's own static data in the shared memory (observed downstream
 // as dlmalloc corruption: `wasm trap: unaligned atomic`).  See
 // doc/implementation-plan/rewrite/m28-configurable-linking.md §5.3.1.
+//
+// rodata overflow is exercised with a large constant int list (each
+// element materializes to a 24-byte rodata frame): a single string
+// literal can't reach 256 KiB without first tripping the ~100K source
+// codepoint cap.
+std::string IntListLiteral(int n) {
+  std::string expr = "[1";
+  for (int i = 2; i <= n; ++i) absl::StrAppend(&expr, ", ", i);
+  absl::StrAppend(&expr, "]");
+  return expr;
+}
 
 TEST(CompileStaticTest, RodataNearBudgetButUnderCompiles) {
   // ~4 KiB string literal: rodata_base (16) + CelValue slot + 4096
-  // payload bytes lands well under the 8192-byte reserved window.
+  // payload bytes lands well under the 256 KiB reserved window.
   CompileOptions opts;
   opts.link_mode = CompileOptions::LinkMode::kStatic;
   const std::string expr = "\"" + std::string(4096, 'x') + "\"";
@@ -368,13 +380,12 @@ TEST(CompileStaticTest, RodataNearBudgetButUnderCompiles) {
 }
 
 TEST(CompileStaticTest, RodataOverBudgetReturnsResourceExhausted) {
-  // 9000 payload bytes pushes rodata past the 8192-byte reserved
-  // window — must be a status error (embedder input may legitimately
-  // be this large; it must not crash the process).
+  // 12000 int frames (~288 KiB) push rodata past the 262144-byte
+  // reserved window — must be a status error (embedder input may
+  // legitimately be this large; it must not crash the process).
   CompileOptions opts;
   opts.link_mode = CompileOptions::LinkMode::kStatic;
-  const std::string expr = "\"" + std::string(9000, 'x') + "\"";
-  EXPECT_THAT(Compile(expr, opts),
+  EXPECT_THAT(Compile(IntListLiteral(12000), opts),
               StatusIs(absl::StatusCode::kResourceExhausted));
 }
 
@@ -394,52 +405,59 @@ TEST(CompileTest, RodataOverBudgetReturnsResourceExhaustedInDynamicMode) {
   // `wasm trap: unaligned atomic` from clobbered dlmalloc state.
   CompileOptions opts;
   opts.link_mode = CompileOptions::LinkMode::kDynamic;
-  const std::string expr = "\"" + std::string(9000, 'x') + "\"";
-  EXPECT_THAT(Compile(expr, opts),
+  EXPECT_THAT(Compile(IntListLiteral(12000), opts),
               StatusIs(absl::StatusCode::kResourceExhausted));
 }
 
-// Workspace half of the gate: rodata alone can sit under the window
-// while workspace slots (24 B per variable / list / map / select
-// node) push the region past it.  A deep nest of single-element list
-// literals allocates one workspace slot per list node with only one
-// 24-byte rodata const.
-std::string NestedListExpr(int depth) {
+// Workspace half of the gate: distinct variables each reserve a 32-byte
+// workspace slot.  Width, not depth, is the only way to exhaust the
+// 256 KiB window now — a const list materializes into rodata (no
+// workspace), and a nested non-const list can't overflow within the
+// 2048 parse-depth cap (2048 * 32 B = 64 KiB).  `[a0, a1, …, a(n-1)]`
+// is a flat list (parse depth 1) of `n` distinct vars ⇒ `n` slots.
+struct VarListExpr {
   std::string expr;
-  expr.reserve((static_cast<size_t>(depth) * 2) + 8);
-  expr.append(depth, '[');
-  expr.push_back('0');
-  expr.append(depth, ']');
-  return expr;
+  std::vector<std::string> specs;
+};
+VarListExpr WideVarList(int n) {
+  VarListExpr out;
+  out.specs.reserve(n);
+  std::string expr = "[";
+  for (int i = 0; i < n; ++i) {
+    if (i != 0) absl::StrAppend(&expr, ", ");
+    absl::StrAppend(&expr, "a", i);
+    out.specs.push_back(absl::StrCat("a", i, ":int"));
+  }
+  absl::StrAppend(&expr, "]");
+  out.expr = std::move(expr);
+  return out;
 }
 
-TEST(CompileTest, WorkspaceNearBudgetButUnderCompilesBothModes) {
-  // 240 list nodes of workspace + ~40 B rodata sit under the
-  // `8192 - kGuardBytes(256)` slot-exhaustion budget.  Re-probed
-  // 2026-06-10 against the slot-allocator + guard-band gate: depth 246
-  // is the largest that compiles, 247 the first that overflows; 240 is
-  // a comfortable under-the-line case.
-  const std::string expr = NestedListExpr(240);
+TEST(CompileTest, WideVarListUnderBudgetCompilesBothModes) {
+  // 1000 variable slots (~32 KiB) sit comfortably under the 256 KiB
+  // window — compiles in both modes.
+  const VarListExpr v = WideVarList(1000);
   for (auto mode : {CompileOptions::LinkMode::kStatic,
                     CompileOptions::LinkMode::kDynamic}) {
     CompileOptions opts;
     opts.link_mode = mode;
-    EXPECT_THAT(Compile(expr, opts).status(), IsOk())
+    opts.check.variable_specs = v.specs;
+    EXPECT_THAT(Compile(v.expr, opts).status(), IsOk())
         << "mode=" << static_cast<int>(mode);
   }
 }
 
 TEST(CompileTest, WorkspaceOverBudgetReturnsResourceExhaustedBothModes) {
-  // 400 list nodes push the workspace well past the
-  // `8192 - kGuardBytes` budget with tiny rodata — the rodata-only
-  // check would wrongly accept this; the slot-exhaustion gate must
-  // reject it in both modes.
-  const std::string expr = NestedListExpr(400);
+  // 9000 variable slots (~288 KiB) push workspace past the 256 KiB
+  // window with negligible rodata — the rodata-only check would wrongly
+  // accept this; the slot-exhaustion gate must reject it in both modes.
+  const VarListExpr v = WideVarList(9000);
   for (auto mode : {CompileOptions::LinkMode::kStatic,
                     CompileOptions::LinkMode::kDynamic}) {
     CompileOptions opts;
     opts.link_mode = mode;
-    EXPECT_THAT(Compile(expr, opts),
+    opts.check.variable_specs = v.specs;
+    EXPECT_THAT(Compile(v.expr, opts),
                 StatusIs(absl::StatusCode::kResourceExhausted))
         << "mode=" << static_cast<int>(mode);
   }

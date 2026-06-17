@@ -1370,5 +1370,30 @@ TEST(WatRunnerNativeTest, ModelAInlinedNativeQuadComposes) {
   EXPECT_EQ(inner.payload.i, 42);
 }
 
+// ─────────────────────────────────────────────────────────
+// 72_static_aggregate.wat — `[10, 20, 30][1]` with the list
+// MATERIALIZED at compile time (m31).
+//
+// The ArenaListHeader + element run + outer CEL_LIST_ARENA frame are
+// written into the data segment; $eval performs no construction, only
+// cel_list_at_arena over the static layout.  Proves the read kernel
+// treats a materialized list identically to an arena-built one, and
+// freezes the byte layout StaticMemoryBuilder::MaterializeList must
+// reproduce.  Result CelValue at out_slot=152 must be CEL_INT(20).
+// ─────────────────────────────────────────────────────────
+
+TEST(WatRunnerListTest, MaterializedListIndexedProducesValue) {
+  auto wat = LoadWat("72_static_aggregate.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 152u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_INT);
+  EXPECT_EQ(cv.payload.i, 20);
+}
+
 }  // namespace
 }  // namespace celwasm

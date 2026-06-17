@@ -163,13 +163,13 @@ element i — IDENTICAL code path as an arena-built list; the kernel
 cannot tell (and must not be able to tell) the difference.
 ```
 
-Maps additionally: the materializer **sorts entries at compile time**,
-which is free here and unlocks the §8 follow-up (binary-search lookup
-above a size threshold) without a second layout change.  Until that
-kernel lands, sorted order is also valid linear-scan input — the
-runtime's lookup semantics do not depend on insertion order (CEL maps
-have no observable order; equality/iteration semantics pinned by
-conformance rows below).
+Maps additionally: the materializer **places entries by hash at compile
+time** into the open-addressed Swiss-table layout the runtime reads
+(§8 m31.B — supersedes the earlier "sort + binary-search" sketch).  The
+compile-time image (control bytes + placed slots) is byte-identical to a
+runtime-built map.  CEL maps have no observable order, so any
+deterministic placement is valid — the only constraint is that the
+materializer's hash matches the runtime's bit-for-bit (§8).
 
 ## 6. Eligibility and exclusions
 
@@ -220,9 +220,61 @@ operand must first copy (tripwire test in §7).
 
 ## 8. Follow-up unlocked (separate slice)
 
-m31.B — sorted-run binary-search lookup for materialized maps above
-~32 entries (`cel_map_lookup_arena` gains a sorted-flag arm or a
-header bit).  Compile-time sorting in §5 already produces the input.
+**m31.A — const-map materialization, AS a Swiss table (committed: WILL
+do).**  Two changes that land together — you don't materialize a
+linear-scan map and convert it later; you materialize the final
+representation directly.
+
+**First, change the arena-map representation to an open-addressed Swiss
+table** (absl `flat_hash_map`-style).  The linear-scan arena map is the
+worst loss vs cel-cpp in the whole corpus (`size(map100)` 0.02× = 42×
+slower; `in {…10…}` 0.25×; `map_str_i32` 0.60×) — O(N) probe, O(N²)
+build.  The realistic fix is **not** a sorted-run + binary search (only
+O(log N), and still needs a sorted build); it's a hash table:
+
+  - **Layout:** `ArenaMapHeader` (`cel_data.h`) gains a power-of-two
+    capacity + a **control-byte array** (1 byte/slot: 7-bit H2 hash tag
+    + empty / deleted / full markers), followed by the slot array of
+    `{key, val}` `CelValue` pairs.  Probe a group of control bytes,
+    match the H2 tag, confirm the full key.  O(1) expected probe,
+    cache-friendly.  Touches `runtime/cel_map.{c,h}`.
+  - **Build:** O(N) insert-by-hash, replacing the O(N²)
+    scan-for-last-write-wins; last-write-wins falls out of normal
+    insert-overwrite.
+  - **Deterministic, host==wasm hash.**  The materializer (host C++) and
+    the runtime (wasm) must hash identically, or a materialized table
+    won't match a built one.  No per-process-seeded hash (absl's default
+    reseeds) — pin a fixed portable hash (seedless wyhash/xxhash).
+  - **SIMD caveat:** the classic 16-wide `i8x16` control-byte group scan
+    isn't available — the runtime is built without `-msimd128` (and SIMD
+    has no portable per-module fallback, see the string-compare
+    investigation).  The group probe is a **scalar word-at-a-time
+    control scan** (8 control bytes per `i64`, has-zero bit-trick) —
+    still O(1) expected, just not vectorized.  A SIMD build variant can
+    add `i8x16` later.
+  - Benefits **both** runtime-built and materialized maps.
+
+**Then materialize const maps into that layout.**  Add
+`StaticMemoryBuilder::MaterializeMap` + `ConstAggregateVisitor::
+PostVisitMap`: the compiler computes the final Swiss-table image —
+control bytes + hash-placed slots — at compile time and packs it into
+rodata, **byte-identical** to what the runtime builder produces (the §2
+premise holds; §5 "place entries by hash at compile time").  This also
+lights up lists-of-const-maps automatically (the list materializer
+already recurses into const-aggregate elements via
+`IsConstMaterializable`).
+
+**The full e2e matrix is already staged and GTEST_SKIP'd** in
+`e2e/m31_static_aggregate_test.cc` (`ConstMapMaterializationTest`, 18
+cases: every value kind, every valid key kind, size / `in` / equality,
+nested map, list-of-maps, large map) — each verified to eval correctly
+via the build path today; un-skip recipe is in
+`SkipPendingMapMaterializer`.  Closing this slice = land the Swiss-table
+representation, delete that skip, confirm green, add the codegen pin (no
+`cel_map_create` for a const map) in `expr_lower_test`.
+
+(Rejected alternative, kept for the record: sorted-run + binary-search
+lookup — simpler but O(log N) probe and no build-cost win.)
 
 ## 9. Open questions
 
@@ -274,3 +326,59 @@ Companion (no window/ABI change): **dedup identical literal frames**
 in `StaticMemoryBuilder` — `1+1+…+1` (10K identical) collapses
 240 KB → 24 B.  Does nothing for 10K *distinct* elements (those need
 the window); orthogonal, ship either order.
+
+## 11. Pre-close cleanup checklist (track to completion before closing)
+
+The feature is functionally complete + e2e-verified; these MUST be done
+before the milestone closes (the whole slice lands as one commit).
+
+Lint / code shape:
+  - [ ] Split `LayoutPass` — it exceeds the function-size gate after the
+    const-aggregate pass was added.
+  - [ ] `IsConstMaterializable` loop → `std::all_of`
+    (readability-use-anyofallof).
+  - [ ] Parenthesize `r.elements_offset + i * stride`
+    (readability-math-missing-parentheses).
+  - [ ] Collapse `ConstAggregateVisitor`'s `consumed_` set vs. the
+    element-stamping (stamping made `consumed_` partly redundant — one
+    mechanism should drive ConstLayoutVisitor's skip).
+  - [ ] `scripts/lint.sh --branch` clean over the whole slice.
+
+Waste (correct but suboptimal):
+  - [ ] String/bytes list elements waste a 24-byte frame each
+    (`ConstToCelValue` → `AllocateString` writes an unused frame + the
+    payload).  Add a payload-only allocate to drop the dead frame.
+  - [ ] (Optional, §10 companion) dedup identical literal frames.
+
+Stale `8192` → `262144` comments:
+  - [ ] `compiler/memory_layout.h` (--global-base comment),
+    `compiler/codegen/layout_pass.h` (`[16, 8192)` window),
+    `eval/engine_test.cc`, `compiler/internal/compile_test.cc`,
+    `e2e/known_bugs_test.cc`.
+
+Tests / conformance:
+  - [x] Retune `compile_test` rodata/workspace over-budget to the
+    256 KiB window — rodata via a 12K-int list (a single string can't
+    reach 256 KiB without tripping the ~100K source codepoint cap);
+    workspace via a 9K distinct-variable list (nesting can't exhaust it
+    within the 2048 parse-depth limit anymore).
+  - [x] `known_bugs` `LiteralIntListInScan*` — bug FIXED by the window
+    raise; converted to a now-evals regression (10K in-list).
+  - [x] `engine_test` window-boundary cases retuned to 262144.
+  - [x] e2e coverage for EVERY materializable element kind: null, bool,
+    int, uint, double, string, bytes, nested list (m31 e2e suite).
+  - [x] e2e nesting cross product — {list, map, struct} × {list, map,
+    struct} (9 combos) + triples; list-only chains materialize, the
+    rest build per-Eval, all eval correctly
+    (AggregateNestingCrossProductTest + UnmaterializedElementTypeTest).
+  - [ ] Un-skip `celwasm-skip-rodata` corpus cells + full conformance
+    (monotonic baseline).
+  - [ ] Tick `testing-checklist.md` m31 rows.
+
+Docs:
+  - [ ] m31 status line → shipped; §10 "Queued" → "shipped"; close-out
+    per CLAUDE.md.  (wat-traces §72 already added.)
+
+ABI:
+  - [x] `kRuntimeAbiVersion` 2 → 3.  (No real users — compat irrelevant;
+    kept because the runtime memory layout genuinely changed.)

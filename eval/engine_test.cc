@@ -229,9 +229,9 @@ Program SyntheticProgramWithVariableSlot(uint32_t slot_offset) {
 TEST(EnginePlanTest, PlanAcceptsVariableSlotAtWindowBoundary) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
-  // Slot [8168, 8192) — ends exactly AT the 8192-byte reserved
-  // window: the largest offset the compiler could legally emit.
-  Program program = SyntheticProgramWithVariableSlot(8192 - 24);
+  // Slot ends exactly AT the 262144-byte reserved window (m31 §10):
+  // the largest offset the compiler could legally emit.
+  Program program = SyntheticProgramWithVariableSlot(262144 - 24);
   auto inst_or = engine_or->Plan(program);
   EXPECT_TRUE(inst_or.ok()) << inst_or.status();
 }
@@ -239,9 +239,9 @@ TEST(EnginePlanTest, PlanAcceptsVariableSlotAtWindowBoundary) {
 TEST(EnginePlanTest, PlanRejectsVariableSlotPastReservedWindow) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
-  // Slot [8176, 8200) — crosses the boundary by 8 bytes; honoring it
+  // Slot crosses the 262144-byte boundary by 8 bytes; honoring it
   // would write over the runtime's static data.
-  Program program = SyntheticProgramWithVariableSlot(8192 - 16);
+  Program program = SyntheticProgramWithVariableSlot(262144 - 16);
   auto inst_or = engine_or->Plan(program);
   EXPECT_FALSE(inst_or.ok());
   EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kInvalidArgument)

@@ -99,11 +99,14 @@ TEST_F(LimitsTest, SmallLiteralExprCompilesAndEvaluates) {
   EXPECT_THAT(EvalInt("10 + 1"), IsOkAndHolds(11));
 }
 
-// ── Rodata window: exact boundary at 328 / 329 literal frames ─────
+// ── Rodata window: exact boundary at 10909 / 10910 literal frames ────
 //
-// If this pair flips, the window or the per-frame size changed —
-// recompute as (--global-base − 16 − 256) / 24 minus list overhead and
-// move BOTH cases here (m31 §10 raises --global-base to 256 KiB).
+// A const list literal materializes into rodata (m31): the window is
+// `[16, --global-base=262144)` minus a 256 B guard, and the list costs
+// `24*N + 40` bytes (N×24-byte element run + 16-byte header + 24-byte
+// outer frame).  Boundary: `16 + 24*N + 40 + 256 ≤ 262144` ⇒ N ≤ 10909.
+// If this pair flips, --global-base or the per-frame size changed —
+// recompute and move BOTH cases here.
 
 // Well inside the window: a small list compiles and evaluates.
 TEST_F(LimitsTest, RodataWindow_SmallListCompiles) {
@@ -111,20 +114,18 @@ TEST_F(LimitsTest, RodataWindow_SmallListCompiles) {
               IsOkAndHolds(10));
 }
 
-TEST_F(LimitsTest, RodataWindow_328FlatLiteralsCompile) {
-  EXPECT_THAT(Compile(IntListLiteral(328)), IsOk());
+// 10K-element const list (~240 KiB rodata) now fits the 256 KiB window —
+// previously impossible under the 8 KiB window (m31 §10 raise).
+TEST_F(LimitsTest, RodataWindow_TenThousandFlatLiteralsCompile) {
+  EXPECT_THAT(Compile(IntListLiteral(10000)), IsOk());
 }
 
-TEST_F(LimitsTest, RodataWindow_329FlatLiteralsExceedWindow) {
-  auto program = Compile(IntListLiteral(329));
-  EXPECT_THAT(program, StatusIs(absl::StatusCode::kResourceExhausted));
-  EXPECT_THAT(program.status().message(), HasSubstr("rodata"));
+TEST_F(LimitsTest, RodataWindow_10909FlatLiteralsCompile) {
+  EXPECT_THAT(Compile(IntListLiteral(10909)), IsOk());
 }
 
-// Far past the window (10K frames ≈ 240 KiB vs the 8 KiB budget): still
-// a clean, loud rejection — no silent truncation at scale.
-TEST_F(LimitsTest, RodataWindow_10KFlatLiteralsExceedWindow) {
-  auto program = Compile(IntListLiteral(10000));
+TEST_F(LimitsTest, RodataWindow_10910FlatLiteralsExceedWindow) {
+  auto program = Compile(IntListLiteral(10910));
   EXPECT_THAT(program, StatusIs(absl::StatusCode::kResourceExhausted));
   EXPECT_THAT(program.status().message(), HasSubstr("rodata"));
 }

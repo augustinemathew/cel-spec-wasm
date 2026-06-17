@@ -44,6 +44,19 @@ void PadTo(std::vector<uint8_t>& buf, uint32_t align) {
   }
 }
 
+// Append a fully-formed CelValue frame verbatim.  The runtime, the
+// eval-side marshalling, and the wasm target are all little-endian and
+// share this 24-byte layout, so a raw copy reproduces the bytes
+// cel_list_append_at writes (`*element = *value`); this is the same
+// host-struct == wasm-bytes assumption the eval CelValue marshalling
+// relies on.
+void AppendCelValue(std::vector<uint8_t>& buf, const CelValue& v) {
+  static_assert(sizeof(CelValue) == kCelValueSize,
+                "CelValue must be 24 bytes for byte-identical run packing");
+  const auto* p = reinterpret_cast<const uint8_t*>(&v);
+  buf.insert(buf.end(), p, p + sizeof(CelValue));
+}
+
 }  // namespace
 
 StaticMemoryBuilder::StaticMemoryBuilder(uint32_t base_offset)
@@ -133,6 +146,45 @@ uint32_t StaticMemoryBuilder::AllocateBytes(absl::string_view b) {
 uint32_t StaticMemoryBuilder::AllocateType(absl::string_view name) {
   // Identical payload to AllocateString — only the kind tag differs.
   return AllocateSpan(CEL_TYPE, name);
+}
+
+StaticMemoryBuilder::MaterializedAggregate StaticMemoryBuilder::MaterializeList(
+    absl::Span<const CelValue> elements) {
+  static_assert(sizeof(ArenaListHeader) == 16,
+                "ArenaListHeader must be 16 bytes");
+  const auto n = static_cast<uint32_t>(elements.size());
+
+  // Header sits at the (8-aligned) cursor; its run follows immediately,
+  // mirroring cel_list_create's two sequential arena_allocs (header then
+  // run).  An empty list has no run and elements_offset == 0.
+  ABSL_CHECK_EQ(buf_.size() % kAlign, 0u)
+      << "StaticMemoryBuilder cursor is not 8-byte aligned";
+  const auto header_local = static_cast<uint32_t>(buf_.size());
+  const uint32_t run_local = header_local + sizeof(ArenaListHeader);
+  const uint32_t elements_offset = (n == 0) ? 0u : base_offset_ + run_local;
+
+  AppendU32LE(buf_, n);                // count
+  AppendU32LE(buf_, n);                // capacity
+  AppendU32LE(buf_, elements_offset);  // elements_offset
+  AppendU32LE(buf_, 0u);               // _pad
+
+  // Element run: N contiguous 24-byte CelValue frames, in index order.
+  for (const CelValue& e : elements) {
+    AppendCelValue(buf_, e);
+  }
+
+  // Outer CEL_LIST_ARENA frame whose header_ptr points at the header.
+  const uint32_t frame_local = OpenFrame(CEL_LIST_ARENA);
+  const uint32_t header_abs = base_offset_ + header_local;
+  AppendU32LE(buf_, header_abs);  // arena_list.header_ptr @ payload+0
+  AppendZeros(buf_, 12);          // rest of the 16-byte payload area
+  ABSL_CHECK_EQ(buf_.size() - frame_local, kCelValueSize);
+
+  CelValue frame{};
+  frame.kind = CEL_LIST_ARENA;
+  frame.payload.arena_list.header_ptr = header_abs;
+  return MaterializedAggregate{base_offset_ + frame_local, elements_offset,
+                               frame};
 }
 
 std::vector<uint8_t> StaticMemoryBuilder::Finalize() && {

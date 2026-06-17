@@ -104,7 +104,10 @@ absl::string_view AbiModuleName(AbiModule m);
 // catalogues below.  The cel.abi custom section in every emitted
 // expr module carries this constant; the engine checks it against
 // the runtime's at instantiate time.
-constexpr uint32_t kRuntimeAbiVersion = 2;
+// v3: reserved low-memory window raised 8 KiB → 256 KiB
+// (`--global-base=262144`) so large constant aggregates materialize
+// into rodata (m31).
+constexpr uint32_t kRuntimeAbiVersion = 3;
 
 // All helpers exported by `cel_runtime.wasm` (module name "cel").
 // Loaded once from the generated, embedded `CelRuntimeCatalogue`
