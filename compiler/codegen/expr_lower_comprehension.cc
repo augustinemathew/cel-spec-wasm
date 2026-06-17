@@ -310,7 +310,7 @@ bool IsPresizableCollectionAccu(const cel::ComprehensionExpr& comp,
 // asymmetry handled by the caller):
 //   kWorkspaceSlot: literal byte offset of the CelValue.
 //   kStaticRodata:  literal byte offset of a const list materialized
-//                   into rodata (m31).  Read-only, but a comprehension
+//                   into rodata.  Read-only, but a comprehension
 //                   only reads its range (absorption-guard kind check +
 //                   element iteration; the accu is separate and never
 //                   materialized), so a rodata offset is used exactly

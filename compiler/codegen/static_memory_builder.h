@@ -26,9 +26,9 @@
 // is padded back to 8-byte alignment before the next Allocate,
 // so every frame lands on an 8-byte boundary.
 //
-// Constant lists are materialized too (m31): `MaterializeList` writes
-// the byte-identical in-arena representation the runtime kernels would
-// have built, so a const `[…]` lowers to a single `i32.const` and the
+// Constant lists are materialized too: `MaterializeList` writes the
+// byte-identical in-arena representation the runtime kernels would have
+// built, so a const `[…]` lowers to a single `i32.const` and the
 // read-only kernels cannot tell it from an arena-built list.
 //
 // Out of scope: messages (host-side proto handles, different
@@ -104,7 +104,7 @@ class StaticMemoryBuilder {
   // `elements` are fully-formed 24-byte CelValue frames in index order;
   // any string / bytes / nested-aggregate payload they reference must
   // already be allocated in THIS builder so the embedded offsets are
-  // final (allocate leaves first, then the enclosing list — m31's
+  // final (allocate leaves first, then the enclosing list —
   // innermost-first ordering).  Nest a const list by passing the
   // `.frame` of its `MaterializeList` result as an element of the outer
   // list.

@@ -1,8 +1,23 @@
 # m31 — compile-time materialization of constant aggregate literals
 
-Status: plan — drafted 2026-06-12, not yet started.  Updated
-2026-06-16: window size settled (§10) and the footprint probe data
-folded in (§4); implementation still queued.
+Status: shipped 2026-06-17 (const **lists** only; const-map
+materialization is the queued follow-up in §8).  What landed: const
+list literals materialize byte-identically into rodata and lower to a
+single `i32.const`; the low-memory window was raised 8 KiB → 256 KiB
+(§10); the rodata-overflow gate and ABI v3 bump shipped with it.
+
+> Plan-vs-execution delta (memory layout, §4).  The as-drafted plan
+> placed materialized aggregates in a **dedicated band** between rodata
+> and workspace (`aggregate_base … aggregate_end` in the §4 diagram).
+> As built, there is **no separate band**: `MaterializeList` writes the
+> aggregate's header + run + frame straight into the **rodata** region
+> via the same `StaticMemoryBuilder`, and the node carries
+> `StorageKind::kStaticRodata` — the identical storage path as a scalar
+> constant.  Materialized aggregates *are* rodata, so the static window
+> stays two-region (rodata + workspace + 256 B guard); the §4 diagram's
+> three-region picture describes the rejected design, not the shipped
+> one.  The single overflow gate (`CheckStaticWindowFits` in
+> layout_pass.cc) covers the merged rodata extent.
 
 ## 1. Problem
 
@@ -329,32 +344,31 @@ the window); orthogonal, ship either order.
 
 ## 11. Pre-close cleanup checklist (track to completion before closing)
 
-The feature is functionally complete + e2e-verified; these MUST be done
-before the milestone closes (the whole slice lands as one commit).
+The feature is functionally complete + e2e-verified.  Shipped as a PR
+with the implementation as the first commit and these cleanups as
+follow-up commits (squash-merge gives the one-commit history).
 
 Lint / code shape:
-  - [ ] Split `LayoutPass` — it exceeds the function-size gate after the
-    const-aggregate pass was added.
-  - [ ] `IsConstMaterializable` loop → `std::all_of`
-    (readability-use-anyofallof).
-  - [ ] Parenthesize `r.elements_offset + i * stride`
-    (readability-math-missing-parentheses).
-  - [ ] Collapse `ConstAggregateVisitor`'s `consumed_` set vs. the
-    element-stamping (stamping made `consumed_` partly redundant — one
-    mechanism should drive ConstLayoutVisitor's skip).
+  - [x] Split `LayoutPass` — extracted `PackRodata` + `CheckStaticWindowFits`.
+  - [x] `IsConstMaterializable` loop → `std::all_of`.
+  - [x] Parenthesize `r.elements_offset + (i * stride)`.
+  - [x] Collapse `ConstAggregateVisitor`'s `consumed_` set vs. the
+    element-stamping — `consumed_` removed; `ConstLayoutVisitor` now
+    skips any const whose node already carries non-`kNone` storage
+    (the element-stamping is the single mechanism).
   - [ ] `scripts/lint.sh --branch` clean over the whole slice.
 
-Waste (correct but suboptimal):
+Waste (correct but suboptimal — deferred, tracked):
   - [ ] String/bytes list elements waste a 24-byte frame each
     (`ConstToCelValue` → `AllocateString` writes an unused frame + the
     payload).  Add a payload-only allocate to drop the dead frame.
   - [ ] (Optional, §10 companion) dedup identical literal frames.
 
 Stale `8192` → `262144` comments:
-  - [ ] `compiler/memory_layout.h` (--global-base comment),
-    `compiler/codegen/layout_pass.h` (`[16, 8192)` window),
-    `eval/engine_test.cc`, `compiler/internal/compile_test.cc`,
-    `e2e/known_bugs_test.cc`.
+  - [x] `compiler/memory_layout.h`, `compiler/codegen/layout_pass.h`,
+    `runtime/cel_layout.h`, `compiler/internal/compile.cc`,
+    `eval/engine_test.cc`, `e2e/{limits,known_bugs}_test.cc`,
+    `runtime/BUILD.bazel`, and the bench corpus headers / OPERATORS.md.
 
 Tests / conformance:
   - [x] Retune `compile_test` rodata/workspace over-budget to the
@@ -371,13 +385,18 @@ Tests / conformance:
     struct} (9 combos) + triples; list-only chains materialize, the
     rest build per-Eval, all eval correctly
     (AggregateNestingCrossProductTest + UnmaterializedElementTypeTest).
-  - [ ] Un-skip `celwasm-skip-rodata` corpus cells + full conformance
-    (monotonic baseline).
-  - [ ] Tick `testing-checklist.md` m31 rows.
+  - [x] Un-skip every `celwasm-skip-rodata` corpus cell (8 cells:
+    arith `*1000TermsConst`, comprehensions `all1000`, long_strings
+    `*_N10000*`, plus the lists/size cells) — each verified to compile +
+    eval on celwasm via the cel CLI.  Conformance monotonic
+    (2035 PASS / 0 FAIL both link modes).
+  - [x] Also closed `celwasm-skip-arena-overflow`
+    (`concatChain1000Terms`) — now evals (the arena grows in chunks).
+  - [x] Tick `testing-checklist.md` m31 rows.
 
 Docs:
-  - [ ] m31 status line → shipped; §10 "Queued" → "shipped"; close-out
-    per CLAUDE.md.  (wat-traces §72 already added.)
+  - [x] m31 status line → shipped; plan-vs-execution delta on the §4
+    memory map; close-out per CLAUDE.md.  (wat-traces §72 already added.)
 
 ABI:
   - [x] `kRuntimeAbiVersion` 2 → 3.  (No real users — compat irrelevant;

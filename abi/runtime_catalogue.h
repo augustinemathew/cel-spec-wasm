@@ -106,7 +106,7 @@ absl::string_view AbiModuleName(AbiModule m);
 // the runtime's at instantiate time.
 // v3: reserved low-memory window raised 8 KiB → 256 KiB
 // (`--global-base=262144`) so large constant aggregates materialize
-// into rodata (m31).
+// into rodata.
 constexpr uint32_t kRuntimeAbiVersion = 3;
 
 // All helpers exported by `cel_runtime.wasm` (module name "cel").

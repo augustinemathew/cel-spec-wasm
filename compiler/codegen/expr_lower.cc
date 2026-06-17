@@ -536,7 +536,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
   // A const list materialized into rodata (LayoutPass's
   // ConstAggregateVisitor) lowers to a single i32.const of its frame
   // offset — read-only kernels treat it exactly like an arena-built
-  // list (m31).  Otherwise it is built per-Eval at its workspace slot.
+  // list.  Otherwise it is built per-Eval at its workspace slot.
   if (ann.storage.kind == StorageKind::kStaticRodata) {
     return I32Const(ctx.mod, ann.storage.payload);
   }

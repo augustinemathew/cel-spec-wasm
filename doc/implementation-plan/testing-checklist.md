@@ -3247,6 +3247,42 @@ error kind is differentially re-derived from cel-cpp on every run by
         `int(-2^63.0)` oracle-settled boundary), uint(-1),
         int('forty-two').
 
+## Rewrite M31 — compile-time materialization of const aggregate literals (lists; shipped 2026-06-17)
+
+Const list literals are written byte-identically into rodata at compile
+time and lower to a single `i32.const`; the low-memory window was raised
+8 KiB → 256 KiB (ABI v3).  Const-map materialization is the queued
+Swiss-table follow-up (m31 §8) — its e2e matrix is staged + GTEST_SKIP'd.
+
+  - [x] `StaticMemoryBuilder::MaterializeList` unit coverage
+        (`static_memory_builder_test`) — header/run/frame byte layout,
+        empty list (`elements_offset == 0`), string-element payload
+        placement, nested list, 8-byte alignment preservation.
+  - [x] `LayoutPass` const-aggregate pass (`layout_pass_test`) — const
+        list stamps `kStaticRodata`; non-const `[a,2,3]` keeps the
+        build path; comprehension `accu_init` excluded, `iter_range`
+        materialized.
+  - [x] codegen lowering (`expr_lower_test`) — const list → single
+        `i32.const` (no `cel_list_create`/appends); non-const list still
+        emits create+append; empty materialized iter_range comprehension.
+  - [x] WAT trace + runner (`wat/72_static_aggregate.wat`,
+        `wat_runner_test`) — pre-materialized `[10,20,30][1]` → CEL_INT 20.
+  - [x] e2e every materializable element kind (`m31_static_aggregate_test`,
+        both link modes) — null/bool/int/uint/double/string/bytes/nested,
+        index/size/`in`, list-as-root, equivalence vs arena-built,
+        comprehension over a materialized range, large 1K/10K lists.
+  - [x] e2e aggregate nesting cross-product — {list,map,struct}² + triples
+        (list chains materialize; map/struct build per-Eval).
+  - [x] compilation limits (`limits_test`, both modes) — rodata window
+        boundary at 10909 fit / 10910 overflow; over-budget rodata
+        (12K-int list) and workspace (9K distinct vars) reject loudly.
+  - [x] `known_bugs` regressions un-skipped — `ExpressionIntermediatesArenaCliff`
+        (`size([0..4000])`), `MapSizeArenaCliff`, `LiteralIntListInScan10KEvals`.
+  - [x] benchmark corpus rodata-capped cells un-skipped + verified on
+        celwasm (arith/comprehension/long-string 1000/10000-element cells).
+  - [ ] const-map materialization (Swiss-table) — staged, GTEST_SKIP'd
+        (`ConstMapMaterializationTest`, 18 rows); un-skip when m31 §8 lands.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

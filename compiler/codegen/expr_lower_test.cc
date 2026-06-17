@@ -847,8 +847,8 @@ TEST(ExprLowerMapTest, KCallLogicalOrLowersToHelper) {
 // --------------------------------------------------------------
 
 TEST(ExprLowerListTest, ConstListLiteralLowersToI32ConstNoBuild) {
-  // m31: an all-constant list is materialized into rodata, so the
-  // kListExpr lowers to a single i32.const of its frame offset — no
+  // An all-constant list is materialized into rodata, so the kListExpr
+  // lowers to a single i32.const of its frame offset — no
   // cel_list_create, no per-element appends.
   Pipeline p = RunPipeline("[10, 20, 30]");
   WasmModule m;
@@ -963,10 +963,10 @@ TEST(ExprLowerComprehensionTest, CelBindLowersThroughGenericPath) {
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
-  // The empty iter_range literal `[]` is materialized into rodata
-  // (m31), so no cel_list_create is emitted for it; the generic
-  // comprehension scaffold still drives the (zero-iteration) loop and
-  // the body arithmetic (`x + 1`) lowers normally.
+  // The empty iter_range literal `[]` is materialized into rodata, so
+  // no cel_list_create is emitted for it; the generic comprehension
+  // scaffold still drives the (zero-iteration) loop and the body
+  // arithmetic (`x + 1`) lowers normally.
   EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_create"));
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_add_at_vv"));
 }

@@ -47,19 +47,19 @@ uint32_t RoundUp16(uint32_t x) {
 // visitor; `IdentStorageVisitor` (below) handles kIdent.
 class ConstLayoutVisitor : public cel::AstVisitorBase {
  public:
-  // `consumed` lists kConst node ids that ConstAggregateVisitor already
-  // packed into a materialized list's element run; they get no standalone
-  // rodata frame here (else a const list would cost ~2x rodata — once for
-  // the dead per-element frames, once for the run).
-  ConstLayoutVisitor(StaticMemoryBuilder& builder, WasmAnnotations& annotations,
-                     const absl::flat_hash_set<int64_t>& consumed)
-      : builder_(builder), annotations_(annotations), consumed_(consumed) {}
+  ConstLayoutVisitor(StaticMemoryBuilder& builder, WasmAnnotations& annotations)
+      : builder_(builder), annotations_(annotations) {}
 
   void PreVisitExpr(const cel::Expr&) override {}
   void PostVisitExpr(const cel::Expr&) override {}
 
   void PostVisitConst(const cel::Expr& expr, const cel::Constant& c) override {
-    if (consumed_.contains(expr.id())) return;  // interior to a material list
+    // A const already carrying storage was packed into a materialized
+    // list's element run by ConstAggregateVisitor (which runs first); it
+    // needs no standalone frame here (else a const list would cost ~2x
+    // rodata — once for the dead per-element frames, once for the run).
+    const NodeAnnotation* a = annotations_.Find(expr.id());
+    if (a != nullptr && a->storage.kind != StorageKind::kNone) return;
     const uint32_t offset = Pack(expr, c);
     annotations_[expr.id()].storage =
         Storage{StorageKind::kStaticRodata, offset};
@@ -100,10 +100,9 @@ class ConstLayoutVisitor : public cel::AstVisitorBase {
 
   StaticMemoryBuilder& builder_;
   WasmAnnotations& annotations_;
-  const absl::flat_hash_set<int64_t>& consumed_;
 };
 
-// --- Constant aggregate materialization (m31) --------------------------
+// --- Constant aggregate materialization ---------------------------------
 //
 // A list literal whose elements are all literals (or, recursively,
 // const-materializable list literals) is packed into rodata at compile
@@ -180,12 +179,8 @@ CelValue ConstToCelValue(const cel::Constant& c, StaticMemoryBuilder& b) {
 // embeds it — making the inner frame live with no double materialization.
 class ConstAggregateVisitor : public cel::AstVisitorBase {
  public:
-  // `consumed` is populated with the node id of every literal packed into
-  // a materialized run, so ConstLayoutVisitor can skip giving them a
-  // redundant standalone rodata frame.
-  ConstAggregateVisitor(StaticMemoryBuilder& builder, WasmAnnotations& ann,
-                        absl::flat_hash_set<int64_t>& consumed)
-      : builder_(builder), annotations_(ann), consumed_(consumed) {}
+  ConstAggregateVisitor(StaticMemoryBuilder& builder, WasmAnnotations& ann)
+      : builder_(builder), annotations_(ann) {}
 
   void PreVisitExpr(const cel::Expr& expr) override {
     if (expr.kind_case() == cel::ExprKindCase::kComprehensionExpr) {
@@ -220,9 +215,10 @@ class ConstAggregateVisitor : public cel::AstVisitorBase {
     annotations_[expr.id()].storage =
         Storage{StorageKind::kStaticRodata, r.frame_offset};
     // Stamp each element node with its slot in the run.  The element's
-    // value already lives there (no standalone frame is packed for it),
-    // and this keeps every node's storage populated — the "no kNone"
-    // invariant (cleanup-backlog #31) that the histogram tests assert.
+    // value already lives there, so this both (a) lets ConstLayoutVisitor
+    // skip giving it a redundant standalone frame (it keys off non-kNone
+    // storage) and (b) keeps every node's storage populated — the "no
+    // kNone" invariant (cleanup-backlog #31) the histogram tests assert.
     const auto stride = static_cast<uint32_t>(sizeof(CelValue));
     for (uint32_t i = 0; i < l.elements().size(); ++i) {
       annotations_[l.elements()[i].expr().id()].storage =
@@ -237,8 +233,8 @@ class ConstAggregateVisitor : public cel::AstVisitorBase {
   // const list, so it is one of those two kinds.
   CelValue ElementValue(const cel::Expr& e) {
     if (e.kind_case() == cel::ExprKindCase::kConstant) {
-      // Packed into the run — no standalone rodata frame needed.
-      consumed_.insert(e.id());
+      // Packed directly into the run; its node is stamped with the run
+      // slot in MaterializeList, so no standalone rodata frame is built.
       return ConstToCelValue(e.const_expr(), builder_);
     }
     return MaterializeList(e);
@@ -246,7 +242,6 @@ class ConstAggregateVisitor : public cel::AstVisitorBase {
 
   StaticMemoryBuilder& builder_;
   WasmAnnotations& annotations_;
-  absl::flat_hash_set<int64_t>& consumed_;
   absl::flat_hash_map<int64_t, CelValue> frames_;
   absl::flat_hash_set<int64_t> excluded_accu_;
 };
@@ -624,21 +619,18 @@ void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
 }
 
 // Pass A: pack rodata.  First materialize const list literals — each
-// eligible kListExpr is stamped {kStaticRodata, frame_offset} and its
-// element literals recorded in `consumed` so the ConstLayoutVisitor
-// skips their redundant standalone frames (a const list would otherwise
-// cost ~2x rodata).  Then pack the remaining kConsts, and lift each
-// kSelect-on-optional field name into rodata for the
+// eligible kListExpr is stamped {kStaticRodata, frame_offset} and each
+// of its element nodes stamped with its slot in the run.  Then pack the
+// remaining kConsts (ConstLayoutVisitor skips any already-stamped
+// element, so a const list isn't double-counted as ~2x rodata), and
+// lift each kSelect-on-optional field name into rodata for the
 // `cel_select_optional_field_at_vv` kernel.  All three share one builder
 // so the rodata layout is contiguous.
 void PackRodata(const cel::Expr& root, StaticLayout& layout) {
   StaticMemoryBuilder builder(layout.rodata_base);
-  absl::flat_hash_set<int64_t> consumed_consts;
-  ConstAggregateVisitor const_agg_visitor(builder, layout.annotations,
-                                          consumed_consts);
+  ConstAggregateVisitor const_agg_visitor(builder, layout.annotations);
   cel::AstTraverse(root, const_agg_visitor);
-  ConstLayoutVisitor const_visitor(builder, layout.annotations,
-                                   consumed_consts);
+  ConstLayoutVisitor const_visitor(builder, layout.annotations);
   cel::AstTraverse(root, const_visitor);
   SelectKeyRodataVisitor select_key_visitor(builder, layout.annotations);
   cel::AstTraverse(root, select_key_visitor);
