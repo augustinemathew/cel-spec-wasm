@@ -1303,6 +1303,31 @@ absl::StatusOr<bool> SnapshotHostListToArena(const HostListBacking& backing,
   return true;
 }
 
+// Writes a zero-count ArenaListHeader at `out_slot` so the comprehension
+// prologue's 2-load shape reads count=0 cleanly (its shape walks the
+// header pointer at `payload+8`, then reads count at `*header+0` — a zero
+// `header_ptr` would dereference into rodata).  Used for non-host
+// sources, empty host lists, and OOM fallback.
+absl::Status WriteEmptyArenaList(uint32_t out_slot,
+                                 const TrampolineContext& ctx) {
+  constexpr uint32_t kHeaderBytes = 16u;
+  uint32_t header_off = 0;
+  if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr ||
+      header_off == 0) {
+    return absl::ResourceExhaustedError(
+        "CelListIterOpenImpl: arena OOM allocating empty header");
+  }
+  ctx.mem.WriteU32(header_off + 0u, 0u);   // count
+  ctx.mem.WriteU32(header_off + 4u, 0u);   // capacity
+  ctx.mem.WriteU32(header_off + 8u, 0u);   // elements_offset
+  ctx.mem.WriteU32(header_off + 12u, 0u);  // _pad
+  CelValue empty{};
+  empty.kind = CEL_LIST_ARENA;
+  empty.payload.arena_list.header_ptr = header_off;
+  ctx.mem.WriteCelValue(out_slot, empty);
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
@@ -1356,30 +1381,6 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
                                  const TrampolineContext& ctx) {
   CelValue list_cv = ctx.mem.ReadCelValue(list_slot);
 
-  // Allocate a zero-count ArenaListHeader so the comprehension
-  // prologue reads count=0 cleanly (its 2-load shape walks the
-  // header pointer at `payload+8`, then reads count at `*header+0`
-  // — a zero `header_ptr` would dereference into rodata).  Used
-  // for non-host sources, empty host lists, and OOM fallback.
-  constexpr uint32_t kHeaderBytes = 16u;
-  auto write_empty = [&]() -> absl::Status {
-    uint32_t header_off = 0;
-    if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr ||
-        header_off == 0) {
-      return absl::ResourceExhaustedError(
-          "CelListIterOpenImpl: arena OOM allocating empty header");
-    }
-    ctx.mem.WriteU32(header_off + 0u, 0u);   // count
-    ctx.mem.WriteU32(header_off + 4u, 0u);   // capacity
-    ctx.mem.WriteU32(header_off + 8u, 0u);   // elements_offset
-    ctx.mem.WriteU32(header_off + 12u, 0u);  // _pad
-    CelValue empty{};
-    empty.kind = CEL_LIST_ARENA;
-    empty.payload.arena_list.header_ptr = header_off;
-    ctx.mem.WriteCelValue(out_slot, empty);
-    return absl::OkStatus();
-  };
-
   if (list_cv.kind == CEL_UNKNOWN || list_cv.kind == CEL_ERROR) {
     // The comprehension prologue's range-absorption guard propagates
     // a poisoned iter_range BEFORE cel_list_arena_view can route it
@@ -1397,7 +1398,7 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
   if (list_cv.kind != CEL_LIST_HOST) {
     // Codegen contract: cel_list_arena_view only routes us for
     // CEL_LIST_HOST sources.  Defence in depth.
-    return write_empty();
+    return WriteEmptyArenaList(out_slot, ctx);
   }
   const HostListBacking* backing =
       ctx.refs.LookupList(list_cv.payload.ref_slot);
@@ -1408,12 +1409,12 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
   }
   const size_t count = backing->Size();
   if (count == 0) {
-    return write_empty();
+    return WriteEmptyArenaList(out_slot, ctx);
   }
   // Materialize the host list into the arena; OOM falls back to empty.
   auto done = SnapshotHostListToArena(*backing, count, out_slot, ctx);
   if (!done.ok()) return done.status();
-  if (!*done) return write_empty();
+  if (!*done) return WriteEmptyArenaList(out_slot, ctx);
   return absl::OkStatus();
 }
 
@@ -3507,21 +3508,24 @@ std::optional<absl::Status> SetScalarIntegerField(
   using FD = google::protobuf::FieldDescriptor;
   switch (field.cpp_type()) {
     case FD::CPPTYPE_BOOL:
-      if (value.kind != CEL_BOOL)
+      if (value.kind != CEL_BOOL) {
         return ScalarKindMismatch(field, "BOOL", value);
+      }
       refl.SetBool(&msg, &field, value.payload.b != 0);
       return absl::OkStatus();
     case FD::CPPTYPE_INT32:
-      if (value.kind != CEL_INT)
+      if (value.kind != CEL_INT) {
         return ScalarKindMismatch(field, "INT32", value);
+      }
       if (auto s = CheckInt32Range(ReadInt64(value), field.name()); !s.ok()) {
         return s;
       }
       refl.SetInt32(&msg, &field, static_cast<int32_t>(ReadInt64(value)));
       return absl::OkStatus();
     case FD::CPPTYPE_INT64:
-      if (value.kind != CEL_INT)
+      if (value.kind != CEL_INT) {
         return ScalarKindMismatch(field, "INT64", value);
+      }
       refl.SetInt64(&msg, &field, ReadInt64(value));
       return absl::OkStatus();
     case FD::CPPTYPE_UINT32:
@@ -3553,8 +3557,9 @@ std::optional<absl::Status> SetScalarFloatField(
   using FD = google::protobuf::FieldDescriptor;
   switch (field.cpp_type()) {
     case FD::CPPTYPE_FLOAT:
-      if (value.kind != CEL_DOUBLE)
+      if (value.kind != CEL_DOUBLE) {
         return ScalarKindMismatch(field, "FLOAT", value);
+      }
       refl.SetFloat(&msg, &field, static_cast<float>(ReadDouble(value)));
       return absl::OkStatus();
     case FD::CPPTYPE_DOUBLE:
@@ -3983,62 +3988,91 @@ std::optional<absl::Status> MaybeSetWktMessageField(
   return MaybePackWktMessage(*sub, value, mem, refs);
 }
 
+// Repeated-field append mismatch error, shared by the numeric/bool/
+// string/enum arms below so they emit an identical message.
+absl::Status RepeatedAppendMismatch(
+    const google::protobuf::FieldDescriptor& field, absl::string_view ty,
+    const CelValue& cv) {
+  return absl::InvalidArgumentError(
+      absl::StrCat("CelSetFieldImpl: repeated `", field.name(), "` ", ty,
+                   " element kind=", static_cast<int>(cv.kind)));
+}
+
+// INT32/INT64/UINT32/UINT64/FLOAT/DOUBLE arms of AppendRepeatedScalar.
+// Returns nullopt for a non-numeric cpp_type (caller handles
+// BOOL/STRING/ENUM/MESSAGE).  Uses the `Add...` reflection family.
+std::optional<absl::Status> AppendRepeatedNumeric(
+    google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const google::protobuf::Reflection& refl, const CelValue& cv) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (field.cpp_type()) {
+    case FD::CPPTYPE_INT32:
+      if (cv.kind != CEL_INT) return RepeatedAppendMismatch(field, "INT32", cv);
+      refl.AddInt32(&msg, &field, static_cast<int32_t>(cv.payload.i));
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT64:
+      if (cv.kind != CEL_INT) return RepeatedAppendMismatch(field, "INT64", cv);
+      refl.AddInt64(&msg, &field, cv.payload.i);
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT32:
+      if (cv.kind != CEL_UINT) {
+        return RepeatedAppendMismatch(field, "UINT32", cv);
+      }
+      refl.AddUInt32(&msg, &field, static_cast<uint32_t>(cv.payload.u));
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT64:
+      if (cv.kind != CEL_UINT) {
+        return RepeatedAppendMismatch(field, "UINT64", cv);
+      }
+      refl.AddUInt64(&msg, &field, cv.payload.u);
+      return absl::OkStatus();
+    case FD::CPPTYPE_FLOAT:
+      if (cv.kind != CEL_DOUBLE) {
+        return RepeatedAppendMismatch(field, "FLOAT", cv);
+      }
+      refl.AddFloat(&msg, &field, static_cast<float>(cv.payload.d));
+      return absl::OkStatus();
+    case FD::CPPTYPE_DOUBLE:
+      if (cv.kind != CEL_DOUBLE) {
+        return RepeatedAppendMismatch(field, "DOUBLE", cv);
+      }
+      refl.AddDouble(&msg, &field, cv.payload.d);
+      return absl::OkStatus();
+    default:
+      return std::nullopt;
+  }
+}
+
 // Numeric / bool / string / enum arms of `AppendRepeatedFromCelValue`
 // (every non-MESSAGE cpp_type).  Returns the append Status for a
 // handled cpp_type, or `std::nullopt` for CPPTYPE_MESSAGE (caller
-// handles).  Mirror of `SetScalarNumericField` + the string/enum arm
-// but uses the `Add...` reflection family.  Single call site →
-// inlines back.
+// handles).  Mirror of the singular scalar setters but uses the
+// `Add...` reflection family.
 std::optional<absl::Status> AppendRepeatedScalar(
     google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field,
     const google::protobuf::Reflection& refl, const CelValue& cv,
     const MemoryView& mem) {
   using FD = google::protobuf::FieldDescriptor;
-  auto mismatch = [&](absl::string_view ty) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("CelSetFieldImpl: repeated `", field.name(), "` ", ty,
-                     " element kind=", static_cast<int>(cv.kind)));
-  };
+  if (auto s = AppendRepeatedNumeric(msg, field, refl, cv); s.has_value()) {
+    return s;
+  }
   switch (field.cpp_type()) {
     case FD::CPPTYPE_BOOL:
-      if (cv.kind != CEL_BOOL) return mismatch("BOOL");
+      if (cv.kind != CEL_BOOL) return RepeatedAppendMismatch(field, "BOOL", cv);
       refl.AddBool(&msg, &field, cv.payload.b != 0);
-      return absl::OkStatus();
-    case FD::CPPTYPE_INT32:
-      if (cv.kind != CEL_INT) return mismatch("INT32");
-      refl.AddInt32(&msg, &field, static_cast<int32_t>(cv.payload.i));
-      return absl::OkStatus();
-    case FD::CPPTYPE_INT64:
-      if (cv.kind != CEL_INT) return mismatch("INT64");
-      refl.AddInt64(&msg, &field, cv.payload.i);
-      return absl::OkStatus();
-    case FD::CPPTYPE_UINT32:
-      if (cv.kind != CEL_UINT) return mismatch("UINT32");
-      refl.AddUInt32(&msg, &field, static_cast<uint32_t>(cv.payload.u));
-      return absl::OkStatus();
-    case FD::CPPTYPE_UINT64:
-      if (cv.kind != CEL_UINT) return mismatch("UINT64");
-      refl.AddUInt64(&msg, &field, cv.payload.u);
-      return absl::OkStatus();
-    case FD::CPPTYPE_FLOAT:
-      if (cv.kind != CEL_DOUBLE) return mismatch("FLOAT");
-      refl.AddFloat(&msg, &field, static_cast<float>(cv.payload.d));
-      return absl::OkStatus();
-    case FD::CPPTYPE_DOUBLE:
-      if (cv.kind != CEL_DOUBLE) return mismatch("DOUBLE");
-      refl.AddDouble(&msg, &field, cv.payload.d);
       return absl::OkStatus();
     case FD::CPPTYPE_STRING: {
       const bool want_bytes = field.type() == FD::TYPE_BYTES;
       if (want_bytes ? cv.kind != CEL_BYTES : cv.kind != CEL_STRING) {
-        return mismatch("STRING/BYTES");
+        return RepeatedAppendMismatch(field, "STRING/BYTES", cv);
       }
       refl.AddString(&msg, &field, ReadSpanString(cv, mem));
       return absl::OkStatus();
     }
     case FD::CPPTYPE_ENUM:
-      if (cv.kind != CEL_INT) return mismatch("ENUM");
+      if (cv.kind != CEL_INT) return RepeatedAppendMismatch(field, "ENUM", cv);
       if (auto s = CheckInt32Range(cv.payload.i, field.name()); !s.ok()) {
         return s;
       }
@@ -4126,21 +4160,15 @@ absl::Status AppendRepeatedFromCelValue(
 }
 
 // Non-MESSAGE arms of `AppendRepeatedFromHostListValue` — reads each
-// element through `celwasm::Value`'s typed accessors (a failed
-// accessor propagates its Status).  Returns `std::nullopt` for
-// CPPTYPE_MESSAGE (caller handles).  Single call site → inlines back.
-std::optional<absl::Status> AppendRepeatedHostScalar(
+// INT32/INT64/UINT32/UINT64 arms of AppendRepeatedHostScalar, reading
+// via celwasm::Value's typed accessors (a failed accessor propagates
+// its Status).  Returns nullopt for a non-integer cpp_type.
+std::optional<absl::Status> AppendRepeatedHostInteger(
     google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field,
     const google::protobuf::Reflection& refl, const celwasm::Value& v) {
   using FD = google::protobuf::FieldDescriptor;
   switch (field.cpp_type()) {
-    case FD::CPPTYPE_BOOL: {
-      auto b = v.AsBool();
-      if (!b.ok()) return b.status();
-      refl.AddBool(&msg, &field, *b);
-      return absl::OkStatus();
-    }
     case FD::CPPTYPE_INT32: {
       auto i = v.AsInt();
       if (!i.ok()) return i.status();
@@ -4165,6 +4193,19 @@ std::optional<absl::Status> AppendRepeatedHostScalar(
       refl.AddUInt64(&msg, &field, *u);
       return absl::OkStatus();
     }
+    default:
+      return std::nullopt;
+  }
+}
+
+// FLOAT / DOUBLE arms of AppendRepeatedHostScalar (both read AsDouble;
+// FLOAT narrows).  Returns nullopt for a non-float cpp_type.
+std::optional<absl::Status> AppendRepeatedHostFloat(
+    google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const google::protobuf::Reflection& refl, const celwasm::Value& v) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (field.cpp_type()) {
     case FD::CPPTYPE_FLOAT: {
       auto d = v.AsDouble();
       if (!d.ok()) return d.status();
@@ -4177,19 +4218,42 @@ std::optional<absl::Status> AppendRepeatedHostScalar(
       refl.AddDouble(&msg, &field, *d);
       return absl::OkStatus();
     }
-    case FD::CPPTYPE_STRING: {
-      auto s = (field.type() == FD::TYPE_BYTES) ? v.AsBytes() : v.AsString();
-      if (!s.ok()) return s.status();
-      refl.AddString(&msg, &field, std::string(*s));
-      return absl::OkStatus();
-    }
-    case FD::CPPTYPE_ENUM: {
+    default:
+      return std::nullopt;
+  }
+}
+
+std::optional<absl::Status> AppendRepeatedHostScalar(
+    google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const google::protobuf::Reflection& refl, const celwasm::Value& v) {
+  using FD = google::protobuf::FieldDescriptor;
+  if (auto s = AppendRepeatedHostInteger(msg, field, refl, v); s.has_value()) {
+    return s;
+  }
+  if (auto s = AppendRepeatedHostFloat(msg, field, refl, v); s.has_value()) {
+    return s;
+  }
+  switch (field.cpp_type()) {
+    case FD::CPPTYPE_ENUM: {  // enum is int-encoded on the wire
       auto i = v.AsInt();
       if (!i.ok()) return i.status();
       if (auto s = CheckInt32Range(*i, field.name()); !s.ok()) {
         return s;
       }
       refl.AddEnumValue(&msg, &field, static_cast<int>(*i));
+      return absl::OkStatus();
+    }
+    case FD::CPPTYPE_BOOL: {
+      auto b = v.AsBool();
+      if (!b.ok()) return b.status();
+      refl.AddBool(&msg, &field, *b);
+      return absl::OkStatus();
+    }
+    case FD::CPPTYPE_STRING: {
+      auto s = (field.type() == FD::TYPE_BYTES) ? v.AsBytes() : v.AsString();
+      if (!s.ok()) return s.status();
+      refl.AddString(&msg, &field, std::string(*s));
       return absl::OkStatus();
     }
     default:
@@ -4306,19 +4370,21 @@ absl::Status SetArenaMapEntryMessageValue(
         "`> value kind=", static_cast<int>(val_cv.kind)));
   }
   const HostMessageBacking* src = refs.Lookup(val_cv.payload.msg_slot);
-  if (src == nullptr || src->message() == nullptr) {
+  const google::protobuf::Message* src_msg =
+      src != nullptr ? src->message() : nullptr;
+  if (src_msg == nullptr) {
     return absl::InvalidArgumentError(
         "CelSetFieldImpl: map message-value source has no backing");
   }
-  return WriteMessageOrPack(dst, *src->message());
+  return WriteMessageOrPack(dst, *src_msg);
 }
 
 absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
                                  const google::protobuf::FieldDescriptor& field,
-                                 const google::protobuf::Reflection& refl,
                                  const CelValue& key_cv, const CelValue& val_cv,
                                  const MemoryView& mem,
                                  const ExternrefTable& refs) {
+  const google::protobuf::Reflection& refl = *msg.GetReflection();
   const google::protobuf::FieldDescriptor* key_fd = MapEntryField(field, 1);
   const google::protobuf::FieldDescriptor* val_fd = MapEntryField(field, 2);
   const bool val_is_message =
@@ -4344,15 +4410,13 @@ absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
   return SetScalarField(*entry, *val_fd, val_cv, mem, &refs);
 }
 
-// Set the key sub-field of a host-map entry from a `celwasm::Value`.
-// Map keys are a closed set (bool / int / uint / string) per
-// descriptor.proto; any other cpp_type is rejected (defence — the
-// descriptor wouldn't have legalised the field).  A failed typed
-// accessor propagates its Status.  Single call site → inlines back.
-absl::Status SetHostMapEntryKey(google::protobuf::Message& entry,
-                                const google::protobuf::Reflection& entry_refl,
-                                const google::protobuf::FieldDescriptor& key_fd,
-                                const celwasm::Value& key) {
+// INT32/INT64/UINT32/UINT64 arms of SetHostMapEntryKey.  Returns
+// nullopt for a non-integer key cpp_type (caller handles bool/string).
+std::optional<absl::Status> SetHostMapEntryIntegerKey(
+    google::protobuf::Message& entry,
+    const google::protobuf::Reflection& entry_refl,
+    const google::protobuf::FieldDescriptor& key_fd,
+    const celwasm::Value& key) {
   using FD = google::protobuf::FieldDescriptor;
   switch (key_fd.cpp_type()) {
     case FD::CPPTYPE_INT32: {
@@ -4379,6 +4443,25 @@ absl::Status SetHostMapEntryKey(google::protobuf::Message& entry,
       entry_refl.SetUInt64(&entry, &key_fd, *u);
       return absl::OkStatus();
     }
+    default:
+      return std::nullopt;
+  }
+}
+
+// Map keys are a closed set (bool / int / uint / string) per
+// descriptor.proto; any other cpp_type is rejected (defence — the
+// descriptor wouldn't have legalised the field).  A failed typed
+// accessor propagates its Status.
+absl::Status SetHostMapEntryKey(google::protobuf::Message& entry,
+                                const google::protobuf::Reflection& entry_refl,
+                                const google::protobuf::FieldDescriptor& key_fd,
+                                const celwasm::Value& key) {
+  using FD = google::protobuf::FieldDescriptor;
+  if (auto s = SetHostMapEntryIntegerKey(entry, entry_refl, key_fd, key);
+      s.has_value()) {
+    return *s;
+  }
+  switch (key_fd.cpp_type()) {
     case FD::CPPTYPE_BOOL: {
       auto b = key.AsBool();
       if (!b.ok()) return b.status();
@@ -4398,24 +4481,15 @@ absl::Status SetHostMapEntryKey(google::protobuf::Message& entry,
   }
 }
 
-// Set the value sub-field of a host-map entry from a `celwasm::Value`.
-// Every cpp_type is allowed (per descriptor.proto); message values
-// resolve their backing and copy/pack via `WriteMessageOrPack`.  A
-// failed typed accessor propagates its Status.  Single call site →
-// inlines back.
-absl::Status SetHostMapEntryValue(
+// INT32/INT64/UINT32/UINT64 arms of SetHostMapEntryValue.  Returns
+// nullopt for a non-integer cpp_type (caller handles the rest).
+std::optional<absl::Status> SetHostMapEntryIntegerValue(
     google::protobuf::Message& entry,
     const google::protobuf::Reflection& entry_refl,
     const google::protobuf::FieldDescriptor& val_fd,
     const celwasm::Value& value) {
   using FD = google::protobuf::FieldDescriptor;
   switch (val_fd.cpp_type()) {
-    case FD::CPPTYPE_BOOL: {
-      auto b = value.AsBool();
-      if (!b.ok()) return b.status();
-      entry_refl.SetBool(&entry, &val_fd, *b);
-      return absl::OkStatus();
-    }
     case FD::CPPTYPE_INT32: {
       auto i = value.AsInt();
       if (!i.ok()) return i.status();
@@ -4440,6 +4514,20 @@ absl::Status SetHostMapEntryValue(
       entry_refl.SetUInt64(&entry, &val_fd, *u);
       return absl::OkStatus();
     }
+    default:
+      return std::nullopt;
+  }
+}
+
+// FLOAT / DOUBLE arms of SetHostMapEntryValue (both read AsDouble;
+// FLOAT narrows).  Returns nullopt for a non-float cpp_type.
+std::optional<absl::Status> SetHostMapEntryFloatValue(
+    google::protobuf::Message& entry,
+    const google::protobuf::Reflection& entry_refl,
+    const google::protobuf::FieldDescriptor& val_fd,
+    const celwasm::Value& value) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (val_fd.cpp_type()) {
     case FD::CPPTYPE_FLOAT: {
       auto d = value.AsDouble();
       if (!d.ok()) return d.status();
@@ -4452,6 +4540,38 @@ absl::Status SetHostMapEntryValue(
       entry_refl.SetDouble(&entry, &val_fd, *d);
       return absl::OkStatus();
     }
+    default:
+      return std::nullopt;
+  }
+}
+
+// CPPTYPE_MESSAGE arm of SetHostMapEntryValue: resolve the source
+// backing and copy/pack it into the entry's value submessage.
+absl::Status SetHostMapEntryMessageValue(
+    google::protobuf::Message& entry,
+    const google::protobuf::Reflection& entry_refl,
+    const google::protobuf::FieldDescriptor& val_fd,
+    const celwasm::Value& value) {
+  auto backing_or = value.MessageBacking();
+  if (!backing_or.ok()) return backing_or.status();
+  const google::protobuf::Message* src_msg = (*backing_or)->message();
+  if (src_msg == nullptr) {
+    return absl::InvalidArgumentError(
+        "CelSetFieldImpl: map message-value backing has no proto");
+  }
+  google::protobuf::Message* dst = entry_refl.MutableMessage(&entry, &val_fd);
+  return WriteMessageOrPack(dst, *src_msg);
+}
+
+// STRING/BYTES and ENUM arms of SetHostMapEntryValue (enum is
+// int-encoded).  Returns nullopt for a non-string/enum cpp_type.
+std::optional<absl::Status> SetHostMapEntryStringOrEnumValue(
+    google::protobuf::Message& entry,
+    const google::protobuf::Reflection& entry_refl,
+    const google::protobuf::FieldDescriptor& val_fd,
+    const celwasm::Value& value) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (val_fd.cpp_type()) {
     case FD::CPPTYPE_STRING: {
       auto s = (val_fd.type() == FD::TYPE_BYTES) ? value.AsBytes()
                                                  : value.AsString();
@@ -4468,18 +4588,45 @@ absl::Status SetHostMapEntryValue(
       entry_refl.SetEnumValue(&entry, &val_fd, static_cast<int>(*i));
       return absl::OkStatus();
     }
-    case FD::CPPTYPE_MESSAGE: {
-      auto backing_or = value.MessageBacking();
-      if (!backing_or.ok()) return backing_or.status();
-      const google::protobuf::Message* src_msg = (*backing_or)->message();
-      if (src_msg == nullptr) {
-        return absl::InvalidArgumentError(
-            "CelSetFieldImpl: map message-value backing has no proto");
-      }
-      google::protobuf::Message* dst =
-          entry_refl.MutableMessage(&entry, &val_fd);
-      return WriteMessageOrPack(dst, *src_msg);
+    default:
+      return std::nullopt;
+  }
+}
+
+// Set the value sub-field of a host-map entry from a `celwasm::Value`.
+// Every cpp_type is allowed (per descriptor.proto); message values
+// resolve their backing and copy/pack via `WriteMessageOrPack`.  A
+// failed typed accessor propagates its Status.
+absl::Status SetHostMapEntryValue(
+    google::protobuf::Message& entry,
+    const google::protobuf::Reflection& entry_refl,
+    const google::protobuf::FieldDescriptor& val_fd,
+    const celwasm::Value& value) {
+  using FD = google::protobuf::FieldDescriptor;
+  if (auto s = SetHostMapEntryIntegerValue(entry, entry_refl, val_fd, value);
+      s.has_value()) {
+    return *s;
+  }
+  if (auto s = SetHostMapEntryFloatValue(entry, entry_refl, val_fd, value);
+      s.has_value()) {
+    return *s;
+  }
+  if (auto s =
+          SetHostMapEntryStringOrEnumValue(entry, entry_refl, val_fd, value);
+      s.has_value()) {
+    return *s;
+  }
+  switch (val_fd.cpp_type()) {
+    case FD::CPPTYPE_BOOL: {
+      auto b = value.AsBool();
+      if (!b.ok()) return b.status();
+      entry_refl.SetBool(&entry, &val_fd, *b);
+      return absl::OkStatus();
     }
+    case FD::CPPTYPE_MESSAGE:
+      return SetHostMapEntryMessageValue(entry, entry_refl, val_fd, value);
+    default:
+      break;  // handled by the delegations above; fall to the CHECK below.
   }
   ABSL_CHECK(false) << "InsertHostMapEntry: unknown value cpp_type "
                     << static_cast<int>(val_fd.cpp_type());
@@ -4520,7 +4667,7 @@ absl::Status SetMapField(google::protobuf::Message& msg,
     ForEachArenaMapEntry(
         source, mem, [&](const CelValue& k, const CelValue& v, uint32_t /*i*/) {
           if (!status.ok()) return;
-          status = InsertArenaMapEntry(msg, field, *refl, k, v, mem, refs);
+          status = InsertArenaMapEntry(msg, field, k, v, mem, refs);
         });
     return status;
   }
@@ -4554,7 +4701,7 @@ absl::Status SetMapField(google::protobuf::Message& msg,
 // mismatch).  Split from `CelSetFieldImpl` so the resolve preamble and
 // the per-kind set dispatch live in separately-reviewable functions;
 // single call site → inlines back.
-std::optional<absl::Status> ResolveOwnedSetTarget(
+static std::optional<absl::Status> ResolveOwnedSetTarget(
     const CelValue& msg_cv, const ExternrefTable& refs,
     google::protobuf::Message** absl_nonnull out_msg) {
   // Poison propagation: a prior field-set on this same message slot
@@ -4604,6 +4751,35 @@ std::optional<absl::Status> ResolveOwnedSetTarget(
   return std::nullopt;
 }
 
+namespace {
+
+// Routes a field-set to the matching writer.  Map precedes repeated
+// because every proto map field is also `is_repeated()` per
+// descriptor.proto.
+absl::Status DispatchFieldSet(google::protobuf::Message& msg,
+                              const google::protobuf::FieldDescriptor& field,
+                              const CelValue& value_cv,
+                              const TrampolineContext& ctx) {
+  if (field.is_map()) {
+    return SetMapField(msg, field, value_cv, ctx.mem, ctx.refs);
+  }
+  if (field.is_repeated()) {
+    return SetRepeatedField(msg, field, value_cv, ctx.mem, ctx.refs);
+  }
+  if (value_cv.kind == CEL_UNKNOWN || value_cv.kind == CEL_ERROR) {
+    // 3VL on `Foo{a: <unknown>}` is unaddressed; surfacing as a clean
+    // trap matches the "trust the checker" stance — a properly-typed
+    // CEL program won't pass an Unknown / Error to a typed scalar
+    // field.  Revisit when partial-eval × construction is exercised.
+    return absl::UnimplementedError(absl::StrCat(
+        "CelSetFieldImpl: 3VL value kind=", static_cast<int>(value_cv.kind),
+        " on field set not yet supported"));
+  }
+  return SetScalarField(msg, field, value_cv, ctx.mem, &ctx.refs);
+}
+
+}  // namespace
+
 absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
                              uint32_t value_slot,
                              const TrampolineContext& ctx) {
@@ -4628,29 +4804,7 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
   }
 
   const CelValue value_cv = ctx.mem.ReadCelValue(value_slot);
-
-  // Route map / repeated source kinds through dedicated walkers.
-  // Map check precedes repeated because every proto map field is
-  // also `is_repeated()` per descriptor.proto.
-  absl::Status set_status = [&]() -> absl::Status {
-    if (field->is_map()) {
-      return SetMapField(*msg, *field, value_cv, ctx.mem, ctx.refs);
-    }
-    if (field->is_repeated()) {
-      return SetRepeatedField(*msg, *field, value_cv, ctx.mem, ctx.refs);
-    }
-    if (value_cv.kind == CEL_UNKNOWN || value_cv.kind == CEL_ERROR) {
-      // 3VL on `Foo{a: <unknown>}` is unaddressed; surfacing as a
-      // clean trap matches the "trust the checker" stance — a
-      // properly-typed CEL program won't pass an Unknown / Error to
-      // a typed scalar field.  Revisit when partial-eval ×
-      // construction is exercised by a fixture row.
-      return absl::UnimplementedError(absl::StrCat(
-          "CelSetFieldImpl: 3VL value kind=", static_cast<int>(value_cv.kind),
-          " on field set not yet supported"));
-    }
-    return SetScalarField(*msg, *field, value_cv, ctx.mem, &ctx.refs);
-  }();
+  absl::Status set_status = DispatchFieldSet(*msg, *field, value_cv, ctx);
 
   // Poison-on-range-error (the write side of the poison contract).  An
   // out-of-range scalar/enum assignment is a CEL value-level error —
