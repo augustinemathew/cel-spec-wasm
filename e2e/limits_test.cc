@@ -11,15 +11,16 @@
 // Two distinct limits, reached by two distinct expression *shapes*:
 //
 //   • Rodata window  — BREADTH.  Every scalar literal is a 24-byte
-//     CelValue frame in the window `[16, --global-base=8192)`; identical
-//     literals are not deduped.  Usable budget = 8192 − 16 reserved −
-//     256 guard = 7920 B → 7920 / 24 = 330 frames, minus the list
-//     header + outer frame ⇒ 328 literals fit, 329 overflow.
+//     CelValue frame in the window `[16, --global-base=262144)`;
+//     identical literals are not deduped.  A flat list of N int
+//     literals costs `16 + 24*N + 40` rodata (header + run + outer
+//     frame); with the 256 B guard the boundary is
+//     `16 + 24*N + 40 + 256 ≤ 262144` ⇒ N ≤ 10909 fit, 10910 overflow.
 //
 //   • Parse nesting depth — DEPTH.  An expression whose AST nests deeper
 //     than `kMaxExpressionNestingDepth` (2048) is rejected at parse,
 //     independent of rodata.  Reached only when operands cost no rodata
-//     (variables); a literal chain hits the 328-frame wall first.
+//     (variables); a literal chain hits the 10909-frame wall first.
 
 #include <cstdint>
 #include <string>

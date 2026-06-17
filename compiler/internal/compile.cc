@@ -572,8 +572,8 @@ absl::StatusOr<WasmModule> AdoptStrippedRuntime() {
 
 // Install expr's rodata as an active data segment on the adopted
 // runtime's memory.  The runtime is linked with
-// `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (8 KiB), so
-// the bottom 8 KiB of linear memory is reserved by design for the
+// `-Wl,--global-base=CELWASM_RESERVED_LOW_MEMORY_BYTES` (256 KiB), so
+// the bottom 256 KiB of linear memory is reserved by design for the
 // expr module's static region; the runtime's own wasi-libc static
 // data + stack + heap live above that.  `ValidateExprStaticRegion`
 // (run by `RunFrontAndLayout` in both link modes) already rejected

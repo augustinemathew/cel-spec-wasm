@@ -184,7 +184,7 @@ TEST(EnginePlanTest, PlanRejectsWrongShapedEvalExport) {
 // `Instance::Eval(Activation)` writes a 24-byte CelValue at every
 // cel.abi variable `slot_offset` in the SHARED linear memory the
 // runtime's static data / heap also live in (above the
-// `CELWASM_RESERVED_LOW_MEMORY_BYTES` = 8192 boundary).  The compiler
+// `CELWASM_RESERVED_LOW_MEMORY_BYTES` = 262144 boundary).  The compiler
 // validates its layout fits under the boundary before serializing, so
 // a Program declaring a slot past it is corrupt / hand-crafted; Plan
 // must reject it rather than let the marshal stomp runtime state.

@@ -10,10 +10,9 @@
 # Surface `size` maps to BM prefix `size` (cell id `string` →
 # `BM_size_string`).
 #
-# `list1000` is tagged `celwasm-skip-rodata`: 1000 literal CelValues
-# = 24 KB of expression rodata, past the 8 KB low-memory window (see
-# arithmetic.yaml header for the same cap on 1000-literal chains).
-# celcpp_bench still runs it.
+# `list1000` is 1000 literal CelValues = 24 KB of expression rodata.
+# It now fits the 256 KiB low-memory window and is materialized into
+# rodata at compile time, so it runs on celwasm as well as celcpp_bench.
 
 schema_version: 1
 surface: size

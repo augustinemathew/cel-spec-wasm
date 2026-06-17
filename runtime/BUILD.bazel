@@ -719,8 +719,9 @@ cc_binary(
         # Match the -flto in copts; without this the linker can't
         # see the LTO bitcode and falls back to per-TU object code.
         "-flto",
-        # Reserve [0, 8192) for the expr module's active data segments.
-        # Per DESIGN.md §3 / experiments/exp_a_rodata.c.
+        # Reserve [0, 262144) for the expr module's active data segments
+        # (256 KiB — holds rodata + workspace + materialized const
+        # aggregates).  Per DESIGN.md §3 / experiments/exp_a_rodata.c.
         "-Wl,--global-base=262144",
         # Tight import allowlist.  The toolchain's default link flags
         # include the broader `-Wl,--allow-undefined`; this file-based

@@ -1,5 +1,6 @@
 #include "compiler/codegen/layout_pass.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -124,13 +125,13 @@ bool IsConstMaterializable(const cel::Expr& e, const WasmAnnotations& ann) {
              c.has_uint_value() || c.has_double_value() ||
              c.has_string_value() || c.has_bytes_value();
     }
-    case cel::ExprKindCase::kListExpr: {
-      for (const cel::ListExprElement& el : e.list_expr().elements()) {
-        if (el.optional()) return false;
-        if (!IsConstMaterializable(el.expr(), ann)) return false;
-      }
-      return true;
-    }
+    case cel::ExprKindCase::kListExpr:
+      return std::all_of(e.list_expr().elements().begin(),
+                         e.list_expr().elements().end(),
+                         [&ann](const cel::ListExprElement& el) {
+                           return !el.optional() &&
+                                  IsConstMaterializable(el.expr(), ann);
+                         });
     default:
       return false;
   }
@@ -225,7 +226,8 @@ class ConstAggregateVisitor : public cel::AstVisitorBase {
     const auto stride = static_cast<uint32_t>(sizeof(CelValue));
     for (uint32_t i = 0; i < l.elements().size(); ++i) {
       annotations_[l.elements()[i].expr().id()].storage =
-          Storage{StorageKind::kStaticRodata, r.elements_offset + i * stride};
+          Storage{StorageKind::kStaticRodata,
+                  r.elements_offset + (i * stride)};
     }
     frames_.emplace(expr.id(), r.frame);
     return r.frame;
@@ -621,6 +623,74 @@ void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
   layout.workspace_bytes = slot_count * kSlotStride;
 }
 
+// Pass A: pack rodata.  First materialize const list literals — each
+// eligible kListExpr is stamped {kStaticRodata, frame_offset} and its
+// element literals recorded in `consumed` so the ConstLayoutVisitor
+// skips their redundant standalone frames (a const list would otherwise
+// cost ~2x rodata).  Then pack the remaining kConsts, and lift each
+// kSelect-on-optional field name into rodata for the
+// `cel_select_optional_field_at_vv` kernel.  All three share one builder
+// so the rodata layout is contiguous.
+void PackRodata(const cel::Expr& root, StaticLayout& layout) {
+  StaticMemoryBuilder builder(layout.rodata_base);
+  absl::flat_hash_set<int64_t> consumed_consts;
+  ConstAggregateVisitor const_agg_visitor(builder, layout.annotations,
+                                          consumed_consts);
+  cel::AstTraverse(root, const_agg_visitor);
+  ConstLayoutVisitor const_visitor(builder, layout.annotations,
+                                   consumed_consts);
+  cel::AstTraverse(root, const_visitor);
+  SelectKeyRodataVisitor select_key_visitor(builder, layout.annotations);
+  cel::AstTraverse(root, select_key_visitor);
+  layout.rodata = std::move(builder).Finalize();
+}
+
+// Slot-exhaustion gate.  rodata + workspace share the
+// `[kRodataBaseMin, kReservedLowMemoryBytes)` window below wasi-libc's
+// static data; anything written past that line silently corrupts libc's
+// bookkeeping (no wasm trap, just a delayed-death failure inside an
+// unrelated helper).  The cap is dynamic in rodata: an expression with
+// no constants gets the full window of workspace headroom, one with
+// large string constants gets less.  The `kGuardBytes` band shaved off
+// the top catches the next slot-allocator off-by-one before it spills.
+absl::Status CheckStaticWindowFits(const StaticLayout& layout) {
+  const auto rodata_size = static_cast<uint32_t>(layout.rodata.size());
+  // rodata must itself fit below the reserved line (with the guard band).
+  // A materialized const aggregate carries no workspace slot, so the
+  // workspace check below cannot catch oversized rodata — a large const
+  // list would otherwise grow the run past the window and silently
+  // corrupt wasi-libc's static data.
+  const uint32_t rodata_end = layout.rodata_base + rodata_size;
+  if (rodata_end + MemoryLayout::kGuardBytes >
+      MemoryLayout::kReservedLowMemoryBytes) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        kSlotExhaustedMessagePrefix, ": rodata at [", layout.rodata_base, ", ",
+        rodata_end, ") plus a ", MemoryLayout::kGuardBytes,
+        "-byte guard exceeds the window below wasi-libc's static data (which "
+        "starts at ",
+        MemoryLayout::kReservedLowMemoryBytes,
+        ").  A constant aggregate or string/bytes literal set too large for "
+        "the static window; split the expression across multiple Compile() "
+        "calls or move large literals into bound variables."));
+  }
+  const uint32_t max_workspace =
+      MemoryLayout::MaxWorkspaceBytes(layout.rodata_base, rodata_size);
+  if (layout.workspace_bytes > max_workspace) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        kSlotExhaustedMessagePrefix, ": needs ", layout.workspace_bytes,
+        " bytes of workspace, but rodata at [", layout.rodata_base, ", ",
+        layout.rodata_base + rodata_size, ") plus a ",
+        MemoryLayout::kGuardBytes, "-byte guard band leaves only ",
+        max_workspace,
+        " bytes free below wasi-libc's static data (which starts at ",
+        MemoryLayout::kReservedLowMemoryBytes,
+        ").  Writing past that line would silently corrupt libc state.  "
+        "Split the expression across multiple Compile() calls, or move "
+        "literal strings/bytes out of the source into bound variables."));
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 // `resolved` is passed by value — its annotations + variables are
@@ -644,25 +714,9 @@ absl::StatusOr<StaticLayout> LayoutPass(
     layout.rodata_base = opts.rodata_base_override;
   }
 
-  // --- Pass A: pack rodata.  First materialize const list literals
-  // (m31) — each eligible kListExpr is stamped {kStaticRodata,
-  // frame_offset} and its element literals recorded in `consumed` so the
-  // ConstLayoutVisitor below skips their redundant standalone frames
-  // (a const list would otherwise cost ~2x rodata).  Then pack the
-  // remaining kConsts, and lift each kSelect-on-optional field name into
-  // rodata for the `cel_select_optional_field_at_vv` kernel.  All three
-  // share one builder so the rodata layout is contiguous. ---
-  StaticMemoryBuilder builder(layout.rodata_base);
-  absl::flat_hash_set<int64_t> consumed_consts;
-  ConstAggregateVisitor const_agg_visitor(builder, layout.annotations,
-                                          consumed_consts);
-  cel::AstTraverse(ast.ast().root_expr(), const_agg_visitor);
-  ConstLayoutVisitor const_visitor(builder, layout.annotations,
-                                   consumed_consts);
-  cel::AstTraverse(ast.ast().root_expr(), const_visitor);
-  SelectKeyRodataVisitor select_key_visitor(builder, layout.annotations);
-  cel::AstTraverse(ast.ast().root_expr(), select_key_visitor);
-  layout.rodata = std::move(builder).Finalize();
+  // --- Pass A: pack rodata (consts, materialized const aggregates,
+  // optional-select field names). ---
+  PackRodata(ast.ast().root_expr(), layout);
 
   // --- Pass B: reserve one 24-byte workspace slot per variable. ---
   ReserveVariableSlots(resolved.variables, layout);
@@ -698,49 +752,9 @@ absl::StatusOr<StaticLayout> LayoutPass(
                    cel::TraversalOptions{.use_comprehension_callbacks = true});
   layout.total_wasm_locals = comp_locals_visitor.total_locals();
 
-  // Slot-exhaustion gate.  rodata + workspace share the
-  // `[kRodataBaseMin, kReservedLowMemoryBytes)` window below
-  // wasi-libc's static data; anything we write past that line
-  // silently corrupts libc's bookkeeping (no wasm trap, just a
-  // delayed-death failure inside an unrelated helper).  The cap
-  // is dynamic in rodata: an expression with no constants gets
-  // ~7.9 KiB of workspace headroom, an expression with 3 KiB of
-  // string constants gets ~4.9 KiB.  The `kGuardBytes` band
-  // shaved off the top catches the next slot-allocator
-  // off-by-one before it spills.
-  const auto rodata_size = static_cast<uint32_t>(layout.rodata.size());
-  // rodata must itself fit below the reserved line (with the guard band).
-  // A materialized const aggregate (m31) carries no workspace slot, so
-  // the workspace check below cannot catch oversized rodata — a large
-  // const list would otherwise grow the run past the window and silently
-  // corrupt wasi-libc's static data.
-  const uint32_t rodata_end = layout.rodata_base + rodata_size;
-  if (rodata_end + MemoryLayout::kGuardBytes >
-      MemoryLayout::kReservedLowMemoryBytes) {
-    return absl::ResourceExhaustedError(absl::StrCat(
-        kSlotExhaustedMessagePrefix, ": rodata at [", layout.rodata_base, ", ",
-        rodata_end, ") plus a ", MemoryLayout::kGuardBytes,
-        "-byte guard exceeds the window below wasi-libc's static data (which "
-        "starts at ",
-        MemoryLayout::kReservedLowMemoryBytes,
-        ").  A constant aggregate or string/bytes literal set too large for "
-        "the static window; split the expression across multiple Compile() "
-        "calls or move large literals into bound variables."));
-  }
-  const uint32_t max_workspace =
-      MemoryLayout::MaxWorkspaceBytes(layout.rodata_base, rodata_size);
-  if (layout.workspace_bytes > max_workspace) {
-    return absl::ResourceExhaustedError(absl::StrCat(
-        kSlotExhaustedMessagePrefix, ": needs ", layout.workspace_bytes,
-        " bytes of workspace, but rodata at [", layout.rodata_base, ", ",
-        layout.rodata_base + rodata_size, ") plus a ",
-        MemoryLayout::kGuardBytes, "-byte guard band leaves only ",
-        max_workspace,
-        " bytes free below wasi-libc's static data (which starts at ",
-        MemoryLayout::kReservedLowMemoryBytes,
-        ").  Writing past that line would silently corrupt libc state.  "
-        "Split the expression across multiple Compile() calls, or move "
-        "literal strings/bytes out of the source into bound variables."));
+  // rodata + workspace must both fit below wasi-libc's static data.
+  if (absl::Status fits = CheckStaticWindowFits(layout); !fits.ok()) {
+    return fits;
   }
 
   return layout;

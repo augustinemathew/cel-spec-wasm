@@ -31,9 +31,9 @@
 // First N bytes of linear memory are reserved for the expr module's
 // active data segments (rodata + workspace).  Set via
 // `-Wl,--global-base=N` on the runtime build so wasi-libc places its
-// static data + stack + heap above this offset.  8 KiB is well above
-// the typical expr rodata footprint; bump if a real expression needs
-// more.
+// static data + stack + heap above this offset.  256 KiB holds the
+// typical expr rodata + workspace plus materialized const aggregates;
+// bump if a real expression needs more.
 #define CELWASM_RESERVED_LOW_MEMORY_BYTES 262144u
 
 // Default size of the per-Instance arena buffer that backs

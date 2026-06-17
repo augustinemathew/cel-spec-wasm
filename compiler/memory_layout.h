@@ -4,11 +4,11 @@
 // Single source of truth for compile-time memory-layout constants the
 // CEL→wasm compiler reasons about.  Every part of the compiler that
 // computes a wasm linear-memory offset, a workspace cap, or a slot
-// stride includes this header — no one redefines `8192` or `32` or
+// stride includes this header — no one redefines `262144` or `32` or
 // `16` inline.
 //
-// Why this matters.  cel.memory's first 8 KiB is the **only** region
-// the expr module can safely write to.  `-Wl,--global-base=8192` on
+// Why this matters.  cel.memory's first 256 KiB is the **only** region
+// the expr module can safely write to.  `-Wl,--global-base=262144` on
 // the runtime build pins wasi-libc's static data + heap + stack
 // **above** that line, so any byte the expr module writes at or
 // past `kReservedLowMemoryBytes` falls into wasi-libc's address

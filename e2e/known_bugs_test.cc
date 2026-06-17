@@ -155,40 +155,29 @@ std::string MapLiteral(int n) {
 }
 
 TEST(KnownBugs, ExpressionIntermediatesArenaCliff) {
-  GTEST_SKIP()
-      << "KNOWN LIMITATION (verified 2026-06-10: now RESOURCE_EXHAUSTED at "
-         "Compile — the 4000-const rodata (~96 KB) trips the 8192-byte "
-         "static-region gate in compiler/internal/compile.cc before the "
-         "64 KiB arena cliff (cel_layout.h:41 / cel_arena.c:85) is even "
-         "reached; want 4000.  Delete this line when BOTH the static "
-         "region can relocate/grow AND the arena can grow/spill (see "
-         "Sethi-Ullman note above).";
-  // `size([0..4000])` — the RESULT is one int (8 B), but the intermediate
-  // list needs ~96 KB, over the 64 KB arena.  Small result, huge peak:
-  // the canonical "intermediates dominate" cliff.
+  // `size([0..4000])` — formerly a "small result, huge intermediate"
+  // cliff: the list once had to be built in the arena per Eval (~96 KB,
+  // over the old 64 KB arena) and its rodata once overflowed the old
+  // 8 KiB static window.  Now the const list is materialized into the
+  // 256 KiB rodata window at compile time, so no intermediate is built
+  // at all and `size()` is one O(1) load.
   auto v = TryEval("size(" + ListLiteral(4000) + ")");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
-  EXPECT_EQ(*v->AsInt(), 4000)
-      << "list intermediate exceeded the 64 KiB arena (cel_layout.h:41)";
+  EXPECT_EQ(*v->AsInt(), 4000);
 }
 
 TEST(KnownBugs, MapSizeArenaCliff) {
-  GTEST_SKIP()
-      << "KNOWN LIMITATION (verified 2026-06-10: now RESOURCE_EXHAUSTED at "
-         "Compile — the 4000-const rodata (~96 KB) trips the 8192-byte "
-         "static-region gate in compiler/internal/compile.cc before the "
-         "64 KiB arena cliff (cel_layout.h:41 / cel_arena.c:85) is even "
-         "reached; want 2000.  Delete this line when BOTH the static "
-         "region can relocate/grow AND the arena can grow/spill (see "
-         "Sethi-Ullman note above).";
-  // A 2000-entry map needs ~96 KB (48 B/entry) and overflows, though
-  // `size()` returns a single int.
+  // `size({0:0 .. 1999:1999})` — a 2000-entry map is ~96 KB (48 B/entry).
+  // Const maps are not yet materialized (that is the Swiss-table slice),
+  // so the map is still built in the arena per Eval — but the arena now
+  // grows in chunks (cel_arena.c) instead of failing at a fixed 64 KB
+  // cliff, and its const-keyed rodata fits the 256 KiB window, so the
+  // build succeeds and `size()` returns the count.
   auto v = TryEval("size(" + MapLiteral(2000) + ")");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
-  EXPECT_EQ(*v->AsInt(), 2000)
-      << "map intermediate exceeded the 64 KiB arena (cel_layout.h:41)";
+  EXPECT_EQ(*v->AsInt(), 2000);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -811,7 +800,7 @@ int64_t ExpectedLongArithResult(int n_terms) {
 // `SlotAllocator::Release`, a left-associative `+`-chain reuses a
 // handful of workspace cells regardless of length, so this size — and
 // the 2000-term sibling below — both fit comfortably inside the
-// 8192-byte reserved window.
+// 256 KiB reserved window.
 TEST(KnownBugs, LongArith165TermsWorks) {
   constexpr int kN = 165;
   const std::string source = MakeLongArithSource(kN);
@@ -833,7 +822,7 @@ TEST(KnownBugs, LongArith165TermsWorks) {
 // and the runtime helpers' atomic ops landed on misaligned offsets.
 // Fixed by giving Release a LIFO free list so the same chain peaks
 // at one workspace slot — the whole `+`-chain reuses a handful of
-// cells, so the static region stays well inside the 8192-byte window
+// cells, so the static region stays well inside the 256 KiB window
 // and a 2000-term chain now compiles AND evaluates to its value.
 // Validated bottom-up by compiler/codegen/slot_allocator_test::
 //   LeftAssocAdditionChainAfterReleaseFix/N2000 (no codegen, exact
