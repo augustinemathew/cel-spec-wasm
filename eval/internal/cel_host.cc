@@ -97,6 +97,52 @@ struct UnpackOneAnyResult {
   std::unique_ptr<google::protobuf::Message> peeled;
 };
 
+// Resolve the Any `type_url` to a descriptor-pool message FQN and
+// instantiate + parse the payload bytes into a fresh message.  Returns
+// a populated `terminal` on any resolution / parse failure (each an
+// error CelValue the caller surfaces directly); on success returns the
+// peeled message in `peeled`.  Split from `UnpackOneAnyLayer` so the
+// outer helper stays a thin reflection-read + dispatch under the
+// function-size gate.  Single call site → inlines back.
+UnpackOneAnyResult ResolveAndParseAnyPayload(
+    absl::string_view type_url, const std::string& bytes,
+    const google::protobuf::DescriptorPool* pool) {
+  const auto fqn_opt = ExtractAnyFqn(type_url);
+  if (!fqn_opt.has_value()) {
+    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
+                      absl::StrCat("Any type_url `", type_url,
+                                   "` lacks `type.googleapis.com/` or "
+                                   "`type.googleprod.com/` prefix")),
+            nullptr};
+  }
+  const absl::string_view fqn = *fqn_opt;
+  const google::protobuf::Descriptor* sub_desc =
+      pool != nullptr ? pool->FindMessageTypeByName(std::string(fqn)) : nullptr;
+  if (sub_desc == nullptr) {
+    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
+                      absl::StrCat("Any type_url FQN `", fqn,
+                                   "` not registered in descriptor pool")),
+            nullptr};
+  }
+  const google::protobuf::Message* prototype =
+      google::protobuf::MessageFactory::generated_factory()->GetPrototype(
+          sub_desc);
+  if (prototype == nullptr) {
+    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
+                      absl::StrCat("Any type `", fqn,
+                                   "` has no generated_factory prototype")),
+            nullptr};
+  }
+  std::unique_ptr<google::protobuf::Message> sub(prototype->New());
+  if (!sub->ParseFromString(bytes)) {
+    return {MakeError(celwasm::ErrorCode::kTypeMismatch,
+                      absl::StrCat("Any payload bytes don't parse against `",
+                                   fqn, "`")),
+            nullptr};
+  }
+  return {std::nullopt, std::move(sub)};
+}
+
 UnpackOneAnyResult UnpackOneAnyLayer(
     const google::protobuf::Message& any,
     const google::protobuf::DescriptorPool* pool) {
@@ -125,42 +171,9 @@ UnpackOneAnyResult UnpackOneAnyLayer(
                       "Any type_url is empty (no descriptor to unpack)"),
             nullptr};
   }
-  const auto fqn_opt = ExtractAnyFqn(type_url);
-  if (!fqn_opt.has_value()) {
-    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
-                      absl::StrCat("Any type_url `", type_url,
-                                   "` lacks `type.googleapis.com/` or "
-                                   "`type.googleprod.com/` prefix")),
-            nullptr};
-  }
-  const absl::string_view fqn = *fqn_opt;
-  const google::protobuf::Descriptor* sub_desc =
-      pool != nullptr ? pool->FindMessageTypeByName(std::string(fqn)) : nullptr;
-  if (sub_desc == nullptr) {
-    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
-                      absl::StrCat("Any type_url FQN `", fqn,
-                                   "` not registered in descriptor pool")),
-            nullptr};
-  }
-  const google::protobuf::Message* prototype =
-      google::protobuf::MessageFactory::generated_factory()->GetPrototype(
-          sub_desc);
-  if (prototype == nullptr) {
-    return {MakeError(celwasm::ErrorCode::kFieldNotFound,
-                      absl::StrCat("Any type `", fqn,
-                                   "` has no generated_factory prototype")),
-            nullptr};
-  }
-  std::unique_ptr<google::protobuf::Message> sub(prototype->New());
   const std::string& bytes =
       any_refl->GetStringReference(any, value_fd, &val_scratch);
-  if (!sub->ParseFromString(bytes)) {
-    return {MakeError(celwasm::ErrorCode::kTypeMismatch,
-                      absl::StrCat("Any payload bytes don't parse against `",
-                                   fqn, "`")),
-            nullptr};
-  }
-  return {std::nullopt, std::move(sub)};
+  return ResolveAndParseAnyPayload(type_url, bytes, pool);
 }
 
 // Iteratively unwrap an Any (M11 Slice A — fixes the P0 where
@@ -1082,6 +1095,14 @@ absl::Status EncodeTimestampValue(const celwasm::Value& v, CelValue* out) {
 // payloads through the per-eval ArenaAllocator.  Returns non-OK
 // Status on infrastructure failure (arena OOM); spec-level errors
 // inside the input Value already encode as `{kind:CEL_ERROR, err:…}`.
+// Aborts for a Value kind the inline encoder must never see — the
+// caller violated the Layer-1/Layer-2 contract.  Never returns.
+[[noreturn]] void EncodeValueUnreachable(const celwasm::Value& v,
+                                         const char* reason) {
+  ABSL_CHECK(false) << "EncodeValue: " << reason << " (kind "
+                    << static_cast<int>(v.kind()) << ")";
+}
+
 absl::Status EncodeValue(const celwasm::Value& v, CelValue* out,
                          ArenaAllocator& alloc) {
   using K = celwasm::Value::Kind;
@@ -1115,35 +1136,26 @@ absl::Status EncodeValue(const celwasm::Value& v, CelValue* out,
       return absl::OkStatus();
     }
     case K::kUnknown:
-      // Layer 2 contract: backings don't return unknowns — operand-
-      // pair propagation happens before this encoder.  M4
-      // PartialEval surfaces unknowns via a different path
-      // (MatchesAnyUnknownPattern).
-      ABSL_CHECK(false) << "EncodeValue: kUnknown is unreachable from "
-                           "Layer 1 returns";
+      // Backings don't return unknowns — operand-pair propagation runs
+      // before this encoder; PartialEval uses MatchesAnyUnknownPattern.
+      EncodeValueUnreachable(v, "kUnknown is unreachable from Layer-1 returns");
     case K::kMessage:
     case K::kMap:
     case K::kList:
-      // Aggregate kinds are handled by `EncodeFieldResult` /
-      // `EncodeAggregateIfAny`, never via the inline path.  Reaching
-      // here is a contract violation by the caller.
-      ABSL_CHECK(false) << "EncodeValue: aggregate kind "
-                        << static_cast<int>(v.kind())
-                        << " must route through EncodeFieldResult";
+      // Aggregate kinds route through EncodeFieldResult /
+      // EncodeAggregateIfAny, never the inline path.
+      EncodeValueUnreachable(
+          v, "aggregate kind must route through EncodeFieldResult");
     case K::kDuration:
       return EncodeDurationValue(v, out);
     case K::kTimestamp:
       return EncodeTimestampValue(v, out);
     case K::kType:
-      // M9: Layer-1 backings don't return type-values — `type(x)` is
-      // always lowered to the standard `cel_type_of_at_v` runtime
-      // helper, never reached through a Layer-1 backing call.
-      // Activation-side encoding lives in `instance.cc::EncodeType`.
-      ABSL_CHECK(false) << "EncodeValue: kType is unreachable from "
-                           "Layer-1 backings (type(x) is a runtime helper)";
+      // type(x) lowers to the cel_type_of_at_v runtime helper, never a
+      // Layer-1 backing call (activation side: instance.cc::EncodeType).
+      EncodeValueUnreachable(v, "kType is unreachable from Layer-1 backings");
   }
-  ABSL_CHECK(false) << "EncodeValue: unhandled kind "
-                    << static_cast<int>(v.kind());
+  EncodeValueUnreachable(v, "unhandled kind");
 }
 
 // Encode a Layer-1 aggregate (message / map / list) by interning
@@ -1206,6 +1218,93 @@ absl::Status EncodeValueToSlot(const celwasm::Value& v, uint32_t out_slot,
   return EncodeFieldResult(v, out_slot, ctx);
 }
 
+namespace {
+
+// Decodes a list-index CelValue to an int64 per langdef §"Indexing":
+// the index is int, or — when dyn-typed (e.g. `[1,2,3][dyn(0.0)]`) — a
+// CEL_UINT or an integral CEL_DOUBLE, mirroring `cel_list_at_arena` in
+// runtime/cel_runtime.c (pinned by oracle `ListIndex{Double,Uint}Agrees`
+// and conformance `lists/index/zero_based_{double,uint}`).  On a
+// malformed index writes the wire error to `out_slot` and returns
+// nullopt; the returned int64 may still be negative (the caller bounds-
+// checks it against the backing).
+std::optional<int64_t> DecodeListIndex(const CelValue& idx_cv,
+                                       uint32_t out_slot,
+                                       const TrampolineContext& ctx) {
+  if (idx_cv.kind == CEL_INT) {
+    return idx_cv.payload.i;
+  }
+  if (idx_cv.kind == CEL_UINT) {
+    if (idx_cv.payload.u > static_cast<uint64_t>(INT64_MAX)) {
+      WriteWireError(CEL_ERR_INDEX_OUT_OF_BOUNDS, out_slot, ctx.mem);
+      return std::nullopt;
+    }
+    return static_cast<int64_t>(idx_cv.payload.u);
+  }
+  if (idx_cv.kind == CEL_DOUBLE) {
+    const double d = idx_cv.payload.d;
+    if (!std::isfinite(d) || d > 9.2233720368547758e18 ||
+        d < -9.2233720368547758e18) {
+      WriteWireError(CEL_ERR_INVALID_ARGUMENT, out_slot, ctx.mem);
+      return std::nullopt;
+    }
+    const auto trunc = static_cast<int64_t>(d);
+    if (static_cast<double>(trunc) != d) {  // non-integral
+      WriteWireError(CEL_ERR_INVALID_ARGUMENT, out_slot, ctx.mem);
+      return std::nullopt;
+    }
+    return trunc;
+  }
+  WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
+  return std::nullopt;
+}
+
+// Materializes a non-empty host list into a fresh arena list at
+// `out_slot` (16-byte ArenaListHeader + count*24B element run, two
+// arena allocs mirroring `cel_list_create`), snapshotting each element
+// via `At` + `EncodeFieldResult`.  Returns false on arena OOM so the
+// caller can fall back to an empty list; element-read failures
+// propagate as a status.
+absl::StatusOr<bool> SnapshotHostListToArena(const HostListBacking& backing,
+                                             size_t count, uint32_t out_slot,
+                                             const TrampolineContext& ctx) {
+  constexpr uint32_t kHeaderBytes = 16u;
+  constexpr auto kElemBytes = static_cast<uint32_t>(sizeof(CelValue));
+  uint32_t header_off = 0;
+  if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr ||
+      header_off == 0) {
+    return false;
+  }
+  uint32_t elements_off = 0;
+  const uint32_t elements_bytes = static_cast<uint32_t>(count) * kElemBytes;
+  if (ctx.alloc.Alloc(elements_bytes, &elements_off) == nullptr ||
+      elements_off == 0) {
+    return false;
+  }
+  // Header layout mirrors `ArenaListHeader` (cel_data.h): count,
+  // capacity, elements_offset, _pad.
+  ctx.mem.WriteU32(header_off + 0u, static_cast<uint32_t>(count));
+  ctx.mem.WriteU32(header_off + 4u, static_cast<uint32_t>(count));
+  ctx.mem.WriteU32(header_off + 8u, elements_off);
+  ctx.mem.WriteU32(header_off + 12u, 0u);
+  // `celwasm::CelType::Int()` is informational only (M4: no element-side
+  // narrowing); matches the CelListAtImpl call site.
+  for (size_t i = 0; i < count; ++i) {
+    auto got = backing.At(i, celwasm::CelType::Int());
+    if (!got.ok()) return got.status();
+    const uint32_t elem_slot =
+        elements_off + (static_cast<uint32_t>(i) * kElemBytes);
+    if (auto s = EncodeFieldResult(*got, elem_slot, ctx); !s.ok()) return s;
+  }
+  CelValue synthetic{};
+  synthetic.kind = CEL_LIST_ARENA;
+  synthetic.payload.arena_list.header_ptr = header_off;
+  ctx.mem.WriteCelValue(out_slot, synthetic);
+  return true;
+}
+
+}  // namespace
+
 absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
                            uint32_t index_slot, const TrampolineContext& ctx) {
   CelValue list_cv = ctx.mem.ReadCelValue(list_slot);
@@ -1229,40 +1328,9 @@ absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
     WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
     return absl::OkStatus();
   }
-  // langdef §"Indexing": list index type is int.  When the operand
-  // is dyn-typed (e.g. `[1,2,3][dyn(0.0)]`), cel-cpp admits a
-  // CEL_UINT or an integral CEL_DOUBLE — mirror that here so the
-  // host-backed list path matches the arena path
-  // (`cel_list_at_arena` in `runtime/cel_runtime.c`).  Pinned by
-  // oracle `ListIndexDoubleAgrees` / `ListIndexUintAgrees` and
-  // conformance rows `lists/index/zero_based_double` /
-  // `zero_based_uint`.
-  int64_t i = 0;
-  if (idx_cv.kind == CEL_INT) {
-    i = idx_cv.payload.i;
-  } else if (idx_cv.kind == CEL_UINT) {
-    if (idx_cv.payload.u > static_cast<uint64_t>(INT64_MAX)) {
-      WriteWireError(CEL_ERR_INDEX_OUT_OF_BOUNDS, out_slot, ctx.mem);
-      return absl::OkStatus();
-    }
-    i = static_cast<int64_t>(idx_cv.payload.u);
-  } else if (idx_cv.kind == CEL_DOUBLE) {
-    const double d = idx_cv.payload.d;
-    if (!std::isfinite(d) || d > 9.2233720368547758e18 ||
-        d < -9.2233720368547758e18) {
-      WriteWireError(CEL_ERR_INVALID_ARGUMENT, out_slot, ctx.mem);
-      return absl::OkStatus();
-    }
-    const auto trunc = static_cast<int64_t>(d);
-    if (static_cast<double>(trunc) != d) {  // non-integral
-      WriteWireError(CEL_ERR_INVALID_ARGUMENT, out_slot, ctx.mem);
-      return absl::OkStatus();
-    }
-    i = trunc;
-  } else {
-    WriteWireError(CEL_ERR_TYPE_MISMATCH, out_slot, ctx.mem);
-    return absl::OkStatus();
-  }
+  std::optional<int64_t> decoded = DecodeListIndex(idx_cv, out_slot, ctx);
+  if (!decoded.has_value()) return absl::OkStatus();
+  int64_t i = *decoded;
 
   const HostListBacking* backing =
       ctx.refs.LookupList(list_cv.payload.ref_slot);
@@ -1294,7 +1362,6 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
   // — a zero `header_ptr` would dereference into rodata).  Used
   // for non-host sources, empty host lists, and OOM fallback.
   constexpr uint32_t kHeaderBytes = 16u;
-  constexpr auto kElemBytes = static_cast<uint32_t>(sizeof(CelValue));
   auto write_empty = [&]() -> absl::Status {
     uint32_t header_off = 0;
     if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr ||
@@ -1343,45 +1410,10 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
   if (count == 0) {
     return write_empty();
   }
-  // Allocate one ArenaListHeader (16 B) + count * 24 B elements
-  // region.  Two separate arena allocations match the literal-list
-  // construction shape (`cel_list_create` does the same).  The
-  // header points at the elements via `elements_offset`.
-  uint32_t header_off = 0;
-  if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr ||
-      header_off == 0) {
-    return write_empty();
-  }
-  uint32_t elements_off = 0;
-  const uint32_t elements_bytes = static_cast<uint32_t>(count) * kElemBytes;
-  if (ctx.alloc.Alloc(elements_bytes, &elements_off) == nullptr ||
-      elements_off == 0) {
-    return write_empty();
-  }
-  // Header layout (mirrors `ArenaListHeader` in cel_data.h):
-  //   [0..4]   count
-  //   [4..8]   capacity
-  //   [8..12]  elements_offset
-  //   [12..16] _pad
-  ctx.mem.WriteU32(header_off + 0u, static_cast<uint32_t>(count));
-  ctx.mem.WriteU32(header_off + 4u, static_cast<uint32_t>(count));
-  ctx.mem.WriteU32(header_off + 8u, elements_off);
-  ctx.mem.WriteU32(header_off + 12u, 0u);
-  // Snapshot every element via `At(i, …)` + EncodeFieldResult.
-  // `celwasm::CelType::Int()` is informational only (M4: no element-side
-  // narrowing); matches the `CelListAtImpl` call site.
-  for (size_t i = 0; i < count; ++i) {
-    auto got = backing->At(i, celwasm::CelType::Int());
-    if (!got.ok()) return got.status();
-    const uint32_t elem_slot =
-        elements_off + (static_cast<uint32_t>(i) * kElemBytes);
-    if (auto s = EncodeFieldResult(*got, elem_slot, ctx); !s.ok()) return s;
-  }
-  // Write the synthetic CelValue at out_slot.
-  CelValue synthetic{};
-  synthetic.kind = CEL_LIST_ARENA;
-  synthetic.payload.arena_list.header_ptr = header_off;
-  ctx.mem.WriteCelValue(out_slot, synthetic);
+  // Materialize the host list into the arena; OOM falls back to empty.
+  auto done = SnapshotHostListToArena(*backing, count, out_slot, ctx);
+  if (!done.ok()) return done.status();
+  if (!*done) return write_empty();
   return absl::OkStatus();
 }
 
@@ -1439,24 +1471,64 @@ absl::Status CelMapLookupImpl(uint32_t out_slot, uint32_t map_slot,
   return EncodeFieldResult(*got, out_slot, ctx);
 }
 
+namespace {
+
+// MapIterState field offsets (mirror the struct in cel_runtime.c).
+constexpr uint32_t kMapIterKindOff = 0u;
+constexpr uint32_t kMapIterCursorOff = 4u;
+constexpr uint32_t kMapIterPayloadOff = 8u;
+constexpr uint32_t kMapIterCountOff = 12u;
+constexpr uint32_t kMapIterHostKind = 1u;  // MAP_ITER_KIND_HOST
+
+// Stamp an empty (count=0) host map-iter state.  The runtime's
+// `cel_map_iter_init` reads count and collapses count=0 to the empty
+// iter handle.
+void WriteEmptyMapIterState(uint32_t state_offset,
+                            const TrampolineContext& ctx) {
+  ctx.mem.WriteU32(state_offset + kMapIterKindOff, kMapIterHostKind);
+  ctx.mem.WriteU32(state_offset + kMapIterCursorOff, 0u);
+  ctx.mem.WriteU32(state_offset + kMapIterPayloadOff, 0u);
+  ctx.mem.WriteU32(state_offset + kMapIterCountOff, 0u);
+}
+
+// Allocate a `count * 48` byte arena snapshot (key 24B immediately
+// followed by value 24B — the stride `cel_map_iter_{key,value}_at`
+// index by), encode each entry pair via `EncodeFieldResult`, and stamp
+// the iter state to point at it.  Returns false on arena OOM so the
+// caller can fall back to an empty state.
+absl::StatusOr<bool> SnapshotMapEntriesToArena(
+    const std::vector<std::pair<celwasm::Value, celwasm::Value>>& entries,
+    uint32_t state_offset, const TrampolineContext& ctx) {
+  constexpr uint32_t kPerEntry = 2u * sizeof(CelValue);
+  const uint32_t snapshot_bytes =
+      static_cast<uint32_t>(entries.size()) * kPerEntry;
+  uint32_t snapshot_off = 0;
+  ctx.alloc.Alloc(snapshot_bytes, &snapshot_off);
+  if (snapshot_off == 0) return false;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const uint32_t key_off =
+        snapshot_off + (static_cast<uint32_t>(i) * kPerEntry);
+    const uint32_t val_off = key_off + sizeof(CelValue);
+    if (auto s = EncodeFieldResult(entries[i].first, key_off, ctx); !s.ok()) {
+      return s;
+    }
+    if (auto s = EncodeFieldResult(entries[i].second, val_off, ctx); !s.ok()) {
+      return s;
+    }
+  }
+  ctx.mem.WriteU32(state_offset + kMapIterKindOff, kMapIterHostKind);
+  ctx.mem.WriteU32(state_offset + kMapIterCursorOff, 0u);
+  ctx.mem.WriteU32(state_offset + kMapIterPayloadOff, snapshot_off);
+  ctx.mem.WriteU32(state_offset + kMapIterCountOff,
+                   static_cast<uint32_t>(entries.size()));
+  return true;
+}
+
+}  // namespace
+
 absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
                                 const TrampolineContext& ctx) {
   CelValue map_cv = ctx.mem.ReadCelValue(map_slot);
-  // Empty / not-our-shape: stamp count=0 and return.  Runtime's
-  // `cel_map_iter_init` reads `count` and collapses to the 0
-  // handle, behaving as an empty iter.
-  // Field offsets within MapIterState (mirrors cel_runtime.c).
-  constexpr uint32_t kKindOff = 0u;
-  constexpr uint32_t kCursorOff = 4u;
-  constexpr uint32_t kPayloadOff = 8u;
-  constexpr uint32_t kCountOff = 12u;
-  constexpr uint32_t kHostKind = 1u;  // MAP_ITER_KIND_HOST
-  auto write_empty = [&] {
-    ctx.mem.WriteU32(state_offset + kKindOff, kHostKind);
-    ctx.mem.WriteU32(state_offset + kCursorOff, 0u);
-    ctx.mem.WriteU32(state_offset + kPayloadOff, 0u);
-    ctx.mem.WriteU32(state_offset + kCountOff, 0u);
-  };
   if (map_cv.kind == CEL_UNKNOWN || map_cv.kind == CEL_ERROR) {
     // Same tripwire as CelListIterOpenImpl: the comprehension
     // prologue's range-absorption guard propagates poisoned ranges
@@ -1471,7 +1543,7 @@ absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
   if (map_cv.kind != CEL_MAP_HOST) {
     // Codegen contract: cel_map_iter_init only calls us for
     // CEL_MAP_HOST sources.  Defence in depth — leave empty.
-    write_empty();
+    WriteEmptyMapIterState(state_offset, ctx);
     return absl::OkStatus();
   }
   const HostMapBacking* backing = ctx.refs.LookupMap(map_cv.payload.ref_slot);
@@ -1480,60 +1552,23 @@ absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
         absl::StrCat("CelMapIterOpenImpl: map ref_slot ",
                      map_cv.payload.ref_slot, " not found in ExternrefTable"));
   }
-  // Snapshot the entries into a vector.  `ForEach` is the only
-  // positional-agnostic accessor on `HostMapBacking`; iter callers
-  // need by-index lookup so we materialise once up front.  Memory
-  // cost: snapshot lives in arena (count * 48B) AND in this
-  // temporary vector (count * sizeof(pair<Value,Value>)) for the
-  // duration of the trampoline.  Acceptable for typical map sizes;
-  // a streaming variant is future work if comprehensions over huge
-  // host maps become a hot path.
+  // `ForEach` is the only positional-agnostic accessor on
+  // `HostMapBacking`; iter callers need by-index lookup, so snapshot the
+  // entries once up front (the snapshot also lives in the arena —
+  // count*48B — for the iter's lifetime; a streaming variant is future
+  // work if huge-host-map comprehensions become hot).
   std::vector<std::pair<celwasm::Value, celwasm::Value>> entries;
   entries.reserve(backing->Size());
   backing->ForEach([&](const celwasm::Value& k, const celwasm::Value& v) {
     entries.emplace_back(k, v);
   });
   if (entries.empty()) {
-    write_empty();
+    WriteEmptyMapIterState(state_offset, ctx);
     return absl::OkStatus();
   }
-  // Allocate `count * 48` bytes in the arena for the snapshot.
-  // CelValue is 24 bytes; each entry is key (24B) immediately
-  // followed by value (24B).  The runtime's `cel_map_iter_key_at` /
-  // `value_at` indexes via the 48-byte stride.
-  constexpr uint32_t kPerEntry = 2u * sizeof(CelValue);
-  const uint32_t snapshot_bytes =
-      static_cast<uint32_t>(entries.size()) * kPerEntry;
-  uint32_t snapshot_off = 0;
-  uint8_t* unused_ptr = ctx.alloc.Alloc(snapshot_bytes, &snapshot_off);
-  (void)unused_ptr;
-  if (snapshot_off == 0) {
-    // OOM — behave as empty rather than tripping the comprehension.
-    write_empty();
-    return absl::OkStatus();
-  }
-  // Encode each entry pair into the snapshot region.
-  // EncodeFieldResult writes via the MemoryView (which sees the
-  // arena bytes the allocator just reserved), so we don't need the
-  // raw pointer.
-  for (size_t i = 0; i < entries.size(); ++i) {
-    const uint32_t key_off =
-        snapshot_off + (static_cast<uint32_t>(i) * kPerEntry);
-    const uint32_t val_off = key_off + sizeof(CelValue);
-    if (auto s = EncodeFieldResult(entries[i].first, key_off, ctx); !s.ok()) {
-      return s;
-    }
-    if (auto s = EncodeFieldResult(entries[i].second, val_off, ctx); !s.ok()) {
-      return s;
-    }
-  }
-  // Stamp the iter state: kind=HOST, cursor=0, payload=snapshot,
-  // count=entries.size().
-  ctx.mem.WriteU32(state_offset + kKindOff, kHostKind);
-  ctx.mem.WriteU32(state_offset + kCursorOff, 0u);
-  ctx.mem.WriteU32(state_offset + kPayloadOff, snapshot_off);
-  ctx.mem.WriteU32(state_offset + kCountOff,
-                   static_cast<uint32_t>(entries.size()));
+  auto done = SnapshotMapEntriesToArena(entries, state_offset, ctx);
+  if (!done.ok()) return done.status();
+  if (!*done) WriteEmptyMapIterState(state_offset, ctx);
   return absl::OkStatus();
 }
 
@@ -2365,6 +2400,41 @@ absl::Status CelListSizeImpl(uint32_t out_slot, uint32_t list_slot,
 // `HostNumericCrossEq` against a synthesised CelValue prototype so
 // the langdef §"Equality" mathematical-value rule holds for
 // `1 in [1u, 2u]`.
+// Compare a numeric backing scalar (int / uint / double) against a
+// wire query CelValue.  Same-kind compares hit the direct payload
+// path; cross-kind routes through `HostNumericCrossEq` against a
+// synthesised prototype so the langdef §"Equality" mathematical-value
+// rule holds (`1 in [1u]`).  Single call site per numeric arm so the
+// optimizer folds it back into `BackingValueEqualsQuery`.
+static bool NumericBackingEqualsQuery(uint32_t same_kind, const CelValue& proto,
+                                      const CelValue& query_cv) {
+  if (query_cv.kind == same_kind) {
+    switch (same_kind) {
+      case CEL_INT:
+        return query_cv.payload.i == proto.payload.i;
+      case CEL_UINT:
+        return query_cv.payload.u == proto.payload.u;
+      default:  // CEL_DOUBLE
+        return query_cv.payload.d == proto.payload.d;
+    }
+  }
+  return HostNumericCrossEq(proto, query_cv);
+}
+
+// Compare a string/bytes backing scalar against a wire query CelValue
+// of the matching wire kind, reading the query bytes from linear
+// memory.  Returns false for any non-matching query kind.  Single
+// call site per arm so it inlines back into the caller.
+static bool SpanBackingEqualsQuery(absl::string_view backing,
+                                   uint32_t want_kind, const CelValue& query_cv,
+                                   const MemoryView& mem) {
+  if (query_cv.kind != want_kind) return false;
+  if (query_cv.payload.s.len != backing.size()) return false;
+  absl::string_view q =
+      mem.ReadSpan(query_cv.payload.s.ptr, query_cv.payload.s.len);
+  return q == backing;
+}
+
 static bool BackingValueEqualsQuery(const celwasm::Value& bv,
                                     const CelValue& query_cv,
                                     const MemoryView& mem) {
@@ -2374,43 +2444,27 @@ static bool BackingValueEqualsQuery(const celwasm::Value& bv,
       if (query_cv.kind != CEL_BOOL) return false;
       return *bv.AsBool() == (query_cv.payload.b != 0);
     case K::kInt: {
-      const int64_t i = *bv.AsInt();
-      if (query_cv.kind == CEL_INT) return query_cv.payload.i == i;
       CelValue proto{};
       proto.kind = CEL_INT;
-      proto.payload.i = i;
-      return HostNumericCrossEq(proto, query_cv);
+      proto.payload.i = *bv.AsInt();
+      return NumericBackingEqualsQuery(CEL_INT, proto, query_cv);
     }
     case K::kUint: {
-      const uint64_t u = *bv.AsUint();
-      if (query_cv.kind == CEL_UINT) return query_cv.payload.u == u;
       CelValue proto{};
       proto.kind = CEL_UINT;
-      proto.payload.u = u;
-      return HostNumericCrossEq(proto, query_cv);
+      proto.payload.u = *bv.AsUint();
+      return NumericBackingEqualsQuery(CEL_UINT, proto, query_cv);
     }
     case K::kDouble: {
-      const double d = *bv.AsDouble();
-      if (query_cv.kind == CEL_DOUBLE) return query_cv.payload.d == d;
       CelValue proto{};
       proto.kind = CEL_DOUBLE;
-      proto.payload.d = d;
-      return HostNumericCrossEq(proto, query_cv);
+      proto.payload.d = *bv.AsDouble();
+      return NumericBackingEqualsQuery(CEL_DOUBLE, proto, query_cv);
     }
-    case K::kString: {
-      if (query_cv.kind != CEL_STRING) return false;
-      if (query_cv.payload.s.len != bv.AsString()->size()) return false;
-      absl::string_view q =
-          mem.ReadSpan(query_cv.payload.s.ptr, query_cv.payload.s.len);
-      return q == *bv.AsString();
-    }
-    case K::kBytes: {
-      if (query_cv.kind != CEL_BYTES) return false;
-      if (query_cv.payload.s.len != bv.AsBytes()->size()) return false;
-      absl::string_view q =
-          mem.ReadSpan(query_cv.payload.s.ptr, query_cv.payload.s.len);
-      return q == *bv.AsBytes();
-    }
+    case K::kString:
+      return SpanBackingEqualsQuery(*bv.AsString(), CEL_STRING, query_cv, mem);
+    case K::kBytes:
+      return SpanBackingEqualsQuery(*bv.AsBytes(), CEL_BYTES, query_cv, mem);
     case K::kNull:
       return query_cv.kind == CEL_NULL;
     case K::kDuration: {
@@ -3165,6 +3219,71 @@ absl::Status WriteMessageOrPack(google::protobuf::Message* dst,
                    "field write"));
 }
 
+// Build the `SetWrapperInnerValue` kind-mismatch error for a wrapper
+// whose inner `value` field rejects the supplied CelValue kind.
+absl::Status WrapperInnerMismatch(
+    const google::protobuf::Descriptor& wrapper_desc,
+    absl::string_view expected, const CelValue& value) {
+  return absl::InvalidArgumentError(absl::StrCat(
+      "SetWrapperInnerValue: `", wrapper_desc.full_name(), "` expects ",
+      expected, " but value kind is ", static_cast<int>(value.kind)));
+}
+
+// Integer / bool arms of `SetWrapperInnerValue` (CPPTYPE_BOOL ..
+// CPPTYPE_UINT64).  Returns the set Status for a handled cpp_type, or
+// `std::nullopt` for FLOAT / DOUBLE / STRING (the caller handles
+// those).  INT32 / UINT32 range-check before narrowing.  Single call
+// site → inlines back.
+std::optional<absl::Status> SetWrapperIntegerValue(
+    const google::protobuf::Reflection& wr, google::protobuf::Message& wrapper,
+    const google::protobuf::FieldDescriptor& vf,
+    const google::protobuf::Descriptor& wrapper_desc, const CelValue& value) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (vf.cpp_type()) {
+    case FD::CPPTYPE_BOOL:
+      if (value.kind != CEL_BOOL) {
+        return WrapperInnerMismatch(wrapper_desc, "CEL_BOOL", value);
+      }
+      wr.SetBool(&wrapper, &vf, value.payload.b != 0);
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT32:
+      if (value.kind != CEL_INT) {
+        return WrapperInnerMismatch(wrapper_desc, "CEL_INT", value);
+      }
+      if (auto s = CheckInt32Range(ReadInt64(value), wrapper_desc.full_name());
+          !s.ok()) {
+        return s;
+      }
+      wr.SetInt32(&wrapper, &vf, static_cast<int32_t>(ReadInt64(value)));
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT64:
+      if (value.kind != CEL_INT) {
+        return WrapperInnerMismatch(wrapper_desc, "CEL_INT", value);
+      }
+      wr.SetInt64(&wrapper, &vf, ReadInt64(value));
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT32:
+      if (value.kind != CEL_UINT) {
+        return WrapperInnerMismatch(wrapper_desc, "CEL_UINT", value);
+      }
+      if (auto s =
+              CheckUint32Range(ReadUInt64(value), wrapper_desc.full_name());
+          !s.ok()) {
+        return s;
+      }
+      wr.SetUInt32(&wrapper, &vf, static_cast<uint32_t>(ReadUInt64(value)));
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT64:
+      if (value.kind != CEL_UINT) {
+        return WrapperInnerMismatch(wrapper_desc, "CEL_UINT", value);
+      }
+      wr.SetUInt64(&wrapper, &vf, ReadUInt64(value));
+      return absl::OkStatus();
+    default:
+      return std::nullopt;
+  }
+}
+
 // Write the inner `value` field of a freshly-allocated wrapper
 // message from a matching scalar CelValue.  9-way cpp_type dispatch,
 // mirror of the read-side `UnpackWrapperMessage`.  Extracted from
@@ -3176,54 +3295,30 @@ absl::Status SetWrapperInnerValue(
     const google::protobuf::Descriptor& wrapper_desc, const CelValue& value,
     const MemoryView& mem) {
   using FD = google::protobuf::FieldDescriptor;
-  auto mismatch = [&](absl::string_view expected) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "SetWrapperInnerValue: `", wrapper_desc.full_name(), "` expects ",
-        expected, " but value kind is ", static_cast<int>(value.kind)));
-  };
+  if (auto s = SetWrapperIntegerValue(wr, wrapper, vf, wrapper_desc, value);
+      s.has_value()) {
+    return *std::move(s);
+  }
   switch (vf.cpp_type()) {
-    case FD::CPPTYPE_BOOL:
-      if (value.kind != CEL_BOOL) return mismatch("CEL_BOOL");
-      wr.SetBool(&wrapper, &vf, value.payload.b != 0);
-      return absl::OkStatus();
-    case FD::CPPTYPE_INT32:
-      if (value.kind != CEL_INT) return mismatch("CEL_INT");
-      if (auto s = CheckInt32Range(ReadInt64(value), wrapper_desc.full_name());
-          !s.ok()) {
-        return s;
-      }
-      wr.SetInt32(&wrapper, &vf, static_cast<int32_t>(ReadInt64(value)));
-      return absl::OkStatus();
-    case FD::CPPTYPE_INT64:
-      if (value.kind != CEL_INT) return mismatch("CEL_INT");
-      wr.SetInt64(&wrapper, &vf, ReadInt64(value));
-      return absl::OkStatus();
-    case FD::CPPTYPE_UINT32:
-      if (value.kind != CEL_UINT) return mismatch("CEL_UINT");
-      if (auto s =
-              CheckUint32Range(ReadUInt64(value), wrapper_desc.full_name());
-          !s.ok()) {
-        return s;
-      }
-      wr.SetUInt32(&wrapper, &vf, static_cast<uint32_t>(ReadUInt64(value)));
-      return absl::OkStatus();
-    case FD::CPPTYPE_UINT64:
-      if (value.kind != CEL_UINT) return mismatch("CEL_UINT");
-      wr.SetUInt64(&wrapper, &vf, ReadUInt64(value));
-      return absl::OkStatus();
     case FD::CPPTYPE_FLOAT:
-      if (value.kind != CEL_DOUBLE) return mismatch("CEL_DOUBLE");
+      if (value.kind != CEL_DOUBLE) {
+        return WrapperInnerMismatch(wrapper_desc, "CEL_DOUBLE", value);
+      }
       wr.SetFloat(&wrapper, &vf, static_cast<float>(ReadDouble(value)));
       return absl::OkStatus();
     case FD::CPPTYPE_DOUBLE:
-      if (value.kind != CEL_DOUBLE) return mismatch("CEL_DOUBLE");
+      if (value.kind != CEL_DOUBLE) {
+        return WrapperInnerMismatch(wrapper_desc, "CEL_DOUBLE", value);
+      }
       wr.SetDouble(&wrapper, &vf, ReadDouble(value));
       return absl::OkStatus();
     case FD::CPPTYPE_STRING:
       if (vf.type() == FD::TYPE_BYTES) {
-        if (value.kind != CEL_BYTES) return mismatch("CEL_BYTES");
+        if (value.kind != CEL_BYTES) {
+          return WrapperInnerMismatch(wrapper_desc, "CEL_BYTES", value);
+        }
       } else if (value.kind != CEL_STRING) {
-        return mismatch("CEL_STRING");
+        return WrapperInnerMismatch(wrapper_desc, "CEL_STRING", value);
       }
       wr.SetString(&wrapper, &vf, ReadSpanString(value, mem));
       return absl::OkStatus();
@@ -3291,6 +3386,231 @@ absl::Status PackCelValueIntoJsonValue(
     const CelValue& value, google::protobuf::Message& out,
     const MemoryView& mem, const ExternrefTable* absl_nullable refs);
 
+// Resolve a CEL_MESSAGE source through `refs` and copy/pack it into a
+// freshly-mutable submessage of `field` on `msg`.  Tail of
+// `SetSingularMessageField` (reached once the null / wrapper / WKT
+// gates ahead of it miss); split out so the parent stays under the
+// function-size gate.  Single call site → inlines back.
+absl::Status SetNestedSingularMessage(
+    const google::protobuf::Reflection& refl, google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, const CelValue& value,
+    const ExternrefTable* absl_nullable refs) {
+  if (value.kind != CEL_MESSAGE) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "CelSetFieldImpl: field `", field.name(),
+        "` is MESSAGE but value kind is ", static_cast<int>(value.kind)));
+  }
+  if (refs == nullptr) {
+    return absl::InternalError(
+        absl::StrCat("CelSetFieldImpl: field `", field.name(),
+                     "` is MESSAGE but no ExternrefTable supplied "
+                     "(nested-message call-site bug)"));
+  }
+  const HostMessageBacking* src = refs->Lookup(value.payload.msg_slot);
+  if (src == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CelSetFieldImpl: field `", field.name(),
+                     "` source has no externref entry"));
+  }
+  const google::protobuf::Message* src_msg = src->message();
+  if (src_msg == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CelSetFieldImpl: field `", field.name(),
+                     "` source backing has no proto message"));
+  }
+  // Descriptor-aware dst-write: descriptors match → CopyFrom;
+  // dst is google.protobuf.Any → reflection-pack; other mismatch
+  // → InvalidArgument (wrapper auto-wrap is gated above).
+  google::protobuf::Message* dst = refl.MutableMessage(&msg, &field);
+  return WriteMessageOrPack(dst, *src_msg);
+}
+
+// CPPTYPE_MESSAGE arm of `SetScalarField` — singular message-field
+// assignment.  Handles, in spec order: `null` clears the field (or
+// packs an explicit `null_value` for a `google.protobuf.Value`
+// target); a scalar source onto a wrapper-typed field auto-wraps; a
+// scalar/aggregate onto a WKT message field (Duration / Timestamp /
+// Value / Struct / ListValue / Any) packs through the shared WKT
+// dispatch; otherwise the source must be a CEL_MESSAGE resolved
+// through `refs` and copied/packed via `WriteMessageOrPack`.  Split
+// from `SetScalarField` so the cpp_type switch stays under the
+// function-size gate; single call site → inlines back.
+absl::Status SetSingularMessageField(
+    const google::protobuf::Reflection& refl, google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, const CelValue& value,
+    const MemoryView& mem, const ExternrefTable* absl_nullable refs) {
+  // langdef §"Field Selection" + cel-cpp behaviour: assigning
+  // `null` to a singular message field clears it (equivalent
+  // to leaving it unset).  `Foo{m: null} == Foo{}` per the
+  // conformance corpus's `set_null/*` rows.  For wrapper-typed
+  // fields, langdef line 484-486's unset-reads-as-null rule
+  // makes this round-trip with the read-side wrapper peel.
+  // A `null` assigned to a `google.protobuf.Value` field packs as
+  // an explicit `null_value` (NOT a cleared field) — langdef JSON
+  // semantics, `value_null/field_assign_*` corpus rows.  Every
+  // other message type clears on null.
+  if (value.kind == CEL_NULL) {
+    const google::protobuf::Descriptor* nmt = field.message_type();
+    if (nmt != nullptr && nmt->full_name() == "google.protobuf.Value") {
+      return PackCelValueIntoJsonValue(
+          value, *refl.MutableMessage(&msg, &field), mem, refs);
+    }
+    refl.ClearField(&msg, &field);
+    return absl::OkStatus();
+  }
+  // Wrapper-typed field with scalar source — synthesise the
+  // wrapper proto and assign.  `Foo{single_int32_wrapper: 5}`
+  // sees scalar CEL_INT here because typed_ast.cc:56 stamps the
+  // value as `Int32` Repr; the auto-wrap below is the boundary
+  // where the scalar becomes an `Int32Value{value: 5}` proto.
+  const google::protobuf::Descriptor* mt = field.message_type();
+  if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
+      value.kind != CEL_MESSAGE) {
+    return SetWrapperFieldFromScalar(refl, msg, field, *mt, value, mem);
+  }
+  // Duration / Timestamp / Value / Struct / ListValue / Any from
+  // a non-message CelValue — pack the scalar/aggregate into the
+  // matching well-known message.  Mirror of the read-side
+  // `MaybeUnpackWktMessage` / `UnpackJsonValueMessage` peelers.
+  if (mt != nullptr && value.kind != CEL_MESSAGE) {
+    if (auto s = MaybeSetWktMessageField(msg, field, value, mem, refs);
+        s.has_value()) {
+      return *std::move(s);
+    }
+  }
+  // Nested singular message — `Foo{nested: Bar{...}}`.  The
+  // outer kStructExpr lowering recursively built `Bar{...}` into
+  // a fresh OwnedProtoBacking and wrote a CEL_MESSAGE CelValue
+  // at value_slot.  Resolve that backing and CopyFrom into a
+  // freshly-mutable submessage of the outer field — same pattern
+  // as repeated-of-message in `AppendRepeatedFromCelValue`.
+  return SetNestedSingularMessage(refl, msg, field, value, refs);
+}
+
+// Build the singular-scalar kind-mismatch error (a checker regression
+// surfaced as InvalidArgument).  Shared across the scalar set arms.
+absl::Status ScalarKindMismatch(const google::protobuf::FieldDescriptor& field,
+                                absl::string_view ty, const CelValue& value) {
+  return absl::InvalidArgumentError(
+      absl::StrCat("CelSetFieldImpl: field `", field.name(), "` is ", ty,
+                   " but value kind is ", static_cast<int>(value.kind)));
+}
+
+// Integer / bool scalar arms of `SetScalarField` (CPPTYPE_BOOL ..
+// CPPTYPE_UINT64).  Returns the set Status for a handled cpp_type, or
+// `std::nullopt` for FLOAT / DOUBLE / STRING / ENUM / MESSAGE.  INT32 /
+// UINT32 range-check before narrowing.  Single call site → inlines
+// back.
+std::optional<absl::Status> SetScalarIntegerField(
+    const google::protobuf::Reflection& refl, google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, const CelValue& value) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (field.cpp_type()) {
+    case FD::CPPTYPE_BOOL:
+      if (value.kind != CEL_BOOL)
+        return ScalarKindMismatch(field, "BOOL", value);
+      refl.SetBool(&msg, &field, value.payload.b != 0);
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT32:
+      if (value.kind != CEL_INT)
+        return ScalarKindMismatch(field, "INT32", value);
+      if (auto s = CheckInt32Range(ReadInt64(value), field.name()); !s.ok()) {
+        return s;
+      }
+      refl.SetInt32(&msg, &field, static_cast<int32_t>(ReadInt64(value)));
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT64:
+      if (value.kind != CEL_INT)
+        return ScalarKindMismatch(field, "INT64", value);
+      refl.SetInt64(&msg, &field, ReadInt64(value));
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT32:
+      if (value.kind != CEL_UINT) {
+        return ScalarKindMismatch(field, "UINT32", value);
+      }
+      if (auto s = CheckUint32Range(ReadUInt64(value), field.name()); !s.ok()) {
+        return s;
+      }
+      refl.SetUInt32(&msg, &field, static_cast<uint32_t>(ReadUInt64(value)));
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT64:
+      if (value.kind != CEL_UINT) {
+        return ScalarKindMismatch(field, "UINT64", value);
+      }
+      refl.SetUInt64(&msg, &field, ReadUInt64(value));
+      return absl::OkStatus();
+    default:
+      return std::nullopt;
+  }
+}
+
+// FLOAT / DOUBLE scalar arms of `SetScalarField`.  Both accept
+// CEL_DOUBLE (CEL has one floating type); FLOAT narrows.  Single call
+// site → inlines back.
+std::optional<absl::Status> SetScalarFloatField(
+    const google::protobuf::Reflection& refl, google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, const CelValue& value) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (field.cpp_type()) {
+    case FD::CPPTYPE_FLOAT:
+      if (value.kind != CEL_DOUBLE)
+        return ScalarKindMismatch(field, "FLOAT", value);
+      refl.SetFloat(&msg, &field, static_cast<float>(ReadDouble(value)));
+      return absl::OkStatus();
+    case FD::CPPTYPE_DOUBLE:
+      if (value.kind != CEL_DOUBLE) {
+        return ScalarKindMismatch(field, "DOUBLE", value);
+      }
+      refl.SetDouble(&msg, &field, ReadDouble(value));
+      return absl::OkStatus();
+    default:
+      return std::nullopt;
+  }
+}
+
+// STRING / BYTES and ENUM scalar arms of `SetScalarField`.  String
+// fields accept CEL_STRING, bytes fields (same CPPTYPE_STRING slot,
+// distinguished by `field.type()`) accept CEL_BYTES; enum values flow
+// as CEL_INT (langdef §"Enumerated Types") and range-check into int32
+// before assignment.  Single call site → inlines back.
+absl::Status SetStringOrEnumField(
+    const google::protobuf::Reflection& refl, google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field, const CelValue& value,
+    const MemoryView& mem) {
+  using FD = google::protobuf::FieldDescriptor;
+  if (field.cpp_type() == FD::CPPTYPE_STRING) {
+    if (field.type() == FD::TYPE_BYTES) {
+      if (value.kind != CEL_BYTES) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "CelSetFieldImpl: field `", field.name(),
+            "` is BYTES but value kind is ", static_cast<int>(value.kind)));
+      }
+    } else if (value.kind != CEL_STRING) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "CelSetFieldImpl: field `", field.name(),
+          "` is STRING but value kind is ", static_cast<int>(value.kind)));
+    }
+    refl.SetString(&msg, &field, ReadSpanString(value, mem));
+    return absl::OkStatus();
+  }
+  // CPPTYPE_ENUM: cel-cpp's checker resolves `Foo.SOME_VALUE` to a
+  // Constant int64; codegen flows that as CEL_INT here.
+  if (value.kind != CEL_INT) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "CelSetFieldImpl: field `", field.name(),
+        "` is ENUM but value kind is ", static_cast<int>(value.kind)));
+  }
+  // Enum values narrow to int32 on the wire; an out-of-range
+  // assignment is a CEL error in cel-cpp (struct_value_builder.cc
+  // `CPPTYPE_ENUM` returns TypeConversionError), surfaced here via
+  // the poison contract rather than a silent truncation.
+  if (auto s = CheckInt32Range(ReadInt64(value), field.name()); !s.ok()) {
+    return s;
+  }
+  refl.SetEnumValue(&msg, &field, static_cast<int>(ReadInt64(value)));
+  return absl::OkStatus();
+}
+
 // Set a scalar singular field on `msg` per `field`'s cpp_type.  Returns
 // non-OK Status on cpp_type / value-kind mismatches that the cel-cpp
 // checker should have rejected pre-codegen — surfaces as a wasm trap so
@@ -3306,182 +3626,20 @@ absl::Status SetScalarField(
   if (refl == nullptr) {
     return absl::InternalError("CelSetFieldImpl: message has no reflection");
   }
+  if (auto s = SetScalarIntegerField(*refl, msg, field, value); s.has_value()) {
+    return *std::move(s);
+  }
+  if (auto s = SetScalarFloatField(*refl, msg, field, value); s.has_value()) {
+    return *std::move(s);
+  }
   switch (field.cpp_type()) {
-    case FD::CPPTYPE_BOOL:
-      if (value.kind != CEL_BOOL) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is BOOL but value kind is ", static_cast<int>(value.kind)));
-      }
-      refl->SetBool(&msg, &field, value.payload.b != 0);
-      return absl::OkStatus();
-    case FD::CPPTYPE_INT32:
-      if (value.kind != CEL_INT) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is INT32 but value kind is ", static_cast<int>(value.kind)));
-      }
-      if (auto s = CheckInt32Range(ReadInt64(value), field.name()); !s.ok()) {
-        return s;
-      }
-      refl->SetInt32(&msg, &field, static_cast<int32_t>(ReadInt64(value)));
-      return absl::OkStatus();
-    case FD::CPPTYPE_INT64:
-      if (value.kind != CEL_INT) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is INT64 but value kind is ", static_cast<int>(value.kind)));
-      }
-      refl->SetInt64(&msg, &field, ReadInt64(value));
-      return absl::OkStatus();
-    case FD::CPPTYPE_UINT32:
-      if (value.kind != CEL_UINT) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is UINT32 but value kind is ", static_cast<int>(value.kind)));
-      }
-      if (auto s = CheckUint32Range(ReadUInt64(value), field.name()); !s.ok()) {
-        return s;
-      }
-      refl->SetUInt32(&msg, &field, static_cast<uint32_t>(ReadUInt64(value)));
-      return absl::OkStatus();
-    case FD::CPPTYPE_UINT64:
-      if (value.kind != CEL_UINT) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is UINT64 but value kind is ", static_cast<int>(value.kind)));
-      }
-      refl->SetUInt64(&msg, &field, ReadUInt64(value));
-      return absl::OkStatus();
-    case FD::CPPTYPE_FLOAT:
-      if (value.kind != CEL_DOUBLE) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is FLOAT but value kind is ", static_cast<int>(value.kind)));
-      }
-      refl->SetFloat(&msg, &field, static_cast<float>(ReadDouble(value)));
-      return absl::OkStatus();
-    case FD::CPPTYPE_DOUBLE:
-      if (value.kind != CEL_DOUBLE) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is DOUBLE but value kind is ", static_cast<int>(value.kind)));
-      }
-      refl->SetDouble(&msg, &field, ReadDouble(value));
-      return absl::OkStatus();
     case FD::CPPTYPE_STRING:
-      // String-type fields accept CEL_STRING; bytes-type fields
-      // accept CEL_BYTES.  Both share the same cpp_type slot
-      // (CPPTYPE_STRING) — the wire-type distinction comes from
-      // `field.type()`, not cpp_type.
-      if (field.type() == FD::TYPE_BYTES) {
-        if (value.kind != CEL_BYTES) {
-          return absl::InvalidArgumentError(absl::StrCat(
-              "CelSetFieldImpl: field `", field.name(),
-              "` is BYTES but value kind is ", static_cast<int>(value.kind)));
-        }
-      } else {
-        if (value.kind != CEL_STRING) {
-          return absl::InvalidArgumentError(absl::StrCat(
-              "CelSetFieldImpl: field `", field.name(),
-              "` is STRING but value kind is ", static_cast<int>(value.kind)));
-        }
-      }
-      refl->SetString(&msg, &field, ReadSpanString(value, mem));
-      return absl::OkStatus();
     case FD::CPPTYPE_ENUM:
-      // langdef §"Enumerated Types": enum values are spec-typed as
-      // int.  cel-cpp's checker resolves `Foo.SOME_VALUE` to a
-      // Constant int64; codegen flows that as CEL_INT to here.
-      if (value.kind != CEL_INT) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is ENUM but value kind is ", static_cast<int>(value.kind)));
-      }
-      // Enum values narrow to int32 on the wire; an out-of-range
-      // assignment is a CEL error in cel-cpp (struct_value_builder.cc
-      // `CPPTYPE_ENUM` returns TypeConversionError), surfaced here via
-      // the poison contract rather than a silent truncation.
-      if (auto s = CheckInt32Range(ReadInt64(value), field.name()); !s.ok()) {
-        return s;
-      }
-      refl->SetEnumValue(&msg, &field, static_cast<int>(ReadInt64(value)));
-      return absl::OkStatus();
-    case FD::CPPTYPE_MESSAGE: {
-      // langdef §"Field Selection" + cel-cpp behaviour: assigning
-      // `null` to a singular message field clears it (equivalent
-      // to leaving it unset).  `Foo{m: null} == Foo{}` per the
-      // conformance corpus's `set_null/*` rows.  For wrapper-typed
-      // fields, langdef line 484-486's unset-reads-as-null rule
-      // makes this round-trip with the read-side wrapper peel.
-      // A `null` assigned to a `google.protobuf.Value` field packs as
-      // an explicit `null_value` (NOT a cleared field) — langdef JSON
-      // semantics, `value_null/field_assign_*` corpus rows.  Every
-      // other message type clears on null.
-      if (value.kind == CEL_NULL) {
-        const google::protobuf::Descriptor* nmt = field.message_type();
-        if (nmt != nullptr && nmt->full_name() == "google.protobuf.Value") {
-          return PackCelValueIntoJsonValue(
-              value, *refl->MutableMessage(&msg, &field), mem, refs);
-        }
-        refl->ClearField(&msg, &field);
-        return absl::OkStatus();
-      }
-      // Wrapper-typed field with scalar source — synthesise the
-      // wrapper proto and assign.  `Foo{single_int32_wrapper: 5}`
-      // sees scalar CEL_INT here because typed_ast.cc:56 stamps the
-      // value as `Int32` Repr; the auto-wrap below is the boundary
-      // where the scalar becomes an `Int32Value{value: 5}` proto.
-      const google::protobuf::Descriptor* mt = field.message_type();
-      if (mt != nullptr && IsWrapperFqn(mt->full_name()) &&
-          value.kind != CEL_MESSAGE) {
-        return SetWrapperFieldFromScalar(*refl, msg, field, *mt, value, mem);
-      }
-      // Duration / Timestamp / Value / Struct / ListValue / Any from
-      // a non-message CelValue — pack the scalar/aggregate into the
-      // matching well-known message.  Mirror of the read-side
-      // `MaybeUnpackWktMessage` / `UnpackJsonValueMessage` peelers.
-      if (mt != nullptr && value.kind != CEL_MESSAGE) {
-        if (auto s = MaybeSetWktMessageField(msg, field, value, mem, refs);
-            s.has_value()) {
-          return *std::move(s);
-        }
-      }
-      // Nested singular message — `Foo{nested: Bar{...}}`.  The
-      // outer kStructExpr lowering recursively built `Bar{...}` into
-      // a fresh OwnedProtoBacking and wrote a CEL_MESSAGE CelValue
-      // at value_slot.  Here we resolve that backing and CopyFrom
-      // into a freshly-mutable submessage of the outer field — same
-      // pattern as repeated-of-message in AppendRepeatedFromCelValue.
-      if (value.kind != CEL_MESSAGE) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: field `", field.name(),
-            "` is MESSAGE but value kind is ", static_cast<int>(value.kind)));
-      }
-      if (refs == nullptr) {
-        return absl::InternalError(
-            absl::StrCat("CelSetFieldImpl: field `", field.name(),
-                         "` is MESSAGE but no ExternrefTable supplied "
-                         "(nested-message call-site bug)"));
-      }
-      const HostMessageBacking* src = refs->Lookup(value.payload.msg_slot);
-      if (src == nullptr) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: field `", field.name(),
-                         "` source has no externref entry"));
-      }
-      const google::protobuf::Message* src_msg = src->message();
-      if (src_msg == nullptr) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: field `", field.name(),
-                         "` source backing has no proto message"));
-      }
-      // Descriptor-aware dst-write: descriptors match → CopyFrom;
-      // dst is google.protobuf.Any → reflection-pack; other mismatch
-      // → InvalidArgument (wrapper auto-wrap is gated above).
-      google::protobuf::Message* dst = refl->MutableMessage(&msg, &field);
-      return WriteMessageOrPack(dst, *src_msg);
-    }
+      return SetStringOrEnumField(*refl, msg, field, value, mem);
+    case FD::CPPTYPE_MESSAGE:
+      return SetSingularMessageField(*refl, msg, field, value, mem, refs);
+    default:
+      break;
   }
   ABSL_CHECK(false) << "CelSetFieldImpl: unknown cpp_type "
                     << static_cast<int>(field.cpp_type());
@@ -3825,6 +3983,125 @@ std::optional<absl::Status> MaybeSetWktMessageField(
   return MaybePackWktMessage(*sub, value, mem, refs);
 }
 
+// Numeric / bool / string / enum arms of `AppendRepeatedFromCelValue`
+// (every non-MESSAGE cpp_type).  Returns the append Status for a
+// handled cpp_type, or `std::nullopt` for CPPTYPE_MESSAGE (caller
+// handles).  Mirror of `SetScalarNumericField` + the string/enum arm
+// but uses the `Add...` reflection family.  Single call site →
+// inlines back.
+std::optional<absl::Status> AppendRepeatedScalar(
+    google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const google::protobuf::Reflection& refl, const CelValue& cv,
+    const MemoryView& mem) {
+  using FD = google::protobuf::FieldDescriptor;
+  auto mismatch = [&](absl::string_view ty) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CelSetFieldImpl: repeated `", field.name(), "` ", ty,
+                     " element kind=", static_cast<int>(cv.kind)));
+  };
+  switch (field.cpp_type()) {
+    case FD::CPPTYPE_BOOL:
+      if (cv.kind != CEL_BOOL) return mismatch("BOOL");
+      refl.AddBool(&msg, &field, cv.payload.b != 0);
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT32:
+      if (cv.kind != CEL_INT) return mismatch("INT32");
+      refl.AddInt32(&msg, &field, static_cast<int32_t>(cv.payload.i));
+      return absl::OkStatus();
+    case FD::CPPTYPE_INT64:
+      if (cv.kind != CEL_INT) return mismatch("INT64");
+      refl.AddInt64(&msg, &field, cv.payload.i);
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT32:
+      if (cv.kind != CEL_UINT) return mismatch("UINT32");
+      refl.AddUInt32(&msg, &field, static_cast<uint32_t>(cv.payload.u));
+      return absl::OkStatus();
+    case FD::CPPTYPE_UINT64:
+      if (cv.kind != CEL_UINT) return mismatch("UINT64");
+      refl.AddUInt64(&msg, &field, cv.payload.u);
+      return absl::OkStatus();
+    case FD::CPPTYPE_FLOAT:
+      if (cv.kind != CEL_DOUBLE) return mismatch("FLOAT");
+      refl.AddFloat(&msg, &field, static_cast<float>(cv.payload.d));
+      return absl::OkStatus();
+    case FD::CPPTYPE_DOUBLE:
+      if (cv.kind != CEL_DOUBLE) return mismatch("DOUBLE");
+      refl.AddDouble(&msg, &field, cv.payload.d);
+      return absl::OkStatus();
+    case FD::CPPTYPE_STRING: {
+      const bool want_bytes = field.type() == FD::TYPE_BYTES;
+      if (want_bytes ? cv.kind != CEL_BYTES : cv.kind != CEL_STRING) {
+        return mismatch("STRING/BYTES");
+      }
+      refl.AddString(&msg, &field, ReadSpanString(cv, mem));
+      return absl::OkStatus();
+    }
+    case FD::CPPTYPE_ENUM:
+      if (cv.kind != CEL_INT) return mismatch("ENUM");
+      if (auto s = CheckInt32Range(cv.payload.i, field.name()); !s.ok()) {
+        return s;
+      }
+      refl.AddEnumValue(&msg, &field, static_cast<int>(cv.payload.i));
+      return absl::OkStatus();
+    default:
+      return std::nullopt;
+  }
+}
+
+// CPPTYPE_MESSAGE arm of `AppendRepeatedFromCelValue`.  A `null`
+// element is PRUNED (skipped) per the `set_null/repeated_*` corpus
+// rows; a non-message element targeting a WKT field packs via the
+// shared dispatch; otherwise the source must be a CEL_MESSAGE resolved
+// through `refs` and copied/packed into a fresh AddMessage element.
+// Single call site → inlines back.
+absl::Status AppendRepeatedMessage(
+    google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const google::protobuf::Reflection& refl, const CelValue& cv,
+    const MemoryView& mem, const ExternrefTable& refs) {
+  // A `null` element of a message-typed repeated field is PRUNED
+  // (skipped), not appended — `[timestamp(1), null]` round-trips
+  // as `[timestamp(1)]` per the `set_null/repeated_*` corpus rows.
+  if (cv.kind == CEL_NULL) {
+    return absl::OkStatus();
+  }
+  // Non-message element targeting a WKT message field (Duration /
+  // Timestamp / Value / Struct / ListValue / Any) — pack into a
+  // fresh AddMessage element via the shared WKT dispatch.
+  if (cv.kind != CEL_MESSAGE) {
+    if (auto s =
+            MaybePackWktMessage(*refl.AddMessage(&msg, &field), cv, mem, &refs);
+        s.has_value()) {
+      return *std::move(s);
+    }
+  }
+  // Repeated-of-message: source element is CEL_MESSAGE pointing
+  // at a HostMessageBacking that exposes its underlying Message*.
+  // We CopyFrom into a fresh `AddMessage` submessage so the
+  // outer field carries an independent copy (the source backing
+  // may be freed at ExternrefTable::Reset between Evals).
+  if (cv.kind != CEL_MESSAGE) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CelSetFieldImpl: repeated message `", field.name(),
+                     "` element kind=", static_cast<int>(cv.kind)));
+  }
+  const HostMessageBacking* src = refs.Lookup(cv.payload.msg_slot);
+  if (src == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CelSetFieldImpl: repeated message `", field.name(),
+                     "` element has no externref entry"));
+  }
+  const google::protobuf::Message* src_msg = src->message();
+  if (src_msg == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CelSetFieldImpl: repeated message `", field.name(),
+                     "` element backing has no proto message"));
+  }
+  google::protobuf::Message* dst = refl.AddMessage(&msg, &field);
+  return WriteMessageOrPack(dst, *src_msg);
+}
+
 // Append one element to a repeated field from an arena-source
 // CelValue.  Per-cpp_type dispatch mirrors `SetScalarField` but
 // uses the `Add...` reflection family instead of `Set...`.
@@ -3837,142 +4114,26 @@ absl::Status AppendRepeatedFromCelValue(
     const google::protobuf::Reflection& refl, const CelValue& cv,
     const MemoryView& mem, const ExternrefTable& refs) {
   using FD = google::protobuf::FieldDescriptor;
-  switch (field.cpp_type()) {
-    case FD::CPPTYPE_BOOL:
-      if (cv.kind != CEL_BOOL) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
-                         "` BOOL element kind=", static_cast<int>(cv.kind)));
-      }
-      refl.AddBool(&msg, &field, cv.payload.b != 0);
-      return absl::OkStatus();
-    case FD::CPPTYPE_INT32:
-      if (cv.kind != CEL_INT) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
-                         "` INT32 element kind=", static_cast<int>(cv.kind)));
-      }
-      refl.AddInt32(&msg, &field, static_cast<int32_t>(cv.payload.i));
-      return absl::OkStatus();
-    case FD::CPPTYPE_INT64:
-      if (cv.kind != CEL_INT) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
-                         "` INT64 element kind=", static_cast<int>(cv.kind)));
-      }
-      refl.AddInt64(&msg, &field, cv.payload.i);
-      return absl::OkStatus();
-    case FD::CPPTYPE_UINT32:
-      if (cv.kind != CEL_UINT) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
-                         "` UINT32 element kind=", static_cast<int>(cv.kind)));
-      }
-      refl.AddUInt32(&msg, &field, static_cast<uint32_t>(cv.payload.u));
-      return absl::OkStatus();
-    case FD::CPPTYPE_UINT64:
-      if (cv.kind != CEL_UINT) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
-                         "` UINT64 element kind=", static_cast<int>(cv.kind)));
-      }
-      refl.AddUInt64(&msg, &field, cv.payload.u);
-      return absl::OkStatus();
-    case FD::CPPTYPE_FLOAT:
-      if (cv.kind != CEL_DOUBLE) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
-                         "` FLOAT element kind=", static_cast<int>(cv.kind)));
-      }
-      refl.AddFloat(&msg, &field, static_cast<float>(cv.payload.d));
-      return absl::OkStatus();
-    case FD::CPPTYPE_DOUBLE:
-      if (cv.kind != CEL_DOUBLE) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
-                         "` DOUBLE element kind=", static_cast<int>(cv.kind)));
-      }
-      refl.AddDouble(&msg, &field, cv.payload.d);
-      return absl::OkStatus();
-    case FD::CPPTYPE_STRING: {
-      const bool want_bytes = field.type() == FD::TYPE_BYTES;
-      if (want_bytes ? cv.kind != CEL_BYTES : cv.kind != CEL_STRING) {
-        return absl::InvalidArgumentError(absl::StrCat(
-            "CelSetFieldImpl: repeated `", field.name(),
-            "` STRING/BYTES element kind=", static_cast<int>(cv.kind)));
-      }
-      refl.AddString(&msg, &field, ReadSpanString(cv, mem));
-      return absl::OkStatus();
-    }
-    case FD::CPPTYPE_ENUM:
-      if (cv.kind != CEL_INT) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated `", field.name(),
-                         "` ENUM element kind=", static_cast<int>(cv.kind)));
-      }
-      if (auto s = CheckInt32Range(cv.payload.i, field.name()); !s.ok()) {
-        return s;
-      }
-      refl.AddEnumValue(&msg, &field, static_cast<int>(cv.payload.i));
-      return absl::OkStatus();
-    case FD::CPPTYPE_MESSAGE: {
-      // A `null` element of a message-typed repeated field is PRUNED
-      // (skipped), not appended — `[timestamp(1), null]` round-trips
-      // as `[timestamp(1)]` per the `set_null/repeated_*` corpus rows.
-      if (cv.kind == CEL_NULL) {
-        return absl::OkStatus();
-      }
-      // Non-message element targeting a WKT message field (Duration /
-      // Timestamp / Value / Struct / ListValue / Any) — pack into a
-      // fresh AddMessage element via the shared WKT dispatch.
-      if (cv.kind != CEL_MESSAGE) {
-        if (auto s = MaybePackWktMessage(*refl.AddMessage(&msg, &field), cv,
-                                         mem, &refs);
-            s.has_value()) {
-          return *std::move(s);
-        }
-      }
-      // Repeated-of-message: source element is CEL_MESSAGE pointing
-      // at a HostMessageBacking that exposes its underlying Message*.
-      // We CopyFrom into a fresh `AddMessage` submessage so the
-      // outer field carries an independent copy (the source backing
-      // may be freed at ExternrefTable::Reset between Evals).
-      if (cv.kind != CEL_MESSAGE) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated message `", field.name(),
-                         "` element kind=", static_cast<int>(cv.kind)));
-      }
-      const HostMessageBacking* src = refs.Lookup(cv.payload.msg_slot);
-      if (src == nullptr) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated message `", field.name(),
-                         "` element has no externref entry"));
-      }
-      const google::protobuf::Message* src_msg = src->message();
-      if (src_msg == nullptr) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: repeated message `", field.name(),
-                         "` element backing has no proto message"));
-      }
-      google::protobuf::Message* dst = refl.AddMessage(&msg, &field);
-      return WriteMessageOrPack(dst, *src_msg);
-    }
+  if (auto s = AppendRepeatedScalar(msg, field, refl, cv, mem); s.has_value()) {
+    return *std::move(s);
+  }
+  if (field.cpp_type() == FD::CPPTYPE_MESSAGE) {
+    return AppendRepeatedMessage(msg, field, refl, cv, mem, refs);
   }
   ABSL_CHECK(false) << "AppendRepeatedFromCelValue: unknown cpp_type "
                     << static_cast<int>(field.cpp_type());
   return absl::InternalError("unreachable");
 }
 
-// Same as `AppendRepeatedFromCelValue` but the source element comes
-// from a host-list backing as a `celwasm::Value` (Activation::Bind
-// path).  Per-cpp_type dispatch reads via celwasm::Value's typed
-// accessors instead of CelValue payloads + MemoryView.
-absl::Status AppendRepeatedFromHostListValue(
+// Non-MESSAGE arms of `AppendRepeatedFromHostListValue` — reads each
+// element through `celwasm::Value`'s typed accessors (a failed
+// accessor propagates its Status).  Returns `std::nullopt` for
+// CPPTYPE_MESSAGE (caller handles).  Single call site → inlines back.
+std::optional<absl::Status> AppendRepeatedHostScalar(
     google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field,
     const google::protobuf::Reflection& refl, const celwasm::Value& v) {
   using FD = google::protobuf::FieldDescriptor;
-  using K = celwasm::Value::Kind;
   switch (field.cpp_type()) {
     case FD::CPPTYPE_BOOL: {
       auto b = v.AsBool();
@@ -4031,23 +4192,40 @@ absl::Status AppendRepeatedFromHostListValue(
       refl.AddEnumValue(&msg, &field, static_cast<int>(*i));
       return absl::OkStatus();
     }
-    case FD::CPPTYPE_MESSAGE: {
-      if (v.kind() != K::kMessage) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: host-list repeated message `",
-                         field.name(), "` element kind != kMessage"));
-      }
-      auto backing_or = v.MessageBacking();
-      if (!backing_or.ok()) return backing_or.status();
-      const google::protobuf::Message* src_msg = (*backing_or)->message();
-      if (src_msg == nullptr) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("CelSetFieldImpl: host-list repeated message `",
-                         field.name(), "` backing has no proto message"));
-      }
-      google::protobuf::Message* dst = refl.AddMessage(&msg, &field);
-      return WriteMessageOrPack(dst, *src_msg);
+    default:
+      return std::nullopt;
+  }
+}
+
+// Same as `AppendRepeatedFromCelValue` but the source element comes
+// from a host-list backing as a `celwasm::Value` (Activation::Bind
+// path).  Per-cpp_type dispatch reads via celwasm::Value's typed
+// accessors instead of CelValue payloads + MemoryView.
+absl::Status AppendRepeatedFromHostListValue(
+    google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const google::protobuf::Reflection& refl, const celwasm::Value& v) {
+  using FD = google::protobuf::FieldDescriptor;
+  using K = celwasm::Value::Kind;
+  if (auto s = AppendRepeatedHostScalar(msg, field, refl, v); s.has_value()) {
+    return *std::move(s);
+  }
+  if (field.cpp_type() == FD::CPPTYPE_MESSAGE) {
+    if (v.kind() != K::kMessage) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("CelSetFieldImpl: host-list repeated message `",
+                       field.name(), "` element kind != kMessage"));
     }
+    auto backing_or = v.MessageBacking();
+    if (!backing_or.ok()) return backing_or.status();
+    const google::protobuf::Message* src_msg = (*backing_or)->message();
+    if (src_msg == nullptr) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("CelSetFieldImpl: host-list repeated message `",
+                       field.name(), "` backing has no proto message"));
+    }
+    google::protobuf::Message* dst = refl.AddMessage(&msg, &field);
+    return WriteMessageOrPack(dst, *src_msg);
   }
   ABSL_CHECK(false) << "AppendRepeatedFromHostListValue: unknown cpp_type "
                     << static_cast<int>(field.cpp_type());
@@ -4102,6 +4280,39 @@ absl::Status SetRepeatedField(google::protobuf::Message& msg,
 // the singular path; the key path naturally rejects map keys typed
 // as message (proto disallows map<message,_>) at the descriptor
 // level.
+// Set the value sub-field of an arena-map entry whose value type is a
+// message.  A non-message source either packs into a WKT value
+// submessage (Duration / Timestamp / Value / Struct / ListValue / Any)
+// or errors; a CEL_MESSAGE source is resolved through `refs` and
+// copied/packed via `WriteMessageOrPack`.  Split from
+// `InsertArenaMapEntry` so the parent stays under the function-size
+// gate; single call site → inlines back.
+absl::Status SetArenaMapEntryMessageValue(
+    google::protobuf::Message& entry,
+    const google::protobuf::FieldDescriptor& key_fd,
+    const google::protobuf::FieldDescriptor& val_fd, const CelValue& val_cv,
+    const MemoryView& mem, const ExternrefTable& refs) {
+  // Non-message value targeting a WKT map value (Duration /
+  // Timestamp / Value / Struct / ListValue / Any) — pack via the
+  // shared WKT dispatch onto the entry's mutable value submessage.
+  google::protobuf::Message* dst =
+      entry.GetReflection()->MutableMessage(&entry, &val_fd);
+  if (val_cv.kind != CEL_MESSAGE) {
+    if (auto s = MaybePackWktMessage(*dst, val_cv, mem, &refs); s.has_value()) {
+      return *std::move(s);
+    }
+    return absl::InvalidArgumentError(absl::StrCat(
+        "CelSetFieldImpl: map<", key_fd.name(), ", message `", val_fd.name(),
+        "`> value kind=", static_cast<int>(val_cv.kind)));
+  }
+  const HostMessageBacking* src = refs.Lookup(val_cv.payload.msg_slot);
+  if (src == nullptr || src->message() == nullptr) {
+    return absl::InvalidArgumentError(
+        "CelSetFieldImpl: map message-value source has no backing");
+  }
+  return WriteMessageOrPack(dst, *src->message());
+}
+
 absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
                                  const google::protobuf::FieldDescriptor& field,
                                  const google::protobuf::Reflection& refl,
@@ -4127,150 +4338,134 @@ absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
     return s;
   }
   if (val_is_message) {
-    // Non-message value targeting a WKT map value (Duration /
-    // Timestamp / Value / Struct / ListValue / Any) — pack via the
-    // shared WKT dispatch onto the entry's mutable value submessage.
-    google::protobuf::Message* dst =
-        entry->GetReflection()->MutableMessage(entry, val_fd);
-    if (val_cv.kind != CEL_MESSAGE) {
-      if (auto s = MaybePackWktMessage(*dst, val_cv, mem, &refs);
-          s.has_value()) {
-        return *std::move(s);
-      }
-      return absl::InvalidArgumentError(absl::StrCat(
-          "CelSetFieldImpl: map<", key_fd->name(), ", message `",
-          val_fd->name(), "`> value kind=", static_cast<int>(val_cv.kind)));
-    }
-    const HostMessageBacking* src = refs.Lookup(val_cv.payload.msg_slot);
-    if (src == nullptr || src->message() == nullptr) {
-      return absl::InvalidArgumentError(
-          "CelSetFieldImpl: map message-value source has no backing");
-    }
-    return WriteMessageOrPack(dst, *src->message());
+    return SetArenaMapEntryMessageValue(*entry, *key_fd, *val_fd, val_cv, mem,
+                                        refs);
   }
   return SetScalarField(*entry, *val_fd, val_cv, mem, &refs);
 }
 
-absl::Status InsertHostMapEntry(google::protobuf::Message& msg,
-                                const google::protobuf::FieldDescriptor& field,
-                                const google::protobuf::Reflection& refl,
-                                const celwasm::Value& key,
-                                const celwasm::Value& value) {
-  google::protobuf::Message* entry = refl.AddMessage(&msg, &field);
-  const google::protobuf::FieldDescriptor* key_fd = MapEntryField(field, 1);
-  const google::protobuf::FieldDescriptor* val_fd = MapEntryField(field, 2);
-  // Reuse `AppendRepeatedFromHostListValue`'s host-value dispatch
-  // shape: it's cpp_type-keyed and handles every scalar + message
-  // arm.  But we need *Set* on a singular sub-field, not *Add* on
-  // a repeated one — so route through a small per-cpp_type
-  // dispatcher inline.  (Alternatively: convert celwasm::Value → CelValue
-  // and reuse SetScalarField; the conversion needs arena bytes for
-  // strings, which we don't have here.)
+// Set the key sub-field of a host-map entry from a `celwasm::Value`.
+// Map keys are a closed set (bool / int / uint / string) per
+// descriptor.proto; any other cpp_type is rejected (defence — the
+// descriptor wouldn't have legalised the field).  A failed typed
+// accessor propagates its Status.  Single call site → inlines back.
+absl::Status SetHostMapEntryKey(google::protobuf::Message& entry,
+                                const google::protobuf::Reflection& entry_refl,
+                                const google::protobuf::FieldDescriptor& key_fd,
+                                const celwasm::Value& key) {
   using FD = google::protobuf::FieldDescriptor;
-  const google::protobuf::Reflection* entry_refl = entry->GetReflection();
-  // Key must be one of the proto-allowed map-key kinds; for any
-  // other shape the descriptor wouldn't have legalised the field
-  // — but we still bound-check below for defence.
-  switch (key_fd->cpp_type()) {
+  switch (key_fd.cpp_type()) {
     case FD::CPPTYPE_INT32: {
       auto i = key.AsInt();
       if (!i.ok()) return i.status();
-      entry_refl->SetInt32(entry, key_fd, static_cast<int32_t>(*i));
-      break;
+      entry_refl.SetInt32(&entry, &key_fd, static_cast<int32_t>(*i));
+      return absl::OkStatus();
     }
     case FD::CPPTYPE_INT64: {
       auto i = key.AsInt();
       if (!i.ok()) return i.status();
-      entry_refl->SetInt64(entry, key_fd, *i);
-      break;
+      entry_refl.SetInt64(&entry, &key_fd, *i);
+      return absl::OkStatus();
     }
     case FD::CPPTYPE_UINT32: {
       auto u = key.AsUint();
       if (!u.ok()) return u.status();
-      entry_refl->SetUInt32(entry, key_fd, static_cast<uint32_t>(*u));
-      break;
+      entry_refl.SetUInt32(&entry, &key_fd, static_cast<uint32_t>(*u));
+      return absl::OkStatus();
     }
     case FD::CPPTYPE_UINT64: {
       auto u = key.AsUint();
       if (!u.ok()) return u.status();
-      entry_refl->SetUInt64(entry, key_fd, *u);
-      break;
+      entry_refl.SetUInt64(&entry, &key_fd, *u);
+      return absl::OkStatus();
     }
     case FD::CPPTYPE_BOOL: {
       auto b = key.AsBool();
       if (!b.ok()) return b.status();
-      entry_refl->SetBool(entry, key_fd, *b);
-      break;
+      entry_refl.SetBool(&entry, &key_fd, *b);
+      return absl::OkStatus();
     }
     case FD::CPPTYPE_STRING: {
       auto s = key.AsString();
       if (!s.ok()) return s.status();
-      entry_refl->SetString(entry, key_fd, std::string(*s));
-      break;
+      entry_refl.SetString(&entry, &key_fd, std::string(*s));
+      return absl::OkStatus();
     }
     default:
       return absl::InvalidArgumentError(
           absl::StrCat("CelSetFieldImpl: map key cpp_type ",
-                       static_cast<int>(key_fd->cpp_type()), " not allowed"));
+                       static_cast<int>(key_fd.cpp_type()), " not allowed"));
   }
-  // Value arm — every cpp_type allowed (per descriptor.proto).
-  switch (val_fd->cpp_type()) {
+}
+
+// Set the value sub-field of a host-map entry from a `celwasm::Value`.
+// Every cpp_type is allowed (per descriptor.proto); message values
+// resolve their backing and copy/pack via `WriteMessageOrPack`.  A
+// failed typed accessor propagates its Status.  Single call site →
+// inlines back.
+absl::Status SetHostMapEntryValue(
+    google::protobuf::Message& entry,
+    const google::protobuf::Reflection& entry_refl,
+    const google::protobuf::FieldDescriptor& val_fd,
+    const celwasm::Value& value) {
+  using FD = google::protobuf::FieldDescriptor;
+  switch (val_fd.cpp_type()) {
     case FD::CPPTYPE_BOOL: {
       auto b = value.AsBool();
       if (!b.ok()) return b.status();
-      entry_refl->SetBool(entry, val_fd, *b);
+      entry_refl.SetBool(&entry, &val_fd, *b);
       return absl::OkStatus();
     }
     case FD::CPPTYPE_INT32: {
       auto i = value.AsInt();
       if (!i.ok()) return i.status();
-      entry_refl->SetInt32(entry, val_fd, static_cast<int32_t>(*i));
+      entry_refl.SetInt32(&entry, &val_fd, static_cast<int32_t>(*i));
       return absl::OkStatus();
     }
     case FD::CPPTYPE_INT64: {
       auto i = value.AsInt();
       if (!i.ok()) return i.status();
-      entry_refl->SetInt64(entry, val_fd, *i);
+      entry_refl.SetInt64(&entry, &val_fd, *i);
       return absl::OkStatus();
     }
     case FD::CPPTYPE_UINT32: {
       auto u = value.AsUint();
       if (!u.ok()) return u.status();
-      entry_refl->SetUInt32(entry, val_fd, static_cast<uint32_t>(*u));
+      entry_refl.SetUInt32(&entry, &val_fd, static_cast<uint32_t>(*u));
       return absl::OkStatus();
     }
     case FD::CPPTYPE_UINT64: {
       auto u = value.AsUint();
       if (!u.ok()) return u.status();
-      entry_refl->SetUInt64(entry, val_fd, *u);
+      entry_refl.SetUInt64(&entry, &val_fd, *u);
       return absl::OkStatus();
     }
     case FD::CPPTYPE_FLOAT: {
       auto d = value.AsDouble();
       if (!d.ok()) return d.status();
-      entry_refl->SetFloat(entry, val_fd, static_cast<float>(*d));
+      entry_refl.SetFloat(&entry, &val_fd, static_cast<float>(*d));
       return absl::OkStatus();
     }
     case FD::CPPTYPE_DOUBLE: {
       auto d = value.AsDouble();
       if (!d.ok()) return d.status();
-      entry_refl->SetDouble(entry, val_fd, *d);
+      entry_refl.SetDouble(&entry, &val_fd, *d);
       return absl::OkStatus();
     }
     case FD::CPPTYPE_STRING: {
-      auto s = (val_fd->type() == FD::TYPE_BYTES) ? value.AsBytes()
-                                                  : value.AsString();
+      auto s = (val_fd.type() == FD::TYPE_BYTES) ? value.AsBytes()
+                                                 : value.AsString();
       if (!s.ok()) return s.status();
-      entry_refl->SetString(entry, val_fd, std::string(*s));
+      entry_refl.SetString(&entry, &val_fd, std::string(*s));
       return absl::OkStatus();
     }
     case FD::CPPTYPE_ENUM: {
       auto i = value.AsInt();
       if (!i.ok()) return i.status();
-      if (auto s = CheckInt32Range(*i, val_fd->name()); !s.ok()) {
+      if (auto s = CheckInt32Range(*i, val_fd.name()); !s.ok()) {
         return s;
       }
-      entry_refl->SetEnumValue(entry, val_fd, static_cast<int>(*i));
+      entry_refl.SetEnumValue(&entry, &val_fd, static_cast<int>(*i));
       return absl::OkStatus();
     }
     case FD::CPPTYPE_MESSAGE: {
@@ -4282,13 +4477,33 @@ absl::Status InsertHostMapEntry(google::protobuf::Message& msg,
             "CelSetFieldImpl: map message-value backing has no proto");
       }
       google::protobuf::Message* dst =
-          entry_refl->MutableMessage(entry, val_fd);
+          entry_refl.MutableMessage(&entry, &val_fd);
       return WriteMessageOrPack(dst, *src_msg);
     }
   }
   ABSL_CHECK(false) << "InsertHostMapEntry: unknown value cpp_type "
-                    << static_cast<int>(val_fd->cpp_type());
+                    << static_cast<int>(val_fd.cpp_type());
   return absl::InternalError("unreachable");
+}
+
+absl::Status InsertHostMapEntry(google::protobuf::Message& msg,
+                                const google::protobuf::FieldDescriptor& field,
+                                const google::protobuf::Reflection& refl,
+                                const celwasm::Value& key,
+                                const celwasm::Value& value) {
+  google::protobuf::Message* entry = refl.AddMessage(&msg, &field);
+  const google::protobuf::FieldDescriptor* key_fd = MapEntryField(field, 1);
+  const google::protobuf::FieldDescriptor* val_fd = MapEntryField(field, 2);
+  // The entry submessage's key/value sub-fields are *Set* (singular),
+  // not *Add* (repeated) — so we dispatch through the two host-value
+  // helpers rather than reusing `AppendRepeatedFromHostListValue`.
+  // (Converting celwasm::Value → CelValue + reusing SetScalarField
+  // would need arena bytes for strings, which we don't have here.)
+  const google::protobuf::Reflection* entry_refl = entry->GetReflection();
+  if (auto s = SetHostMapEntryKey(*entry, *entry_refl, *key_fd, key); !s.ok()) {
+    return s;
+  }
+  return SetHostMapEntryValue(*entry, *entry_refl, *val_fd, value);
 }
 
 absl::Status SetMapField(google::protobuf::Message& msg,
@@ -4331,10 +4546,17 @@ absl::Status SetMapField(google::protobuf::Message& msg,
 
 }  // namespace
 
-absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
-                             uint32_t value_slot,
-                             const TrampolineContext& ctx) {
-  const CelValue msg_cv = ctx.mem.ReadCelValue(msg_slot);
+// Resolve the mutable `Message*` a `cel_set_field` call targets from
+// its `msg_slot` CelValue.  On success `*out_msg` is the mutable proto
+// and the returned optional is empty; a non-empty optional carries the
+// terminal Status the trampoline returns directly (OkStatus for the
+// poison short-circuit, InvalidArgument for a kind / backing / mutability
+// mismatch).  Split from `CelSetFieldImpl` so the resolve preamble and
+// the per-kind set dispatch live in separately-reviewable functions;
+// single call site → inlines back.
+std::optional<absl::Status> ResolveOwnedSetTarget(
+    const CelValue& msg_cv, const ExternrefTable& refs,
+    google::protobuf::Message** absl_nonnull out_msg) {
   // Poison propagation: a prior field-set on this same message slot
   // overflowed and wrote a CEL_ERROR there.  Leave it untouched and
   // no-op so the error rides the construction's result slot out to the
@@ -4349,7 +4571,7 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
         absl::StrCat("CelSetFieldImpl: msg_slot kind is ",
                      static_cast<int>(msg_cv.kind), " (expected CEL_MESSAGE)"));
   }
-  const HostMessageBacking* backing = ctx.refs.Lookup(msg_cv.payload.msg_slot);
+  const HostMessageBacking* backing = refs.Lookup(msg_cv.payload.msg_slot);
   if (backing == nullptr) {
     return absl::InvalidArgumentError(
         "CelSetFieldImpl: msg_slot has no externref entry");
@@ -4378,6 +4600,19 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
   google::protobuf::Message* msg = owned_backing->mutable_message();
   ABSL_CHECK(msg != nullptr)
       << "CelSetFieldImpl: OwnedProtoBacking has null msg";
+  *out_msg = msg;
+  return std::nullopt;
+}
+
+absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
+                             uint32_t value_slot,
+                             const TrampolineContext& ctx) {
+  const CelValue msg_cv = ctx.mem.ReadCelValue(msg_slot);
+  google::protobuf::Message* msg = nullptr;
+  if (auto terminal = ResolveOwnedSetTarget(msg_cv, ctx.refs, &msg);
+      terminal.has_value()) {
+    return *std::move(terminal);
+  }
 
   const FieldRefEntry* field_ref = ResolveFieldRef(ctx.bindings, field_ref_id);
   if (field_ref == nullptr) {
