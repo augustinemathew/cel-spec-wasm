@@ -46,7 +46,7 @@ silent gaps):
 
 | tag prefix | meaning |
 |---|---|
-| `celwasm-skip-*` | cell cannot run through celwasm today; celcpp_bench still runs it.  Suffix names the reason (`-rodata`, `-het-eq`, `-ternary-ident-cond`, `-map-dot-field`, `-arena-overflow`). |
+| `celwasm-skip-*` | cell cannot run through celwasm today; celcpp_bench still runs it.  Suffix names the reason (`-het-eq`, `-ternary-ident-cond`, `-map-dot-field`, `-arena-overflow`). |
 | `celcpp-skip-*` | cell rejected by cel-cpp's checker as configured; celwasm_bench may still run it.  Cells carrying BOTH prefixes run nowhere and exist as documented grid exclusions. |
 
 **Loader schema (documented in `corpus_loader.h`):** activation
@@ -103,9 +103,9 @@ comparison grid below.
 ² CEL has no unary `-` on uint.
 
 Length sweep `{2, 10, 50, 250, 1000}` per intAdd/intMul/intSub/
-doubleAdd, var + const variants.  `*1000TermsConst` cells are
-`celwasm-skip-rodata` (1000 literal CelValues = 24 KB rodata vs the
-8 KB low-memory window).
+doubleAdd, var + const variants.  `*1000TermsConst` cells (1000
+literal CelValues = 24 KB rodata) fit the 256 KiB low-memory window
+and run on both comparators.
 
 Composite-shape cells (2026-06-11, absorbed from the legacy
 `bench/` tree):
@@ -174,8 +174,8 @@ carry `skip-source-check` (the loader's identifier heuristic reads the
 `b"…"` prefix as a variable).
 
 Chained: cmp.intLtChain20 (`a<b && b<c && …`, 20 comparisons).
-String-eq payload sweep: long_strings.eqLong_N{10,100,1000}_{match,
-mismatch} (N=10000 cells are `celwasm-skip-rodata`, see §Findings).
+String-eq payload sweep: long_strings.eqLong_N{10,100,1000,10000}_{match,
+mismatch} (the N=10000 cells now fit the 256 KiB window; see §Findings).
 
 ---
 
@@ -209,7 +209,7 @@ Surfaces: `lists.yaml` (BM prefix `in_list`), `maps.yaml` (`map`).
 
 | range kind     | elem/key types covered | cell ids | status |
 |----------------|------------------------|----------|--------|
-| list<string>   | length sweep {5,20,100,1000}, var + literal needle | lists.{5,20,100,1000}(_lit) | ✓ ({1000,1000_lit} ◐ `celwasm-skip-rodata`) |
+| list<string>   | length sweep {5,20,100,1000}, var + literal needle | lists.{5,20,100,1000}(_lit) | ✓ |
 | list<string> literal, early-exit/miss | 100 elems, first-element + absent needle | lists.100_lit_first, lists.100_lit_miss | ✓ |
 | list<int> BOUND (`x in xs`, activation-bound list) | length sweep {100, 1k, 10k, 100k, 1M}, x = N−2 worst case | lists.bound{100,1000,10000,100000,1000000} | ✓ |
 | list<int> BOUND, 1M early-exit/miss | x = 0 (first) / x = −1 (absent) | lists.bound1000000_first, lists.bound1000000_miss | ✓ |
@@ -269,7 +269,7 @@ Surface: `comprehensions.yaml` (BM prefix `compr`).  Ranges are
 
 | macro        | cell ids | status |
 |--------------|----------|--------|
-| `all`        | compr.all20 + length sweep compr.all{10,100,1000} | ✓ (all1000 ◐ `celwasm-skip-rodata`) |
+| `all`        | compr.all20 + length sweep compr.all{10,100,1000} | ✓ |
 | `exists`     | compr.exists20 | ✓ |
 | `exists_one` | compr.existsOne20 | ✓ |
 | `map`        | compr.map20 | ✓ |
@@ -287,7 +287,7 @@ the list-literal-construction length sweep {10,100,1000}.
 |-------|----------|--------|
 | string (var + const) | size.string, size.stringConst | ✓ |
 | bytes (var + const) | size.bytes, size.bytesConst | ✓ |
-| list   | size.list{10,100,1000} | ✓ (list1000 ◐ `celwasm-skip-rodata`) |
+| list   | size.list{10,100,1000} | ✓ |
 | map    | size.map{10,100} | ✓ |
 
 ---
@@ -303,7 +303,7 @@ bound variable), plus the `+` concat pairs (`concat2`/`concat2Const`,
 
 | fn | cell ids | status |
 |----|----------|--------|
-| `_.contains(_)` | strings.contains, strings.containsConst, long_strings.containsLong_N{10,100,1000} | ✓ (N10000 ◐ rodata) |
+| `_.contains(_)` | strings.contains, strings.containsConst, long_strings.containsLong_N{10,100,1000,10000} | ✓ |
 | `_.startsWith(_)` | strings.startsWith, strings.startsWithConst | ✓ |
 | `_.endsWith(_)` | strings.endsWith, strings.endsWithConst | ✓ |
 | `_.matches(_)` cheap anchor | strings.matchesCheap, strings.matchesCheapConst | ✓ |
@@ -485,7 +485,6 @@ design — this list is the accountability record):
 
 | tag | cells | reason |
 |-----|-------|--------|
-| `celwasm-skip-rodata` | arith.{intAdd,intMul,intSub,doubleAdd}1000TermsConst, in_list.{1000,1000_lit}, size.list1000, compr.all1000, str.{eqLong,containsLong}_N10000* | >8 KB expression rodata (1000 literals ≈ 24 KB; 10 KB string literal).  Static mode rejects loudly; dynamic mode must not be trusted past the bound (see §Findings). |
 | `celwasm-skip-het-eq` | cmp.intLtDouble (+ the two §Exclusions cells) | checker rejects mixed-numeric comparison; cel-cpp runs it with `enable_cross_numeric_comparisons`. |
 | `celwasm-skip-ternary-ident-cond` | ternary.intVarCond | **celwasm bug**, see §Findings. |
 | `celwasm-skip-map-dot-field` | map.dotField, map.hasKey | cleanup-backlog #9 Select-on-map gap. |
@@ -499,16 +498,16 @@ design — this list is the accountability record):
    (`a > b ? …`, `(c || false) ? …`, `!c ? …`) are correct.
    Verified via the cel CLI in both link modes.  Pinned by
    ternary.intVarCond (`celwasm-skip-ternary-ident-cond`).
-2. **Dynamic-mode silent wrong answer past the rodata bound
-   (celwasm, 2026-06-09).**  `a == "<10000 x's>"` with `a` equal:
-   link_mode=static rejects at compile ("rodata ends at byte 10040,
-   past the 8192-byte window"); link_mode=dynamic **compiled and
-   returned false** (cel-cpp: true).  The 8 KB bound is enforced
-   loudly only on the static path.  Pinned by
-   long_strings.eqLong_N10000_match (`celwasm-skip-rodata`); the
-   m28 doc §10 lists the N=10000 rodata budget as out-of-scope
-   follow-up — the *silent* dynamic-mode miscompare is the sharp
-   edge to carry into that follow-up.
+2. **(RESOLVED) Dynamic-mode silent wrong answer past the rodata
+   bound (celwasm, 2026-06-09; closed when the window was raised to
+   256 KiB).**  When the window was 8 KB, `a == "<10000 x's>"` with
+   `a` equal diverged by link mode: static rejected at compile while
+   dynamic **compiled and returned false** (cel-cpp: true).  Both
+   halves are now closed — the 256 KiB window admits a 10 KB literal,
+   and the compile-time rodata gate (`CheckStaticWindowFits` in
+   layout_pass.cc) rejects an over-budget layout loudly in BOTH link
+   modes.  long_strings.eqLong_N10000_match now runs on celwasm and
+   evaluates true.
 3. **Heterogeneous equality is a checker gap on both stacks as
    configured** (`int == double`, `1 == null`): celwasm rejects by
    design of the current static subset; cel-cpp rejects at check
