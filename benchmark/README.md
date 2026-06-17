@@ -140,7 +140,7 @@ enumeration live from the corpus (with cell counts); the standing set:
 ## Results
 
 <!-- BEGIN AUTO-GENERATED RESULTS (benchmark/eval/report.py) -->
-_Last run: 2026-06-16 on Mac (full tables: `benchmark/eval/results/`)._
+_Last run: 2026-06-17 on Mac (full tables: `benchmark/eval/results/`)._
 
 ### Per-operator headline — T(N) = setup + N·per_op
 
@@ -148,17 +148,17 @@ Linear regression over each length-sweep family; slope is the steady-state cost 
 
 | surface | operator family | points | cel-cpp slope | cel-cpp setup | celwasm-static slope | celwasm-static setup | celwasm-static crossover vs cel-cpp |
 |---|---|---|---|---|---|---|---|
-| arithmetic | doubleAdd | 5 | 30.8 | -30 | 1.5 | 116 | N ≈ 5 |
-| arithmetic | intAdd | 5 | 34.0 | -197 | 1.7 | 112 | N ≈ 10 |
-| arithmetic | intMul | 5 | 32.9 | -115 | 2.7 | 111 | N ≈ 7 |
-| arithmetic | intSub | 5 | 33.1 | -184 | 1.7 | 116 | N ≈ 10 |
-| comprehensions | all | 4 | 66.5 | 117 | 6.2 | 60 | always wins |
-| lists | bound | 5 | 3.3 | -1,062 | 3.2 | -297 | N ≈ 8,102 |
-| long_strings | containsLong_N | 4 | 0.0 | 64 | 0.1 | 48 | never wins |
-| proto | reads | 3 | 64.2 | 21 | 20.6 | 45 | N ≈ 1 |
-| proto | select_depth | 5 | 33.3 | 35 | 40.0 | 29 | never wins |
-| size | list | 3 | 8.5 | 130 | n/a | n/a | n/a |
-| strings | concatChain | 3 | 125.0 | -3,336 | n/a | n/a | n/a |
+| arithmetic | doubleAdd | 5 | 33.0 | -198 | 1.5 | 114 | N ≈ 10 |
+| arithmetic | intAdd | 5 | 32.2 | -66 | 1.7 | 109 | N ≈ 6 |
+| arithmetic | intMul | 5 | 30.8 | -34 | 2.7 | 118 | N ≈ 5 |
+| arithmetic | intSub | 5 | 31.2 | -48 | 1.7 | 114 | N ≈ 5 |
+| comprehensions | all | 4 | 64.6 | 159 | 4.5 | 44 | always wins |
+| lists | bound | 5 | 3.5 | 110 | 3.2 | 75 | always wins |
+| long_strings | containsLong_N | 4 | 0.0 | 65 | 0.1 | 50 | never wins |
+| proto | reads | 3 | 63.8 | 17 | 22.1 | 36 | N ≈ 0 |
+| proto | select_depth | 5 | 34.9 | 36 | 39.2 | 28 | never wins |
+| size | list | 3 | 8.7 | 127 | -0.0 | 40 | always wins |
+| strings | concatChain | 3 | 129.9 | -3,585 | 41.8 | -832 | N ≈ 31 |
 
 
 <!-- END AUTO-GENERATED RESULTS -->
