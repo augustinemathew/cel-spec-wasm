@@ -46,7 +46,7 @@ silent gaps):
 
 | tag prefix | meaning |
 |---|---|
-| `celwasm-skip-*` | cell cannot run through celwasm today; celcpp_bench still runs it.  Suffix names the reason (`-het-eq`, `-ternary-ident-cond`, `-map-dot-field`, `-arena-overflow`). |
+| `celwasm-skip-*` | cell cannot run through celwasm today; celcpp_bench still runs it.  Suffix names the reason (`-het-eq`, `-ternary-ident-cond`, `-map-dot-field`). |
 | `celcpp-skip-*` | cell rejected by cel-cpp's checker as configured; celwasm_bench may still run it.  Cells carrying BOTH prefixes run nowhere and exist as documented grid exclusions. |
 
 **Loader schema (documented in `corpus_loader.h`):** activation
@@ -128,7 +128,7 @@ cel-cpp gained the pair for free.
 
 | operand types          | result   | cell id (surface)            | status |
 |------------------------|----------|------------------------------|--------|
-| string + string        | string   | strings.concat2, strings.concatChain{10,100,1000}Terms | ✓ (1000-term ◐ `celwasm-skip-arena-overflow`) |
+| string + string        | string   | strings.concat2, strings.concatChain{10,100,1000}Terms | ✓ |
 | bytes + bytes          | bytes    | strings.bytesConcat2         | ✓      |
 | list + list            | list     | lists.concat (`size([…]+[…])`) | ✓    |
 | timestamp + duration   | timestamp| time.tsAddDur (int-reduced)  | ✓      |
@@ -488,7 +488,6 @@ design — this list is the accountability record):
 | `celwasm-skip-het-eq` | cmp.intLtDouble (+ the two §Exclusions cells) | checker rejects mixed-numeric comparison; cel-cpp runs it with `enable_cross_numeric_comparisons`. |
 | `celwasm-skip-ternary-ident-cond` | ternary.intVarCond | **celwasm bug**, see §Findings. |
 | `celwasm-skip-map-dot-field` | map.dotField, map.hasKey | cleanup-backlog #9 Select-on-map gap. |
-| `celwasm-skip-arena-overflow` | str.concatChain1000Terms | 999 intermediate concats overflow the eval arena (CEL overflow error value); same family as known_bugs ExpressionIntermediatesArenaCliff. |
 
 ## Findings (correctness divergences surfaced by this corpus)
 

@@ -97,12 +97,11 @@ cells:
   # through them, so the result length grows 2N and the chain
   # exercises N-1 cel_string_concat calls.
   #
-  # concatChain1000Terms is tagged `celwasm-skip-arena-overflow`:
-  # the 999 intermediate concat results overflow celwasm's eval
-  # arena (verified via the cel CLI: eval returns a CEL overflow
-  # error value at N=1000; N=100 is fine).  celcpp_bench still runs
-  # it.  Same family as e2e/known_bugs_test.cc::
-  # ExpressionIntermediatesArenaCliff.
+  # concatChain1000Terms builds 999 intermediate concat results.  The
+  # eval arena now grows in chunks (cel_arena.c) instead of failing at
+  # a fixed cliff, so this evaluates correctly on celwasm (verified via
+  # the cel CLI) and runs on both comparators — same resolution as
+  # e2e/known_bugs_test.cc::ExpressionIntermediatesArenaCliff.
   - id: concat2
     source: 'a + b'
     activation:
@@ -162,7 +161,7 @@ cells:
       i: { type: string, value: "ii" }
       j: { type: string, value: "jj" }
     expected: { type: string, value: "aabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijj" }
-    tags: [phase2, bench-shape, celwasm-skip-arena-overflow]
+    tags: [phase2, bench-shape]
 
   # ── bytes + bytes concat ──
   - id: bytesConcat2
