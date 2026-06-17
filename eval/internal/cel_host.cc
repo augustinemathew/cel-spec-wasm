@@ -1052,7 +1052,7 @@ absl::Status EncodeSpan(const celwasm::Value& v, CelValue* out,
   if (p == nullptr && !s.empty()) {
     return absl::ResourceExhaustedError("arena OOM in CelMapLookupImpl");
   }
-  if (!s.empty()) std::memcpy(p, s.data(), s.size());
+  if (p != nullptr && !s.empty()) std::memcpy(p, s.data(), s.size());
   out->kind = v.kind() == K::kString ? CEL_STRING : CEL_BYTES;
   out->payload.s.ptr = off;
   out->payload.s.len = static_cast<uint32_t>(s.size());
@@ -1253,7 +1253,7 @@ absl::Status CelListAtImpl(uint32_t out_slot, uint32_t list_slot,
       WriteWireError(CEL_ERR_INVALID_ARGUMENT, out_slot, ctx.mem);
       return absl::OkStatus();
     }
-    const int64_t trunc = static_cast<int64_t>(d);
+    const auto trunc = static_cast<int64_t>(d);
     if (static_cast<double>(trunc) != d) {  // non-integral
       WriteWireError(CEL_ERR_INVALID_ARGUMENT, out_slot, ctx.mem);
       return absl::OkStatus();
@@ -1294,7 +1294,7 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
   // — a zero `header_ptr` would dereference into rodata).  Used
   // for non-host sources, empty host lists, and OOM fallback.
   constexpr uint32_t kHeaderBytes = 16u;
-  constexpr uint32_t kElemBytes = static_cast<uint32_t>(sizeof(CelValue));
+  constexpr auto kElemBytes = static_cast<uint32_t>(sizeof(CelValue));
   auto write_empty = [&]() -> absl::Status {
     uint32_t header_off = 0;
     if (ctx.alloc.Alloc(kHeaderBytes, &header_off) == nullptr ||
@@ -1374,7 +1374,7 @@ absl::Status CelListIterOpenImpl(uint32_t out_slot, uint32_t list_slot,
     auto got = backing->At(i, celwasm::CelType::Int());
     if (!got.ok()) return got.status();
     const uint32_t elem_slot =
-        elements_off + static_cast<uint32_t>(i) * kElemBytes;
+        elements_off + (static_cast<uint32_t>(i) * kElemBytes);
     if (auto s = EncodeFieldResult(*got, elem_slot, ctx); !s.ok()) return s;
   }
   // Write the synthetic CelValue at out_slot.
@@ -1518,7 +1518,7 @@ absl::Status CelMapIterOpenImpl(uint32_t state_offset, uint32_t map_slot,
   // raw pointer.
   for (size_t i = 0; i < entries.size(); ++i) {
     const uint32_t key_off =
-        snapshot_off + static_cast<uint32_t>(i) * kPerEntry;
+        snapshot_off + (static_cast<uint32_t>(i) * kPerEntry);
     const uint32_t val_off = key_off + sizeof(CelValue);
     if (auto s = EncodeFieldResult(entries[i].first, key_off, ctx); !s.ok()) {
       return s;
@@ -2365,8 +2365,9 @@ absl::Status CelListSizeImpl(uint32_t out_slot, uint32_t list_slot,
 // `HostNumericCrossEq` against a synthesised CelValue prototype so
 // the langdef §"Equality" mathematical-value rule holds for
 // `1 in [1u, 2u]`.
-bool BackingValueEqualsQuery(const celwasm::Value& bv, const CelValue& query_cv,
-                             const MemoryView& mem) {
+static bool BackingValueEqualsQuery(const celwasm::Value& bv,
+                                    const CelValue& query_cv,
+                                    const MemoryView& mem) {
   using K = celwasm::Value::Kind;
   switch (bv.kind()) {
     case K::kBool:
@@ -4396,7 +4397,7 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
   // Route map / repeated source kinds through dedicated walkers.
   // Map check precedes repeated because every proto map field is
   // also `is_repeated()` per descriptor.proto.
-  const absl::Status set_status = [&]() -> absl::Status {
+  absl::Status set_status = [&]() -> absl::Status {
     if (field->is_map()) {
       return SetMapField(*msg, *field, value_cv, ctx.mem, ctx.refs);
     }
@@ -4487,7 +4488,7 @@ absl::Status CelResolveMessageTypeNameImpl(uint32_t out_slot, uint32_t in_slot,
         absl::StrCat("CelResolveMessageTypeNameImpl: arena OOM (need ",
                      fqn.size(), " bytes for FQN `", fqn, "`)"));
   }
-  if (!fqn.empty()) {
+  if (dst != nullptr && !fqn.empty()) {
     std::memcpy(dst, fqn.data(), fqn.size());
   }
   CelValue out_cv{};
