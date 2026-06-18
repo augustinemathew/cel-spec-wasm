@@ -296,6 +296,11 @@ TEST(ValueMessageTest, MessageBackingOnNonMessageFails) {
 
 class JsonLikeBacking : public HostMessageBacking {
  public:
+  // `fields_` IS initialized below; pro-type-member-init false-fires on
+  // the flat_hash_map member when clang-tidy can't see its default ctor.
+  // A redundant `fields_{}` would instead trip readability-redundant-
+  // member-init, so suppress here.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   explicit JsonLikeBacking(absl::flat_hash_map<std::string, int64_t> fields)
       : fields_(std::move(fields)) {}
 
@@ -380,9 +385,9 @@ struct Layer2Fixture {
 
   // Intern `backing`, write a CEL_MESSAGE CelValue at kMsgSlot, and
   // register `(field_number, field_name)` at field_ref_id = 1.
-  uint32_t BindMessage(std::shared_ptr<HostMessageBacking> backing,
+  uint32_t BindMessage(const std::shared_ptr<HostMessageBacking>& backing,
                        uint32_t field_number, absl::string_view field_name) {
-    const uint32_t slot = refs.Intern(std::move(backing));
+    const uint32_t slot = refs.Intern(backing);
     CelValue cv{};
     cv.kind = CEL_MESSAGE;
     cv.payload.msg_slot = slot;
@@ -491,9 +496,9 @@ TEST(Layer2AbsorptionTest, InvalidExternrefSlotYieldsHostAdapterError) {
 
 // Helper: intern `backing`, stage a CEL_MESSAGE at kMsgSlot, run the
 // probe, return the out CelValue.
-CelValue RunMessageIsZero(Layer2Fixture& f,
-                          std::shared_ptr<const HostMessageBacking> backing) {
-  const uint32_t slot = f.refs.Intern(std::move(backing));
+CelValue RunMessageIsZero(
+    Layer2Fixture& f, const std::shared_ptr<const HostMessageBacking>& backing) {
+  const uint32_t slot = f.refs.Intern(backing);
   CelValue cv{};
   cv.kind = CEL_MESSAGE;
   cv.payload.msg_slot = slot;
@@ -1052,6 +1057,9 @@ class PackHarness {
  public:
   PackHarness() {
     auto outer = std::make_unique<HostMsg3>();
+    // outer_ aliases a body-local unique_ptr that is then moved into the
+    // backing; it can't be a member initializer.
+    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
     outer_ = outer.get();
     auto backing = std::make_shared<OwnedProtoBacking>(std::move(outer));
     outer_slot_ = f_.refs.Intern(backing);

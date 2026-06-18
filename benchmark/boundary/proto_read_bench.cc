@@ -45,8 +45,7 @@ struct CelValueBytes {
 // (1) Descriptor lookup — FindFieldByNumber.  Production CACHES this per
 // access site, so this is the cost the cache SAVES, not a per-read cost.
 void BM_FindFieldByNumber(benchmark::State& state) {
-  Customer c = MakeCustomer();
-  const google::protobuf::Descriptor* desc = c.GetDescriptor();
+  const google::protobuf::Descriptor* desc = Customer::GetDescriptor();
   for ([[maybe_unused]] auto _ : state) {
     const google::protobuf::FieldDescriptor* f = desc->FindFieldByNumber(2);
     benchmark::DoNotOptimize(f);
@@ -107,7 +106,8 @@ void BM_ReflectGetStringView(benchmark::State& state) {
       m.GetDescriptor()->FindFieldByNumber(1);
   std::string scratch;
   for ([[maybe_unused]] auto _ : state) {
-    const std::string& s = m.GetReflection()->GetStringReference(m, f, &scratch);
+    const std::string& s =
+        m.GetReflection()->GetStringReference(m, f, &scratch);
     benchmark::DoNotOptimize(s.data());
   }
 }
