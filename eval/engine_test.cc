@@ -184,7 +184,7 @@ TEST(EnginePlanTest, PlanRejectsWrongShapedEvalExport) {
 // `Instance::Eval(Activation)` writes a 24-byte CelValue at every
 // cel.abi variable `slot_offset` in the SHARED linear memory the
 // runtime's static data / heap also live in (above the
-// `CELWASM_RESERVED_LOW_MEMORY_BYTES` = 8192 boundary).  The compiler
+// `CELWASM_RESERVED_LOW_MEMORY_BYTES` = 262144 boundary).  The compiler
 // validates its layout fits under the boundary before serializing, so
 // a Program declaring a slot past it is corrupt / hand-crafted; Plan
 // must reject it rather than let the marshal stomp runtime state.
@@ -229,9 +229,9 @@ Program SyntheticProgramWithVariableSlot(uint32_t slot_offset) {
 TEST(EnginePlanTest, PlanAcceptsVariableSlotAtWindowBoundary) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
-  // Slot [8168, 8192) — ends exactly AT the 8192-byte reserved
-  // window: the largest offset the compiler could legally emit.
-  Program program = SyntheticProgramWithVariableSlot(8192 - 24);
+  // Slot ends exactly AT the 262144-byte reserved window (m31 §10):
+  // the largest offset the compiler could legally emit.
+  Program program = SyntheticProgramWithVariableSlot(262144 - 24);
   auto inst_or = engine_or->Plan(program);
   EXPECT_TRUE(inst_or.ok()) << inst_or.status();
 }
@@ -239,9 +239,9 @@ TEST(EnginePlanTest, PlanAcceptsVariableSlotAtWindowBoundary) {
 TEST(EnginePlanTest, PlanRejectsVariableSlotPastReservedWindow) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
-  // Slot [8176, 8200) — crosses the boundary by 8 bytes; honoring it
+  // Slot crosses the 262144-byte boundary by 8 bytes; honoring it
   // would write over the runtime's static data.
-  Program program = SyntheticProgramWithVariableSlot(8192 - 16);
+  Program program = SyntheticProgramWithVariableSlot(262144 - 16);
   auto inst_or = engine_or->Plan(program);
   EXPECT_FALSE(inst_or.ok());
   EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kInvalidArgument)
@@ -1080,12 +1080,9 @@ std::vector<uint8_t> CompileToBytes(CompilerOptions::LinkMode mode) {
 
 // Rewrites the wire value of the trailing `link_mode` field in a
 // STATIC Program's cel.abi payload.  The emitter serializes fields
-// in number order and `link_mode` (field 7) is the only non-default
-// trailing field a static compile of a chain-free expression adds —
-// `paths` (field 8) is omitted when the program has no batched
-// select chains (BuildCelAbi skips a sentinel-only table), and the
-// `42` fixture below has none — so the payload ends with the 2-byte
-// record `0x38 0x01` (tag fld7/varint, value 1).
+// in number order and `link_mode` (field 7, the highest) is the only
+// non-default trailing field a static compile adds, so the payload
+// ends with the 2-byte record `0x38 0x01` (tag fld7/varint, value 1).
 // Patching the value byte in place flips the label without resizing
 // any section, keeping all wasm framing intact.
 std::vector<uint8_t> PatchStaticLinkModeByte(std::vector<uint8_t> bytes,

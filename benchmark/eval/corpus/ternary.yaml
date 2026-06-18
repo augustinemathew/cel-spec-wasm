@@ -45,6 +45,13 @@ cells:
     expected: { type: string, value: "yes" }
     tags: [phase2, bench-shape]
 
+  # Literal twin of stringComputedCond: same ternary with a
+  # string result, no activation — isolates variable-binding cost.
+  - id: stringConst
+    source: '3 > 2 ? "yes" : "no"'
+    expected: { type: string, value: "yes" }
+    tags: [phase2, bench-shape, const-only]
+
   - id: nested3
     source: 'a > b ? "gt" : (a == b ? "eq" : "lt")'
     activation:

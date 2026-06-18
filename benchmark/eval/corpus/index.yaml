@@ -48,6 +48,11 @@ cells:
     expected: { type: int, value: 30 }
     tags: [phase2, bench-shape]
 
+  - id: mapIntConst
+    source: '{1:10,2:20,3:30}[3]'
+    expected: { type: int, value: 30 }
+    tags: [phase2, bench-shape, const-only]
+
   - id: mapUint
     source: '{1u:10,2u:20,3u:30}[k]'
     activation:
@@ -55,9 +60,19 @@ cells:
     expected: { type: int, value: 30 }
     tags: [phase2, bench-shape]
 
+  - id: mapUintConst
+    source: '{1u:10,2u:20,3u:30}[3u]'
+    expected: { type: int, value: 30 }
+    tags: [phase2, bench-shape, const-only]
+
   - id: mapBool
     source: '{true:1,false:0}[k]'
     activation:
       k: { type: bool, value: true }
     expected: { type: int, value: 1 }
     tags: [phase2, bench-shape]
+
+  - id: mapBoolConst
+    source: '{true:1,false:0}[true]'
+    expected: { type: int, value: 1 }
+    tags: [phase2, bench-shape, const-only]

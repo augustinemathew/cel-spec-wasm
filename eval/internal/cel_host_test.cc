@@ -10,12 +10,10 @@
 #include <cstring>
 #include <limits>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
@@ -298,6 +296,11 @@ TEST(ValueMessageTest, MessageBackingOnNonMessageFails) {
 
 class JsonLikeBacking : public HostMessageBacking {
  public:
+  // `fields_` IS initialized below; pro-type-member-init false-fires on
+  // the flat_hash_map member when clang-tidy can't see its default ctor.
+  // A redundant `fields_{}` would instead trip readability-redundant-
+  // member-init, so suppress here.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   explicit JsonLikeBacking(absl::flat_hash_map<std::string, int64_t> fields)
       : fields_(std::move(fields)) {}
 
@@ -371,22 +374,20 @@ struct Layer2Fixture {
   std::vector<FieldRefEntry> field_refs{FieldRefEntry{}};  // index 0 sentinel
   std::vector<AttributeEntry> attributes;
   std::vector<celwasm::AttributePattern> unknown_patterns;
-  std::vector<PathRefEntry> path_refs{PathRefEntry{}};  // index 0 sentinel
   CelHostBindings bindings_scratch;  // outlives TrampolineContext ref
 
   TrampolineContext Ctx() {
-    bindings_scratch = CelHostBindings{
-        absl::MakeConstSpan(field_refs), absl::MakeConstSpan(attributes),
-        absl::MakeConstSpan(unknown_patterns),
-        /*message_types=*/{}, absl::MakeConstSpan(path_refs)};
+    bindings_scratch = CelHostBindings{absl::MakeConstSpan(field_refs),
+                                       absl::MakeConstSpan(attributes),
+                                       absl::MakeConstSpan(unknown_patterns)};
     return TrampolineContext{bindings_scratch, mem, refs, alloc};
   }
 
   // Intern `backing`, write a CEL_MESSAGE CelValue at kMsgSlot, and
   // register `(field_number, field_name)` at field_ref_id = 1.
-  uint32_t BindMessage(std::shared_ptr<HostMessageBacking> backing,
+  uint32_t BindMessage(const std::shared_ptr<HostMessageBacking>& backing,
                        uint32_t field_number, absl::string_view field_name) {
-    const uint32_t slot = refs.Intern(std::move(backing));
+    const uint32_t slot = refs.Intern(backing);
     CelValue cv{};
     cv.kind = CEL_MESSAGE;
     cv.payload.msg_slot = slot;
@@ -495,9 +496,9 @@ TEST(Layer2AbsorptionTest, InvalidExternrefSlotYieldsHostAdapterError) {
 
 // Helper: intern `backing`, stage a CEL_MESSAGE at kMsgSlot, run the
 // probe, return the out CelValue.
-CelValue RunMessageIsZero(Layer2Fixture& f,
-                          std::shared_ptr<const HostMessageBacking> backing) {
-  const uint32_t slot = f.refs.Intern(std::move(backing));
+CelValue RunMessageIsZero(
+    Layer2Fixture& f, const std::shared_ptr<const HostMessageBacking>& backing) {
+  const uint32_t slot = f.refs.Intern(backing);
   CelValue cv{};
   cv.kind = CEL_MESSAGE;
   cv.payload.msg_slot = slot;
@@ -677,6 +678,41 @@ TEST(Layer2DispatchTest, ScalarDoubleField) {
   EXPECT_DOUBLE_EQ(out.payload.d, 725.5);
 }
 
+TEST(Layer2DispatchTest, ScalarUintField) {
+  HostMsg3 m;
+  m.set_u64(1'000'000uLL);
+  Layer2Fixture f;
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 5, "u64");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_UINT);
+  EXPECT_EQ(out.payload.u, 1'000'000uLL);
+}
+
+// A float field widens to a CEL double (langdef: CEL has no float32).
+TEST(Layer2DispatchTest, ScalarFloatFieldWidensToDouble) {
+  HostMsg3 m;
+  m.set_f32(3.5f);  // exactly representable, so == holds after widening
+  Layer2Fixture f;
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 12, "f32");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_DOUBLE);
+  EXPECT_DOUBLE_EQ(out.payload.d, 3.5);
+}
+
+// An enum field surfaces as its int value (langdef §2.4.7).
+TEST(Layer2DispatchTest, ScalarEnumFieldReadsAsInt) {
+  HostMsg3 m;
+  m.set_kind(HostMsg3::KIND_SEVEN);
+  Layer2Fixture f;
+  f.BindMessage(std::make_shared<ProtoBacking>(&m), 16, "kind");
+
+  const CelValue out = f.Get();
+  EXPECT_EQ(out.kind, CEL_INT);
+  EXPECT_EQ(out.payload.i, 7);
+}
+
 TEST(Layer2DispatchTest, StringFieldAllocatesArenaSpan) {
   Customer c;
   c.set_name("Ada");
@@ -852,476 +888,6 @@ TEST(Layer2HasFieldTest, UnknownInputShortCircuits) {
   EXPECT_EQ(out.payload.unk, 42u);
 }
 
-// ═══════════ CelGetFieldPathImpl — batched select-chain read ═══════════
-//
-// Parity contract: the batched walk must produce byte-identical
-// out_slot results to N chained `CelGetFieldImpl` calls over the
-// same hops (the reference semantics).  Every behavioural case below
-// therefore runs BOTH paths on identically-bound fixtures and
-// compares, in addition to pinning the expected value.  ABI +
-// eligibility rules: `rewrite/wat-traces.md` §71.
-
-namespace {
-
-// Register one FieldRefEntry per (field_number, field_name) pair and
-// return the hop list; `attr_ids` supplies per-hop operand attribute
-// ids (0 when omitted).
-std::vector<PathHopEntry> AddHops(
-    Layer2Fixture& f,
-    absl::Span<const std::pair<uint32_t, absl::string_view>> fields,
-    absl::Span<const uint32_t> attr_ids = {}) {
-  std::vector<PathHopEntry> hops;
-  hops.reserve(fields.size());
-  for (size_t i = 0; i < fields.size(); ++i) {
-    const auto id = static_cast<uint32_t>(f.field_refs.size());
-    f.field_refs.push_back(
-        FieldRefEntry{fields[i].first, std::string(fields[i].second)});
-    hops.push_back(PathHopEntry{id, i < attr_ids.size() ? attr_ids[i] : 0});
-  }
-  return hops;
-}
-
-// Intern `backing`, stage a CEL_MESSAGE at kMsgSlot.  (Unlike
-// Layer2Fixture::BindMessage, registers no field row — AddHops owns
-// the rows.)
-void BindPathMessage(Layer2Fixture& f,
-                     const std::shared_ptr<HostMessageBacking>& backing) {
-  const uint32_t slot = f.refs.Intern(backing);
-  CelValue cv{};
-  cv.kind = CEL_MESSAGE;
-  cv.payload.msg_slot = slot;
-  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
-}
-
-// One batched call over `hops`; returns the out CelValue.
-CelValue RunBatchedPath(Layer2Fixture& f, std::vector<PathHopEntry> hops) {
-  const auto path_id = static_cast<uint32_t>(f.path_refs.size());
-  f.path_refs.push_back(PathRefEntry{std::move(hops)});
-  EXPECT_THAT(CelGetFieldPathImpl(Layer2Fixture::kOutSlot,
-                                  Layer2Fixture::kMsgSlot, path_id, f.Ctx()),
-              IsOk());
-  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
-}
-
-// The reference semantics: the same hops as N chained per-hop
-// CelGetFieldImpl calls threading intermediate slots, exactly as the
-// unbatched codegen would emit them.
-CelValue RunUnbatchedChain(Layer2Fixture& f,
-                           absl::Span<const PathHopEntry> hops) {
-  constexpr uint32_t kScratchBase = 256;
-  uint32_t msg_slot = Layer2Fixture::kMsgSlot;
-  for (size_t i = 0; i < hops.size(); ++i) {
-    const bool last = i + 1 == hops.size();
-    const uint32_t out = last ? Layer2Fixture::kOutSlot
-                              : kScratchBase + (24u * static_cast<uint32_t>(i));
-    EXPECT_THAT(CelGetFieldImpl(out, msg_slot, hops[i].field_ref_id,
-                                hops[i].attribute_id, f.Ctx()),
-                IsOk());
-    msg_slot = out;
-  }
-  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
-}
-
-// Canonical 64-bit pattern of an inline payload for the value's
-// kind (u32 members zero-extend; doubles compare bit-exactly).
-// Returns nullopt for kinds the comparator doesn't model.
-std::optional<uint64_t> InlinePayloadBits(const CelValue& v) {
-  switch (v.kind) {
-    case CEL_BOOL:
-      return v.payload.b;
-    case CEL_INT:
-      return static_cast<uint64_t>(v.payload.i);
-    case CEL_UINT:
-      return v.payload.u;
-    case CEL_DOUBLE:
-      return absl::bit_cast<uint64_t>(v.payload.d);
-    case CEL_ERROR:
-      return v.payload.err;
-    case CEL_NULL:
-      return 0;  // no payload
-    default:
-      return std::nullopt;
-  }
-}
-
-// Inline-payload kinds compare member-wise (via the canonical bit
-// pattern above).
-void ExpectInlinePayloadParity(const CelValue& batched,
-                               const CelValue& unbatched) {
-  const std::optional<uint64_t> b = InlinePayloadBits(batched);
-  ASSERT_TRUE(b.has_value())
-      << "unhandled kind in parity comparator: " << batched.kind;
-  EXPECT_EQ(b, InlinePayloadBits(unbatched));
-}
-
-// Inline-payload kinds compare member-wise; span kinds compare
-// content (arena offsets legitimately differ across fixtures).
-void ExpectPathParity(Layer2Fixture& fb, const CelValue& batched,
-                      Layer2Fixture& fu, const CelValue& unbatched) {
-  ASSERT_EQ(batched.kind, unbatched.kind);
-  switch (batched.kind) {
-    case CEL_STRING:
-    case CEL_BYTES:
-      EXPECT_EQ(
-          fb.mem.ReadSpan(batched.payload.s.ptr, batched.payload.s.len),
-          fu.mem.ReadSpan(unbatched.payload.s.ptr, unbatched.payload.s.len));
-      return;
-    case CEL_MESSAGE:
-    case CEL_MAP_HOST:
-    case CEL_LIST_HOST:
-      // Externref slot ids are table-local; equality of kind plus a
-      // resolvable slot is the wire-level contract.
-      return;
-    default:
-      ExpectInlinePayloadParity(batched, unbatched);
-  }
-}
-
-// Non-proto custom backing with one message-typed field (`child`)
-// and one scalar (`leaf`) — drives the virtual (ReadField) walk arm.
-class NestedFakeBacking : public HostMessageBacking {
- public:
-  NestedFakeBacking(std::shared_ptr<HostMessageBacking> child, int64_t leaf)
-      : child_(std::move(child)), leaf_(leaf) {}
-
-  absl::StatusOr<celwasm::Value> ReadField(
-      int, absl::string_view name, const celwasm::CelType&) const override {
-    if (name == "child" && child_ != nullptr) {
-      return celwasm::Value::HostMessage(child_);
-    }
-    if (name == "leaf") return celwasm::Value::Int(leaf_);
-    return celwasm::Value::Error(celwasm::ErrorPayload{
-        celwasm::ErrorCode::kFieldNotFound, std::string(name), 0});
-  }
-
-  bool HasField(int, absl::string_view name) const override {
-    return name == "leaf" || (name == "child" && child_ != nullptr);
-  }
-
- private:
-  std::shared_ptr<HostMessageBacking> child_;
-  int64_t leaf_;
-};
-
-}  // namespace
-
-TEST(CelGetFieldPathTest, Depth2ScalarMatchesUnbatched) {
-  HostMsg3 m;
-  m.mutable_inner()->set_i64(7);
-  Layer2Fixture fb;
-  BindPathMessage(fb, std::make_shared<ProtoBacking>(&m));
-  auto hops = AddHops(fb, {{{17, "inner"}, {3, "i64"}}});
-  const CelValue batched = RunBatchedPath(fb, hops);
-  EXPECT_EQ(batched.kind, CEL_INT);
-  EXPECT_EQ(batched.payload.i, 7);
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, std::make_shared<ProtoBacking>(&m));
-  auto u_hops = AddHops(fu, {{{17, "inner"}, {3, "i64"}}});
-  const CelValue unbatched = RunUnbatchedChain(fu, u_hops);
-  ExpectPathParity(fb, batched, fu, unbatched);
-}
-
-TEST(CelGetFieldPathTest, Depth4StringMatchesUnbatched) {
-  HostMsg3 m;
-  m.mutable_inner()->mutable_inner()->mutable_inner()->set_s("deep");
-  const auto fields = std::vector<std::pair<uint32_t, absl::string_view>>{
-      {17, "inner"}, {17, "inner"}, {17, "inner"}, {14, "s"}};
-  Layer2Fixture fb;
-  BindPathMessage(fb, std::make_shared<ProtoBacking>(&m));
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields));
-  EXPECT_EQ(batched.kind, CEL_STRING);
-  EXPECT_EQ(fb.mem.ReadSpan(batched.payload.s.ptr, batched.payload.s.len),
-            "deep");
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, std::make_shared<ProtoBacking>(&m));
-  const CelValue unbatched = RunUnbatchedChain(fu, AddHops(fu, fields));
-  ExpectPathParity(fb, batched, fu, unbatched);
-}
-
-TEST(CelGetFieldPathTest, Depth16ScalarWalksWithoutIntermediateEncodes) {
-  HostMsg3 m;
-  HostMsg3* cur = &m;
-  std::vector<std::pair<uint32_t, absl::string_view>> fields;
-  for (int i = 0; i < 15; ++i) {
-    cur = cur->mutable_inner();
-    fields.emplace_back(17, "inner");
-  }
-  cur->set_i64(7);
-  fields.emplace_back(3, "i64");
-
-  Layer2Fixture fb;
-  BindPathMessage(fb, std::make_shared<ProtoBacking>(&m));
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields));
-  EXPECT_EQ(batched.kind, CEL_INT);
-  EXPECT_EQ(batched.payload.i, 7);
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, std::make_shared<ProtoBacking>(&m));
-  ExpectPathParity(fb, batched, fu, RunUnbatchedChain(fu, AddHops(fu, fields)));
-}
-
-// proto3 default semantics: an unset intermediate message field
-// walks the default instance per hop, terminating in the leaf's
-// default — identical to the unbatched chain (langdef §"Field
-// Selection"; e2e pin `m2_test.cc` NestedSelect tests).
-TEST(CelGetFieldPathTest, UnsetIntermediateWalksDefaultInstances) {
-  HostMsg3 m;  // nothing set
-  const auto fields = std::vector<std::pair<uint32_t, absl::string_view>>{
-      {17, "inner"}, {17, "inner"}, {3, "i64"}};
-  Layer2Fixture fb;
-  BindPathMessage(fb, std::make_shared<ProtoBacking>(&m));
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields));
-  EXPECT_EQ(batched.kind, CEL_INT);
-  EXPECT_EQ(batched.payload.i, 0);
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, std::make_shared<ProtoBacking>(&m));
-  ExpectPathParity(fb, batched, fu, RunUnbatchedChain(fu, AddHops(fu, fields)));
-}
-
-TEST(CelGetFieldPathTest, MissingFieldMidChainIsFieldNotFound) {
-  HostMsg3 m;
-  m.mutable_inner()->set_i64(7);
-  // Hop 2 names a field HostMsg3's descriptor doesn't have.
-  const auto fields = std::vector<std::pair<uint32_t, absl::string_view>>{
-      {17, "inner"}, {0, "no_such_field"}, {3, "i64"}};
-  Layer2Fixture fb;
-  BindPathMessage(fb, std::make_shared<ProtoBacking>(&m));
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields));
-  EXPECT_EQ(batched.kind, CEL_ERROR);
-  EXPECT_EQ(batched.payload.err,
-            static_cast<uint32_t>(celwasm::ErrorCode::kFieldNotFound));
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, std::make_shared<ProtoBacking>(&m));
-  ExpectPathParity(fb, batched, fu, RunUnbatchedChain(fu, AddHops(fu, fields)));
-}
-
-// Partial eval: a pattern covering a chain PREFIX fires at that hop
-// with the hop OPERAND's attribute id inside the minted UnknownSet —
-// the per-hop ids ride in the path row precisely so this matches the
-// unbatched calls byte-for-byte.
-TEST(CelGetFieldPathTest, UnknownPatternOnPrefixMintsHopOperandAttributeId) {
-  HostMsg3 m;
-  m.mutable_inner()->mutable_inner()->set_i64(7);
-  const auto fields = std::vector<std::pair<uint32_t, absl::string_view>>{
-      {17, "inner"}, {17, "inner"}, {3, "i64"}};
-  const auto attrs = std::vector<uint32_t>{1, 2, 3};
-  auto setup = [&](Layer2Fixture& f) {
-    BindPathMessage(f, std::make_shared<ProtoBacking>(&m));
-    f.attributes.push_back(AttributeEntry{});  // sentinel
-    f.attributes.push_back(AttributeEntry{"m", {}});
-    f.attributes.push_back(AttributeEntry{"m", {"inner"}});
-    f.attributes.push_back(AttributeEntry{"m", {"inner", "inner"}});
-    auto pat = celwasm::AttributePattern::Parse("m.inner.inner");
-    EXPECT_TRUE(pat.ok());
-    f.unknown_patterns.push_back(*std::move(pat));
-  };
-
-  Layer2Fixture fb;
-  setup(fb);
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields, attrs));
-  EXPECT_EQ(batched.kind, CEL_UNKNOWN);
-  // The pattern kFull-matches hop 2's effective attribute
-  // (m.inner ⊕ inner); the minted set carries hop 2's OPERAND id (2).
-  EXPECT_THAT(test::ReadUnknownIds(fb.mem, batched),
-              ::testing::ElementsAre(2u));
-
-  Layer2Fixture fu;
-  setup(fu);
-  const CelValue unbatched = RunUnbatchedChain(fu, AddHops(fu, fields, attrs));
-  ASSERT_EQ(unbatched.kind, CEL_UNKNOWN);
-  EXPECT_THAT(test::ReadUnknownIds(fu.mem, unbatched),
-              ::testing::ElementsAre(2u));
-}
-
-TEST(CelGetFieldPathTest, UnknownInputPropagates) {
-  Layer2Fixture f;
-  auto hops = AddHops(f, {{{17, "inner"}, {3, "i64"}}});
-  CelValue in{};
-  in.kind = CEL_UNKNOWN;
-  in.payload.unk = 77;
-  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, in);
-  const CelValue out = RunBatchedPath(f, hops);
-  EXPECT_EQ(out.kind, CEL_UNKNOWN);
-  EXPECT_EQ(out.payload.unk, 77u);
-}
-
-TEST(CelGetFieldPathTest, ErrorInputPropagates) {
-  Layer2Fixture f;
-  auto hops = AddHops(f, {{{17, "inner"}, {3, "i64"}}});
-  CelValue in{};
-  in.kind = CEL_ERROR;
-  in.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
-  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, in);
-  const CelValue out = RunBatchedPath(f, hops);
-  EXPECT_EQ(out.kind, CEL_ERROR);
-  EXPECT_EQ(out.payload.err,
-            static_cast<uint32_t>(celwasm::ErrorCode::kOverflow));
-}
-
-TEST(CelGetFieldPathTest, NonMessageInputYieldsTypeMismatch) {
-  Layer2Fixture f;
-  auto hops = AddHops(f, {{{17, "inner"}, {3, "i64"}}});
-  CelValue in{};
-  in.kind = CEL_INT;
-  in.payload.i = 42;
-  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, in);
-  const CelValue out = RunBatchedPath(f, hops);
-  EXPECT_EQ(out.kind, CEL_ERROR);
-  EXPECT_EQ(out.payload.err,
-            static_cast<uint32_t>(celwasm::ErrorCode::kTypeMismatch));
-}
-
-TEST(CelGetFieldPathTest, BadPathIdsYieldFieldNotFound) {
-  HostMsg3 m;
-  Layer2Fixture f;
-  BindPathMessage(f, std::make_shared<ProtoBacking>(&m));
-  f.path_refs.emplace_back();  // id 1: empty hop list
-  for (const uint32_t path_id :
-       {0u /*sentinel*/, 1u /*empty hops*/, 9u /*OOR*/}) {
-    ASSERT_THAT(CelGetFieldPathImpl(Layer2Fixture::kOutSlot,
-                                    Layer2Fixture::kMsgSlot, path_id, f.Ctx()),
-                IsOk());
-    const CelValue out = f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
-    EXPECT_EQ(out.kind, CEL_ERROR) << "path_id=" << path_id;
-    EXPECT_EQ(out.payload.err,
-              static_cast<uint32_t>(celwasm::ErrorCode::kFieldNotFound))
-        << "path_id=" << path_id;
-  }
-}
-
-TEST(CelGetFieldPathTest, HopFieldRefIdOutOfRangeYieldsFieldNotFound) {
-  HostMsg3 m;
-  Layer2Fixture f;
-  BindPathMessage(f, std::make_shared<ProtoBacking>(&m));
-  // Hop references field_refs[9] which doesn't exist.
-  const CelValue out =
-      RunBatchedPath(f, {PathHopEntry{9, 0}, PathHopEntry{9, 0}});
-  EXPECT_EQ(out.kind, CEL_ERROR);
-  EXPECT_EQ(out.payload.err,
-            static_cast<uint32_t>(celwasm::ErrorCode::kFieldNotFound));
-}
-
-TEST(CelGetFieldPathTest, InvalidExternrefSlotYieldsHostAdapterError) {
-  Layer2Fixture f;
-  auto hops = AddHops(f, {{{17, "inner"}, {3, "i64"}}});
-  CelValue cv{};
-  cv.kind = CEL_MESSAGE;
-  cv.payload.msg_slot = 9999;  // never interned
-  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
-  const CelValue out = RunBatchedPath(f, hops);
-  EXPECT_EQ(out.kind, CEL_ERROR);
-  EXPECT_EQ(out.payload.err,
-            static_cast<uint32_t>(celwasm::ErrorCode::kHostAdapterError));
-}
-
-// Runtime divergence: a map field mid-chain (static types said plain
-// message) — the next-hop verdict is kTypeMismatch on both paths.
-TEST(CelGetFieldPathTest, MapFieldMidChainIsTypeMismatch) {
-  HostMsg3 m;
-  (*m.mutable_str_to_i32())["k"] = 1;
-  const auto fields = std::vector<std::pair<uint32_t, absl::string_view>>{
-      {19, "str_to_i32"}, {3, "i64"}};
-  Layer2Fixture fb;
-  BindPathMessage(fb, std::make_shared<ProtoBacking>(&m));
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields));
-  EXPECT_EQ(batched.kind, CEL_ERROR);
-  EXPECT_EQ(batched.payload.err,
-            static_cast<uint32_t>(celwasm::ErrorCode::kTypeMismatch));
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, std::make_shared<ProtoBacking>(&m));
-  ExpectPathParity(fb, batched, fu, RunUnbatchedChain(fu, AddHops(fu, fields)));
-}
-
-// Runtime divergence, positive arm: an Any mid-chain unpacks and the
-// walk continues over the unpacked clone — the intern pin keeps the
-// clone alive exactly as the unbatched encode would have.
-TEST(CelGetFieldPathTest, AnyMidChainUnpacksAndContinues) {
-  HostMsg3 packed;
-  packed.set_i64(7);
-  HostMsg3 m;
-  m.mutable_single_any()->PackFrom(packed);
-  const auto fields = std::vector<std::pair<uint32_t, absl::string_view>>{
-      {30, "single_any"}, {3, "i64"}};
-  Layer2Fixture fb;
-  BindPathMessage(fb, std::make_shared<ProtoBacking>(&m));
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields));
-  EXPECT_EQ(batched.kind, CEL_INT);
-  EXPECT_EQ(batched.payload.i, 7);
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, std::make_shared<ProtoBacking>(&m));
-  ExpectPathParity(fb, batched, fu, RunUnbatchedChain(fu, AddHops(fu, fields)));
-}
-
-// Runtime divergence, negative arm: an UNSET Any mid-chain reads as
-// Null; the next-hop verdict is kTypeMismatch on both paths.
-TEST(CelGetFieldPathTest, UnsetAnyMidChainIsTypeMismatch) {
-  HostMsg3 m;  // single_any unset
-  const auto fields = std::vector<std::pair<uint32_t, absl::string_view>>{
-      {30, "single_any"}, {3, "i64"}};
-  Layer2Fixture fb;
-  BindPathMessage(fb, std::make_shared<ProtoBacking>(&m));
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields));
-  EXPECT_EQ(batched.kind, CEL_ERROR);
-  EXPECT_EQ(batched.payload.err,
-            static_cast<uint32_t>(celwasm::ErrorCode::kTypeMismatch));
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, std::make_shared<ProtoBacking>(&m));
-  ExpectPathParity(fb, batched, fu, RunUnbatchedChain(fu, AddHops(fu, fields)));
-}
-
-// Non-proto custom backings walk through the virtual ReadField arm.
-TEST(CelGetFieldPathTest, CustomBackingChainWalksVirtually) {
-  auto leaf = std::make_shared<NestedFakeBacking>(nullptr, 99);
-  auto mid = std::make_shared<NestedFakeBacking>(leaf, 0);
-  auto root = std::make_shared<NestedFakeBacking>(mid, 0);
-  const auto fields = std::vector<std::pair<uint32_t, absl::string_view>>{
-      {0, "child"}, {0, "child"}, {0, "leaf"}};
-  Layer2Fixture fb;
-  BindPathMessage(fb, root);
-  const CelValue batched = RunBatchedPath(fb, AddHops(fb, fields));
-  EXPECT_EQ(batched.kind, CEL_INT);
-  EXPECT_EQ(batched.payload.i, 99);
-
-  Layer2Fixture fu;
-  BindPathMessage(fu, root);
-  ExpectPathParity(fb, batched, fu, RunUnbatchedChain(fu, AddHops(fu, fields)));
-}
-
-// Final-hop aggregates encode through the shared cel_get_field tail:
-// a map field lands as a resolvable CEL_MAP_HOST handle.
-TEST(CelGetFieldPathTest, FinalHopMapFieldEncodesHostMap) {
-  HostMsg3 m;
-  (*m.mutable_inner()->mutable_str_to_i32())["k"] = 5;
-  Layer2Fixture f;
-  BindPathMessage(f, std::make_shared<ProtoBacking>(&m));
-  const CelValue out =
-      RunBatchedPath(f, AddHops(f, {{{17, "inner"}, {19, "str_to_i32"}}}));
-  ASSERT_EQ(out.kind, CEL_MAP_HOST);
-  const HostMapBacking* map = f.refs.LookupMap(out.payload.ref_slot);
-  ASSERT_NE(map, nullptr);
-  EXPECT_EQ(map->Size(), 1u);
-}
-
-// Final-hop plain message interns a backing — same wire shape as the
-// unbatched final hop.
-TEST(CelGetFieldPathTest, FinalHopMessageFieldInternsBacking) {
-  HostMsg3 m;
-  m.mutable_inner()->mutable_inner()->set_i64(1);
-  Layer2Fixture f;
-  BindPathMessage(f, std::make_shared<ProtoBacking>(&m));
-  const CelValue out =
-      RunBatchedPath(f, AddHops(f, {{{17, "inner"}, {17, "inner"}}}));
-  ASSERT_EQ(out.kind, CEL_MESSAGE);
-  EXPECT_NE(f.refs.Lookup(out.payload.msg_slot), nullptr);
-}
-
 // ═══════════ Layer 2 — per-access-site resolved-field cache ═══════════
 //
 // `CelGetFieldImpl` / `CelHasFieldImpl` resolve proto fields through
@@ -1491,6 +1057,9 @@ class PackHarness {
  public:
   PackHarness() {
     auto outer = std::make_unique<HostMsg3>();
+    // outer_ aliases a body-local unique_ptr that is then moved into the
+    // backing; it can't be a member initializer.
+    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
     outer_ = outer.get();
     auto backing = std::make_shared<OwnedProtoBacking>(std::move(outer));
     outer_slot_ = f_.refs.Intern(backing);

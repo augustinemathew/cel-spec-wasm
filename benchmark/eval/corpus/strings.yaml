@@ -34,12 +34,25 @@ cells:
     expected: { type: bool, value: true }
     tags: [phase1, bench-shape, skip-source-check]
 
+  # Literal-receiver twins of the string-function var cells: same
+  # kernel, the haystack is a literal instead of a bound variable, so
+  # (var − const) isolates the variable-binding cost.
+  - id: containsConst
+    source: '"augustine".contains("aug")'
+    expected: { type: bool, value: true }
+    tags: [phase1, bench-shape, const-only, skip-source-check]
+
   - id: startsWith
     source: 'a.startsWith("aug")'
     activation:
       a: { type: string, value: "augustine" }
     expected: { type: bool, value: true }
     tags: [phase1, bench-shape, skip-source-check]
+
+  - id: startsWithConst
+    source: '"augustine".startsWith("aug")'
+    expected: { type: bool, value: true }
+    tags: [phase1, bench-shape, const-only, skip-source-check]
 
 
   # ── endsWith / matches ──
@@ -50,12 +63,22 @@ cells:
     expected: { type: bool, value: true }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: endsWithConst
+    source: '"augustine".endsWith("ine")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: matchesCheap
     source: 'a.matches("^aug")'
     activation:
       a: { type: string, value: "augustine" }
     expected: { type: bool, value: true }
     tags: [phase2, bench-shape, skip-source-check]
+
+  - id: matchesCheapConst
+    source: '"augustine".matches("^aug")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
 
   - id: matchesComplex
     source: 'a.matches("^[a-z]+-[0-9]{2,4}@[a-z]+\\.(com|org)$")'
@@ -64,17 +87,21 @@ cells:
     expected: { type: bool, value: true }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: matchesComplexConst
+    source: '"user-1234@example.com".matches("^[a-z]+-[0-9]{2,4}@[a-z]+\\.(com|org)$")'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   # ── string + string concat, length sweep {2, 10, 100, 1000} ──
   # Vars a..j each bound to a 2-char string; the N-term chain cycles
   # through them, so the result length grows 2N and the chain
   # exercises N-1 cel_string_concat calls.
   #
-  # concatChain1000Terms is tagged `celwasm-skip-arena-overflow`:
-  # the 999 intermediate concat results overflow celwasm's eval
-  # arena (verified via the cel CLI: eval returns a CEL overflow
-  # error value at N=1000; N=100 is fine).  celcpp_bench still runs
-  # it.  Same family as e2e/known_bugs_test.cc::
-  # ExpressionIntermediatesArenaCliff.
+  # concatChain1000Terms builds 999 intermediate concat results.  The
+  # eval arena now grows in chunks (cel_arena.c) instead of failing at
+  # a fixed cliff, so this evaluates correctly on celwasm (verified via
+  # the cel CLI) and runs on both comparators — same resolution as
+  # e2e/known_bugs_test.cc::ExpressionIntermediatesArenaCliff.
   - id: concat2
     source: 'a + b'
     activation:
@@ -82,6 +109,11 @@ cells:
       b: { type: string, value: "world" }
     expected: { type: string, value: "hello world" }
     tags: [phase2, bench-shape]
+
+  - id: concat2Const
+    source: '"hello " + "world"'
+    expected: { type: string, value: "hello world" }
+    tags: [phase2, bench-shape, const-only]
 
   - id: concatChain10Terms
     source: 'a + b + c + d + e + f + g + h + i + j'
@@ -129,7 +161,7 @@ cells:
       i: { type: string, value: "ii" }
       j: { type: string, value: "jj" }
     expected: { type: string, value: "aabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijjaabbccddeeffgghhiijj" }
-    tags: [phase2, bench-shape, celwasm-skip-arena-overflow]
+    tags: [phase2, bench-shape]
 
   # ── bytes + bytes concat ──
   - id: bytesConcat2
@@ -139,3 +171,8 @@ cells:
       b: { type: bytes, value: "cd" }
     expected: { type: bytes, value: "abcd" }
     tags: [phase2, bench-shape]
+
+  - id: bytesConcat2Const
+    source: 'b"ab" + b"cd"'
+    expected: { type: bytes, value: "abcd" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]

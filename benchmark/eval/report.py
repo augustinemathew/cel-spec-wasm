@@ -4,19 +4,34 @@
 Reads one Google Benchmark JSON per comparator, joins cells by BM name,
 joins the human-facing expression from the corpus YAMLs, and emits:
 
-  * a per-operator headline table (linear regression over length-sweep
-    families — slope = ns per added op, intercept = per-Eval setup,
-    crossover = expression length where celwasm overtakes the baseline);
-  * a per-cell detail table per surface (expression next to the ratio);
-  * a long-format CSV (full expressions, machine-readable);
+  * the MAIN report (`--out-md` / `--out-csv`) — STATIC-focused.  It
+    carries only the baseline (cel-cpp) and the non-dynamic comparators
+    (celwasm-static), so each detail row is 3 data columns:
+    `cel-cpp (ns)`, `celwasm-static (ns)`, `celwasm-static ×cel-cpp`.
+    Layout: per-surface detail tables FIRST, then the per-operator
+    headline (linear-regression slope/setup/crossover) at the BOTTOM.
+    Dynamic comparators never appear here.
+  * the DYNAMIC report (derived sibling files `<out>-dynamic.md` /
+    `<out>-dynamic.csv`, emitted only when a `celwasm-dynamic`
+    comparator is present) — the dynamic numbers in isolation
+    (`cel-cpp (ns)`, `celwasm-dynamic (ns)`, `celwasm-dynamic ×cel-cpp`),
+    since dynamic is slow + noisy and would otherwise crowd the main
+    report.  Same detail-first / headline-last layout.
+  * a long-format CSV per report (full expressions, machine-readable).
   * optionally, an auto-generated results section spliced into
-    benchmark/README.md between the AUTO-GENERATED RESULTS markers.
+    benchmark/README.md between the AUTO-GENERATED RESULTS markers
+    (the STATIC headline only).
 
 Usage (run.sh drives this; manual invocation):
   report.py --json celwasm-dynamic=/tmp/d.json --json celwasm-static=/tmp/s.json \
             --json cel-cpp=/tmp/c.json --baseline cel-cpp \
             --out-md results/2026-06-11-host.md --out-csv results/2026-06-11-host.csv \
             --update-readme ../README.md
+  # writes results/2026-06-11-host.md/.csv (static) AND
+  #        results/2026-06-11-host-dynamic.md/.csv (dynamic).
+
+A comparator counts as "dynamic" iff its name contains "dynamic"
+(see is_dynamic); everything else is a main-report comparator.
 
 Parity: both bench mains stamp `result=...` labels (DESIGN.md §11); when
 comparators disagree on a cell's label the row is tagged
@@ -257,6 +272,30 @@ def detail_tables(rows, comparators, baseline, width):
     return out.getvalue()
 
 
+# Canonical column order, independent of --json arg order: the baseline
+# (the reference impl, cel-cpp) reads first, then celwasm static before
+# dynamic — slowest-to-set-up last.  Unknown comparators keep their input
+# order after these.
+COMPARATOR_RANK = {"celwasm-static": 0, "celwasm-dynamic": 1}
+
+
+def is_dynamic(comparator):
+    """A comparator is dynamic iff its name mentions 'dynamic'.
+
+    Dynamic comparators are slow + noisy and live in their own report;
+    the main (static-focused) report excludes them entirely.
+    """
+    return "dynamic" in comparator
+
+
+def order_comparators(comparators, baseline):
+    """Baseline first, then a fixed preference order (static < dynamic)."""
+    def key(c):
+        return (c != baseline, COMPARATOR_RANK.get(c, len(COMPARATOR_RANK)),
+                comparators.index(c))
+    return sorted(comparators, key=key)
+
+
 def build_rows(corpus, jsons):
     """Join: bm_name → corpus metadata + one timing dict per comparator."""
     rows = {}
@@ -267,6 +306,24 @@ def build_rows(corpus, jsons):
                      "tags": []})))
             row[comp] = timing
     return rows
+
+
+def build_doc(rows, comparators, baseline, title, width):
+    """Detail tables first, per-operator headline last (DESIGN.md §12)."""
+    headline = headline_table(rows, comparators, baseline)
+    detail = detail_tables(rows, comparators, baseline, width)
+    return (f"## {title}\n\n"
+            f"Eval steady-state, median real time ns/call (lower is better); "
+            f"`×{baseline}` > 1.0 means that comparator is faster than "
+            f"{baseline}.  `n/a` = cell does not run on that comparator "
+            f"(see skip tags in the corpus YAML).\n\n"
+            + detail + headline), headline
+
+
+def dynamic_path(path):
+    """results/2026-06-11-host.md → results/2026-06-11-host-dynamic.md."""
+    p = pathlib.Path(path)
+    return str(p.with_name(f"{p.stem}-dynamic{p.suffix}"))
 
 
 def write_csv(path, rows, comparators):
@@ -354,6 +411,7 @@ def main():
     if args.baseline not in jsons:
         sys.exit(f"report.py: baseline '{args.baseline}' not among "
                  f"comparators {comparators}")
+    comparators = order_comparators(comparators, args.baseline)
 
     corpus = load_corpus(args.corpus_dir)
     rows = build_rows(corpus, jsons)
@@ -361,31 +419,45 @@ def main():
     stamp = datetime.date.today().isoformat()
     host = socket.gethostname().split(".")[0]
     title = args.title or f"Eval benchmark results — {stamp}, {host}"
-    headline = headline_table(rows, comparators, args.baseline)
-    detail = detail_tables(rows, comparators, args.baseline,
-                           args.max_expr_width)
-    doc = (f"## {title}\n\n"
-           f"Eval steady-state, median real time ns/call (lower is better); "
-           f"`×{args.baseline}` > 1.0 means that comparator is faster than "
-           f"{args.baseline}.  `n/a` = cell does not run on that comparator "
-           f"(see skip tags in the corpus YAML).\n\n"
-           + headline + detail)
+
+    # Main report: STATIC-focused — baseline + non-dynamic comparators.
+    main_comps = [c for c in comparators if not is_dynamic(c)]
+    main_doc, main_headline = build_doc(
+        rows, main_comps, args.baseline, title, args.max_expr_width)
+
+    # Dynamic report: baseline + dynamic comparators, in its own files.
+    dyn_others = [c for c in comparators if is_dynamic(c)]
+    dyn_comps = ([args.baseline] + dyn_others) if dyn_others else []
+    dyn_doc = None
+    if dyn_comps:
+        dyn_doc, _ = build_doc(
+            rows, dyn_comps, args.baseline, f"{title} (dynamic)",
+            args.max_expr_width)
 
     if args.out_md:
         pathlib.Path(args.out_md).parent.mkdir(parents=True, exist_ok=True)
-        pathlib.Path(args.out_md).write_text(doc)
+        pathlib.Path(args.out_md).write_text(main_doc)
         print(f"wrote {args.out_md}")
+        if dyn_doc is not None:
+            dyn_md = dynamic_path(args.out_md)
+            pathlib.Path(dyn_md).write_text(dyn_doc)
+            print(f"wrote {dyn_md}")
     if args.out_csv:
         pathlib.Path(args.out_csv).parent.mkdir(parents=True, exist_ok=True)
-        write_csv(args.out_csv, rows, comparators)
+        write_csv(args.out_csv, rows, main_comps)
         print(f"wrote {args.out_csv}")
+        if dyn_comps:
+            dyn_csv = dynamic_path(args.out_csv)
+            write_csv(dyn_csv, rows, dyn_comps)
+            print(f"wrote {dyn_csv}")
     if args.update_readme:
         summary = (f"_Last run: {stamp} on {host} "
-                   f"(full tables: `benchmark/eval/results/`)._\n\n" + headline)
+                   f"(full tables: `benchmark/eval/results/`)._\n\n"
+                   + main_headline)
         update_readme(args.update_readme, summary)
         print(f"updated results section in {args.update_readme}")
     if not (args.out_md or args.out_csv or args.update_readme):
-        print(doc)
+        print(main_doc)
 
 
 if __name__ == "__main__":

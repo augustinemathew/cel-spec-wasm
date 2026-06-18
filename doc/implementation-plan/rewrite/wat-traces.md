@@ -2693,107 +2693,50 @@ Expected result: eval returns 88; the CelValue there is
 {CEL_UNKNOWN, payload.unk=7} — payload byte-identical to the seeded
 range value.
 
-## 71. Batched select chain — `m.inner.inner.i64` (one host crossing)
+## 72. `[10, 20, 30][1]` — compile-time-materialized constant list (m31)
 
-`wat/71_get_field_path.wat` — executable; runs through `wat_runner`
-(`WatRunnerSelectPathTest.GetFieldPathStubRoundTripsThreeArgAbi`).
+File: `wat/72_static_aggregate.wat`.  Status: assembles under
+`wasm-as`; runs end-to-end through `tools/wat_runner` against the real
+`cel_runtime.wasm`, no host stubs
+(`wat_runner_test.cc::WatRunnerListTest.MaterializedListIndexedProducesValue`).
 
-The unbatched lowering of an N-hop proto select chain is N
-`cel_host.cel_get_field` calls, each paying the full wasm↔host
-boundary (~104 ns/hop measured on `BM_proto_select_depth*`; see
-`benchmark/ANALYSIS.md` "P3 — batch select chains").  The batched
-lowering emits **one** call for the whole contiguous message-typed
-chain:
-
-```wat
-(import "cel_host" "cel_get_field_path"
-        (func $cel_get_field_path (param i32 i32 i32)))
-...
-(call $cel_get_field_path
-      (i32.const 40)     ;; out_slot   — OUTERMOST select's slot
-      (local.get $m_off) ;; msg_slot   — root operand's CelValue cell
-      (i32.const 1))     ;; path_ref_id — cel.abi.paths[] row
-```
-
-Memory map (the per-WAT header has the byte-level commentary):
+Freezes the byte layout `StaticMemoryBuilder::MaterializeList` must
+reproduce, and proves the read kernel cannot distinguish a materialized
+list from an arena-built one (m31 §2, §5).  Unlike
+`12_list_index_arena.wat`, which builds `[1,2,3]` at eval time
+(`cel_list_create` + `cel_list_append_at` per element), here the entire
+list value is written into the module's data segment at compile time and
+`$eval` performs no construction — only `cel_list_at_arena` over the
+static layout:
 
 ```
-[ 0, 16)   reserved
-[16, 40)   workspace: m's CelValue slot (marshal-written, local 0)
-[40, 64)   workspace: OUTERMOST select's out slot — the only slot
-           the batched call writes
-[64+]      bump arena
+[ 16, 32)  ArenaListHeader { count=3, capacity=3, elements_offset=32 }
+[ 32,104)  element run: {CEL_INT,10} {CEL_INT,20} {CEL_INT,30}  (3×24 B)
+[104,128)  outer frame   {CEL_LIST_ARENA, arena_list.header_ptr=16}
+[128,152)  lookup index  {CEL_INT, 1}
+[152,176)  workspace: cel_list_at_arena out_slot
 ```
+
+Layout per `runtime/cel_data.h`: `CelValue` 24 B `{kind:u32@0, _pad@4,
+payload@8}`; `ArenaListHeader` 16 B `{count, capacity, elements_offset,
+_pad}`; element stride 24 B; `CEL_INT = 2`, `CEL_LIST_ARENA = 7`.  The
+header sits before its run (m31 §5 innermost-first ordering); a flat
+list has a single header→run→frame triple.
 
 Invariants the shape locks:
 
-  - **3 × i32 `(out_slot, msg_slot, path_ref_id)`** — i32-only per
-    the unchecked-ABI rule (`abi/runtime_catalogue.h` "LOAD-BEARING").
-    No per-hop data crosses in call args; depth is a property of the
-    interned path row, so the wasm side is one call at any depth.
-  - **`cel.abi.paths[path_ref_id]`** is an ordered hop list,
-    innermost (root-adjacent) hop first.  Each hop carries
-    `(field_ref_id, attribute_id)`:
-      * `field_ref_id` indexes `cel.abi.fields[]` — codegen still
-        interns ONE FieldEntry per hop (identical rows to what the
-        unbatched calls would reference), so the eval side's
-        per-site `ResolvedFieldCache` works untouched per hop;
-      * `attribute_id` is the id of THAT hop's *operand* attribute —
-        exactly the fourth arg the unbatched per-hop `cel_get_field`
-        would have passed.  Partial-eval unknown matching runs per
-        hop against the same effective attribute (operand ⊕ field
-        name), and a minted UnknownSet carries the same id —
-        byte-identical to the per-hop path.  (This is why the ids
-        live in the path row, not in a call arg: they differ per
-        hop.)
-  - **Intermediate hop results never cross the boundary**: the host
-    walks `Reflection::GetMessage` hop-to-hop in C++ (no CelValue
-    encode, no externref intern, no wasm re-entry).  Only the final
-    hop's value is encoded at `out_slot`, through the *same* encode
-    tail `cel_get_field` uses (`TryEncodeAggregateFieldFast` /
-    `ReadFieldClassified` → `EncodeFieldResult`), so the final bytes
-    are identical to the unbatched result.
-  - **Intermediate workspace slots are simply not written.**
-    LayoutPass still allocates one slot per select node; the AST is
-    a tree, so an intermediate select's slot is consumed only by the
-    next hop — skipping the writes is unobservable.
-
-Batching eligibility (decided statically in codegen; every excluded
-shape falls back to the existing per-hop `cel_get_field` lowering —
-correctness outranks the optimization):
-
-  - every hop is a **non-test_only** kSelect taking the proto branch
-    (a `has(...)` outermost select keeps `cel_has_field`; its operand
-    chain still batches independently);
-  - every **intermediate** node (each hop's operand past the root)
-    has `Repr::kMessage` AND a message FQN outside the WKT set
-    {the 9 `google.protobuf.*Value` wrappers, `Any`, `Timestamp`,
-    `Duration`, `Struct`, `Value`, `ListValue`} — i.e. statically
-    classifiable as `kMessagePlain`, so the host-side "stay in proto
-    reflection" walk is exactly what the per-hop trampolines would
-    have done.  Optional-typed (`.?f` / `optional.of(...)` results),
-    map-typed (map dot sugar), and WKT-typed intermediates are
-    excluded: their per-hop lowering routes through different
-    kernels (`cel_select_optional_field_at_vv`, `cel_map_lookup`) or
-    different unwrap semantics (wrapper → scalar/null, Any → unpack,
-    Timestamp/Duration → CEL_TIMESTAMP/CEL_DURATION).  The checker
-    types all of those with a non-`kMessage` repr, so the repr gate
-    alone already excludes them; the FQN list is belt-and-braces
-    against checker/descriptor divergence;
-  - chains shorter than 2 hops keep the single `cel_get_field` call.
-
-The **final** hop's field may be anything — scalar, string/bytes,
-map, repeated, wrapper, Any, plain message — because its read +
-encode is shared verbatim with `cel_get_field`'s tail.
-
-Runtime-divergence defence (a dynamic descriptor pool can disagree
-with the static types): if a mid-chain hop resolves at runtime to a
-non-`kMessagePlain` class, the trampoline performs the full
-classified read and then applies the same verdict the next unbatched
-hop's prelude would have: a `CEL_ERROR` result propagates verbatim,
-any other non-message result poisons `kTypeMismatch`.  Pinned by the
-`CelGetFieldPathTest` batched-vs-per-hop parity cases in
-`eval/internal/cel_host_test.cc`.
+  - The aggregate lives in the low static window (offsets < the runtime
+    `--global-base`), not the arena above `__heap_base`; the read kernel
+    only dereferences linear-memory offsets, so origin is invisible to
+    it — the m31 premise.
+  - `elements_offset` and `arena_list.header_ptr` are absolute
+    linear-memory offsets, identical in meaning to an arena-built list's
+    pointers; the keystone byte-identity test (m31 §7) will `memcmp` the
+    materialized region against the `cel_make_*` arena build to catch any
+    layout drift.
+  - The materialized aggregate is effectively rodata: read-only kernels
+    must never mutate an operand (concat allocates fresh; iterators keep
+    state in the arena), so a materialized list is safe to share.
 
 ## Future entries (stubs)
 

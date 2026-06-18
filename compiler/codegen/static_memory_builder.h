@@ -26,15 +26,20 @@
 // is padded back to 8-byte alignment before the next Allocate,
 // so every frame lands on an 8-byte boundary.
 //
-// Out of scope: messages and lists / maps.  Their runtime value
-// is a host-side handle (externref / arena pointer), not bytes —
-// they're constructed at eval time via runtime / host calls
-// (§4.7), not packed here.
+// Constant lists are materialized too: `MaterializeList` writes the
+// byte-identical in-arena representation the runtime kernels would have
+// built, so a const `[…]` lowers to a single `i32.const` and the
+// read-only kernels cannot tell it from an arena-built list.
+//
+// Out of scope: messages (host-side proto handles, different
+// machinery) and — for now — maps (the map materializer is a sibling
+// follow-up; maps additionally sort entries at compile time).
 
 #include <cstdint>
 #include <vector>
 
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "runtime/cel_runtime.h"
 
 namespace celwasm {
@@ -69,6 +74,44 @@ class StaticMemoryBuilder {
   // checker-assigned `Repr` is `kType` — see
   // `rewrite/m9-type-subsystem.md`.
   uint32_t AllocateType(absl::string_view name);
+
+  // Result of materializing a constant aggregate.
+  struct MaterializedAggregate {
+    // Absolute linear-memory offset of the outer CelValue frame — what
+    // a top-level const aggregate lowers to via a single `i32.const`.
+    uint32_t frame_offset;
+    // Absolute offset of the element run (== the header's
+    // `elements_offset`); element `i`'s 24-byte CelValue lives at
+    // `elements_offset + 24*i`.  Zero for an empty list (no run).
+    uint32_t elements_offset;
+    // A copy of the value at `frame_offset`.  To nest this aggregate
+    // inside another, pass `frame` as an element of the enclosing
+    // `MaterializeList` — its `header_ptr` already points at this
+    // aggregate's header.  (Needed because the buffer is not readable
+    // until `Finalize`, so the caller gets the embeddable value here.)
+    CelValue frame;
+  };
+
+  // Materialize a constant list as the byte-identical in-arena
+  // representation `cel_list_create` + N×`cel_list_append_at` would
+  // build: an `ArenaListHeader { count=N, capacity=N, elements_offset,
+  // _pad=0 }` followed immediately by the contiguous N×24-byte element
+  // run (so the header→run adjacency matches `cel_list_create`'s two
+  // sequential `arena_alloc`s), then the outer `CEL_LIST_ARENA`
+  // CelValue frame whose `payload.arena_list.header_ptr` points at the
+  // header.
+  //
+  // `elements` are fully-formed 24-byte CelValue frames in index order;
+  // any string / bytes / nested-aggregate payload they reference must
+  // already be allocated in THIS builder so the embedded offsets are
+  // final (allocate leaves first, then the enclosing list —
+  // innermost-first ordering).  Nest a const list by passing the
+  // `.frame` of its `MaterializeList` result as an element of the outer
+  // list.
+  //
+  // An empty list writes `elements_offset = 0` with no run, matching
+  // `cel_list_create(out, 0)`.  Infallible, like the scalar Allocates.
+  MaterializedAggregate MaterializeList(absl::Span<const CelValue> elements);
 
   // Move-return the packed buffer.  After Finalize the builder is
   // consumed.  Use `size_bytes()` beforehand to learn the final size

@@ -1,6 +1,5 @@
 #include "compiler/codegen/expr_lower.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -311,127 +310,6 @@ BinaryenExpressionRef EmitKSelectProtoBranch(EmitCtx& ctx,
                        BinaryenTypeInt32());
 }
 
-// Forward declaration — defined with the kStructExpr WKT helpers
-// further down in this TU.
-uint32_t WrapperKindFromFqn(absl::string_view fqn);
-
-// FQNs excluded from batched-chain INTERMEDIATE positions: every WKT
-// whose field-read class is not kMessagePlain (wrapper → scalar/null
-// unwrap, Any → unpack, Timestamp/Duration → time scalar,
-// Struct/Value/ListValue → JSON conversion).  A mid-chain hop over
-// one of these must keep the per-hop lowering so the unwrap
-// semantics stay on the audited path.  Mirrors the complement of
-// `ClassifyResolvedField`'s kMessagePlain arm
-// (eval/internal/cel_host.cc).  In practice the checker types all of
-// these with a non-kMessage Repr, so the repr gate in
-// `IsBatchableInnerSelect` already excludes them — this list is
-// belt-and-braces against checker/descriptor divergence.
-bool IsPathBatchExcludedFqn(absl::string_view fqn) {
-  return WrapperKindFromFqn(fqn) != 0 || fqn == "google.protobuf.Any" ||
-         fqn == "google.protobuf.Timestamp" ||
-         fqn == "google.protobuf.Duration" || fqn == "google.protobuf.Struct" ||
-         fqn == "google.protobuf.Value" || fqn == "google.protobuf.ListValue";
-}
-
-// True iff `node` is a kSelect hop that can be merged as an
-// INTERMEDIATE hop of a batched select chain: a non-test_only select
-// that (a) itself takes the proto branch (operand neither optional
-// nor map), and (b) statically produces a plain (non-WKT) message —
-// so the host-side walk's "stay in proto reflection" step is exactly
-// what the per-hop trampoline would have done.  Eligibility rules
-// locked by `rewrite/wat-traces.md` §71.
-bool IsBatchableInnerSelect(EmitCtx& ctx, const cel::Expr& node) {
-  if (node.kind_case() != cel::ExprKindCase::kSelectExpr) return false;
-  const cel::SelectExpr& sel = node.select_expr();
-  if (sel.test_only()) return false;
-  const NodeAnnotation* ann = ctx.layout.annotations.Find(node.id());
-  if (ann == nullptr || ann->repr != Repr::kMessage) return false;
-  const std::string fqn = MessageTypeFqn(ctx.ast, node);
-  if (fqn.empty() || IsPathBatchExcludedFqn(fqn)) return false;
-  const NodeAnnotation* op_ann =
-      ctx.layout.annotations.Find(sel.operand().id());
-  return op_ann == nullptr ||
-         (op_ann->repr != Repr::kOptional && op_ann->repr != Repr::kMap);
-}
-
-// Collects the maximal contiguous run of batchable hops ending at
-// `expr` (the outermost select, already routed to the proto branch).
-// Returns hop nodes ordered INNERMOST (root-adjacent) first, with
-// `expr` last.  Size 1 means "nothing to batch" — the operand is not
-// a mergeable select — and the caller falls through to the per-hop
-// lowering.
-std::vector<const cel::Expr*> CollectBatchableChain(EmitCtx& ctx,
-                                                    const cel::Expr& expr) {
-  std::vector<const cel::Expr*> outermost_first;
-  outermost_first.push_back(&expr);
-  const cel::Expr* cur = &expr;
-  while (true) {
-    const cel::Expr& op = cur->select_expr().operand();
-    if (!IsBatchableInnerSelect(ctx, op)) break;
-    outermost_first.push_back(&op);
-    cur = &op;
-  }
-  std::reverse(outermost_first.begin(), outermost_first.end());
-  return outermost_first;
-}
-
-// Interns one FieldRefRow per hop (identical rows to what the
-// unbatched per-hop `cel_get_field` calls would reference — the eval
-// side's per-site resolved-field cache stays 1:1 with hops) plus one
-// PathRefRow listing them, and returns the new path id.  Each hop's
-// `attribute_id` is its OPERAND's attribute id — the exact value the
-// unbatched call for that hop would have passed, so partial-eval
-// unknown matching is byte-identical per hop.
-uint32_t InternPathForChain(EmitCtx& ctx,
-                            absl::Span<const cel::Expr* const> hops) {
-  PathRefRow row;
-  row.hops.reserve(hops.size());
-  for (const cel::Expr* node : hops) {
-    const cel::SelectExpr& sel = node->select_expr();
-    const NodeAnnotation* ann = ctx.layout.annotations.Find(node->id());
-    ABSL_CHECK(ann != nullptr)
-        << "expr_lower: batched-chain hop expr_id=" << node->id()
-        << " has no annotation (ResolvePass invariant)";
-    const auto field_ref_id = static_cast<uint32_t>(ctx.field_refs.size());
-    ctx.field_refs.push_back(FieldRefRow{
-        /*field_number=*/ann->field_number,
-        /*name=*/sel.field(),
-        /*owner_fqn=*/MessageTypeFqn(ctx.ast, sel.operand()),
-    });
-    const NodeAnnotation* op_ann =
-        ctx.layout.annotations.Find(sel.operand().id());
-    row.hops.push_back(
-        PathHopRow{field_ref_id, op_ann != nullptr ? op_ann->attribute_id : 0});
-  }
-  const auto path_id = static_cast<uint32_t>(ctx.path_refs.size());
-  ctx.path_refs.push_back(std::move(row));
-  return path_id;
-}
-
-// Batched select-chain lowering: ONE
-// `cel_get_field_path(out_slot, msg_slot, path_ref_id)` call covers
-// every hop in `hops`; the host walks the hops in C++ and writes
-// only the FINAL hop's CelValue at `out_slot` (the outermost
-// select's slot).  Intermediate selects' workspace slots are never
-// written — the AST is a tree, so each is consumed only by the next
-// hop.  Shape locked by `wat/71_get_field_path.wat`.
-BinaryenExpressionRef EmitKSelectPathBranch(
-    EmitCtx& ctx, absl::Span<const cel::Expr* const> hops,
-    BinaryenExpressionRef base_operand, uint32_t out_slot) {
-  const uint32_t path_id = InternPathForChain(ctx, hops);
-  BinaryenExpressionRef args[3] = {
-      I32Const(ctx.mod, out_slot),
-      base_operand,
-      I32Const(ctx.mod, path_id),
-  };
-  const std::string internal_name(kCelHostGetFieldPathInternalName);
-  BinaryenExpressionRef call = BinaryenCall(
-      ctx.mod.raw(), internal_name.c_str(), args, 3, BinaryenTypeNone());
-  BinaryenExpressionRef block_items[2] = {call, I32Const(ctx.mod, out_slot)};
-  return BinaryenBlock(ctx.mod.raw(), /*name=*/nullptr, block_items, 2,
-                       BinaryenTypeInt32());
-}
-
 absl::StatusOr<BinaryenExpressionRef> EmitKSelect(EmitCtx& ctx,
                                                   const cel::Expr& expr,
                                                   const cel::SelectExpr& sel,
@@ -466,36 +344,6 @@ absl::StatusOr<BinaryenExpressionRef> EmitKSelect(EmitCtx& ctx,
   }
 
   return EmitKSelectProtoBranch(ctx, *operand_or, out_slot, sel, ann, op_ann);
-}
-
-// kSelect dispatcher.  Routes the optional / map branches first
-// (their kernels differ), then tries the batched-chain path (a
-// contiguous run of >= 2 message-typed proto hops collapses into a
-// single `cel_get_field_path` host crossing), and finally falls back
-// to the per-hop proto branch.  NOTE: the operand sub-expression is
-// emitted exactly once on every route — for a batched chain it is
-// the INNERMOST hop's operand, and the intermediate select nodes are
-// consumed by the path row instead of being individually lowered.
-absl::StatusOr<BinaryenExpressionRef> EmitKSelectDispatch(
-    EmitCtx& ctx, const cel::Expr& expr, const cel::SelectExpr& sel,
-    const NodeAnnotation& ann) {
-  const NodeAnnotation* op_ann =
-      ctx.layout.annotations.Find(sel.operand().id());
-  const bool optional_or_map =
-      op_ann != nullptr &&
-      (op_ann->repr == Repr::kOptional || op_ann->repr == Repr::kMap);
-  if (!optional_or_map && !sel.test_only()) {
-    ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
-        << "expr_lower: kSelect expr_id=" << expr.id()
-        << " has non-workspace storage (LayoutPass didn't allocate a slot)";
-    std::vector<const cel::Expr*> hops = CollectBatchableChain(ctx, expr);
-    if (hops.size() >= 2) {
-      auto base_or = Emit(ctx, hops.front()->select_expr().operand());
-      if (!base_or.ok()) return base_or.status();
-      return EmitKSelectPathBranch(ctx, hops, *base_or, ann.storage.payload);
-    }
-  }
-  return EmitKSelect(ctx, expr, sel, ann);
 }
 
 // Emits `(call $cel.cel_map_create (i32.const out_slot) (i32.const N))`.
@@ -685,6 +533,13 @@ absl::StatusOr<BinaryenExpressionRef> EmitKListExpr(EmitCtx& ctx,
                                                     const cel::Expr& expr,
                                                     const cel::ListExpr& l,
                                                     const NodeAnnotation& ann) {
+  // A const list materialized into rodata (LayoutPass's
+  // ConstAggregateVisitor) lowers to a single i32.const of its frame
+  // offset — read-only kernels treat it exactly like an arena-built
+  // list.  Otherwise it is built per-Eval at its workspace slot.
+  if (ann.storage.kind == StorageKind::kStaticRodata) {
+    return I32Const(ctx.mod, ann.storage.payload);
+  }
   ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
       << "expr_lower: kListExpr expr_id=" << expr.id()
       << " has non-workspace storage (LayoutPass didn't allocate a slot)";
@@ -1434,7 +1289,7 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
     case cel::ExprKindCase::kIdentExpr:
       return EmitKIdentLoad(ctx, *ann);
     case cel::ExprKindCase::kSelectExpr:
-      return EmitKSelectDispatch(ctx, expr, expr.select_expr(), *ann);
+      return EmitKSelect(ctx, expr, expr.select_expr(), *ann);
     case cel::ExprKindCase::kCallExpr: {
       const cel::CallExpr& call = expr.call_expr();
       // `dyn(scalar)` is the identity function at codegen — emit
@@ -1490,14 +1345,12 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
   ABSL_CHECK(ast.has_ast())
       << "LowerToEvalFunction: TypedAst has no checked cel::Ast";
 
-  // field_refs[0] / path_refs[0] are the reserved sentinels;
-  // subsequent rows are pushed by the kSelect arm as the walk emits
-  // each select / batched chain.
+  // field_refs[0] is the reserved "not proto-resolvable" sentinel;
+  // subsequent rows are pushed by EmitKSelect as the walk emits each
+  // select.
   std::vector<FieldRefRow> field_refs;
   field_refs.push_back(FieldRefRow{});
-  std::vector<PathRefRow> path_refs;
-  path_refs.emplace_back();
-  EmitCtx ctx{mod, ast, layout, field_refs, path_refs, overload_table};
+  EmitCtx ctx{mod, ast, layout, field_refs, overload_table};
 
   auto root_ref = Emit(ctx, ast.ast().root_expr());
   if (!root_ref.ok()) return root_ref.status();
@@ -1540,7 +1393,7 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
   ABSL_CHECK(func != nullptr)
       << "expr_lower: Binaryen did not register function `" << func_name
       << "` after AddFunction";
-  return LoweredFunction{func, std::move(field_refs), std::move(path_refs)};
+  return LoweredFunction{func, std::move(field_refs)};
 }
 
 namespace {
@@ -1599,13 +1452,10 @@ absl::StatusOr<LoweredFunction> LowerToCustomFn(
 
   std::vector<FieldRefRow> field_refs;
   field_refs.push_back(FieldRefRow{});
-  std::vector<PathRefRow> path_refs;
-  path_refs.emplace_back();
   EmitCtx ctx{mod,
               ast,
               layout,
               field_refs,
-              path_refs,
               overload_table,
               /*wasm_local_offset=*/num_wasm_params};
 
@@ -1647,7 +1497,7 @@ absl::StatusOr<LoweredFunction> LowerToCustomFn(
   ABSL_CHECK(func != nullptr)
       << "LowerToCustomFn: Binaryen did not register function `" << export_name
       << "` after AddFunction";
-  return LoweredFunction{func, std::move(field_refs), std::move(path_refs)};
+  return LoweredFunction{func, std::move(field_refs)};
 }
 
 }  // namespace celwasm

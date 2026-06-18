@@ -53,18 +53,31 @@ static int span_match_at(const CelSpan* hay, uint32_t off, const CelSpan* sub) {
   return cel_byteptr_equal_(ph, ps, sub->len);
 }
 
-// Linear-scan substring search.  langdef pins string ops to byte
-// granularity; we don't need a fancy search algorithm because
-// CEL fixtures are short.  Mirrors cel-cpp's
-// `StringContains::Apply` (also a linear scan).
+// Substring search.  langdef pins string ops to byte granularity (no
+// Unicode normalisation); cel-cpp's `StringContains::Apply` is also a
+// byte scan.  We anchor on the substring's first byte: `memchr` finds
+// the next candidate start, and only there do we compare the full
+// `sub`.  This skips every haystack position whose first byte can't
+// begin a match, and `memchr` itself (wasi-libc / musl) scans
+// word-at-a-time via the has-zero bit-trick rather than byte-by-byte —
+// so a needle whose first byte is absent costs one word-parallel pass,
+// not `hay.len` failed compares.
 static int span_contains(const CelSpan* hay, const CelSpan* sub) {
   if (sub->len == 0) return 1;
   if (sub->len > hay->len) return 0;
-  uint32_t last = hay->len - sub->len;
-  for (uint32_t i = 0; i <= last; ++i) {
-    if (span_match_at(hay, i, sub)) return 1;
+  const uint8_t* base = cel_memory_base_();
+  const uint8_t* hbeg = base + hay->ptr;
+  const uint8_t* ps = base + sub->ptr;
+  const uint32_t last = hay->len - sub->len;  // last valid start offset
+  uint32_t i = 0;
+  for (;;) {
+    const uint8_t* hit = memchr(hbeg + i, ps[0], (size_t)(last - i) + 1);
+    if (hit == NULL) return 0;
+    const uint32_t pos = (uint32_t)(hit - hbeg);
+    if (cel_byteptr_equal_(hbeg + pos, ps, sub->len)) return 1;
+    if (pos >= last) return 0;
+    i = pos + 1;
   }
-  return 0;
 }
 
 // Wrap up the per-helper string/bytes header check + 3VL + alloc

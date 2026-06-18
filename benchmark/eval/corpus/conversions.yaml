@@ -34,6 +34,15 @@ cells:
     expected: { type: int, value: 42 }
     tags: [phase2, bench-shape, skip-source-check]
 
+  # Literal-argument twins (`…Const`) of the simple scalar
+  # conversions: same conversion kernel, the argument is a literal
+  # rather than a bound variable, so (var − const) isolates the
+  # variable-binding cost.
+  - id: intFromUintConst
+    source: 'int(42u)'
+    expected: { type: int, value: 42 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: intFromDouble
     source: 'int(d)'
     activation:
@@ -41,12 +50,25 @@ cells:
     expected: { type: int, value: 42 }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: intFromDoubleConst
+    source: 'int(42.9)'
+    expected: { type: int, value: 42 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: intFromString
     source: 'int(s)'
     activation:
       s: { type: string, value: "42" }
     expected: { type: int, value: 42 }
     tags: [phase2, bench-shape, skip-source-check]
+
+  # Direct literal twin of intFromString (single conversion).  The
+  # nested `int(string(123))` form below is a distinct two-kernel
+  # shape, not this var cell's literal mirror.
+  - id: intFromStringConst
+    source: 'int("42")'
+    expected: { type: int, value: 42 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
 
   - id: intFromTimestamp
     source: 'int(timestamp("2024-01-01T00:00:00Z"))'
@@ -71,6 +93,11 @@ cells:
     expected: { type: uint, value: 42 }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: uintFromIntConst
+    source: 'uint(42)'
+    expected: { type: uint, value: 42 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: uintFromDouble
     source: 'uint(d)'
     activation:
@@ -78,12 +105,22 @@ cells:
     expected: { type: uint, value: 42 }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: uintFromDoubleConst
+    source: 'uint(42.9)'
+    expected: { type: uint, value: 42 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: uintFromString
     source: 'uint(s)'
     activation:
       s: { type: string, value: "42" }
     expected: { type: uint, value: 42 }
     tags: [phase2, bench-shape, skip-source-check]
+
+  - id: uintFromStringConst
+    source: 'uint("42")'
+    expected: { type: uint, value: 42 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
 
   # ── double(_) ──
   - id: doubleFromInt
@@ -93,6 +130,11 @@ cells:
     expected: { type: double, value: 42.0 }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: doubleFromIntConst
+    source: 'double(42)'
+    expected: { type: double, value: 42.0 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: doubleFromUint
     source: 'double(u)'
     activation:
@@ -100,12 +142,22 @@ cells:
     expected: { type: double, value: 42.0 }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: doubleFromUintConst
+    source: 'double(42u)'
+    expected: { type: double, value: 42.0 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: doubleFromString
     source: 'double(s)'
     activation:
       s: { type: string, value: "42.5" }
     expected: { type: double, value: 42.5 }
     tags: [phase2, bench-shape, skip-source-check]
+
+  - id: doubleFromStringConst
+    source: 'double("42.5")'
+    expected: { type: double, value: 42.5 }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
 
   # ── string(_) ──
   - id: stringFromInt
@@ -115,12 +167,22 @@ cells:
     expected: { type: string, value: "42" }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: stringFromIntConst
+    source: 'string(42)'
+    expected: { type: string, value: "42" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: stringFromUint
     source: 'string(u)'
     activation:
       u: { type: uint, value: 42 }
     expected: { type: string, value: "42" }
     tags: [phase2, bench-shape, skip-source-check]
+
+  - id: stringFromUintConst
+    source: 'string(42u)'
+    expected: { type: string, value: "42" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
 
   - id: stringFromDouble
     source: 'string(d)'
@@ -129,6 +191,11 @@ cells:
     expected: { type: string, value: "42.5" }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: stringFromDoubleConst
+    source: 'string(42.5)'
+    expected: { type: string, value: "42.5" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: stringFromBool
     source: 'string(x)'
     activation:
@@ -136,12 +203,22 @@ cells:
     expected: { type: string, value: "true" }
     tags: [phase2, bench-shape, skip-source-check]
 
+  - id: stringFromBoolConst
+    source: 'string(true)'
+    expected: { type: string, value: "true" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
+
   - id: stringFromBytes
     source: 'string(x)'
     activation:
       x: { type: bytes, value: "abc" }
     expected: { type: string, value: "abc" }
     tags: [phase2, bench-shape, skip-source-check]
+
+  - id: stringFromBytesConst
+    source: 'string(b"abc")'
+    expected: { type: string, value: "abc" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
 
   - id: stringFromTimestamp
     source: 'string(timestamp("2024-01-01T00:00:00Z"))'
@@ -160,6 +237,11 @@ cells:
       s: { type: string, value: "abc" }
     expected: { type: bytes, value: "abc" }
     tags: [phase2, bench-shape, skip-source-check]
+
+  - id: bytesFromStringConst
+    source: 'bytes("abc")'
+    expected: { type: bytes, value: "abc" }
+    tags: [phase2, bench-shape, const-only, skip-source-check]
 
   # ── timestamp(_) / duration(_) from string (parse + format) ──
   - id: timestampRoundTrip

@@ -3203,49 +3203,6 @@ logic ops carry the oracle-confirmed UNKNOWN-over-ERROR precedence
         `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest`
         (unknown-over-error, both orders, both ops).
 
-## Batched select chains — `cel_host.cel_get_field_path` (2026-06-12)
-
-Contiguous message-typed kSelect chains (>= 2 hops) lower to ONE host
-crossing; the `cel.abi.paths[]` row carries per-hop
-`(field_ref_id, attribute_id)` pairs so partial-eval unknown
-semantics stay byte-identical to the per-hop calls.  Eligibility
-rules + exclusions (optional / map / WKT intermediates, test_only):
-`rewrite/wat-traces.md` §71.  Conformance held 1973/0 per mode.
-
-  - [x] WAT-first ABI lock — `rewrite/wat/71_get_field_path.wat`,
-        run end-to-end via
-        `tools/wat_runner/wat_runner_test.cc::WatRunnerSelectPathTest`
-        (3 × i32 ABI round-trip, ONE crossing for a 3-hop chain).
-  - [x] codegen — `compiler/codegen/expr_lower_test.cc::
-        ExprLowerSelectTest`: chain batched (2-hop + 4-hop shapes,
-        path row hop order + per-hop attribute ids, no per-hop
-        cel_get_field emitted); single select NOT batched; has()
-        keeps cel_has_field while its operand chain batches; map
-        intermediate breaks the chain; map FINAL hop batches.
-  - [x] abi emit/parse — `abi/cel_abi_emit_test.cc`: paths[] dense
-        ids + sentinel, hop round-trip through proto parse, empty +
-        sentinel-only tables omitted (chain-free programs stay
-        wire-identical).
-  - [x] trampoline — `eval/internal/cel_host_test.cc::
-        CelGetFieldPathTest` (18 cases): batched-vs-per-hop parity
-        harness (RunBatchedPath vs RunUnbatchedChain over
-        identically-bound fixtures) across depth 2/4/16, string leaf,
-        unset-intermediate default walk, missing field mid-chain,
-        unknown-pattern prefix match (minted id parity), runtime
-        divergence arms (map mid-chain → kTypeMismatch; Any mid-chain
-        unpack-and-continue; unset Any → kTypeMismatch), non-proto
-        custom-backing virtual walk, 3VL entry absorption,
-        non-message operand, sentinel/OOR/empty path ids, OOR hop
-        field id, invalid externref slot, final-hop aggregate
-        encodes (map / message).
-  - [x] e2e, both link modes — `e2e/m2_test.cc` (depth-16 chain,
-        unset-intermediate leaf default, deep string leaf, deep
-        has() set/unset) + `e2e/m2_partial_eval_test.cc`
-        (exact-leaf-path unknown on a batched chain, sibling-leaf
-        pattern stays concrete; the pre-existing
-        ParentPathUnknown/WildcardMidPath cases now exercise the
-        batched path).
-
 ## First-party conformance fixture — optimization-series edge pins (2026-06-12)
 
 `conformance/testdata/celwasm_edges.textproto` (62 rows, first
@@ -3289,6 +3246,42 @@ error kind is differentially re-derived from cel-cpp on every run by
         add/sub/mul overflow, double→int range (incl. the
         `int(-2^63.0)` oracle-settled boundary), uint(-1),
         int('forty-two').
+
+## Rewrite M31 — compile-time materialization of const aggregate literals (lists; shipped 2026-06-17)
+
+Const list literals are written byte-identically into rodata at compile
+time and lower to a single `i32.const`; the low-memory window was raised
+8 KiB → 256 KiB (ABI v3).  Const-map materialization is the queued
+Swiss-table follow-up (m31 §8) — its e2e matrix is staged + GTEST_SKIP'd.
+
+  - [x] `StaticMemoryBuilder::MaterializeList` unit coverage
+        (`static_memory_builder_test`) — header/run/frame byte layout,
+        empty list (`elements_offset == 0`), string-element payload
+        placement, nested list, 8-byte alignment preservation.
+  - [x] `LayoutPass` const-aggregate pass (`layout_pass_test`) — const
+        list stamps `kStaticRodata`; non-const `[a,2,3]` keeps the
+        build path; comprehension `accu_init` excluded, `iter_range`
+        materialized.
+  - [x] codegen lowering (`expr_lower_test`) — const list → single
+        `i32.const` (no `cel_list_create`/appends); non-const list still
+        emits create+append; empty materialized iter_range comprehension.
+  - [x] WAT trace + runner (`wat/72_static_aggregate.wat`,
+        `wat_runner_test`) — pre-materialized `[10,20,30][1]` → CEL_INT 20.
+  - [x] e2e every materializable element kind (`m31_static_aggregate_test`,
+        both link modes) — null/bool/int/uint/double/string/bytes/nested,
+        index/size/`in`, list-as-root, equivalence vs arena-built,
+        comprehension over a materialized range, large 1K/10K lists.
+  - [x] e2e aggregate nesting cross-product — {list,map,struct}² + triples
+        (list chains materialize; map/struct build per-Eval).
+  - [x] compilation limits (`limits_test`, both modes) — rodata window
+        boundary at 10909 fit / 10910 overflow; over-budget rodata
+        (12K-int list) and workspace (9K distinct vars) reject loudly.
+  - [x] `known_bugs` regressions un-skipped — `ExpressionIntermediatesArenaCliff`
+        (`size([0..4000])`), `MapSizeArenaCliff`, `LiteralIntListInScan10KEvals`.
+  - [x] benchmark corpus rodata-capped cells un-skipped + verified on
+        celwasm (arith/comprehension/long-string 1000/10000-element cells).
+  - [ ] const-map materialization (Swiss-table) — staged, GTEST_SKIP'd
+        (`ConstMapMaterializationTest`, 18 rows); un-skip when m31 §8 lands.
 
 ## How to update
 

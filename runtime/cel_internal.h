@@ -59,11 +59,6 @@ int is_numeric_kind(uint32_t kind);
 // cross-type numeric ladder per langdef §"Equality".
 int cel_value_eq(const CelValue* a, const CelValue* b);
 
-// Map-key equality (bool / int / uint / string + cross-type numeric).
-// Defined in cel_map.c; referenced by cel_compare.c's
-// cel_value_eq_polymorphic for cross-kind non-numeric fallthrough.
-int map_keys_equal(const CelValue* a, const CelValue* b);
-
 // CelValue* at byte-offset `off`.  Caller must have verified
 // `off != 0` for the absent-sentinel contract; for that, use the
 // public `cel_value_at` in cel_arena.h.
@@ -159,17 +154,24 @@ static inline void write_bool(CelValue* out, int b) {
   out->payload.b = b ? 1 : 0;
 }
 
-// Raw byte-pointer equality.  Processes 8 bytes per iteration via an
-// unaligned u64 load (the wasm spec guarantees misaligned i64.load is
-// legal and traps-free; engines lower it as a single i64.load).
-// Falls back to a byte loop for the 0–7 byte tail so we never read
-// past the caller's range.  __builtin_memcmp on a constant length of
-// 8 lowers under wasi-sdk's libc + LTO to a load+load+xor+i64.eqz on
-// wasm32 and to the platform memcmp's fast path on the native build.
+// Raw byte-pointer equality.  Processes 8 bytes per iteration via a pair
+// of unaligned u64 loads compared as whole words.  The `memcpy` is the
+// portable spelling of an unaligned load: the wasm spec guarantees
+// misaligned i64.load is legal and trap-free, so under wasi-sdk + LTO
+// each `memcpy(&w, p, 8)` lowers to one `i64.load` and the comparison to
+// a single `i64.eq` (verified by disassembly; `__builtin_memcmp(p,q,8)`
+// does NOT — it lowers to eight separate `i32.load8_u`).  On the native
+// build the same pattern is the platform's word-at-a-time compare.  A
+// byte loop handles the 0–7 byte tail so we never read past the caller's
+// range.
 static inline int cel_byteptr_equal_(const uint8_t* pa, const uint8_t* pb,
                                      uint32_t n) {
   while (n >= 8) {
-    if (__builtin_memcmp(pa, pb, 8) != 0) return 0;
+    uint64_t wa;
+    uint64_t wb;
+    __builtin_memcpy(&wa, pa, 8);
+    __builtin_memcpy(&wb, pb, 8);
+    if (wa != wb) return 0;
     pa += 8;
     pb += 8;
     n -= 8;

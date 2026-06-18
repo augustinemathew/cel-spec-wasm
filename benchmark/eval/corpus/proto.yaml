@@ -249,3 +249,11 @@ cells:
            textproto: 'i32: 1 i64: 2 si32: 3 si64: 4 sfx32: 5 sfx64: 6' }
     expected: { type: int, value: 31 }
     tags: [phase2, bench-shape]
+
+  - id: reads100
+    source: 'm.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64 + m.sfx32 + m.sfx64 + m.i32 + m.i64 + m.si32 + m.si64'
+    activation:
+      m: { type: message, message_type: "celwasm.testdata.HostMsg3",
+           textproto: 'i32: 1 i64: 2 si32: 3 si64: 4 sfx32: 5 sfx64: 6' }
+    expected: { type: int, value: 346 }
+    tags: [phase2, bench-shape]

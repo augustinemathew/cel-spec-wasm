@@ -68,10 +68,10 @@ struct LayoutOptions {
 // low region of `cel.memory` permits.  The actual byte cap is
 // computed dynamically from the rodata footprint via
 // `MemoryLayout::MaxWorkspaceBytes` — there is no single constant
-// limit, because rodata and workspace share the [16, 8192) window
+// limit, because rodata and workspace share the [16, 262144) window
 // below wasi-libc's static data.  An expression with no rodata
-// can use the full headroom; an expression with 3 KiB of string
-// constants gets ~4.6 KiB before the gate trips.
+// can use the full headroom; rodata (including materialized const
+// aggregates) eats into it before the gate trips.
 inline constexpr absl::string_view kSlotExhaustedMessagePrefix =
     "expression requires too many workspace slots";
 

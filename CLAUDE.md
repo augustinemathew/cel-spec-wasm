@@ -615,6 +615,17 @@ genuine harness/scope limitation, convert it to a reasoned
 `GTEST_SKIP` AND record it in `cleanup-backlog.md`.  Do not leave a
 bare FAIL with no test documenting it.
 
+## Compilation limits
+
+Every fixed boundary on what the compiler accepts (rodata window,
+parse nesting depth, workspace slots, …) is pinned in
+`e2e/limits_test.cc` (`//e2e:e2e_limits`, both link modes), which
+documents each limit inline.  Rules: every limit carries a passing
+case (just inside) and a failing case (past it) that asserts a **loud**
+rejection (status code + message substring), never a silent
+miscompile; a new limit adds a case before it ships; when a limit
+moves, its case moves in the same commit.
+
 ## Build & run
 
   - **`bazel build //...` works** — and is the preferred "whole project"

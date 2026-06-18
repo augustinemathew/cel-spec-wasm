@@ -40,7 +40,7 @@ StaticLayout LayoutWith(absl::string_view expression,
 
 TEST(CelAbiEmitTest, EmptyWhenNoVariablesReferenced) {
   StaticLayout layout = LayoutWith("42", {});
-  auto abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   EXPECT_EQ(abi->version(), 1u);
   EXPECT_EQ(abi->variables_size(), 0);
@@ -55,7 +55,7 @@ TEST(CelAbiEmitTest, EmptyWhenNoVariablesReferenced) {
 
 TEST(CelAbiEmitTest, SingleIntVariableRoundTrips) {
   StaticLayout layout = LayoutWith("x", {"x:int"});
-  auto abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   ASSERT_EQ(abi->variables_size(), 1);
   const auto& v = abi->variables(0);
@@ -71,7 +71,7 @@ TEST(CelAbiEmitTest, EveryScalarReprMaps) {
   // layout.variables with four distinct repr kinds.
   StaticLayout layout = LayoutWith("b || s == \"x\" || i > 0 || d > 0.0",
                                    {"b:bool", "s:string", "i:int", "d:double"});
-  auto abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   ASSERT_EQ(abi->variables_size(), 4);
 
@@ -93,7 +93,7 @@ TEST(CelAbiEmitTest, VariableSlotOffsetsAreContiguous) {
   // layout.variables without re-computing, so this locks both the
   // layout pass contract AND the emitter's transparent pass-through.
   StaticLayout layout = LayoutWith("x + y + z", {"x:int", "y:int", "z:int"});
-  auto abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   ASSERT_EQ(abi->variables_size(), 3);
   EXPECT_EQ(abi->variables(0).slot_offset(), layout.workspace_base);
@@ -110,7 +110,7 @@ TEST(CelAbiEmitTest, VariableSlotOffsetsAreContiguous) {
 // path; this one stays within proto serialization.
 TEST(CelAbiEmitTest, EmittedProtoSerializesAndRoundTripsThroughProtoParse) {
   StaticLayout layout = LayoutWith("x", {"x:int"});
-  auto abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   std::string bytes;
   ASSERT_TRUE(abi->SerializeToString(&bytes));
@@ -135,7 +135,7 @@ TEST(CelAbiEmitTest, FieldRefsEmittedDenselyWithSentinelAtZero) {
       {/*field_number=*/9, /*name=*/"billing_address",
        /*owner_fqn=*/"celwasm.testdata.Customer"},
   };
-  auto abi = BuildCelAbi(layout, absl::MakeConstSpan(field_refs), {},
+  auto abi = BuildCelAbi(layout, absl::MakeConstSpan(field_refs),
                          celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
 
@@ -153,85 +153,6 @@ TEST(CelAbiEmitTest, FieldRefsEmittedDenselyWithSentinelAtZero) {
   EXPECT_EQ(abi->fields(2).name(), "billing_address");
 }
 
-// --- paths[] (batched select chains) ---------------------------------------
-
-TEST(CelAbiEmitTest, PathRefsEmittedDenselyWithSentinelAtZero) {
-  StaticLayout layout;  // no variables — paths arrive independently.
-  // Mirrors `m.inner.inner.i64`: three FieldEntry hops referenced by
-  // one PathEntry (innermost-first), per-hop operand attribute ids.
-  const std::vector<FieldRefRow> field_refs = {
-      {},
-      {/*field_number=*/17, "inner", "celwasm.testdata.HostMsg3"},
-      {/*field_number=*/17, "inner", "celwasm.testdata.HostMsg3"},
-      {/*field_number=*/3, "i64", "celwasm.testdata.HostMsg3"},
-  };
-  const std::vector<PathRefRow> path_refs = {
-      {},  // sentinel at index 0
-      {{PathHopRow{1, 1}, PathHopRow{2, 2}, PathHopRow{3, 3}}},
-  };
-  auto abi =
-      BuildCelAbi(layout, absl::MakeConstSpan(field_refs),
-                  absl::MakeConstSpan(path_refs), celwasm::abi::LINK_MODE_DYNAMIC);
-  ASSERT_THAT(abi, IsOk());
-
-  ASSERT_EQ(abi->paths_size(), 2);
-  // Sentinel: id=0, no hops.
-  EXPECT_EQ(abi->paths(0).id(), 0u);
-  EXPECT_EQ(abi->paths(0).hops_size(), 0);
-  // Real row: id matches its dense index; hops innermost-first.
-  EXPECT_EQ(abi->paths(1).id(), 1u);
-  ASSERT_EQ(abi->paths(1).hops_size(), 3);
-  EXPECT_EQ(abi->paths(1).hops(0).field_ref_id(), 1u);
-  EXPECT_EQ(abi->paths(1).hops(0).attribute_id(), 1u);
-  EXPECT_EQ(abi->paths(1).hops(1).field_ref_id(), 2u);
-  EXPECT_EQ(abi->paths(1).hops(1).attribute_id(), 2u);
-  EXPECT_EQ(abi->paths(1).hops(2).field_ref_id(), 3u);
-  EXPECT_EQ(abi->paths(1).hops(2).attribute_id(), 3u);
-}
-
-TEST(CelAbiEmitTest, PathRefsRoundTripThroughProtoParse) {
-  StaticLayout layout;
-  const std::vector<PathRefRow> path_refs = {
-      {},
-      {{PathHopRow{1, 0}, PathHopRow{2, 5}}},
-  };
-  auto abi = BuildCelAbi(layout, {}, absl::MakeConstSpan(path_refs),
-                         celwasm::abi::LINK_MODE_DYNAMIC);
-  ASSERT_THAT(abi, IsOk());
-
-  std::string bytes;
-  ASSERT_TRUE(abi->SerializeToString(&bytes));
-  celwasm::abi::CelAbi parsed;
-  ASSERT_TRUE(parsed.ParseFromString(bytes));
-  ASSERT_EQ(parsed.paths_size(), 2);
-  ASSERT_EQ(parsed.paths(1).hops_size(), 2);
-  EXPECT_EQ(parsed.paths(1).hops(0).field_ref_id(), 1u);
-  EXPECT_EQ(parsed.paths(1).hops(0).attribute_id(), 0u);
-  EXPECT_EQ(parsed.paths(1).hops(1).field_ref_id(), 2u);
-  EXPECT_EQ(parsed.paths(1).hops(1).attribute_id(), 5u);
-}
-
-TEST(CelAbiEmitTest, EmptyPathTableEmitsNoPaths) {
-  StaticLayout layout = LayoutWith("42", {});
-  auto abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_DYNAMIC);
-  ASSERT_THAT(abi, IsOk());
-  EXPECT_EQ(abi->paths_size(), 0);
-}
-
-// A sentinel-ONLY table (every chain-free program — LowerToEvalFunction
-// always pushes the sentinel row) is omitted from the wire: nothing
-// references it, and chain-free programs stay byte-identical to
-// pre-paths emitters (the trailing record remains link_mode, which
-// engine_test's PatchStaticLinkModeByte fixture byte-inspects).
-TEST(CelAbiEmitTest, SentinelOnlyPathTableEmitsNoPaths) {
-  StaticLayout layout = LayoutWith("42", {});
-  const std::vector<PathRefRow> path_refs = {{}};  // sentinel only
-  auto abi = BuildCelAbi(layout, {}, absl::MakeConstSpan(path_refs),
-                         celwasm::abi::LINK_MODE_DYNAMIC);
-  ASSERT_THAT(abi, IsOk());
-  EXPECT_EQ(abi->paths_size(), 0);
-}
-
 // --- link_mode ------------------------------------------------------------
 //
 // The link-mode marker is embedder-tooling metadata, not an engine
@@ -240,7 +161,7 @@ TEST(CelAbiEmitTest, SentinelOnlyPathTableEmitsNoPaths) {
 
 TEST(CelAbiEmitTest, LinkModeDynamicRoundTripsThroughProtoParse) {
   StaticLayout layout = LayoutWith("42", {});
-  auto abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
   ASSERT_THAT(abi, IsOk());
   EXPECT_EQ(abi->link_mode(), celwasm::abi::LINK_MODE_DYNAMIC);
 
@@ -253,7 +174,7 @@ TEST(CelAbiEmitTest, LinkModeDynamicRoundTripsThroughProtoParse) {
 
 TEST(CelAbiEmitTest, LinkModeStaticRoundTripsThroughProtoParse) {
   StaticLayout layout = LayoutWith("42", {});
-  auto abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_STATIC);
+  auto abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_STATIC);
   ASSERT_THAT(abi, IsOk());
   EXPECT_EQ(abi->link_mode(), celwasm::abi::LINK_MODE_STATIC);
 
@@ -290,8 +211,8 @@ TEST(CelAbiEmitTest, LegacyBytesWithoutLinkModeFieldDecodeAsDynamic) {
 // 0x38, value 1).
 TEST(CelAbiEmitTest, LinkModeDynamicSerializesWithoutFieldSevenTag) {
   StaticLayout layout = LayoutWith("42", {});
-  auto dynamic_abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_DYNAMIC);
-  auto static_abi = BuildCelAbi(layout, {}, {}, celwasm::abi::LINK_MODE_STATIC);
+  auto dynamic_abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_DYNAMIC);
+  auto static_abi = BuildCelAbi(layout, {}, celwasm::abi::LINK_MODE_STATIC);
   ASSERT_THAT(dynamic_abi, IsOk());
   ASSERT_THAT(static_abi, IsOk());
   std::string dynamic_bytes;

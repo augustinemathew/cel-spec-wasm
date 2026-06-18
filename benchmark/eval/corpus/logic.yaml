@@ -134,3 +134,10 @@ cells:
       a: { type: bool, value: false }
     expected: { type: bool, value: true }
     tags: [phase2, bench-shape]
+
+  # Literal twin of the triple-not shape; same three `!` kernels, no
+  # activation — isolates the variable-binding cost of `not3`.
+  - id: not3Const
+    source: '!!!false'
+    expected: { type: bool, value: true }
+    tags: [phase2, bench-shape, const-only]

@@ -1,9 +1,12 @@
 #include "compiler/codegen/layout_pass.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -51,6 +54,12 @@ class ConstLayoutVisitor : public cel::AstVisitorBase {
   void PostVisitExpr(const cel::Expr&) override {}
 
   void PostVisitConst(const cel::Expr& expr, const cel::Constant& c) override {
+    // A const already carrying storage was packed into a materialized
+    // list's element run by ConstAggregateVisitor (which runs first); it
+    // needs no standalone frame here (else a const list would cost ~2x
+    // rodata — once for the dead per-element frames, once for the run).
+    const NodeAnnotation* a = annotations_.Find(expr.id());
+    if (a != nullptr && a->storage.kind != StorageKind::kNone) return;
     const uint32_t offset = Pack(expr, c);
     annotations_[expr.id()].storage =
         Storage{StorageKind::kStaticRodata, offset};
@@ -91,6 +100,148 @@ class ConstLayoutVisitor : public cel::AstVisitorBase {
 
   StaticMemoryBuilder& builder_;
   WasmAnnotations& annotations_;
+};
+
+// --- Constant aggregate materialization ---------------------------------
+//
+// A list literal whose elements are all literals (or, recursively,
+// const-materializable list literals) is packed into rodata at compile
+// time as the byte-identical arena representation, so it lowers to a
+// single i32.const instead of a per-Eval cel_list_create + N appends.
+// Eligibility is purely syntactic — there is no compile-time evaluation,
+// so `[1 + 1]` (a call) is NOT eligible and keeps the build path.
+
+// True iff `e` is a literal or a const-materializable list, recursively.
+// Type-valued constants (Repr::kType) and optional (`?x`) list elements
+// are excluded — they fall back to the per-Eval build path.
+bool IsConstMaterializable(const cel::Expr& e, const WasmAnnotations& ann) {
+  switch (e.kind_case()) {
+    case cel::ExprKindCase::kConstant: {
+      const NodeAnnotation* a = ann.Find(e.id());
+      if (a != nullptr && a->repr == Repr::kType) return false;
+      const cel::Constant& c = e.const_expr();
+      return c.has_null_value() || c.has_bool_value() || c.has_int_value() ||
+             c.has_uint_value() || c.has_double_value() ||
+             c.has_string_value() || c.has_bytes_value();
+    }
+    case cel::ExprKindCase::kListExpr:
+      return std::all_of(
+          e.list_expr().elements().begin(), e.list_expr().elements().end(),
+          [&ann](const cel::ListExprElement& el) {
+            return !el.optional() && IsConstMaterializable(el.expr(), ann);
+          });
+    default:
+      return false;
+  }
+}
+
+// Build the CelValue for one materializable literal, allocating any
+// string / bytes payload into `b` so the run element's span points into
+// rodata.  Precondition: `c` is a kind IsConstMaterializable admits.
+CelValue ConstToCelValue(const cel::Constant& c, StaticMemoryBuilder& b) {
+  CelValue v{};
+  if (c.has_null_value()) {
+    v.kind = CEL_NULL;
+  } else if (c.has_bool_value()) {
+    v.kind = CEL_BOOL;
+    v.payload.b = c.bool_value() ? 1 : 0;
+  } else if (c.has_int_value()) {
+    v.kind = CEL_INT;
+    v.payload.i = c.int_value();
+  } else if (c.has_uint_value()) {
+    v.kind = CEL_UINT;
+    v.payload.u = c.uint_value();
+  } else if (c.has_double_value()) {
+    v.kind = CEL_DOUBLE;
+    v.payload.d = c.double_value();
+  } else if (c.has_string_value()) {
+    // AllocateString writes the payload bytes immediately after a frame
+    // (the frame is unused here); the run element's span points at them.
+    const uint32_t frame = b.AllocateString(c.string_value());
+    v.kind = CEL_STRING;
+    v.payload.s.ptr = frame + static_cast<uint32_t>(sizeof(CelValue));
+    v.payload.s.len = static_cast<uint32_t>(c.string_value().size());
+  } else if (c.has_bytes_value()) {
+    const uint32_t frame = b.AllocateBytes(c.bytes_value());
+    v.kind = CEL_BYTES;
+    v.payload.bytes.ptr = frame + static_cast<uint32_t>(sizeof(CelValue));
+    v.payload.bytes.len = static_cast<uint32_t>(c.bytes_value().size());
+  } else {
+    ABSL_CHECK(false) << "ConstToCelValue: non-materializable constant";
+  }
+  return v;
+}
+
+// Materializes every const-eligible list literal into rodata and stamps
+// its node `{kStaticRodata, frame_offset}`.  PostVisit (bottom-up) and
+// memoized, so a nested list is materialized once — before its parent
+// embeds it — making the inner frame live with no double materialization.
+class ConstAggregateVisitor : public cel::AstVisitorBase {
+ public:
+  ConstAggregateVisitor(StaticMemoryBuilder& builder, WasmAnnotations& ann)
+      : builder_(builder), annotations_(ann) {}
+
+  void PreVisitExpr(const cel::Expr& expr) override {
+    if (expr.kind_case() == cel::ExprKindCase::kComprehensionExpr) {
+      // The accumulator is mutated by the loop body (cel_list_append_at);
+      // it must be built fresh at a workspace slot per Eval, never
+      // materialized into read-only rodata.  iter_range stays eligible —
+      // iteration is read-only.  PreVisit fires before the accu_init
+      // sub-expr's PostVisitList, so the id is recorded in time.
+      excluded_accu_.insert(expr.comprehension_expr().accu_init().id());
+    }
+  }
+  void PostVisitExpr(const cel::Expr&) override {}
+
+  void PostVisitList(const cel::Expr& expr, const cel::ListExpr&) override {
+    if (excluded_accu_.contains(expr.id())) return;
+    if (IsConstMaterializable(expr, annotations_)) MaterializeList(expr);
+  }
+
+ private:
+  // Returns the embeddable frame CelValue for a materialized list,
+  // memoized per expr id; stamps the node's storage on first build.
+  CelValue MaterializeList(const cel::Expr& expr) {
+    auto it = frames_.find(expr.id());
+    if (it != frames_.end()) return it->second;
+    const cel::ListExpr& l = expr.list_expr();
+    std::vector<CelValue> elements;
+    elements.reserve(l.elements().size());
+    for (const cel::ListExprElement& el : l.elements()) {
+      elements.push_back(ElementValue(el.expr()));
+    }
+    const auto r = builder_.MaterializeList(elements);
+    annotations_[expr.id()].storage =
+        Storage{StorageKind::kStaticRodata, r.frame_offset};
+    // Stamp each element node with its slot in the run.  The element's
+    // value already lives there, so this both (a) lets ConstLayoutVisitor
+    // skip giving it a redundant standalone frame (it keys off non-kNone
+    // storage) and (b) keeps every node's storage populated — the "no
+    // kNone" invariant (cleanup-backlog #31) the histogram tests assert.
+    const auto stride = static_cast<uint32_t>(sizeof(CelValue));
+    for (uint32_t i = 0; i < l.elements().size(); ++i) {
+      annotations_[l.elements()[i].expr().id()].storage =
+          Storage{StorageKind::kStaticRodata, r.elements_offset + (i * stride)};
+    }
+    frames_.emplace(expr.id(), r.frame);
+    return r.frame;
+  }
+
+  // Precondition: IsConstMaterializable proved `e` is a literal or a
+  // const list, so it is one of those two kinds.
+  CelValue ElementValue(const cel::Expr& e) {
+    if (e.kind_case() == cel::ExprKindCase::kConstant) {
+      // Packed directly into the run; its node is stamped with the run
+      // slot in MaterializeList, so no standalone rodata frame is built.
+      return ConstToCelValue(e.const_expr(), builder_);
+    }
+    return MaterializeList(e);
+  }
+
+  StaticMemoryBuilder& builder_;
+  WasmAnnotations& annotations_;
+  absl::flat_hash_map<int64_t, CelValue> frames_;
+  absl::flat_hash_set<int64_t> excluded_accu_;
 };
 
 // Walks every kIdent node and writes `{kLocal, local_index}` onto
@@ -265,6 +416,14 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
   void PreVisitExpr(const cel::Expr& expr) override {
     switch (expr.kind_case()) {
       case cel::ExprKindCase::kListExpr:
+        // A const list already materialized into rodata
+        // (ConstAggregateVisitor stamped {kStaticRodata, ...}) needs no
+        // workspace slot and is not built per-Eval.
+        if (annotations_[expr.id()].storage.kind ==
+            StorageKind::kStaticRodata) {
+          break;
+        }
+        [[fallthrough]];
       case cel::ExprKindCase::kMapExpr:
       case cel::ExprKindCase::kStructExpr:
         annotations_[expr.id()].storage =
@@ -457,6 +616,71 @@ void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
   layout.workspace_bytes = slot_count * kSlotStride;
 }
 
+// Pass A: pack rodata.  First materialize const list literals — each
+// eligible kListExpr is stamped {kStaticRodata, frame_offset} and each
+// of its element nodes stamped with its slot in the run.  Then pack the
+// remaining kConsts (ConstLayoutVisitor skips any already-stamped
+// element, so a const list isn't double-counted as ~2x rodata), and
+// lift each kSelect-on-optional field name into rodata for the
+// `cel_select_optional_field_at_vv` kernel.  All three share one builder
+// so the rodata layout is contiguous.
+void PackRodata(const cel::Expr& root, StaticLayout& layout) {
+  StaticMemoryBuilder builder(layout.rodata_base);
+  ConstAggregateVisitor const_agg_visitor(builder, layout.annotations);
+  cel::AstTraverse(root, const_agg_visitor);
+  ConstLayoutVisitor const_visitor(builder, layout.annotations);
+  cel::AstTraverse(root, const_visitor);
+  SelectKeyRodataVisitor select_key_visitor(builder, layout.annotations);
+  cel::AstTraverse(root, select_key_visitor);
+  layout.rodata = std::move(builder).Finalize();
+}
+
+// Slot-exhaustion gate.  rodata + workspace share the
+// `[kRodataBaseMin, kReservedLowMemoryBytes)` window below wasi-libc's
+// static data; anything written past that line silently corrupts libc's
+// bookkeeping (no wasm trap, just a delayed-death failure inside an
+// unrelated helper).  The cap is dynamic in rodata: an expression with
+// no constants gets the full window of workspace headroom, one with
+// large string constants gets less.  The `kGuardBytes` band shaved off
+// the top catches the next slot-allocator off-by-one before it spills.
+absl::Status CheckStaticWindowFits(const StaticLayout& layout) {
+  const auto rodata_size = static_cast<uint32_t>(layout.rodata.size());
+  // rodata must itself fit below the reserved line (with the guard band).
+  // A materialized const aggregate carries no workspace slot, so the
+  // workspace check below cannot catch oversized rodata — a large const
+  // list would otherwise grow the run past the window and silently
+  // corrupt wasi-libc's static data.
+  const uint32_t rodata_end = layout.rodata_base + rodata_size;
+  if (rodata_end + MemoryLayout::kGuardBytes >
+      MemoryLayout::kReservedLowMemoryBytes) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        kSlotExhaustedMessagePrefix, ": rodata at [", layout.rodata_base, ", ",
+        rodata_end, ") plus a ", MemoryLayout::kGuardBytes,
+        "-byte guard exceeds the window below wasi-libc's static data (which "
+        "starts at ",
+        MemoryLayout::kReservedLowMemoryBytes,
+        ").  A constant aggregate or string/bytes literal set too large for "
+        "the static window; split the expression across multiple Compile() "
+        "calls or move large literals into bound variables."));
+  }
+  const uint32_t max_workspace =
+      MemoryLayout::MaxWorkspaceBytes(layout.rodata_base, rodata_size);
+  if (layout.workspace_bytes > max_workspace) {
+    return absl::ResourceExhaustedError(absl::StrCat(
+        kSlotExhaustedMessagePrefix, ": needs ", layout.workspace_bytes,
+        " bytes of workspace, but rodata at [", layout.rodata_base, ", ",
+        layout.rodata_base + rodata_size, ") plus a ",
+        MemoryLayout::kGuardBytes, "-byte guard band leaves only ",
+        max_workspace,
+        " bytes free below wasi-libc's static data (which starts at ",
+        MemoryLayout::kReservedLowMemoryBytes,
+        ").  Writing past that line would silently corrupt libc state.  "
+        "Split the expression across multiple Compile() calls, or move "
+        "literal strings/bytes out of the source into bound variables."));
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 // `resolved` is passed by value — its annotations + variables are
@@ -480,17 +704,9 @@ absl::StatusOr<StaticLayout> LayoutPass(
     layout.rodata_base = opts.rodata_base_override;
   }
 
-  // --- Pass A: pack every kConst into rodata, then lift the field
-  // name of every kSelect-on-optional into rodata too — the
-  // `cel_select_optional_field_at_vv` kernel reads its key from a
-  // CelValue slot.  Both passes share one builder so the rodata
-  // layout is contiguous. ---
-  StaticMemoryBuilder builder(layout.rodata_base);
-  ConstLayoutVisitor const_visitor(builder, layout.annotations);
-  cel::AstTraverse(ast.ast().root_expr(), const_visitor);
-  SelectKeyRodataVisitor select_key_visitor(builder, layout.annotations);
-  cel::AstTraverse(ast.ast().root_expr(), select_key_visitor);
-  layout.rodata = std::move(builder).Finalize();
+  // --- Pass A: pack rodata (consts, materialized const aggregates,
+  // optional-select field names). ---
+  PackRodata(ast.ast().root_expr(), layout);
 
   // --- Pass B: reserve one 24-byte workspace slot per variable. ---
   ReserveVariableSlots(resolved.variables, layout);
@@ -526,31 +742,9 @@ absl::StatusOr<StaticLayout> LayoutPass(
                    cel::TraversalOptions{.use_comprehension_callbacks = true});
   layout.total_wasm_locals = comp_locals_visitor.total_locals();
 
-  // Slot-exhaustion gate.  rodata + workspace share the
-  // `[kRodataBaseMin, kReservedLowMemoryBytes)` window below
-  // wasi-libc's static data; anything we write past that line
-  // silently corrupts libc's bookkeeping (no wasm trap, just a
-  // delayed-death failure inside an unrelated helper).  The cap
-  // is dynamic in rodata: an expression with no constants gets
-  // ~7.9 KiB of workspace headroom, an expression with 3 KiB of
-  // string constants gets ~4.9 KiB.  The `kGuardBytes` band
-  // shaved off the top catches the next slot-allocator
-  // off-by-one before it spills.
-  const auto rodata_size = static_cast<uint32_t>(layout.rodata.size());
-  const uint32_t max_workspace =
-      MemoryLayout::MaxWorkspaceBytes(layout.rodata_base, rodata_size);
-  if (layout.workspace_bytes > max_workspace) {
-    return absl::ResourceExhaustedError(absl::StrCat(
-        kSlotExhaustedMessagePrefix, ": needs ", layout.workspace_bytes,
-        " bytes of workspace, but rodata at [", layout.rodata_base, ", ",
-        layout.rodata_base + rodata_size, ") plus a ",
-        MemoryLayout::kGuardBytes, "-byte guard band leaves only ",
-        max_workspace,
-        " bytes free below wasi-libc's static data (which starts at ",
-        MemoryLayout::kReservedLowMemoryBytes,
-        ").  Writing past that line would silently corrupt libc state.  "
-        "Split the expression across multiple Compile() calls, or move "
-        "literal strings/bytes out of the source into bound variables."));
+  // rodata + workspace must both fit below wasi-libc's static data.
+  if (absl::Status fits = CheckStaticWindowFits(layout); !fits.ok()) {
+    return fits;
   }
 
   return layout;

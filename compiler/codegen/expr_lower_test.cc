@@ -17,7 +17,6 @@
 #include "compiler/ir/typed_ast.h"
 #include "gtest/gtest.h"
 #include "testdata/e2e_fixture.pb.h"
-#include "testdata/host_fixture_proto3.pb.h"
 
 namespace celwasm {
 namespace {
@@ -36,8 +35,6 @@ bool CallTargetMatches(BinaryenExpressionRef expr, const char* name);
     [] {
       google::protobuf::LinkMessageReflection<celwasm::testdata::Customer>();
       google::protobuf::LinkMessageReflection<celwasm::testdata::Address>();
-      // Self-recursive `inner` field — depth >= 3 select-chain tests.
-      google::protobuf::LinkMessageReflection<celwasm::testdata::HostMsg3>();
       return 0;
     }();
 
@@ -222,9 +219,6 @@ void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
                       "cel_get_field", host_params, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelHostHasFieldInternalName), "cel_host",
                       "cel_has_field", host_params, BinaryenTypeNone());
-  const BinaryenType host_params3[3] = {i32, i32, i32};
-  m.AddFunctionImport(std::string(kCelHostGetFieldPathInternalName), "cel_host",
-                      "cel_get_field_path", host_params3, BinaryenTypeNone());
   const BinaryenType set3[3] = {i32, i32, i32};
   m.AddFunctionImport(std::string(kCelSetFieldAtIfPresentInternalName), "cel",
                       "cel_set_field_at_if_present", set3, BinaryenTypeNone());
@@ -670,12 +664,7 @@ TEST(ExprLowerSelectTest, SingleSelectEmitsCall) {
   EXPECT_EQ(BinaryenConstGetValueI32(tail), static_cast<int32_t>(out_slot));
 }
 
-// A contiguous message-typed select chain batches into ONE
-// `cel_get_field_path` call: (block (call $cel_get_field_path
-// out_slot msg_slot path_ref_id) (i32.const out_slot)).  Shape
-// locked by doc/implementation-plan/rewrite/wat/71_get_field_path.wat;
-// eligibility rules in rewrite/wat-traces.md §71.
-TEST(ExprLowerSelectTest, NestedSelectChainBatchesIntoOnePathCall) {
+TEST(ExprLowerSelectTest, NestedSelectRecursesOperandFirst) {
   Pipeline p = RunPipelineWithVars("c.billing_address.city",
                                    {"c:celwasm.testdata.Customer"});
   WasmModule m;
@@ -684,151 +673,23 @@ TEST(ExprLowerSelectTest, NestedSelectChainBatchesIntoOnePathCall) {
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
-  // field_refs: one row per hop, innermost-first (identical rows to
-  // the unbatched per-hop calls).
+  // Post-order: row 1 = billing_address, row 2 = city.
   ASSERT_EQ(lowered->field_refs.size(), 3u);
   EXPECT_EQ(lowered->field_refs[1].name, "billing_address");
   EXPECT_EQ(lowered->field_refs[1].owner_fqn, "celwasm.testdata.Customer");
   EXPECT_EQ(lowered->field_refs[2].name, "city");
   EXPECT_EQ(lowered->field_refs[2].owner_fqn, "celwasm.testdata.Address");
 
-  // path_refs: [sentinel, {hops: [(1, attr(c)), (2, attr(c.billing_
-  // address))]}] — per-hop attribute_id is the hop OPERAND's id.
-  ASSERT_EQ(lowered->path_refs.size(), 2u);
-  ASSERT_EQ(lowered->path_refs[1].hops.size(), 2u);
-  EXPECT_EQ(lowered->path_refs[1].hops[0].field_ref_id, 1u);
-  EXPECT_EQ(lowered->path_refs[1].hops[1].field_ref_id, 2u);
-  // attr ids: operand `c` interned at 1; prefix `c.billing_address`
-  // interned next (2) — see cel_abi.proto AttributeEntry docs.
-  EXPECT_EQ(lowered->path_refs[1].hops[0].attribute_id, 1u);
-  EXPECT_EQ(lowered->path_refs[1].hops[1].attribute_id, 2u);
-
-  // One call, three operands: out_slot, msg_slot (local.get c),
-  // path_ref_id=1.  No cel_get_field anywhere in the body.
-  BinaryenExpressionRef block = RootExpr(lowered->func);
-  ASSERT_EQ(BinaryenBlockGetNumChildren(block), 2u);
-  BinaryenExpressionRef call = BinaryenBlockGetChildAt(block, 0);
-  ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
-  EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_get_field_path");
-  ASSERT_EQ(BinaryenCallGetNumOperands(call), 3u);
-  const uint32_t out_slot =
-      p.layout.annotations.Find(p.ast.ast().root_expr().id())->storage.payload;
-  EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(call, 0)),
-            static_cast<int32_t>(out_slot));
-  EXPECT_EQ(BinaryenExpressionGetId(BinaryenCallGetOperandAt(call, 1)),
-            BinaryenLocalGetId());
-  EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(call, 2)), 1);
-  EXPECT_FALSE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
-                                  "cel_get_field"))
-      << "batched chain must not emit per-hop cel_get_field calls";
-}
-
-// Deep chain: every hop folds into the one path row — depth is a
-// property of the interned row, not of the wasm body.
-TEST(ExprLowerSelectTest, DepthFourChainBatchesAllHopsIntoOneRow) {
-  Pipeline p = RunPipelineWithVars("m.inner.inner.inner.i64",
-                                   {"m:celwasm.testdata.HostMsg3"});
-  WasmModule m;
-  PrepareHostModule(m, p.layout);
-  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
-  ASSERT_THAT(lowered, IsOk());
-  EXPECT_THAT(m.Validate(), IsOk());
-
-  ASSERT_EQ(lowered->path_refs.size(), 2u);
-  ASSERT_EQ(lowered->path_refs[1].hops.size(), 4u);
-  // Hops innermost-first; field_refs rows 1..4 in the same order.
-  ASSERT_EQ(lowered->field_refs.size(), 5u);
-  EXPECT_EQ(lowered->field_refs[1].name, "inner");
-  EXPECT_EQ(lowered->field_refs[4].name, "i64");
-  for (uint32_t h = 0; h < 4; ++h) {
-    EXPECT_EQ(lowered->path_refs[1].hops[h].field_ref_id, h + 1);
-  }
-  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_get_field_path"));
-  EXPECT_FALSE(BodyContainsCallTo(body, "cel_get_field"));
-}
-
-// Single selects keep the existing per-hop call — no path row, no
-// path call.  (The cel_get_field shape itself is pinned by
-// SingleSelectEmitsCall above.)
-TEST(ExprLowerSelectTest, SingleSelectDoesNotBatch) {
-  Pipeline p = RunPipelineWithVars("c.name", {"c:celwasm.testdata.Customer"});
-  WasmModule m;
-  PrepareHostModule(m, p.layout);
-  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
-  ASSERT_THAT(lowered, IsOk());
-  EXPECT_THAT(m.Validate(), IsOk());
-
-  EXPECT_EQ(lowered->path_refs.size(), 1u) << "sentinel only — no path rows";
-  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_get_field"));
-  EXPECT_FALSE(BodyContainsCallTo(body, "cel_get_field_path"));
-}
-
-// has(...) keeps cel_has_field for the test_only outermost select;
-// its operand chain (>= 2 message hops) still batches independently.
-TEST(ExprLowerSelectTest, HasOverChainKeepsHasFieldAndBatchesOperand) {
-  Pipeline p = RunPipelineWithVars("has(m.inner.inner.inner)",
-                                   {"m:celwasm.testdata.HostMsg3"});
-  WasmModule m;
-  PrepareHostModule(m, p.layout);
-  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
-  ASSERT_THAT(lowered, IsOk());
-  EXPECT_THAT(m.Validate(), IsOk());
-
-  // Operand chain `m.inner.inner` batches (2 hops); the test_only
-  // select reads presence off the batched result.
-  ASSERT_EQ(lowered->path_refs.size(), 2u);
-  EXPECT_EQ(lowered->path_refs[1].hops.size(), 2u);
-  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_get_field_path"));
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_has_field"));
-  EXPECT_FALSE(BodyContainsCallTo(body, "cel_get_field"));
-}
-
-// A map-typed intermediate breaks the chain: `m.str_to_msg.k.i64`
-// routes `.k` through the map branch (map dot sugar), so the final
-// `.i64` select has a non-batchable operand and keeps the per-hop
-// cel_get_field call.  The prefix `m.str_to_msg` is a single hop
-// (chain < 2) and stays per-hop too.
-TEST(ExprLowerSelectTest, MapIntermediateBreaksChain) {
-  Pipeline p = RunPipelineWithVars("m.str_to_msg.k.i64",
-                                   {"m:celwasm.testdata.HostMsg3"});
-  WasmModule m;
-  PrepareHostModule(m, p.layout);
-  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
-  ASSERT_THAT(lowered, IsOk());
-  EXPECT_THAT(m.Validate(), IsOk());
-
-  EXPECT_EQ(lowered->path_refs.size(), 1u) << "sentinel only — no batching";
-  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
-  EXPECT_FALSE(BodyContainsCallTo(body, "cel_get_field_path"));
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_get_field"));
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_lookup"));
-}
-
-// A map-typed FINAL hop batches fine — only intermediates must be
-// plain messages.  `m.inner.str_to_msg` = 2 hops ending on a map
-// field; the batched call's encode tail interns the ProtoMap exactly
-// as the unbatched final cel_get_field would.  (The `.k` lookup that
-// follows routes through the map branch on the batched result.)
-TEST(ExprLowerSelectTest, MapFinalHopBatches) {
-  Pipeline p = RunPipelineWithVars("m.inner.str_to_msg.k.i32",
-                                   {"m:celwasm.testdata.HostMsg3"});
-  WasmModule m;
-  PrepareHostModule(m, p.layout);
-  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
-  ASSERT_THAT(lowered, IsOk());
-  EXPECT_THAT(m.Validate(), IsOk());
-
-  // One path row: hops [inner, str_to_msg].  The trailing `.k` (map
-  // branch) and `.i32` (single proto select) stay per-hop.
-  ASSERT_EQ(lowered->path_refs.size(), 2u);
-  EXPECT_EQ(lowered->path_refs[1].hops.size(), 2u);
-  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_get_field_path"));
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_lookup"));
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_get_field"));
+  // Outer call's msg_slot operand is the inner block — proves
+  // recursion produced the right nesting.
+  BinaryenExpressionRef outer_call =
+      BinaryenBlockGetChildAt(RootExpr(lowered->func), 0);
+  EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(outer_call, 2)),
+            2);
+  BinaryenExpressionRef inner_call =
+      BinaryenBlockGetChildAt(BinaryenCallGetOperandAt(outer_call, 1), 0);
+  EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(inner_call, 2)),
+            1);
 }
 
 // ============================================================
@@ -985,23 +846,10 @@ TEST(ExprLowerMapTest, KCallLogicalOrLowersToHelper) {
 // M4.F — kListExpr + kCallExpr(`_[_]`) on lists
 // --------------------------------------------------------------
 
-TEST(ExprLowerListTest, EmptyListLiteralLowers) {
-  // `dyn([])` would slip past the static checker; use a simple
-  // typed literal to lock the empty-list path.  The kCreateList
-  // call must emit; no kListSet calls since N=0.
-  Pipeline p = RunPipeline("[1][0]");  // `[1]` exercises a 1-element create.
-  WasmModule m;
-  PrepareHostModule(m, p.layout);
-  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
-  ASSERT_THAT(lowered, IsOk());
-  EXPECT_THAT(m.Validate(), IsOk());
-  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
-                                 "cel_list_create"));
-  EXPECT_TRUE(BodyContainsCallTo(BinaryenFunctionGetBody(lowered->func),
-                                 "cel_list_append_at"));
-}
-
-TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndAppends) {
+TEST(ExprLowerListTest, ConstListLiteralLowersToI32ConstNoBuild) {
+  // An all-constant list is materialized into rodata, so the kListExpr
+  // lowers to a single i32.const of its frame offset — no
+  // cel_list_create, no per-element appends.
   Pipeline p = RunPipeline("[10, 20, 30]");
   WasmModule m;
   PrepareHostModule(m, p.layout);
@@ -1009,7 +857,26 @@ TEST(ExprLowerListTest, ScalarListLiteralEmitsCreateAndAppends) {
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
 
-  // The kListExpr root materialises as:
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_create"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_append_at"));
+  // The root expression is a bare i32.const (the rodata frame offset).
+  BinaryenExpressionRef root =
+      BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);
+  EXPECT_EQ(BinaryenExpressionGetId(root), BinaryenConstId());
+}
+
+TEST(ExprLowerListTest, NonConstListLiteralEmitsCreateAndAppends) {
+  // A list with a non-constant element (variable `a`) is ineligible for
+  // materialization and keeps the per-Eval build path.
+  Pipeline p = RunPipelineWithVars("[a, 20, 30]", {"a:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  // The kListExpr root lowers as:
   //   (block (call $cel_list_create out N)        ;; capacity=N, count=0
   //          (call $cel_list_append_at out e0)
   //          (call $cel_list_append_at out e1)
@@ -1096,11 +963,11 @@ TEST(ExprLowerComprehensionTest, CelBindLowersThroughGenericPath) {
   ASSERT_THAT(lowered, IsOk());
   EXPECT_THAT(m.Validate(), IsOk());
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
-  // Generic path emits the list-create call for the empty
-  // iter_range literal, even though the loop body never runs.
-  // A surviving ShapeC fast path would skip this entirely.
-  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_create"));
-  // The arithmetic in the body (`x + 1`) still lowers normally.
+  // The empty iter_range literal `[]` is materialized into rodata, so
+  // no cel_list_create is emitted for it; the generic comprehension
+  // scaffold still drives the (zero-iteration) loop and the body
+  // arithmetic (`x + 1`) lowers normally.
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_create"));
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_int_add_at_vv"));
 }
 
@@ -1651,7 +1518,11 @@ TEST(ExprLowerOptionalLiteralTest, NonOptionalMapLiteralEmitsOnlyPlainInsert) {
 }
 
 TEST(ExprLowerOptionalLiteralTest, NonOptionalListLiteralEmitsOnlyPlainAppend) {
-  Pipeline p = RunPipeline("[1, 2, 3]");
+  // A non-constant element (`a`) forces the build path; the
+  // non-optional elements must use the plain append, not the
+  // append-if-present variant.  (An all-const list would materialize
+  // and emit no appends — see ConstListLiteralLowersToI32ConstNoBuild.)
+  Pipeline p = RunPipelineWithVars("[a, 2, 3]", {"a:int"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
   auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);

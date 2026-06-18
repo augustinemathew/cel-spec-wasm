@@ -155,40 +155,29 @@ std::string MapLiteral(int n) {
 }
 
 TEST(KnownBugs, ExpressionIntermediatesArenaCliff) {
-  GTEST_SKIP()
-      << "KNOWN LIMITATION (verified 2026-06-10: now RESOURCE_EXHAUSTED at "
-         "Compile — the 4000-const rodata (~96 KB) trips the 8192-byte "
-         "static-region gate in compiler/internal/compile.cc before the "
-         "64 KiB arena cliff (cel_layout.h:41 / cel_arena.c:85) is even "
-         "reached; want 4000.  Delete this line when BOTH the static "
-         "region can relocate/grow AND the arena can grow/spill (see "
-         "Sethi-Ullman note above).";
-  // `size([0..4000])` — the RESULT is one int (8 B), but the intermediate
-  // list needs ~96 KB, over the 64 KB arena.  Small result, huge peak:
-  // the canonical "intermediates dominate" cliff.
+  // `size([0..4000])` — formerly a "small result, huge intermediate"
+  // cliff: the list once had to be built in the arena per Eval (~96 KB,
+  // over the old 64 KB arena) and its rodata once overflowed the old
+  // 8 KiB static window.  Now the const list is materialized into the
+  // 256 KiB rodata window at compile time, so no intermediate is built
+  // at all and `size()` is one O(1) load.
   auto v = TryEval("size(" + ListLiteral(4000) + ")");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
-  EXPECT_EQ(*v->AsInt(), 4000)
-      << "list intermediate exceeded the 64 KiB arena (cel_layout.h:41)";
+  EXPECT_EQ(*v->AsInt(), 4000);
 }
 
 TEST(KnownBugs, MapSizeArenaCliff) {
-  GTEST_SKIP()
-      << "KNOWN LIMITATION (verified 2026-06-10: now RESOURCE_EXHAUSTED at "
-         "Compile — the 4000-const rodata (~96 KB) trips the 8192-byte "
-         "static-region gate in compiler/internal/compile.cc before the "
-         "64 KiB arena cliff (cel_layout.h:41 / cel_arena.c:85) is even "
-         "reached; want 2000.  Delete this line when BOTH the static "
-         "region can relocate/grow AND the arena can grow/spill (see "
-         "Sethi-Ullman note above).";
-  // A 2000-entry map needs ~96 KB (48 B/entry) and overflows, though
-  // `size()` returns a single int.
+  // `size({0:0 .. 1999:1999})` — a 2000-entry map is ~96 KB (48 B/entry).
+  // Const maps are not yet materialized (that is the Swiss-table slice),
+  // so the map is still built in the arena per Eval — but the arena now
+  // grows in chunks (cel_arena.c) instead of failing at a fixed 64 KB
+  // cliff, and its const-keyed rodata fits the 256 KiB window, so the
+  // build succeeds and `size()` returns the count.
   auto v = TryEval("size(" + MapLiteral(2000) + ")");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());
-  EXPECT_EQ(*v->AsInt(), 2000)
-      << "map intermediate exceeded the 64 KiB arena (cel_layout.h:41)";
+  EXPECT_EQ(*v->AsInt(), 2000);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -669,90 +658,29 @@ TEST(KnownBugs, ParserSourceCodepointLimitNotConfigurable) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// REGRESSION (cleanup-backlog #16, formerly **P0**): literal
+// FIXED (cleanup-backlog #16, formerly **P0**): literal
 // `x in [0..9999]` used to compile + plan cleanly and then PANIC
-// wasmtime at Eval (`store.rs:2440 assertion failed:
-// fault.is_none()`, Rust abort, host process dies).  Root cause:
-// neither Compile arm validated the expression's static region
-// (rodata + workspace) against the 8192-byte low-memory window the
-// runtime reserves for it (`-Wl,--global-base=8192`,
-// runtime/cel_layout.h `CELWASM_RESERVED_LOW_MEMORY_BYTES`) — the
-// 240 KB rodata segment was applied over the runtime's static data
-// / heap in the SHARED memory at instantiate time.  After the
-// memory-ownership flip the same corruption surfaced as
-// `wasm trap: unaligned atomic` (clobbered dlmalloc state) instead
-// of the panic; both shapes are closed by the compile-time gate
-// (`ValidateExprStaticRegion`, compiler/internal/compile.cc): the
-// expression is now REJECTED AT COMPILE with ResourceExhausted in
-// BOTH link modes.
-//
-// ASPIRATION (future arena/region work): the original want was
-// OK + true — a 10 K-element literal list is a legitimate
-// expression.  Supporting it needs a relocatable / growable static
-// region (and the arena grow/spill noted at the top of this file),
-// at which point these assertions flip back to value checks.
+// wasmtime at Eval (`store.rs:2440 assertion failed: fault.is_none()`,
+// Rust abort).  Root cause: neither Compile arm validated the
+// expression's static region against the (then 8 KiB) low-memory
+// window, so the ~240 KB rodata clobbered the runtime's static data in
+// the shared memory.  Two changes closed it: the compile-time
+// static-region gate (`ValidateExprStaticRegion`), and the m31 §10
+// window raise to 256 KiB — which makes a 10 K-element literal list a
+// legitimate, materialized expression that evaluates correctly (the
+// original "OK + true" aspiration).  The exact rodata-window boundary
+// (10909 / 10910 elements) is pinned in `e2e/limits_test.cc`.
 // ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, LiteralIntListInScanRejectedAtCompileAt10K) {
+TEST(KnownBugs, LiteralIntListInScan10KEvals) {
   constexpr int kN = 10'000;
   const std::string source = MakeIntListInSource(kN);
   auto v = TryEvalActivated(
       source,
-      [](Compiler::Builder& b) {
-        b.DeclareVariable("x", CelType::Int());
-      },
-      [](Activation& a) {
-        a.Bind("x", Value::Int(kN - 2));
-      });
-  // Graceful compile-time rejection — NOT a wasmtime panic, NOT a
-  // mid-eval corruption trap.
-  ASSERT_FALSE(v.ok()) << "10K-element literal list unexpectedly evaluated — "
-                          "if the static-region budget grew, update the "
-                          "boundary tests below too";
-  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
-      << v.status();
-}
-
-// Boundary pin for the static-region gate, both modes.  For a literal
-// `x in [0..N-1]` the rodata grows ~24 bytes per int constant, and the
-// slot-exhaustion gate (LayoutPass::MaxWorkspaceBytes) reserves a
-// `kGuardBytes`=256-byte guard band below wasi-libc's static data at
-// `kReservedLowMemoryBytes`=8192 — so the workspace the `in`-scan needs
-// must fit in `8192 - 256 - rodata_end`.  Empirically (re-probed
-// 2026-06-10 via tools/cel after the slot-reuse merge) N=327 is the
-// largest list whose rodata still leaves room for the scan workspace;
-// N=328 is the smallest that overflows.  Unlike the deep `+`-chain,
-// this ceiling is rodata-bound, so slot reuse does NOT raise it — the
-// constants themselves consume the window.
-TEST(KnownBugs, LiteralIntListInScanLargestFittingEvals) {
-  constexpr int kN = 327;  // largest N whose region fits the window
-  const std::string source = MakeIntListInSource(kN);
-  auto v = TryEvalActivated(
-      source,
-      [](Compiler::Builder& b) {
-        b.DeclareVariable("x", CelType::Int());
-      },
-      [](Activation& a) {
-        a.Bind("x", Value::Int(kN - 2));
-      });
+      [](Compiler::Builder& b) { b.DeclareVariable("x", CelType::Int()); },
+      [](Activation& a) { a.Bind("x", Value::Int(kN - 2)); });
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
-  EXPECT_TRUE(*v->AsBool());
-}
-
-TEST(KnownBugs, LiteralIntListInScanJustOverWindowRejectedAtCompile) {
-  constexpr int kN = 328;  // smallest N whose region overflows the window
-  const std::string source = MakeIntListInSource(kN);
-  auto v = TryEvalActivated(
-      source,
-      [](Compiler::Builder& b) {
-        b.DeclareVariable("x", CelType::Int());
-      },
-      [](Activation& a) {
-        a.Bind("x", Value::Int(kN - 2));
-      });
-  ASSERT_FALSE(v.ok());
-  EXPECT_EQ(v.status().code(), absl::StatusCode::kResourceExhausted)
-      << v.status();
+  EXPECT_TRUE(*v->AsBool());  // kN-2 is a member of [0..kN-1]
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -872,7 +800,7 @@ int64_t ExpectedLongArithResult(int n_terms) {
 // `SlotAllocator::Release`, a left-associative `+`-chain reuses a
 // handful of workspace cells regardless of length, so this size — and
 // the 2000-term sibling below — both fit comfortably inside the
-// 8192-byte reserved window.
+// 256 KiB reserved window.
 TEST(KnownBugs, LongArith165TermsWorks) {
   constexpr int kN = 165;
   const std::string source = MakeLongArithSource(kN);
@@ -894,7 +822,7 @@ TEST(KnownBugs, LongArith165TermsWorks) {
 // and the runtime helpers' atomic ops landed on misaligned offsets.
 // Fixed by giving Release a LIFO free list so the same chain peaks
 // at one workspace slot — the whole `+`-chain reuses a handful of
-// cells, so the static region stays well inside the 8192-byte window
+// cells, so the static region stays well inside the 256 KiB window
 // and a 2000-term chain now compiles AND evaluates to its value.
 // Validated bottom-up by compiler/codegen/slot_allocator_test::
 //   LeftAssocAdditionChainAfterReleaseFix/N2000 (no codegen, exact

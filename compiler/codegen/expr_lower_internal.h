@@ -38,10 +38,6 @@ struct EmitCtx {
   const TypedAst& ast;
   const StaticLayout& layout;
   std::vector<FieldRefRow>& field_refs;
-  // Select-path intern table for batched select chains — same
-  // append-only discipline as `field_refs` (sentinel row 0 pushed by
-  // the LowerTo* entry points before the walk starts).
-  std::vector<PathRefRow>& path_refs;
   // Looked up at every general-arm `kCallExpr` to map the resolved
   // cel-cpp `overload_id` (e.g. `add_int64`) onto the wasm helper
   // this codegen emits a `BinaryenCall` to.

@@ -305,16 +305,23 @@ bool IsPresizableCollectionAccu(const cel::ComprehensionExpr& comp,
   return false;
 }
 
-// Resolve the comprehension source address into `c`.  Two storage
+// Resolve the comprehension source address into `c`.  Three storage
 // shapes are accepted (each only on certain reprs — list/map
 // asymmetry handled by the caller):
 //   kWorkspaceSlot: literal byte offset of the CelValue.
+//   kStaticRodata:  literal byte offset of a const list materialized
+//                   into rodata.  Read-only, but a comprehension
+//                   only reads its range (absorption-guard kind check +
+//                   element iteration; the accu is separate and never
+//                   materialized), so a rodata offset is used exactly
+//                   like a workspace slot.
 //   kLocal:         wasm local holds the byte offset at runtime.
 // See CompContext field doc for the runtime mapping.
 absl::Status ResolveCompSourceAddress(const NodeAnnotation& range_ann,
                                       const cel::Expr& expr, CompContext* c) {
   switch (range_ann.storage.kind) {
     case StorageKind::kWorkspaceSlot:
+    case StorageKind::kStaticRodata:
       c->source_slot = range_ann.storage.payload;
       c->source_via_local = false;
       return absl::OkStatus();
@@ -330,13 +337,12 @@ absl::Status ResolveCompSourceAddress(const NodeAnnotation& range_ann,
       c->source_local = range_ann.storage.payload;
       c->source_via_local = true;
       return absl::OkStatus();
-    case StorageKind::kStaticRodata:
     case StorageKind::kNone:
       return absl::UnimplementedError(
           absl::StrCat("expr_lower: comprehension iter_range storage kind ",
                        static_cast<int>(range_ann.storage.kind),
                        " not yet supported (expr_id=", expr.id(),
-                       "); accepted: kWorkspaceSlot, kLocal."));
+                       "); accepted: kWorkspaceSlot, kStaticRodata, kLocal."));
   }
   ABSL_CHECK(false) << "ResolveCompSourceAddress: unknown StorageKind "
                     << static_cast<int>(range_ann.storage.kind);

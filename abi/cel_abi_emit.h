@@ -26,9 +26,6 @@ namespace celwasm {
 //   - `variables[]` from `layout.variables`
 //   - `fields[]` from `field_refs` (field intern table, one
 //     row per kSelect; index 0 is the reserved sentinel)
-//   - `paths[]` from `path_refs` (select-path intern table, one
-//     row per batched select chain — the `cel_get_field_path`
-//     call sites; index 0 is the reserved sentinel)
 //   - `attributes[]` from `layout.attributes` (attribute intern
 //     table; index 0 is the reserved sentinel)
 //   - `types[]` from `layout.message_types` (message-type intern
@@ -41,7 +38,7 @@ namespace celwasm {
 // change).
 ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs,
-    absl::Span<const PathRefRow> path_refs, celwasm::abi::LinkMode link_mode);
+    celwasm::abi::LinkMode link_mode);
 
 }  // namespace celwasm
 

@@ -6,6 +6,18 @@ surface MUST have at least one corpus cell.**  No exceptions, no
 accountability artifact: when an operator is uncovered, it shows up
 here unticked.
 
+**Lit/var pairing invariant (2026-06-16): every operator carries BOTH
+a literal-operand cell and a variable-operand cell.**  The two share
+the operator/kernel and differ only in operand binding — the var cell
+binds operands through the activation, the literal twin (id +
+`Const`) inlines them in `source` with no activation.  The
+`(var − const)` delta isolates per-Eval variable-binding cost (each
+bound activation variable costs ~13 ns/Eval vs ~0 for a literal),
+which is otherwise invisible in a single number.  **Operand types the
+loader cannot bind — timestamp, duration, map, message (see "Loader
+schema" below) — are literal-only by necessity**; those rows note the
+gap and have no `Const` twin (they ARE the literal form).
+
 **Wiring status (2026-06-09):** `celwasm_bench` and `celcpp_bench`
 both load every corpus YAML via `LoadCorpus(...)` and register one
 Google Benchmark per cell.  Adding a new operator's coverage is a
@@ -34,7 +46,7 @@ silent gaps):
 
 | tag prefix | meaning |
 |---|---|
-| `celwasm-skip-*` | cell cannot run through celwasm today; celcpp_bench still runs it.  Suffix names the reason (`-rodata`, `-het-eq`, `-ternary-ident-cond`, `-map-dot-field`, `-arena-overflow`). |
+| `celwasm-skip-*` | cell cannot run through celwasm today; celcpp_bench still runs it.  Suffix names the reason (`-het-eq`, `-ternary-ident-cond`, `-map-dot-field`). |
 | `celcpp-skip-*` | cell rejected by cel-cpp's checker as configured; celwasm_bench may still run it.  Cells carrying BOTH prefixes run nowhere and exist as documented grid exclusions. |
 
 **Loader schema (documented in `corpus_loader.h`):** activation
@@ -72,12 +84,18 @@ Surface files: `arithmetic.yaml` (BM prefix `arith`).
 
 | op       | int | uint | double | mixed-numeric¹ | cell ids |
 |----------|-----|------|--------|----------------|----------|
-| `+`      | ✓ sweep | ✓ | ✓ sweep | n/a (spec rejects mixed arithmetic) | intAdd{2,10,50,250,1000}Terms(+Const), uintAdd_simple, doubleAdd{…}Terms(+Const) |
-| `-` bin  | ✓ sweep | ✓ | ✓ | n/a | intSub{…}Terms(+Const), uintSub_simple, doubleSub_simple |
-| `*`      | ✓ sweep | ✓ | ✓ | n/a | intMul{…}Terms(+Const), uintMul_simple, doubleMul_simple |
-| `/`      | ✓   | ✓    | ✓      | n/a | intDiv_simple, uintDiv_simple, doubleDiv_simple |
-| `%`      | ✓   | ✓    | n/a    | n/a | intMod_simple, uintMod_simple |
-| unary `-`| ✓   | n/a² | ✓      | n/a | intNeg, doubleNeg |
+| `+`      | ✓ sweep | ✓ | ✓ sweep | n/a (spec rejects mixed arithmetic) | intAdd{2,10,50,250,1000}Terms(+Const), uintAdd_simple(+Const), doubleAdd{…}Terms(+Const) |
+| `-` bin  | ✓ sweep | ✓ | ✓ | n/a | intSub{…}Terms(+Const), uintSub_simple(+Const), doubleSub_simple(+Const) |
+| `*`      | ✓ sweep | ✓ | ✓ | n/a | intMul{…}Terms(+Const), uintMul_simple(+Const), doubleMul_simple(+Const) |
+| `/`      | ✓   | ✓    | ✓      | n/a | intDiv_simple(+Const), uintDiv_simple(+Const), doubleDiv_simple(+Const) |
+| `%`      | ✓   | ✓    | n/a    | n/a | intMod_simple(+Const), uintMod_simple(+Const) |
+| unary `-`| ✓   | n/a² | ✓      | n/a | intNeg(+Const), doubleNeg(+Const) |
+
+Every arithmetic op now carries its literal-operand twin — the
+op-coverage var simples gained `…Const` siblings (2026-06-16:
+`intDiv_simpleConst`, `intMod_simpleConst`, `intNegConst`,
+`uintAdd/Mul/Sub/Div/Mod_simpleConst`, `doubleMul/Sub/Div_simpleConst`,
+`doubleNegConst`) to match the length-sweep cells that already had them.
 
 ¹ Mixed-numeric arithmetic is rejected by the static subset (and by
 cel-cpp's checker); mixed-numeric *comparison* is tracked in the
@@ -85,9 +103,9 @@ comparison grid below.
 ² CEL has no unary `-` on uint.
 
 Length sweep `{2, 10, 50, 250, 1000}` per intAdd/intMul/intSub/
-doubleAdd, var + const variants.  `*1000TermsConst` cells are
-`celwasm-skip-rodata` (1000 literal CelValues = 24 KB rodata vs the
-8 KB low-memory window).
+doubleAdd, var + const variants.  `*1000TermsConst` cells (1000
+literal CelValues = 24 KB rodata) fit the 256 KiB low-memory window
+and run on both comparators.
 
 Composite-shape cells (2026-06-11, absorbed from the legacy
 `bench/` tree):
@@ -110,7 +128,7 @@ cel-cpp gained the pair for free.
 
 | operand types          | result   | cell id (surface)            | status |
 |------------------------|----------|------------------------------|--------|
-| string + string        | string   | strings.concat2, strings.concatChain{10,100,1000}Terms | ✓ (1000-term ◐ `celwasm-skip-arena-overflow`) |
+| string + string        | string   | strings.concat2, strings.concatChain{10,100,1000}Terms | ✓ |
 | bytes + bytes          | bytes    | strings.bytesConcat2         | ✓      |
 | list + list            | list     | lists.concat (`size([…]+[…])`) | ✓    |
 | timestamp + duration   | timestamp| time.tsAddDur (int-reduced)  | ✓      |
@@ -140,9 +158,24 @@ operands: see §Exclusions.
 nullEqInt exclusion.
 ² Ordering on bool is not defined by spec.
 
+**Lit/var twins (2026-06-16):** every scalar-comparison var cell above
+(int/uint/double/bool/string/bytes × ==/!=/</<=/>/>=) now has a
+literal-operand twin `<cell>Const` (e.g. `intEq`→`intEqConst`,
+`stringLt`→`stringLtConst`, `bytesGe`→`bytesGeConst`).  The twin
+mirrors its sibling's operator + true result with operands inlined as
+literals (small operands: `42`, `"a"`/`"b"`, `b"a"`/`b"b"`), so
+`(var − const)` is the per-Eval variable-binding cost on an identical
+comparison.  `intLt`/`intLtConst` predate this expansion.  The
+**timestamp / duration / list / map / null** rows stay literal-only —
+the loader cannot bind those operand types (see "Loader schema"), so
+the existing `ts*`/`dur*`/`listEq`/`mapEq`/`nullEq` cells ARE the
+literal form and have no separate `Const` twin.  Bytes `…Const` cells
+carry `skip-source-check` (the loader's identifier heuristic reads the
+`b"…"` prefix as a variable).
+
 Chained: cmp.intLtChain20 (`a<b && b<c && …`, 20 comparisons).
-String-eq payload sweep: long_strings.eqLong_N{10,100,1000}_{match,
-mismatch} (N=10000 cells are `celwasm-skip-rodata`, see §Findings).
+String-eq payload sweep: long_strings.eqLong_N{10,100,1000,10000}_{match,
+mismatch} (the N=10000 cells now fit the 256 KiB window; see §Findings).
 
 ---
 
@@ -159,9 +192,9 @@ Surface: `logic.yaml` (BM prefix `logic`), `ternary.yaml`
 | `\|\|`       | 2-term var / const          | logic.or2, logic.or2Const | ✓ |
 | `\|\|`       | 10-term chain               | logic.or10Terms | ✓ |
 | `\|\|`       | short-circuit vs not        | logic.orShortCircuit, logic.orNoShortCircuit | ✓ |
-| `!`          | single / triple, var + const| logic.not1, logic.not1Const, logic.not3 | ✓ |
+| `!`          | single / triple, var + const| logic.not1, logic.not1Const, logic.not3, logic.not3Const | ✓ |
 | ternary `?:` | int result, computed cond   | ternary.intComputedCond, ternary.intConst | ✓ |
-| ternary `?:` | string result               | ternary.stringComputedCond | ✓ |
+| ternary `?:` | string result, var + const  | ternary.stringComputedCond, ternary.stringConst | ✓ |
 | ternary `?:` | nested chain                | ternary.nested3 | ✓ |
 | ternary `?:` | bare bool-var condition     | ternary.intVarCond | ◐ `celwasm-skip-ternary-ident-cond` — **celwasm BUG, see §Findings** |
 
@@ -176,7 +209,7 @@ Surfaces: `lists.yaml` (BM prefix `in_list`), `maps.yaml` (`map`).
 
 | range kind     | elem/key types covered | cell ids | status |
 |----------------|------------------------|----------|--------|
-| list<string>   | length sweep {5,20,100,1000}, var + literal needle | lists.{5,20,100,1000}(_lit) | ✓ ({1000,1000_lit} ◐ `celwasm-skip-rodata`) |
+| list<string>   | length sweep {5,20,100,1000}, var + literal needle | lists.{5,20,100,1000}(_lit) | ✓ |
 | list<string> literal, early-exit/miss | 100 elems, first-element + absent needle | lists.100_lit_first, lists.100_lit_miss | ✓ |
 | list<int> BOUND (`x in xs`, activation-bound list) | length sweep {100, 1k, 10k, 100k, 1M}, x = N−2 worst case | lists.bound{100,1000,10000,100000,1000000} | ✓ |
 | list<int> BOUND, 1M early-exit/miss | x = 0 (first) / x = −1 (absent) | lists.bound1000000_first, lists.bound1000000_miss | ✓ |
@@ -189,9 +222,9 @@ Surfaces: `lists.yaml` (BM prefix `in_list`), `maps.yaml` (`map`).
 | list<bytes>    | —                       | — | ✗ excluded: bytes list literals add no kernel path beyond string (same memcmp scan); revisit if the kernel ever specializes |
 | list<message>  | —                       | — | ✗ excluded: message-ELEMENT lists are still outside the loader schema (list elems are scalar-only); message ACTIVATIONS landed — see §Proto-message reads |
 | map<string,V>  | 10 keys, var + const    | maps.inString, maps.inStringConst | ✓ |
-| map<int,V>     | 10 keys                 | maps.inInt | ✓ |
-| map<uint,V>    | 10 keys                 | maps.inUint | ✓ |
-| map<bool,V>    | 2 keys                  | maps.inBool | ✓ |
+| map<int,V>     | 10 keys, var + const    | maps.inInt, maps.inIntConst | ✓ |
+| map<uint,V>    | 10 keys, var + const    | maps.inUint, maps.inUintConst | ✓ |
+| map<bool,V>    | 2 keys, var + const     | maps.inBool, maps.inBoolConst | ✓ |
 
 The bound cells mirror the legacy `bench/in_operator_bench.cc`
 shapes (BM_Eval_In_IntList_Bound_WorstCase, BM_Eval_In_1M_*,
@@ -211,9 +244,9 @@ Surface: `index.yaml` (BM prefix `idx`).
 |----------------|----------|--------|
 | list[int], var + const key | idx.listInt, idx.listIntConst | ✓ |
 | map[string], var + const key | idx.mapString, idx.mapStringConst | ✓ |
-| map[int]       | idx.mapInt | ✓ |
-| map[uint]      | idx.mapUint | ✓ |
-| map[bool]      | idx.mapBool | ✓ |
+| map[int], var + const key | idx.mapInt, idx.mapIntConst | ✓ |
+| map[uint], var + const key | idx.mapUint, idx.mapUintConst | ✓ |
+| map[bool], var + const key | idx.mapBool, idx.mapBoolConst | ✓ |
 
 ---
 
@@ -236,7 +269,7 @@ Surface: `comprehensions.yaml` (BM prefix `compr`).  Ranges are
 
 | macro        | cell ids | status |
 |--------------|----------|--------|
-| `all`        | compr.all20 + length sweep compr.all{10,100,1000} | ✓ (all1000 ◐ `celwasm-skip-rodata`) |
+| `all`        | compr.all20 + length sweep compr.all{10,100,1000} | ✓ |
 | `exists`     | compr.exists20 | ✓ |
 | `exists_one` | compr.existsOne20 | ✓ |
 | `map`        | compr.map20 | ✓ |
@@ -253,8 +286,8 @@ the list-literal-construction length sweep {10,100,1000}.
 | input | cell ids | status |
 |-------|----------|--------|
 | string (var + const) | size.string, size.stringConst | ✓ |
-| bytes  | size.bytes | ✓ |
-| list   | size.list{10,100,1000} | ✓ (list1000 ◐ `celwasm-skip-rodata`) |
+| bytes (var + const) | size.bytes, size.bytesConst | ✓ |
+| list   | size.list{10,100,1000} | ✓ |
 | map    | size.map{10,100} | ✓ |
 
 ---
@@ -263,13 +296,18 @@ the list-literal-construction length sweep {10,100,1000}.
 
 Surface: `strings.yaml` + `long_strings.yaml` (BM prefix `str`).
 
+Every string-function var cell now has a literal-receiver twin
+(`<cell>Const`, 2026-06-16: the haystack is a string literal, not a
+bound variable), plus the `+` concat pairs (`concat2`/`concat2Const`,
+`bytesConcat2`/`bytesConcat2Const`).
+
 | fn | cell ids | status |
 |----|----------|--------|
-| `_.contains(_)` | strings.contains, long_strings.containsLong_N{10,100,1000} | ✓ (N10000 ◐ rodata) |
-| `_.startsWith(_)` | strings.startsWith | ✓ |
-| `_.endsWith(_)` | strings.endsWith | ✓ |
-| `_.matches(_)` cheap anchor | strings.matchesCheap | ✓ |
-| `_.matches(_)` moderate regex (alternation + bounded repeat) | strings.matchesComplex | ✓ |
+| `_.contains(_)` | strings.contains, strings.containsConst, long_strings.containsLong_N{10,100,1000,10000} | ✓ |
+| `_.startsWith(_)` | strings.startsWith, strings.startsWithConst | ✓ |
+| `_.endsWith(_)` | strings.endsWith, strings.endsWithConst | ✓ |
+| `_.matches(_)` cheap anchor | strings.matchesCheap, strings.matchesCheapConst | ✓ |
+| `_.matches(_)` moderate regex (alternation + bounded repeat) | strings.matchesComplex, strings.matchesComplexConst | ✓ |
 
 ---
 
@@ -305,6 +343,18 @@ back-to-back-conversion cost.
 non-uniform-support bucket¹); bool→string covered (stringFromBool).
 `dyn(_)` is rejected by celwasm's static subset by design — not a
 corpus row.
+
+**Lit/var twins (2026-06-16):** every simple scalar conversion var
+cell now has a literal-argument twin `<cell>Const` (the convert kernel
+runs on a literal instead of a bound activation value):
+`intFromUint/Double/StringConst`, `uintFromInt/Double/StringConst`,
+`doubleFromInt/Uint/StringConst`,
+`stringFromInt/Uint/Double/Bool/BytesConst`, `bytesFromStringConst`.
+`intFromStringConst` (`int("42")`) is the direct twin of
+`intFromString`; the existing `intFromStringNested` (`int(string(123))`)
+remains a separate two-kernel shape, not a lit twin.  The
+timestamp/duration round-trips were already literal-only (loader
+cannot bind those source types).
 
 ---
 
@@ -435,11 +485,9 @@ design — this list is the accountability record):
 
 | tag | cells | reason |
 |-----|-------|--------|
-| `celwasm-skip-rodata` | arith.{intAdd,intMul,intSub,doubleAdd}1000TermsConst, in_list.{1000,1000_lit}, size.list1000, compr.all1000, str.{eqLong,containsLong}_N10000* | >8 KB expression rodata (1000 literals ≈ 24 KB; 10 KB string literal).  Static mode rejects loudly; dynamic mode must not be trusted past the bound (see §Findings). |
 | `celwasm-skip-het-eq` | cmp.intLtDouble (+ the two §Exclusions cells) | checker rejects mixed-numeric comparison; cel-cpp runs it with `enable_cross_numeric_comparisons`. |
 | `celwasm-skip-ternary-ident-cond` | ternary.intVarCond | **celwasm bug**, see §Findings. |
 | `celwasm-skip-map-dot-field` | map.dotField, map.hasKey | cleanup-backlog #9 Select-on-map gap. |
-| `celwasm-skip-arena-overflow` | str.concatChain1000Terms | 999 intermediate concats overflow the eval arena (CEL overflow error value); same family as known_bugs ExpressionIntermediatesArenaCliff. |
 
 ## Findings (correctness divergences surfaced by this corpus)
 
@@ -449,16 +497,16 @@ design — this list is the accountability record):
    (`a > b ? …`, `(c || false) ? …`, `!c ? …`) are correct.
    Verified via the cel CLI in both link modes.  Pinned by
    ternary.intVarCond (`celwasm-skip-ternary-ident-cond`).
-2. **Dynamic-mode silent wrong answer past the rodata bound
-   (celwasm, 2026-06-09).**  `a == "<10000 x's>"` with `a` equal:
-   link_mode=static rejects at compile ("rodata ends at byte 10040,
-   past the 8192-byte window"); link_mode=dynamic **compiled and
-   returned false** (cel-cpp: true).  The 8 KB bound is enforced
-   loudly only on the static path.  Pinned by
-   long_strings.eqLong_N10000_match (`celwasm-skip-rodata`); the
-   m28 doc §10 lists the N=10000 rodata budget as out-of-scope
-   follow-up — the *silent* dynamic-mode miscompare is the sharp
-   edge to carry into that follow-up.
+2. **(RESOLVED) Dynamic-mode silent wrong answer past the rodata
+   bound (celwasm, 2026-06-09; closed when the window was raised to
+   256 KiB).**  When the window was 8 KB, `a == "<10000 x's>"` with
+   `a` equal diverged by link mode: static rejected at compile while
+   dynamic **compiled and returned false** (cel-cpp: true).  Both
+   halves are now closed — the 256 KiB window admits a 10 KB literal,
+   and the compile-time rodata gate (`CheckStaticWindowFits` in
+   layout_pass.cc) rejects an over-budget layout loudly in BOTH link
+   modes.  long_strings.eqLong_N10000_match now runs on celwasm and
+   evaluates true.
 3. **Heterogeneous equality is a checker gap on both stacks as
    configured** (`int == double`, `1 == null`): celwasm rejects by
    design of the current static subset; cel-cpp rejects at check

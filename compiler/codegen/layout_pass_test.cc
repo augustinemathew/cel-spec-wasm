@@ -555,43 +555,46 @@ TEST(LayoutPassMapTest, ArenaBaseFollowsMapWorkspace) {
 // Element scratch slots are released as `cel_list_set` consumes
 // each one (mirrors map entry key/value handling).
 
-TEST(LayoutPassListTest, EmptyListLiteralGetsOneWorkspaceSlot) {
-  CheckOptions opts;
-  opts.variable_specs = {"xs:list<int>"};
-  // `xs[0]` is the simplest way to force an empty-list-typed list
-  // literal up to the checker — but we want a literal directly.
-  // `dyn([]) == dyn([])` doesn't typecheck; use a typed-context
-  // literal: `[1][0]` is enough to lock the slot for kListExpr.
-  auto ta = ParseAndCheck("[1]", {});
+TEST(LayoutPassListTest, ConstListLiteralMaterializesToRodata) {
+  // m31: a list literal whose elements are all constants is packed into
+  // rodata at compile time, so the kListExpr node carries kStaticRodata
+  // (a frame offset) — NOT a workspace slot — and no per-Eval build
+  // happens.  Holds regardless of element count.
+  auto ta = ParseAndCheck("[1, 2, 3, 4, 5]", {});
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   ASSERT_THAT(resolved, IsOk());
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  // No variables; one kCreateList → one 32B slot (the literal is
-  // the root).  Element kConsts live in rodata.
-  EXPECT_EQ(layout->workspace_bytes, 32u);
-  EXPECT_EQ(layout->peak_slots, 1u);
+  // No workspace slot for the materialized list (no variables either).
+  EXPECT_EQ(layout->workspace_bytes, 0u);
+  EXPECT_EQ(layout->peak_slots, 0u);
+
+  const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
+  ASSERT_NE(root_ann, nullptr);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kStaticRodata);
+  // The frame offset lands inside the rodata window.
+  EXPECT_GE(root_ann->storage.payload, layout->rodata_base);
+}
+
+TEST(LayoutPassListTest, NonConstListLiteralGetsOneWorkspaceSlot) {
+  // A list with a non-constant element (a variable) is NOT eligible for
+  // materialization and keeps the per-Eval build path: the kListExpr
+  // result is a single CelValue in one 32B workspace cell, per
+  // dispatch-doc §4.2.
+  CheckOptions opts;
+  opts.variable_specs = {"a:int"};
+  auto ta = ParseAndCheck("[a, 2, 3]", opts);
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
 
   const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
   ASSERT_NE(root_ann, nullptr);
   EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
-  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base);
-}
-
-TEST(LayoutPassListTest, ScalarListLiteralGetsOneSlotRegardlessOfElementCount) {
-  // Per dispatch-doc §4.2: the kCreateList result slot is a single
-  // CelValue in one 32B workspace cell.  Element storage lives in
-  // the arena (cel_list_create reserves count × sizeof(CelValue));
-  // the workspace cell count stays at 1 regardless of N.
-  auto ta = ParseAndCheck("[1, 2, 3, 4, 5]", {});
-  ASSERT_THAT(ta, IsOk());
-  auto resolved = ResolvePass(*ta);
-  auto layout = LayoutPass(*ta, *std::move(resolved));
-  ASSERT_THAT(layout, IsOk());
-  EXPECT_EQ(layout->workspace_bytes, 32u);
-  EXPECT_EQ(layout->peak_slots, 1u);
 }
 
 TEST(LayoutPassListTest, ListLiteralIndexingReusesSingleSlot) {
