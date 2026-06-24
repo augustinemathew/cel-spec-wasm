@@ -1,0 +1,14 @@
+cel-wasm
+Copyright 2026 Augustine Mathew
+
+Created and maintained by Augustine Mathew.
+Licensed under the Apache License, Version 2.0.
+
+cel-wasm is an independent project and is not affiliated with or
+endorsed by any employer.
+
+This product reuses the Google CEL toolchain for its parser and
+type-checker: github.com/google/cel-cpp (Apache-2.0). The CEL language
+definition and conformance corpus mirror github.com/google/cel-spec,
+governed by the CEL Language Council. cel-wasm is not affiliated with or
+endorsed by those projects.
