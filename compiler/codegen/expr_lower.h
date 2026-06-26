@@ -2,23 +2,34 @@
 #define CELWASM_COMPILER_CODEGEN_EXPR_LOWER_H_
 
 // Lowers a fully-resolved, fully-laid-out `TypedAst` into the `$eval`
-// wasm function.  M1 handles only the `kConst` arm: every literal's
-// value lives at a known rodata offset, so `$eval`'s body is a two-
-// instruction block — `call $arena_reset(<arena_base>, <arena_limit>)`
-// followed by `i32.const <root_rodata_offset>` — and the function
-// returns the root literal's CelValue offset.
+// wasm function.  `LowerToEvalFunction` walks the root expression
+// through the `Emit` dispatcher — one arm per `cel::ExprKindCase`
+// (const / ident / select / call / list / map / struct /
+// comprehension) — and assembles the body:
 //
-// Non-kConst expression kinds return `absl::UnimplementedError` naming
-// the kind.  This is a designed rejection path, not a stub crash: the
-// checker accepts `1 + 2` (a kCall) but M1 compilation of arithmetic
-// lands at M3/M4, and the CLI is expected to surface the unimplemented
-// status to the user.
+//   (block $eval (result i32)
+//     <prelude: one local.set per referenced free variable>
+//     (call $arena_reset)
+//     <root expression>)
 //
-// Caller responsibilities (M1): before calling `LowerToEvalFunction`
-// the caller must have installed memory + the `cel.arena_reset` function
-// import on `mod`.  `LowerToEvalFunction` only adds the function
-// definition; the export is left to the caller so CLI callers can
-// export under a different external name if they choose.
+// Every `Emit` arm returns an i32-valued expression whose runtime
+// value is the linear-memory offset of that node's CelValue (a rodata
+// offset for `kConst`, a workspace-slot offset for most nodes), so the
+// block's trailing expression is what `$eval` returns: the root
+// CelValue's offset.  Comprehension codegen lives in
+// `expr_lower_comprehension.cc`; the two TUs share state through
+// `expr_lower_internal.h`.
+//
+// Expression shapes outside the supported static subset return
+// `absl::UnimplementedError` naming the kind — a designed rejection the
+// CLI surfaces to the user, not a crash.
+//
+// Caller responsibilities: before calling `LowerToEvalFunction` the
+// caller must have installed memory plus the runtime imports the body
+// references (`cel.arena_reset`, the `cel_host.*` trampolines, and the
+// runtime helpers named by the overload table).  `LowerToEvalFunction`
+// only adds the function definition; the export is left to the caller
+// so CLI callers can export under a different external name.
 
 #include <cstdint>
 #include <string>
@@ -209,15 +220,17 @@ struct LoweredFunction {
 // function body is a block of type `i32`:
 //
 //   (block $eval (result i32)
-//     (call $arena_reset (i32.const <arena_base>) (i32.const <arena_limit>))
-//     (i32.const <root_rodata_offset>))
+//     <one local.set per referenced free variable>   ;; the prelude
+//     (call $arena_reset)
+//     <lowered root expression>)                      ;; yields its
+//                                                     ;; CelValue offset
 //
-// Fails with `UnimplementedError` for any expression kind outside the
-// M1 subset (kConst only).  Fails with `InvalidArgumentError` if the
-// root expression has no storage annotation (LayoutPass was skipped)
-// or its storage is not `kStaticRodata` (impossible at M1 but checked
-// defensively — a later milestone accidentally flowing a workspace
-// offset through here would otherwise emit a subtly wrong i32.const).
+// Fails with `UnimplementedError` (naming the kind) for any expression
+// shape outside the supported static subset, and with
+// `InvalidArgumentError` if a node lacks a storage annotation
+// (LayoutPass was skipped).  The per-arm `ABSL_CHECK`s guard layout
+// invariants — a node reaching codegen with the wrong storage kind is
+// a LayoutPass bug, not user error.
 ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view func_name, WasmModule& mod,
@@ -225,7 +238,7 @@ ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToEvalFunction(
 
 // One declared parameter on a CEL-defined custom function — name
 // + wasm-param position (1..N; wasm param 0 is the out_slot
-// dictated by the M13 ABI).  Used by `LowerToCustomFn` to wire
+// dictated by the custom-fn ABI).  Used by `LowerToCustomFn` to wire
 // each referenced kFreeVariable `LaidOutVariable` to the wasm
 // param the caller passes its slot offset through.
 struct CustomFnParam {
@@ -235,7 +248,7 @@ struct CustomFnParam {
 };
 
 // Lowers a CEL-defined custom function body into a wasm function
-// with the M13 ABI:
+// with the custom-fn ABI:
 //
 //   (func (export <export_name>)
 //     (param i32 i32 ...)        ;; out_slot, arg0, arg1, ...
@@ -252,8 +265,8 @@ struct CustomFnParam {
 // rather than returned by value.
 //
 // Bodies that reference a free variable not listed in `params` are
-// an invariant violation (per m13 §3.5 the only legal references
-// are declared params); CHECKs.
+// an invariant violation (per `m13-custom-fns.md` §3.5 the only
+// legal references are declared params); CHECKs.
 ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToCustomFn(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view export_name, absl::Span<const CustomFnParam> params,

@@ -116,7 +116,7 @@ BinaryenExpressionRef EmitKConstLoad(WasmModule& mod,
 // Emits `(local.get <local_index>)`.  The local's value at runtime is
 // the u32 offset of the variable's CelValue cell in linear memory —
 // set once per Eval by the `$eval` prelude (free variable), or per
-// iteration by the loop header (comprehension iter var, M5).  The
+// iteration by the loop header (comprehension iter var).  The
 // kIdent read site is identical across both cases.
 //
 // `wasm_local_offset` shifts the index for CEL-defined custom-fn
@@ -801,7 +801,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
     EmitCtx& ctx, const cel::Expr& expr, const cel::CallExpr& call,
     const NodeAnnotation& ann) {
   // CEL's `_[_]` is a binary operator: args[0] = collection,
-  // args[1] = index.  `target` (receiver) form is not used at M3 —
+  // args[1] = index.  `target` (receiver) form is not used here —
   // the parser materialises the operand as args[0].
   ABSL_CHECK(call.args().size() == 2)
       << "expr_lower: `_[_]` expr_id=" << expr.id() << " has "
@@ -821,7 +821,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
 
   // Origin comes from the OPERAND, not the call: a kSelect over a
   // proto map field stamps `kHost` on its own annotation, and `m[k]`
-  // reads that origin off `m` (operand) — same shape M2 uses for
+  // reads that origin off `m` (operand) — same shape used for
   // attribute-id propagation.  The operand's repr selects which
   // origin field (map vs list) and which dispatch table to use.
   const NodeAnnotation* op_ann = ctx.layout.annotations.Find(operand_expr.id());
