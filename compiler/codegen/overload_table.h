@@ -6,10 +6,6 @@
 // `kBuiltinSeeds` array; custom host functions are registered by the
 // embedder at compile time via `OverloadTableBuilder::RegisterCustom`.
 // Both funnel into the same immutable `OverloadTable`.
-//
-// M1 ships the shape (builder + frozen table + collision rule) with
-// `kBuiltinSeeds` empty — M3 fills the seeds.  The table exists now so
-// that M3's "turn on the overload set" lands as a data-only change.
 
 #include <cstddef>
 #include <cstdint>
@@ -30,13 +26,13 @@ namespace celwasm {
 //
 //   kCelRuntime — "cel" — runtime .wasm exports (cel_int_add_at_vv, …).
 //   kCelHost   — "cel_host" — built-in host trampolines (cel_get_field, …).
-//   kCelFn     — "cel_fn"   — host-backed custom fns (Slice C of M13).
+//   kCelFn     — "cel_fn"   — host-backed custom fns.
 //   kUserModule — <impl.module_name> — foreign-wasm-backed custom fns
 //                                       or CEL-defined backend exports.
 //
-// `kCelFn` and `kUserModule` are new in M13; built-in seeds use only
-// kCelRuntime and kCelHost.  See `m13-custom-fns.md` §5.3 for the
-// design context.
+// Built-in seeds use only kCelRuntime and kCelHost; kCelFn and
+// kUserModule carry custom functions.  See `m13-custom-fns.md` §5.3
+// for the design context.
 enum class ImportModule : uint8_t {
   kCelRuntime = 0,
   kCelHost = 1,
@@ -62,12 +58,11 @@ struct OverloadImpl {
   absl::string_view name;
   // Number of i32 wasm function parameters this helper takes (one
   // out_slot + N arg slots, so a unary helper has num_args=2).
-  // Populated for every built-in seed at Build() time (inferred
-  // from the helper-name suffix `_at_v…` or a small special-case
-  // table); populated for customs at `RegisterCustom` time.  A
-  // value of 0 means "arity not known" — such rows are silently
-  // skipped at import-install time (matches pre-M13 behavior for
-  // helpers whose names didn't follow the suffix convention).
+  // Populated for every built-in seed at Build() time from the ABI
+  // catalogue (`abi/runtime_catalogue.h`), and for customs at
+  // `RegisterCustom` time.  Always >= 1 (out_slot is mandatory): the
+  // catalogue lookup CHECK-fails for a missing built-in, and
+  // RegisterCustom requires num_args >= 1.
   uint8_t num_args = 0;
   // Only populated when `module == kUserModule`.  The wasm import
   // module string — declared alias from `<alias>.<fnname>(...)`.
@@ -102,7 +97,7 @@ class OverloadTable;
 
 class OverloadTableBuilder {
  public:
-  // Seeds every row in `kBuiltinSeeds` (empty in M1).
+  // Seeds every row in `kBuiltinSeeds`.
   OverloadTableBuilder();
 
   // Registers a custom host function.
@@ -119,8 +114,8 @@ class OverloadTableBuilder {
   // reference map; ResolvePass uses it as the lookup key here.
   //
   // `module` selects the wasm import namespace:
-  //   kCelHost     — legacy host trampoline (pre-M13 customs).
-  //   kCelFn       — host-backed M13 customs.
+  //   kCelHost     — legacy host trampoline.
+  //   kCelFn       — host-backed customs.
   //   kUserModule  — foreign-wasm-backed or CEL-defined backend.
   // kCelRuntime is reserved for built-in seeds and CHECKs here.
   //

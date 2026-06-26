@@ -475,7 +475,7 @@ constexpr std::array<Seed, 271> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_string_to_bytes_at_v"}},
     Seed{"bytes_to_string",
          {ImportModule::kCelRuntime, "cel_bytes_to_string_at_v"}},
-    // ── M12 `string_ext` extension (cel-cpp `extensions/strings.cc`) ──
+    // ── `string_ext` extension (cel-cpp `extensions/strings.cc`) ──
     // 19 overload IDs covering charAt, lowerAscii, upperAscii, trim,
     // reverse, indexOf (×2), lastIndexOf (×2), substring (×2), replace
     // (×2), split (×2), join (×2), quote, format.  All kernels are
@@ -526,7 +526,7 @@ constexpr std::array<Seed, 271> kBuiltinSeeds{
 
     // ── math_ext extension (cel-cpp `extensions/math_ext.cc`) ──
     // Resolved overload IDs enumerated from `math_ext_decls.cc` +
-    // the M16 AST probe (`m16-ast-probe-findings.md`).  Many IDs
+    // an AST probe (`m16-ast-probe-findings.md`).  Many IDs
     // map to one kind-dispatching kernel (abs/sign/sqrt/min/max).
     // `math.greatest` / `math.least` never reach here — the parser
     // macros expand them to `math.@min` / `math.@max` calls; their
@@ -637,7 +637,7 @@ constexpr std::array<Seed, 271> kBuiltinSeeds{
          {ImportModule::kCelRuntime, "cel_math_max_list_at_v"}},
     Seed{"math_@max_list_double",
          {ImportModule::kCelRuntime, "cel_math_max_list_at_v"}},
-    // ── M17 `encoders` extension (cel-cpp `extensions/encoders.cc`) ──
+    // ── `encoders` extension (cel-cpp `extensions/encoders.cc`) ──
     // base64.encode(bytes)->string + base64.decode(string)->bytes.
     // Overload IDs are cel-cpp's `MakeOverloadDecl` strings (confirmed
     // against `encoders.cc`); kernels self-hosted in `cel_runtime.wasm`
