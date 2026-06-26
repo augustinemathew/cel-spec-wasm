@@ -26,7 +26,8 @@ uint32_t SlotAllocator::Acquire() {
   if (debug_mode_) {
     // Debug mode: bump-only, no reuse.  Every Acquire returns a
     // fresh cell and grows the watermark; Release is a no-op.
-    // Preserves the original M1 semantics for layout dumps.
+    // This is the form layout dumps rely on for per-expr slot
+    // distinctness.
     const uint32_t offset = base_offset_ + (bump_ * kSlotStride);
     ++bump_;
     peak_slots_ = std::max(peak_slots_, bump_);
