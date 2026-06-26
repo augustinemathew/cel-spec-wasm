@@ -59,7 +59,7 @@ struct LayoutOptions {
   // Exists so multiple modules instantiated against the same shared
   // `cel.memory` can be given non-overlapping rodata ranges — without
   // this, two such modules would write their data segments on top of
-  // each other (see the WAT trace at `wat/45b_foo_module.wat`).
+  // each other.
   uint32_t rodata_base_override = 0;
 };
 

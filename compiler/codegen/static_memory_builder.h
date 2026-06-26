@@ -15,11 +15,11 @@
 // the value is only meaningful inside the emitted wasm module's
 // memory.  If we ever target wasm64 this becomes `uint64_t`.
 //
-// Infallible.  Rodata packing has no failure mode by design
-// (§6.2.1): no cap, no fallback, no runtime-initialised-literal
-// variant — every literal lands in rodata and the buffer grows
-// as needed.  Hence no `absl::StatusOr` on any Allocate return
-// path.
+// Infallible.  Rodata packing has no failure mode by design (see
+// `rewrite/design.md` §6.2.1): no cap, no fallback, no runtime-
+// initialised-literal variant — every literal lands in rodata and
+// the buffer grows as needed.  Hence no `absl::StatusOr` on any
+// Allocate return path.
 //
 // CelValue is 24 bytes, 8-byte aligned.  For string / bytes the
 // payload bytes follow the 24-byte frame directly and the cursor

@@ -511,14 +511,10 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
   SlotAllocator& slots_;
 };
 
-// Reserve one 24-byte workspace slot per referenced variable and
-// fill `layout.variables`.  Workspace sits 8-aligned immediately
-// after rodata; each slot is 24 B, and 24 is a multiple of 8 so
-// every slot stays aligned.
-// M5.B Slice C: walks every `kComprehensionExpr` and stamps
-// `comp_aux_local_base` on each — the first of N consecutive wasm
-// locals reserved for that comp's per-iter state (end_off, cursor,
-// index).  N = `StaticLayout::comprehension_extra_locals_per_comp`.
+// Walks every `kComprehensionExpr` and stamps `comp_aux_local_base`
+// on each — the first of N consecutive wasm locals reserved for that
+// comp's per-iter state (end_off, cursor, index).  N =
+// `StaticLayout::comprehension_extra_locals_per_comp`.
 // `LowerToEvalFunction` reads the total local count via
 // `StaticLayout::total_wasm_locals`.
 class ComprehensionLocalsVisitor : public cel::AstVisitorBase {
@@ -588,6 +584,10 @@ class ComprehensionLocalsVisitor : public cel::AstVisitorBase {
   uint32_t next_local_;
 };
 
+// Reserve one 24-byte workspace slot per referenced variable and fill
+// `layout.variables`.  Workspace sits 8-aligned immediately after
+// rodata; each slot is 24 B, and 24 is a multiple of 8 so every slot
+// stays aligned.
 void ReserveVariableSlots(const std::vector<ResolvedVariable>& variables,
                           StaticLayout& layout) {
   constexpr uint32_t kSlotStride = SlotAllocator::kSlotStride;

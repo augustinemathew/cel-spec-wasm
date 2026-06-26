@@ -636,9 +636,15 @@ class MessageTypeIdVisitor : public cel::AstVisitorBase {
 };
 
 // Runs the per-kind annotation-stamping visitors on `output` over
-// `root`.  Each visitor is independent — sequencing matters only for
-// the dyn-passthrough forwarder, which runs last so every other
-// visitor's writes on the argument are visible to copy.
+// `root`, in a dependency-respecting order:
+//   - ScopedIdentResolver runs FIRST: it stamps `scope_id` (and
+//     `local_index`), which AttributePathResolver, MapOriginVisitor,
+//     and ListOriginVisitor each read to skip comprehension-scope
+//     nodes.  Reordering those three ahead of it silently mis-stamps.
+//   - DynPassthroughVisitor runs LAST: it copies every other field
+//     off a `dyn` call's argument, so all writes above must be in
+//     place before it reads them.
+// The remaining visitors are mutually independent.
 void RunAnnotationVisitors(const cel::Ast& checked, const cel::Expr& root,
                            ResolveOutput& output) {
   KConstReprAudit audit(output.annotations);

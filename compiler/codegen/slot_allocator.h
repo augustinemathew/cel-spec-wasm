@@ -119,8 +119,9 @@
 // `Release` the three Acquires would instead bump monotonically to
 // 128, 152, 176 (peak_slots() = 3, total_bytes() = 72).  LayoutPass
 // doesn't inspect these numbers — either allocator produces a
-// workspace sized for the emitted loads and stores.  M1 ships the
-// no-op form; M10 flips on the free list under `!debug_mode`.
+// workspace sized for the emitted loads and stores.  Debug mode is
+// the no-op (bump-only) form; production mode (`!debug_mode`) enables
+// the free list.
 
 #include <cstdint>
 #include <vector>
