@@ -130,6 +130,26 @@ link_mode_e2e_cc_test(
     ],
 )
 
+# m32.A SwissTable map index e2e: runtime-built index activated by the
+# codegen-emitted terminal `cel_map_index_build` call.  Indexed (>=8)
+# and linear (<8) maps evaluate identically across lookup / `in` /
+# equality, over int and string keys, for literal and transformMap-
+# built maps.
+link_mode_e2e_cc_test(
+    name = "m32_swisstable_index_test",
+    size = "large",
+    srcs = ["m32_swisstable_index_test.cc"],
+    deps = [
+        ":link_mode_e2e_helpers",
+        "//compiler:compiler",
+        "//eval:activation",
+        "//eval:value",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # M17 encoders e2e: compile + plan + eval base64.encode / base64.decode
 # end-to-end.  Tracks `tests/simple/testdata/encoders_ext.textproto`.
 link_mode_e2e_cc_test(

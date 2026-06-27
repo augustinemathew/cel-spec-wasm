@@ -31,7 +31,7 @@ namespace {
 // (api/engine.cc::Engine::Plan does the same).  Append-only as
 // the runtime grows; dropping a name silently breaks WATs that
 // rely on it, which is the point.
-constexpr std::array<absl::string_view, 116> kRuntimeExports = {
+constexpr std::array<absl::string_view, 117> kRuntimeExports = {
     // M1 baseline.
     "arena_reset",
     "arena_alloc",
@@ -42,6 +42,8 @@ constexpr std::array<absl::string_view, 116> kRuntimeExports = {
     "cel_map_insert_at_if_bool",
     "cel_map_lookup_arena",
     "cel_map_lookup",
+    // m32: SwissTable index terminal-build step.
+    "cel_map_index_build",
     // List runtime helpers.
     "cel_list_create",
     "cel_list_append_at",

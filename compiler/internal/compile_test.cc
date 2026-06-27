@@ -566,8 +566,9 @@ TEST(CompileMapTest, ModuleImportsRuntimeMapEntryPoints) {
   auto art_or = Compile(R"({"a": 1}["a"])", opts);
   ASSERT_THAT(art_or, IsOk());
   BinaryenModuleRef raw = art_or->module.raw();
-  for (const char* fn : {"cel_map_create", "cel_map_insert",
-                         "cel_map_lookup_arena", "cel_map_lookup"}) {
+  for (const char* fn :
+       {"cel_map_create", "cel_map_insert", "cel_map_index_build",
+        "cel_map_lookup_arena", "cel_map_lookup"}) {
     EXPECT_TRUE(ModuleImports(raw, "cel", fn)) << "missing import cel." << fn;
   }
 }

@@ -114,6 +114,13 @@ inline constexpr absl::string_view kCelHostWktUnwrapWrapperInternalName =
 // `(i32 map_slot, i32 key_slot, i32 value_slot) -> ()`.
 inline constexpr absl::string_view kCelMapCreateInternalName = "cel_map_create";
 inline constexpr absl::string_view kCelMapInsertInternalName = "cel_map_insert";
+// `cel_map_index_build(map_slot)` — the terminal map-construction step.
+// Builds the SwissTable hash index over a fully-constructed arena map;
+// a no-op below the runtime threshold and a pure accelerator
+// (identical semantics).  Signature `(i32 map_slot) -> ()`.  See
+// `doc/implementation-plan/rewrite/m32-swisstable-map-index.md` §8.
+inline constexpr absl::string_view kCelMapIndexBuildInternalName =
+    "cel_map_index_build";
 inline constexpr absl::string_view kCelMapLookupArenaInternalName =
     "cel_map_lookup_arena";
 inline constexpr absl::string_view kCelMapLookupInternalName =

@@ -189,6 +189,13 @@ void InstallMapImports(WasmModule& mod) {
   const BinaryenType map3_params[3] = {i32, i32, i32};
   mod.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
                         "cel_map_insert", map3_params, BinaryenTypeNone());
+  // Terminal map-construction step: build the SwissTable hash index.
+  // Installed unconditionally alongside the other map helpers (no lazy
+  // tracking of runtime imports); the runtime no-ops below threshold.
+  const BinaryenType map_index_build_params[1] = {i32};
+  mod.AddFunctionImport(std::string(kCelMapIndexBuildInternalName), "cel",
+                        "cel_map_index_build", map_index_build_params,
+                        BinaryenTypeNone());
   // Dynamic-map insert for transformMap accumulators.
   mod.AddFunctionImport("cel_map_insert_at", "cel", "cel_map_insert_at",
                         map3_params, BinaryenTypeNone());

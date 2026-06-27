@@ -363,6 +363,19 @@ BinaryenExpressionRef EmitCelMapInsertCall(WasmModule& mod, uint32_t out_slot,
   return BinaryenCall(mod.raw(), name.c_str(), args, 3, BinaryenTypeNone());
 }
 
+// Emits `(call $cel.cel_map_index_build (i32.const map_slot))` — the
+// TERMINAL map-construction step (after the last insert).  The runtime
+// builds a SwissTable hash index over the fully-constructed map's dense
+// entries run; it no-ops below the threshold and is a pure accelerator,
+// so codegen always emits it without predicting the entry count.  See
+// `doc/implementation-plan/rewrite/m32-swisstable-map-index.md` §8.
+BinaryenExpressionRef EmitCelMapIndexBuildCall(WasmModule& mod,
+                                               uint32_t map_slot) {
+  BinaryenExpressionRef args[1] = {I32Const(mod, map_slot)};
+  const std::string name(kCelMapIndexBuildInternalName);
+  return BinaryenCall(mod.raw(), name.c_str(), args, 1, BinaryenTypeNone());
+}
+
 // Emits `(call $cel.cel_map_insert_at_if_present <map> <key> <opt_v>)`.
 // Predicate-gated insert for `{?key: opt_value}` map-literal entries:
 // the kernel unwraps `opt_value` and inserts the inner CelValue iff
@@ -397,7 +410,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
   const auto N = static_cast<uint32_t>(m.entries().size());
 
   std::vector<BinaryenExpressionRef> instrs;
-  instrs.reserve(2u + (3u * N));
+  instrs.reserve(3u + (3u * N));
   instrs.push_back(EmitCelMapCreateCall(ctx.mod, out_slot, N));
 
   for (const cel::MapExprEntry& e : m.entries()) {
@@ -411,6 +424,11 @@ absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
             : EmitCelMapInsertCall(ctx.mod, out_slot, *key_or, *val_or);
     instrs.push_back(call);
   }
+
+  // Terminal construction step: build the SwissTable index over the
+  // now-complete map (runtime no-ops below threshold).  Must run after
+  // the last insert and before the map is consumed.
+  instrs.push_back(EmitCelMapIndexBuildCall(ctx.mod, out_slot));
 
   // Block-trailer i32 yields the map's slot offset for parent
   // expressions (e.g. an index call or a return).
