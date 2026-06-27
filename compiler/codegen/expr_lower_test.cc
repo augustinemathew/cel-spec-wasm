@@ -759,7 +759,10 @@ bool BodyContainsCallTo(BinaryenExpressionRef expr, const char* name) {
 // `cel_map_create` is emitted with no `cel_map_insert`.
 
 TEST(ExprLowerMapTest, ScalarMapLiteralEmitsCreateAndInserts) {
-  Pipeline p = RunPipeline("{1: 10, 2: 20, 3: 30}");
+  // A map with a non-constant value (variable `a`) is ineligible for
+  // const materialization and keeps the per-Eval build path
+  // (cel_map_create + inserts + terminal cel_map_index_build).
+  Pipeline p = RunPipelineWithVars("{1: a, 2: 20, 3: 30}", {"a:int"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
   auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
@@ -804,10 +807,114 @@ TEST(ExprLowerMapTest, ScalarMapLiteralEmitsCreateAndInserts) {
       << "index_build must target the same slot the map was built into";
 }
 
+TEST(ExprLowerMapTest, ConstMapLiteralLowersToI32ConstNoBuild) {
+  // An all-constant map is materialized into rodata (header + 48-B entry
+  // run + baked index), so the kMapExpr lowers to a single i32.const of
+  // its frame offset — no cel_map_create, no per-entry inserts, no
+  // terminal cel_map_index_build.
+  Pipeline p = RunPipeline("{1: 10, 2: 20, 3: 30}");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_create"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_index_build"));
+  // The root expression is a bare i32.const (the rodata frame offset).
+  BinaryenExpressionRef root =
+      BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);
+  EXPECT_EQ(BinaryenExpressionGetId(root), BinaryenConstId());
+}
+
+TEST(ExprLowerMapTest, ConstMapNestedLowersToI32Const) {
+  // Nested all-const map: inner materializes innermost-first and embeds in
+  // the outer entry run; the outer also lowers to a single i32.const.
+  Pipeline p = RunPipeline("{1: {2: 30}}");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_create"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_index_build"));
+  BinaryenExpressionRef root =
+      BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);
+  EXPECT_EQ(BinaryenExpressionGetId(root), BinaryenConstId());
+}
+
+TEST(ExprLowerMapTest, ConstMapInsideNonConstListInnerStillMaterializes) {
+  // `[{1: 10}, {2: a}]`: the first map is const (materializes to a frame),
+  // the second has an ident value so it builds per-Eval; the outer list is
+  // therefore non-const and builds per-Eval too.  The const inner map must
+  // NOT emit a cel_map_create for itself — only the non-const inner map
+  // does.  So exactly ONE cel_map_create appears (for `{2: a}`), plus the
+  // list build.
+  Pipeline p = RunPipelineWithVars("[{1: 10}, {2: a}]", {"a:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  // The const inner map is materialized; only the non-const inner map and
+  // the outer list build per-Eval.
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_create"));
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_create"));
+}
+
+TEST(ExprLowerMapTest, MapWithIdentValueKeepsBuildSequence) {
+  // A single ident value disqualifies the whole map from materialization;
+  // it keeps the cel_map_create + insert + index_build build sequence.
+  Pipeline p = RunPipelineWithVars("{1: a}", {"a:int"});
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_create"));
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_index_build"));
+}
+
+TEST(ExprLowerMapTest, MapWithComprehensionValueKeepsBuildSequence) {
+  // A comprehension value (`[1,2,3].map(x, x)`) is not a compile-time
+  // constant — IsConstMaterializable rejects comprehension nodes — so the
+  // whole map keeps the per-Eval build path: cel_map_create + the terminal
+  // cel_map_index_build, NOT a bare i32.const.
+  Pipeline p = RunPipeline("{1: [1, 2, 3].map(x, x)}");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_create"));
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_index_build"));
+}
+
+TEST(ExprLowerMapTest, MapWithCallValueKeepsBuildSequence) {
+  // A call value (`1 + 1`) is syntactically a kCallExpr, which
+  // IsConstMaterializable rejects (no compile-time eval), so the map keeps
+  // the build path: cel_map_create is emitted, NOT a bare i32.const.
+  Pipeline p = RunPipeline("{1: 1 + 1}");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_create"));
+}
+
 TEST(ExprLowerMapTest, MapIndexOnLiteralEmitsArenaFastPath) {
-  // Map literal indexed with int key — origin is kArena (literal),
-  // so codegen routes to cel_map_lookup_arena (the pure-wasm fast
-  // path), bypassing the dispatcher.
+  // Materialized map literal indexed with int key — origin is kArena, so
+  // codegen routes to cel_map_lookup_arena (the pure-wasm fast path),
+  // bypassing the dispatcher.  The map operand is a single i32.const
+  // (materialized) rather than a build block.
   Pipeline p = RunPipeline("{1: 10}[1]");
   WasmModule m;
   PrepareHostModule(m, p.layout);
@@ -1522,8 +1629,10 @@ TEST(ExprLowerOptionalLiteralTest, ListMixedElementsEmitsBothAppendKernels) {
 
 TEST(ExprLowerOptionalLiteralTest, NonOptionalMapLiteralEmitsOnlyPlainInsert) {
   // Regression: ordinary map literal must not route through the
-  // predicate-gated kernel even after the codegen branch was added.
-  Pipeline p = RunPipeline("{'k': 'v'}");
+  // predicate-gated kernel even after the codegen branch was added.  A
+  // non-constant value (`a`) forces the build path; an all-const map would
+  // materialize and emit no inserts (see ConstMapLiteralLowersToI32Const).
+  Pipeline p = RunPipelineWithVars("{'k': a}", {"a:string"});
   WasmModule m;
   PrepareHostModule(m, p.layout);
   auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);

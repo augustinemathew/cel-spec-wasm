@@ -13,9 +13,14 @@ runtime no-ops below threshold.  Verified: conformance 2035/2035 both modes
 lookup-loop 65x at N=256 (`benchmark/eval/results/2026-06-27-Mac*`);
 independent adversarial review CLEAN, no P0/P1
 (`doc/implementation-plan/rewrite/reviews/2026-06-27-m32a-swisstable-index.md`).
-m32.B (codegen-baked index) still planned, blocked on the const-map
-materializer (see the reconciliation note below).  Drafted 2026-06-14;
-reviewed + reconciled + shipped 2026-06-27.
+m32.B (codegen-baked index) SHIPPED 2026-06-27 alongside the const-map
+materializer (`StaticMemoryBuilder::MaterializeMap`, see §7 + m31 §8):
+a const map literal with `count >= kCelMapIndexThreshold` materializes
+into rodata with a baked index byte-identical to `cel_map_index_build`,
+so the lookup hot path is one branch (`index_offset != 0`) and the
+runtime does zero index work.  Drafted 2026-06-14; reviewed + reconciled
++ m32.A shipped 2026-06-27; m32.B + const-map materializer shipped
+2026-06-27.
 
 > **What landed (m32.A, 2026-06-27).**  `ArenaMapHeader._pad` →
 > `index_offset`; `kRuntimeAbiVersion` 3 → 4; the shared kernel
@@ -38,18 +43,16 @@ reviewed + reconciled + shipped 2026-06-27.
 > **Reconciliation against mainline (2026-06-27).**  The design holds as
 > written; two things to fix before reading §§5–9 literally:
 >
-> 1. **m32.B is blocked on const-map materialization, which has NOT
->    shipped.**  m31 landed const-*list* materialization only
->    (`StaticMemoryBuilder::MaterializeList`); there is **no
->    `MaterializeMap`** yet — it's the queued m31 follow-up
->    (`static_memory_builder.h`: "for now — maps … sibling follow-up").
->    So §7 (codegen-baked index) and §8's "runtime-built index is
->    byte-identical to the codegen-baked one" both ride a prerequisite
->    that isn't in the tree.  Read "m31's `MaterializeMap`" as "the
->    const-map materializer, landed first."  **m32.A (runtime-built
->    index) has no such dependency** and is the bulk of the win — ship it
->    alone; its correctness is checked by index-vs-linear parity (§12),
->    not by byte-identity against a baked index that doesn't exist yet.
+> 1. **RESOLVED 2026-06-27 — m32.B shipped with the const-map
+>    materializer.**  `StaticMemoryBuilder::MaterializeMap` now exists
+>    (alongside `MaterializeList`) and bakes the index byte-identically
+>    to `cel_map_index_build`.  §7 (codegen-baked index) and §8's
+>    "runtime-built index is byte-identical to the codegen-baked one" are
+>    now in the tree and pinned by `StaticMemoryBuilderKeystoneTest`
+>    (memcmp of the entry run + index block against the runtime builders,
+>    int + string keys, N<8 and N>=8).  m32.A (runtime-built index) had
+>    no such dependency and shipped first; m32.B layers the compile-time
+>    bake on top.
 >
 > 2. **`kRuntimeAbiVersion` is currently 3** (`abi/runtime_catalogue.h`);
 >    the layout change bumps it to 4.

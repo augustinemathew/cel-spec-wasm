@@ -403,6 +403,13 @@ absl::StatusOr<BinaryenExpressionRef> EmitKMapExpr(EmitCtx& ctx,
                                                    const cel::Expr& expr,
                                                    const cel::MapExpr& m,
                                                    const NodeAnnotation& ann) {
+  // A const map materialized into rodata (LayoutPass's
+  // ConstAggregateVisitor) lowers to a single i32.const of its frame
+  // offset — read-only kernels treat it exactly like an arena-built map
+  // (header + 48-B run + baked index).  Otherwise it is built per-Eval.
+  if (ann.storage.kind == StorageKind::kStaticRodata) {
+    return I32Const(ctx.mod, ann.storage.payload);
+  }
   ABSL_CHECK(ann.storage.kind == StorageKind::kWorkspaceSlot)
       << "expr_lower: kMapExpr expr_id=" << expr.id()
       << " has non-workspace storage (LayoutPass didn't allocate a slot)";

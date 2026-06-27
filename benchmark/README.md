@@ -148,21 +148,21 @@ Linear regression over each length-sweep family; slope is the steady-state cost 
 
 | surface | operator family | points | cel-cpp slope | cel-cpp setup | celwasm-static slope | celwasm-static setup | celwasm-static crossover vs cel-cpp |
 |---|---|---|---|---|---|---|---|
-| arithmetic | doubleAdd | 5 | 47.5 | -879 | 1.6 | 123 | N ≈ 22 |
-| arithmetic | intAdd | 5 | 33.8 | -54 | 1.8 | 120 | N ≈ 5 |
-| arithmetic | intMul | 5 | 65.0 | 104 | 3.1 | 130 | N ≈ 0 |
-| arithmetic | intSub | 5 | 77.4 | -195 | 1.9 | 119 | N ≈ 4 |
-| comprehensions | all | 4 | 66.1 | 140 | 5.1 | 50 | always wins |
-| index | mapIntN | 3 | 46.3 | -30 | 3,542.4 | -91,697 | never wins |
-| index | mapStrN | 3 | 78.8 | -891 | 1,952.1 | -49,684 | never wins |
-| lists | bound | 5 | 3.4 | 1,861 | 2.9 | -3,178 | always wins |
-| long_strings | containsLong_N | 4 | 0.0 | 64 | 0.1 | 57 | never wins |
-| maps | inIntN | 3 | 54.5 | -422 | 3,549.9 | -91,859 | never wins |
-| maps | inStrN | 3 | 87.4 | -1,275 | 1,942.6 | -49,211 | never wins |
-| proto | reads | 3 | 65.1 | 16 | 20.5 | 54 | N ≈ 1 |
-| proto | select_depth | 5 | 35.0 | 36 | 83.3 | 13 | never wins |
-| size | list | 3 | 8.8 | 134 | -0.0 | 48 | always wins |
-| strings | concatChain | 3 | 144.6 | -4,117 | 52.1 | -1,014 | N ≈ 34 |
+| arithmetic | doubleAdd | 5 | 30.8 | 19 | 1.5 | 114 | N ≈ 3 |
+| arithmetic | intAdd | 5 | 32.0 | -4 | 1.7 | 111 | N ≈ 4 |
+| arithmetic | intMul | 5 | 31.0 | -44 | 2.7 | 117 | N ≈ 6 |
+| arithmetic | intSub | 5 | 31.8 | -65 | 1.7 | 116 | N ≈ 6 |
+| comprehensions | all | 4 | 65.3 | 165 | 4.5 | 44 | always wins |
+| index | mapIntN | 3 | 45.1 | -64 | -0.0 | 99 | N ≈ 4 |
+| index | mapStrN | 3 | 50.3 | -223 | 0.0 | 93 | N ≈ 6 |
+| lists | bound | 5 | 3.5 | -2,835 | 2.6 | -922 | N ≈ 2,169 |
+| long_strings | containsLong_N | 4 | 0.0 | 66 | 0.1 | 51 | never wins |
+| maps | inIntN | 3 | 82.1 | -1,067 | 0.0 | 100 | N ≈ 14 |
+| maps | inStrN | 3 | 72.1 | -890 | 0.0 | 104 | N ≈ 14 |
+| proto | reads | 3 | 64.6 | 13 | 21.0 | 46 | N ≈ 1 |
+| proto | select_depth | 5 | 34.8 | 36 | 39.5 | 32 | never wins |
+| size | list | 3 | 8.8 | 136 | -0.0 | 40 | always wins |
+| strings | concatChain | 3 | 131.4 | -3,601 | 41.6 | -859 | N ≈ 31 |
 
 
 <!-- END AUTO-GENERATED RESULTS -->

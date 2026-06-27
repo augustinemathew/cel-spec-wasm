@@ -2789,6 +2789,57 @@ Invariants the shape locks:
     regression that drops the `cel_map_index_build` call — leaving the
     index dormant — is caught here, not four passes downstream.
 
+## 74. `{0:100, …, 8:108}[5]` — materialized SwissTable map index (m32.B)
+
+File: `wat/74_static_map_swisstable.wat`.  Status: assembles under
+`wasm-as` (with `--enable-threads`); runs end-to-end through
+`tools/wat_runner` against the real `cel_runtime.wasm`, no host stubs
+(`wat_runner_test.cc::WatRunnerMapTest.MaterializedMapWithBakedIndexResolvesLookup`).
+
+Same source expr as §73, but here the WHOLE map — `ArenaMapHeader`, the
+48-byte `{key,val}` entry run, the **baked** control-byte / slot-array
+index block, and the outer `CEL_MAP_ARENA` frame — is written into the
+data segment **at compile time** by `StaticMemoryBuilder::MaterializeMap`.
+`$eval` constructs nothing: it calls `cel_map_lookup_arena` directly over
+the static layout, which follows `hdr->index_offset` (baked, non-zero)
+and resolves `m[5]` through `cel_map_index_find` (the baked SwissTable
+probe) — exactly as if `cel_map_index_build` had run.  §73 is the
+runtime-built sibling; this is the compile-time-baked one, and the two
+are byte-identical (pinned by
+`StaticMemoryBuilderKeystoneTest` over the runtime builders).
+
+```
+[  16,  32)  ArenaMapHeader {count=9, cap=9, entries_offset=32,
+                             index_offset=464}
+[  32, 464)  9 × 48-B {key:CEL_INT i, val:CEL_INT 100+i} (source order)
+[ 464, 552)  baked index: ctrl[16]+clone[7] (kEmpty 0x80 / 7-bit H2),
+             pad to 4, then 16 × u32 slot = entry index
+[ 552, 576)  outer frame {CEL_MAP_ARENA, header_ptr=16}  ← i32.const target
+[ 576, 600)  lookup key {CEL_INT, i=5}
+[ 600, 624)  workspace: cel_map_lookup_arena result slot
+```
+
+Layout per `runtime/cel_data.h`: `CelValue` 24 B; `ArenaMapHeader` 16 B
+`{count, capacity, entries_offset, index_offset}`; entry stride 48 B;
+`CEL_INT = 2`, `CEL_MAP_ARENA = 8`.
+
+Invariants the shape locks:
+
+  - The materialized region's header→run→index adjacency and the index
+    block's bytes (control bytes = `cel_h2` tags, cloned first-7 mirror,
+    `u32` slot array of entry indices, `kEmpty = 0x80` for empty slots)
+    are **byte-identical** to what `cel_map_create` + `cel_map_insert` +
+    `cel_map_index_build` produce at runtime — the m32.B byte-identity
+    gate.  The materializer reuses the frozen `cel_map_hash.h` kernel
+    (hash / H1 / H2 / triangular probe), so both producers place every
+    key in the same slot.
+  - A const map lowers to a single `(i32.const <frame_off>)`; no
+    `cel_map_create`, no inserts, no `cel_map_index_build` at eval time
+    (pinned in `expr_lower_test.cc::ExprLowerMapTest.ConstMapLiteral*`).
+  - The test asserts `m[5] == CEL_INT(105)` AND `index_offset == 464`
+    (the baked block), so a regression that drops the baked index — or
+    miscomputes its placement — is caught here.
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

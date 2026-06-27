@@ -38,6 +38,7 @@ cc_library(
     srcs = ["static_memory_builder.cc"],
     hdrs = ["static_memory_builder.h"],
     deps = [
+        "//runtime:cel_map_hash",
         "//runtime:cel_runtime",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
@@ -51,7 +52,9 @@ cc_test(
     srcs = ["static_memory_builder_test.cc"],
     deps = [
         ":static_memory_builder",
+        "//runtime:cel_map_hash",
         "//runtime:cel_runtime",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
