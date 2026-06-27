@@ -154,6 +154,9 @@ void InstallMapImports(WasmModule& m) {
                       "cel_map_create", map2, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelMapInsertInternalName), "cel",
                       "cel_map_insert", map3, BinaryenTypeNone());
+  const BinaryenType map1[1] = {i32};
+  m.AddFunctionImport(std::string(kCelMapIndexBuildInternalName), "cel",
+                      "cel_map_index_build", map1, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelMapLookupArenaInternalName), "cel",
                       "cel_map_lookup_arena", map3, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelMapLookupInternalName), "cel",
@@ -765,15 +768,15 @@ TEST(ExprLowerMapTest, ScalarMapLiteralEmitsCreateAndInserts) {
 
   // The kMapExpr root materialises as:
   //   (block (call $cel_map_create out N) (call $cel_map_insert ...) ×3
-  //          (i32.const out))
+  //          (call $cel_map_index_build out) (i32.const out))
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   // Last child of $eval body = the kMapExpr block (the root).
   BinaryenExpressionRef root =
       BinaryenBlockGetChildAt(body, BinaryenBlockGetNumChildren(body) - 1);
   ASSERT_EQ(BinaryenExpressionGetId(root), BinaryenBlockId())
       << "kMapExpr lowers to a block";
-  // 1 create + 3 inserts + 1 i32.const trailer = 5 children.
-  EXPECT_EQ(BinaryenBlockGetNumChildren(root), 5u);
+  // 1 create + 3 inserts + 1 index_build + 1 i32.const trailer = 6.
+  EXPECT_EQ(BinaryenBlockGetNumChildren(root), 6u);
 
   BinaryenExpressionRef create = BinaryenBlockGetChildAt(root, 0);
   ASSERT_EQ(BinaryenExpressionGetId(create), BinaryenCallId());
@@ -789,6 +792,16 @@ TEST(ExprLowerMapTest, ScalarMapLiteralEmitsCreateAndInserts) {
     ASSERT_EQ(BinaryenExpressionGetId(call), BinaryenCallId());
     EXPECT_STREQ(BinaryenCallGetTarget(call), "cel_map_insert");
   }
+
+  // The terminal map-construction step: cel_map_index_build, emitted
+  // after the last insert and before the i32.const trailer.  Its sole
+  // operand is the map's out_slot (same as cel_map_create's first).
+  BinaryenExpressionRef index_build = BinaryenBlockGetChildAt(root, 4);
+  ASSERT_EQ(BinaryenExpressionGetId(index_build), BinaryenCallId());
+  EXPECT_STREQ(BinaryenCallGetTarget(index_build), "cel_map_index_build");
+  EXPECT_EQ(BinaryenConstGetValueI32(BinaryenCallGetOperandAt(index_build, 0)),
+            BinaryenConstGetValueI32(BinaryenCallGetOperandAt(create, 0)))
+      << "index_build must target the same slot the map was built into";
 }
 
 TEST(ExprLowerMapTest, MapIndexOnLiteralEmitsArenaFastPath) {
@@ -987,6 +1000,9 @@ TEST(ExprLowerComprehensionTest, MapMacroEmitsListAppendAt) {
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_list_append_at"));
   EXPECT_FALSE(BodyContainsCallTo(body, "cel_list_append_at_if_bool"));
   EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert_at"));
+  // List-producing comprehensions have no map accu, so no index build.
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_index_build"))
+      << "list-producing comprehension must not emit cel_map_index_build";
 }
 
 TEST(ExprLowerComprehensionTest, FilterMacroEmitsListAppendAtIfBool) {
@@ -1013,6 +1029,9 @@ TEST(ExprLowerComprehensionTest, TransformMap3ArgEmitsMapInsertAt) {
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert_at"));
   EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_insert_at_if_bool"));
+  // The map accu gets a terminal SwissTable index build after the loop.
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_index_build"))
+      << "map-producing comprehension must emit terminal cel_map_index_build";
 }
 
 TEST(ExprLowerComprehensionTest, TransformMap4ArgEmitsMapInsertAtIfBool) {

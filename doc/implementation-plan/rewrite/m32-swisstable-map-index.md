@@ -1,14 +1,19 @@
 # m32 — SwissTable hash index for arena maps
 
-Status: m32.A in progress — the shared hash kernel (`cel_map_hash.h`) and the
-runtime index kernels (`cel_map_index.c`; `cel_map_lookup/in/eq` dispatch)
-have landed, but are DORMANT: no compiled module calls `cel_map_index_build`
-yet, so every map still linear-scans until the codegen wiring lands.
-Remaining for m32.A: codegen emits the terminal build call, then conformance
-(monotonic), benchmarks, independent review.  m32.B (codegen-baked index)
-still planned, blocked on the const-map materializer (see the reconciliation
-note below).  Drafted 2026-06-14; reviewed + reconciled against mainline
-2026-06-27 (dependency clarified, file:line cites refreshed).
+Status: m32.A codegen wiring landed (uncommitted) — the shared hash kernel
+(`cel_map_hash.h`) and the runtime index kernels (`cel_map_index.c`;
+`cel_map_lookup/in/eq` dispatch) shipped earlier; codegen now emits the
+terminal `cel_map_index_build` call after every map construction (map
+literals in `EmitKMapExpr`, and map-producing comprehensions —
+transformMap / transformMapEntry — in `LowerComprehension`), so the index
+is ACTIVE for compiled maps with >= 8 entries.  The call is installed
+unconditionally as a `cel` import (`InstallMapImports`, no AST gating) and
+the runtime no-ops below threshold.  Remaining for m32.A: conformance
+(monotonic), benchmarks, independent review, commit.  m32.B (codegen-baked
+index) still planned, blocked on the const-map materializer (see the
+reconciliation note below).  Drafted 2026-06-14; reviewed + reconciled
+against mainline 2026-06-27 (dependency clarified, file:line cites
+refreshed); codegen wiring 2026-06-27.
 
 > **What landed (m32.A, 2026-06-27).**  `ArenaMapHeader._pad` →
 > `index_offset`; `kRuntimeAbiVersion` 3 → 4; the shared kernel
@@ -442,10 +447,26 @@ Freeze the index layout in WAT before any codegen C++.
 - `compiler/codegen/static_memory_builder.{h,cc}` — emit index bytes
   (m32.B); add `//runtime:cel_map_hash` dep.
 - `compiler/codegen` — emit `cel_map_index_build` as terminal
-  construction step (m32.A).
-- `doc/.../wat/NN_map_swisstable_index.wat` + `wat-traces.md`.
+  construction step (m32.A).  As shipped: the import is declared in
+  `compiler/codegen/expr_lower.h` (`kCelMapIndexBuildInternalName`) and
+  installed unconditionally in `compiler/internal/compile.cc`
+  (`InstallMapImports`); the call is emitted by
+  `EmitCelMapIndexBuildCall` in `compiler/codegen/expr_lower.cc` (after
+  the last insert in `EmitKMapExpr`) and inside `LowerComprehension`
+  (`compiler/codegen/expr_lower_comprehension.cc`, gated on the
+  loop-step shape being a map-insert kind so `cel.bind` map
+  pass-throughs are not double-built).  Codegen-IR assertions in
+  `compiler/codegen/expr_lower_test.cc`; import-presence assertion in
+  `compiler/internal/compile_test.cc`.
+- `doc/.../wat/73_map_swisstable_index.wat` + `wat-traces.md` §73;
+  `tools/wat_runner/wat_runner.cc` adds `cel_map_index_build` to
+  `kRuntimeExports`; `wat_runner_test.cc` asserts the index activates
+  (`index_offset != 0`).
 - `runtime/cel_map_hash_test.cc`, `runtime/cel_map_test.cc` additions,
-  oracle + e2e cases.
+  oracle cases (shipped with the runtime slice); e2e cases as shipped:
+  `e2e/m32_swisstable_index_test.cc` (both link modes) — indexed (>=8)
+  vs linear (<8) parity over int/string keys, lookup hit/miss, `in`,
+  equality, and transformMap-built maps.
 - Reconcile (on ship): resolve `map-list-dispatch.md` §10 #1, drop
   `m31` §8 (m31.B), tick `testing-checklist.md` rows. (As a plan, m32
   only forward-references these today.)

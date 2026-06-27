@@ -433,6 +433,45 @@ TEST(WatRunnerMapTest, MapLiteralIndexedProducesValue) {
 }
 
 // ─────────────────────────────────────────────────────────
+// 73_map_swisstable_index.wat — 9-entry int map, indexed lookup.
+//
+// Locks the m32.A terminal construction sequence: cel_map_create +
+// 9× cel_map_insert + cel_map_index_build, then a keyed lookup.
+// count = 9 >= kCelMapIndexThreshold (8), so cel_map_index_build
+// allocates the index block and sets hdr->index_offset != 0 — the
+// lookup resolves through cel_map_index_find (indexed path), not a
+// linear scan.  Asserts both the correct value (CEL_INT 105) AND
+// that index_offset became non-zero (proves the index activated;
+// a regression that drops the build call would leave it 0).
+// ─────────────────────────────────────────────────────────
+
+TEST(WatRunnerMapTest, IndexBuildActivatesIndexedLookup) {
+  auto wat = LoadWat("73_map_swisstable_index.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  // Lookup result at out_slot = 496; m[5] == CEL_INT(105).
+  EXPECT_EQ(out->eval_return, 496u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_INT);
+  EXPECT_EQ(cv.payload.i, 105);
+  // The map header is at slot 472; read its header_ptr, then the
+  // ArenaMapHeader's index_offset (4th u32, byte offset 12).  A
+  // non-zero index_offset proves cel_map_index_build activated the
+  // index for this >= 8-entry map.
+  CelValue map_cv = DecodeCelValue(out->memory_after, 472u);
+  ASSERT_EQ(map_cv.kind, CEL_MAP_ARENA);
+  const uint32_t header_ptr = map_cv.payload.arena_map.header_ptr;
+  uint32_t index_offset = 0;
+  std::memcpy(&index_offset, out->memory_after.data() + header_ptr + 12u,
+              sizeof(index_offset));
+  EXPECT_NE(index_offset, 0u)
+      << "cel_map_index_build should set index_offset for a 9-entry map";
+}
+
+// ─────────────────────────────────────────────────────────
 // 08_map_index_host.wat — `m["k"]` on a bound map.
 //
 // kHost path: the WAT imports cel_host.cel_map_lookup directly.

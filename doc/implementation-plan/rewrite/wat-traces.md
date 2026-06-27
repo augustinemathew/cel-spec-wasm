@@ -2738,6 +2738,57 @@ Invariants the shape locks:
     must never mutate an operand (concat allocates fresh; iterators keep
     state in the arena), so a materialized list is safe to share.
 
+## 73. `{0:100, …, 8:108}[5]` — runtime-built SwissTable map index (m32.A)
+
+File: `wat/73_map_swisstable_index.wat`.  Status: assembles under
+`wasm-as` (with `--enable-threads`); runs end-to-end through
+`tools/wat_runner` against the real `cel_runtime.wasm`, no host stubs
+(`wat_runner_test.cc::WatRunnerMapTest.IndexBuildActivatesIndexedLookup`).
+
+Source expr: a 9-entry int-keyed map literal indexed by key `5`.  This
+freezes the **terminal map-construction sequence** m32.A emits: after
+the last `cel_map_insert`, codegen calls
+`cel_map_index_build(map_slot)` — a single
+`(call $cel.cel_map_index_build (i32.const map_slot))`, no new ABI
+surface (the design's §11 "codegen call shape is unchanged").  Because
+`count = 9 >= kCelMapIndexThreshold (8)`, the build allocates the index
+block and sets `hdr->index_offset != 0`, so `cel_map_lookup_arena`
+resolves `m[5]` through `cel_map_index_find` (the SwissTable probe)
+rather than a linear scan.
+
+```
+[  16, 232)  rodata: 9 keys   {CEL_INT, i=0..8}      (24 B each)
+[ 232, 448)  rodata: 9 values {CEL_INT, i=100..108}  (24 B each)
+[ 448, 472)  rodata: lookup key {CEL_INT, i=5}
+[ 472, 496)  workspace: kMapExpr result slot (map built here)
+[ 496, 520)  workspace: kCallExpr lookup result slot
+[ 520+)      bump arena: ArenaMapHeader + 48 B entries run + index block
+```
+
+Layout per `runtime/cel_data.h`: `CelValue` 24 B `{kind:u32@0, _pad@4,
+payload@8}`; `ArenaMapHeader` 16 B `{count, capacity, entries_offset,
+index_offset}` (`index_offset` was `_pad`; 0 = no index, linear-scan
+fallback); entry stride 48 B (key+val); `CEL_INT = 2`,
+`CEL_MAP_ARENA = 5`.
+
+Invariants the shape locks:
+
+  - `cel_map_index_build` is the TERMINAL step — emitted after the last
+    insert, before the map is consumed by the lookup.  The runtime
+    decides per final `count` whether to build; codegen always emits the
+    call and never predicts the entry count (the index is a pure
+    accelerator — a no-op below threshold, identical semantics above).
+  - The index lives in the bump arena alongside (after) the dense
+    entries run; the entries run is byte-identical to the no-index case
+    (`07_map_index_arena.wat` is the <8 linear-path sibling).  Read-only
+    keyed kernels branch on `hdr->index_offset != 0` once; equality
+    (`cel_value_eq`) still gates every H2 group match, so hash collisions
+    are harmless and the result matches the linear scan exactly.
+  - The test asserts both `m[5] == CEL_INT(105)` AND
+    `index_offset != 0` (read from the header's 4th u32), so a
+    regression that drops the `cel_map_index_build` call — leaving the
+    index dormant — is caught here, not four passes downstream.
+
 ## Future entries (stubs)
 
   - `has(c.field)` — M2.D, `cel_host.cel_has_field` returns bool

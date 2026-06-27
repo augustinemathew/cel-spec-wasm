@@ -1108,6 +1108,30 @@ absl::StatusOr<BinaryenExpressionRef> LowerComprehension(
   auto loop_or = BuildCompLoop(ctx, expr, comp, c);
   if (!loop_or.ok()) return loop_or.status();
   guarded.push_back(*loop_or);
+  // Terminal map-construction step for map-ACCUMULATING comprehensions
+  // (transformMap / transformMapEntry): after the accumulation loop,
+  // build the SwissTable index over the complete accu map.  Gated on
+  // the loop-step shape being a map-insert kind — NOT merely a kMap
+  // accu repr — so `cel.bind(x, <map>, body)` (a kGeneric pass-through
+  // whose map accu_init already carries its own EmitKMapExpr-built
+  // index) is excluded and the map isn't index-built twice.  Emitted
+  // inside the guarded block, so on the range-absorption path (accu
+  // holds a poison CelValue, not a map) it never runs.  Runtime no-ops
+  // below threshold; pure accelerator.  See m32-swisstable-map-index.md
+  // §8.
+  const LoopStepShape build_shape =
+      ClassifyLoopStep(comp.loop_step(), comp.accu_var());
+  const bool map_accumulating =
+      build_shape.kind == LoopStepShape::Kind::kMapInsert ||
+      build_shape.kind == LoopStepShape::Kind::kMapInsertIf ||
+      build_shape.kind == LoopStepShape::Kind::kMapMerge ||
+      build_shape.kind == LoopStepShape::Kind::kMapMergeIf;
+  if (map_accumulating) {
+    BinaryenExpressionRef build_args[1] = {I32Const(ctx.mod, c.accu_slot())};
+    guarded.push_back(BinaryenCall(
+        ctx.mod.raw(), std::string(kCelMapIndexBuildInternalName).c_str(),
+        build_args, 1, BinaryenTypeNone()));
+  }
   BinaryenExpressionRef guarded_block = BinaryenBlock(
       ctx.mod.raw(), c.absorb_label.c_str(), guarded.data(),
       static_cast<BinaryenIndex>(guarded.size()), BinaryenTypeNone());
