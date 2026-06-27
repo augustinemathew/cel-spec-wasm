@@ -103,6 +103,22 @@ cc_library(
     visibility = ["//:internal"],
 )
 
+# Shared SwissTable hash kernel for arena maps — FROZEN, dual-build.
+# Header-only (`static inline`, `extern "C"`); no `.c` TU so both the
+# wasm32 runtime and the native host compiler include the SAME source and
+# compute byte-identical hash / control-byte / probe placement.  Mirrors
+# the `cel_layout` hdrs-only shape above; deps `cel_runtime` only for the
+# CelValue layout + `cel_memory_base_` accessor it reads through.  See
+# `doc/implementation-plan/rewrite/m32-swisstable-map-index.md` §6.
+cc_library(
+    name = "cel_map_hash",
+    hdrs = ["cel_map_hash.h"],
+    visibility = ["//:internal"],
+    deps = [
+        ":cel_runtime",
+    ],
+)
+
 # Native-host build of the runtime.  Used by unit tests and by host-side
 # code that needs the CelValue layout (codegen, cel_log, tests).
 cc_library(
@@ -254,6 +270,17 @@ cc_test(
     size = "small",
     srcs = ["cel_map_test.cc"],
     deps = [
+        ":cel_runtime",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "cel_map_hash_test",
+    size = "small",
+    srcs = ["cel_map_hash_test.cc"],
+    deps = [
+        ":cel_map_hash",
         ":cel_runtime",
         "@com_google_googletest//:gtest_main",
     ],
