@@ -232,11 +232,33 @@ a different token than an int it would compare-equal to under linear
 scan. **Resolution**: when a double lookup key canonicalizes with
 magnitude `≥ 2^53`, the lookup kernel **falls back to linear scan for
 that single call** (one compare; common path stays O(1); pathological
-path stays bit-identical to today). **This threshold MUST be
-oracle-confirmed** before merge — extend `testdata/cel_cpp_oracle_test.cc`
-with `double in {bigInt: v}` cases per CLAUDE.md's oracle discipline;
-the oracle outranks any source-reading guess about where cel-cpp's
-cross-type equality flips.
+path stays bit-identical to today).
+
+> **Oracle verdict (2026-06-27) — keep the fallback; it matches our
+> runtime.**  Confirmed against real cel-cpp (`cel_cpp_oracle_test.cc`,
+> `MapKeyNumericCrossType`, 21 cases).  Two facts:
+> - **Our runtime's map-key equality is the lossy `==` (`cel_value_eq`,
+>   used at `cel_runtime.c:113/163/196`):** `(int64)v` is cast to double
+>   and compared, so the double `2^53.0` is map-equal to BOTH `2^53` and
+>   `2^53+1`.  The SwissTable index must agree with this linear scan, and
+>   no single hash token can land a double on a *range* of ints — so the
+>   `≥ 2^53` double-lookup-key linear fallback **stays**.  Its rationale
+>   is "match the current runtime," and it is what keeps index↔linear
+>   parity.  Below `2^53` everything is exact and the index handles it.
+> - **cel-cpp itself is *exact* for map keys** (`dyn(2^53.0) in
+>   {2^53+1:'a'}` → **false**, though `dyn(2^53+1) == 2^53.0` → **true** —
+>   `==` is lossy, map lookup is not).  So our lossy `cel_value_eq`
+>   map-key path is a **latent conformance gap** vs cel-cpp — but the
+>   cross-type numeric key path is reachable only via `dyn` (no
+>   homogeneous `int==double` / `uint in map<int>` checker overload),
+>   which our static subset rejects, so it is unreachable through our
+>   compiler today (live only in the shared runtime kernel).  Fixing it
+>   (an *exact* map-key equality, distinct from the `==` operator, used by
+>   both scan and index → drop the fallback) is **future work, out of
+>   m32's pure-accelerator scope** (§15).  Likewise the insert-time
+>   dup-key asymmetry — cel-cpp accepts `{1:'a', 1u:'b'}` (int/uint
+>   distinct) but folds `{1:'a', 1.0:'b'}` to a dup error — is a
+>   `cel_value_eq` property m32 inherits unchanged.
 
 ## 6. Shared hash kernel — `runtime/cel_map_hash.h`
 
@@ -429,15 +451,17 @@ the decision + rationale; revisit only with a reason.
    lower one) so string-keyed maps benefit earliest.  Cite the bench in
    the constant's comment.
 
-4. **The `≥ 2^53` canonicalization boundary is the one merge gate.**
-   §5.1's double-lookup boundary is the only point that can return a
-   *wrong* answer (a spurious `no_such_key`) instead of degrading to
-   linear scan — everything else (OOM, tiny maps, unhandled shapes) falls
-   back safely.  So the large-int / rounding-double cases go into
-   `testdata/cel_cpp_oracle_test.cc` and the boundary is oracle-confirmed
-   **before** `cel_map_hash.h` is frozen, not after.  Interim behavior: a
-   double lookup key with magnitude `≥ 2^53` falls back to linear scan for
-   that one call.
+4. **The `≥ 2^53` boundary — RESOLVED by the oracle (2026-06-27): keep
+   the fallback.**  Confirmed against real cel-cpp
+   (`cel_cpp_oracle_test.cc::MapKeyNumericCrossType`, 21 cases; see §5.1's
+   callout).  Our runtime's map-key equality is the lossy `cel_value_eq`,
+   so a double `2^53.0` is map-equal to a *range* of ints — the
+   `≥ 2^53` double-lookup-key **linear-scan fallback stays**, to keep the
+   index in parity with the scan.  cel-cpp itself is exact, so our lossy
+   path is a latent gap, but it is `dyn`-only (rejected by the static
+   subset) → unreachable through our compiler and out of m32 scope.
+   Making map-key equality exact (and dropping the fallback) is future
+   work (§15).
 
 5. **Ship m32.A first; m32.B waits on const-map materialization.**  m32.A
    (runtime-built index) is self-contained, freezes the kernel + index
@@ -454,6 +478,14 @@ the decision + rationale; revisit only with a reason.
   scan changes).
 - u16 slot array for `capacity < 64k` to shave index memory.
 - Selective index suppression (open question #1).
+- **Exact map-key equality** distinct from the lossy `==` operator
+  (oracle-confirmed: cel-cpp matches map keys exactly and treats int/uint
+  as distinct insert keys — `cel_cpp_oracle_test.cc::MapKeyNumericCrossType`).
+  Replacing `cel_value_eq` on the map-key path with an exact comparator
+  (used by both scan and index) closes the latent `≥ 2^53` / int-vs-uint
+  conformance gap and lets the index drop the `≥ 2^53` linear fallback.
+  Currently `dyn`-only, so unreachable through the static subset — a
+  conformance-fix, not an m32 accelerator concern.
 
 > **Supersedes m31 §8 (m31.B).** m31's follow-up proposed a sorted-run
 > binary-search lookup (`cel_map_lookup_arena` gains a sorted-flag arm)
