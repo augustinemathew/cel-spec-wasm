@@ -222,12 +222,6 @@ BinaryenExpressionRef EmitKSelectOptionalBranch(EmitCtx& ctx,
                        BinaryenTypeInt32());
 }
 
-// Forward declarations — defined further down in this TU.  EmitKSelect's
-// kMap branch and EmitKIndexCall share the same map-origin → call-target
-// mapping.
-absl::string_view MapLookupCallTarget(Origin origin);
-absl::string_view MapInCallTarget(Origin origin);
-
 // kSelect on a map operand is CEL sugar for `m[field]` (langdef §"Field
 // selection"): the dot form binds the field name as a string key.  Routes
 // to `cel_map_lookup` (value form) or `cel_map_in` (test_only / `has()`
@@ -440,23 +434,6 @@ absl::string_view MapLookupCallTarget(Origin origin) {
       return kCelHostMapLookupInternalName;
     case Origin::kDynamic:
       return kCelMapLookupInternalName;
-  }
-  ABSL_CHECK(false) << "expr_lower: unknown map Origin "
-                    << static_cast<int>(origin);
-}
-
-// Mirror of MapLookupCallTarget for the key-presence `_in_` family:
-//   kArena    → cel.cel_map_in_arena (pure wasm fast path)
-//   kHost     → cel_host.cel_map_in  (host trampoline)
-//   kDynamic  → cel.cel_map_in       (the runtime dispatcher)
-absl::string_view MapInCallTarget(Origin origin) {
-  switch (origin) {
-    case Origin::kArena:
-      return kCelMapInArenaInternalName;
-    case Origin::kHost:
-      return kCelHostMapInInternalName;
-    case Origin::kDynamic:
-      return kCelMapInInternalName;
   }
   ABSL_CHECK(false) << "expr_lower: unknown map Origin "
                     << static_cast<int>(origin);

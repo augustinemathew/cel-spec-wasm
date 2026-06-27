@@ -48,7 +48,7 @@ namespace {
 // ones (`WasmModule::Adopt`).  Binaryen's validator defaults to
 // MVP-only.  The design requires multi-value (tuple returns for host
 // trampolines) and reference-types (externref table for message
-// handles, M3+).  Phase C adds Atomics (threads): the runtime imports
+// handles).  Atomics (threads) is also on because the runtime imports
 // a shared memory; importing a shared memory requires the threads
 // feature to be on, even if the expr module itself emits no atomic
 // ops.

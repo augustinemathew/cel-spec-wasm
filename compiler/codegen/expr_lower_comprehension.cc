@@ -392,10 +392,6 @@ absl::StatusOr<CompContext> ResolveCompContext(
   return c;
 }
 
-// Emits the prologue: drop iter_range/accu_init values (their side
-// effects already ran), copy accu_init → accu_slot, set accu_var
-// local, then source-specific iter setup.  For list source:
-// iter_off (= iter_var local) + end_off (= aux0_local).  For map
 // Which wasm local holds the moving elements pointer.  Single-iter:
 // iter_v itself.  Two-iter (v2): iter_v2 — iter_v is the synthesized
 // index counter slot.
@@ -633,6 +629,12 @@ void EmitRangeAbsorptionGuard(EmitCtx& ctx, const CompContext& c,
       nullptr));
 }
 
+// Emits the prologue: drop the iter_range / accu_init values (their
+// side effects already ran), bind accu_var's local to accu_slot, run
+// the range 3VL absorption guard, then do source-specific iter setup
+// — for list sources resolve the range to an arena view (EmitListPrologue)
+// and either pre-size or copy the accu; for map sources cel_map_iter_init
+// + bind the iter slots (EmitMapPrologue).
 void EmitCompPrologue(EmitCtx& ctx, const cel::ComprehensionExpr& comp,
                       const CompContext& c, BinaryenExpressionRef range_value,
                       BinaryenExpressionRef init_value,
