@@ -1,19 +1,21 @@
 # m32 — SwissTable hash index for arena maps
 
-Status: m32.A codegen wiring landed (uncommitted) — the shared hash kernel
-(`cel_map_hash.h`) and the runtime index kernels (`cel_map_index.c`;
-`cel_map_lookup/in/eq` dispatch) shipped earlier; codegen now emits the
-terminal `cel_map_index_build` call after every map construction (map
-literals in `EmitKMapExpr`, and map-producing comprehensions —
-transformMap / transformMapEntry — in `LowerComprehension`), so the index
-is ACTIVE for compiled maps with >= 8 entries.  The call is installed
-unconditionally as a `cel` import (`InstallMapImports`, no AST gating) and
-the runtime no-ops below threshold.  Remaining for m32.A: conformance
-(monotonic), benchmarks, independent review, commit.  m32.B (codegen-baked
-index) still planned, blocked on the const-map materializer (see the
-reconciliation note below).  Drafted 2026-06-14; reviewed + reconciled
-against mainline 2026-06-27 (dependency clarified, file:line cites
-refreshed); codegen wiring 2026-06-27.
+Status: m32.A SHIPPED 2026-06-27 — the shared hash kernel (`cel_map_hash.h`),
+the runtime index kernels (`cel_map_index.c`; `cel_map_lookup/in/eq`
+dispatch), and the codegen activation (terminal `cel_map_index_build` after
+every map construction — map literals in `EmitKMapExpr`, map-producing
+comprehensions in `LowerComprehension`) all landed.  The index is ACTIVE for
+compiled maps with >= `kCelMapIndexThreshold` (8) entries; installed
+unconditionally as a `cel` import (`InstallMapImports`, no AST gating); the
+runtime no-ops below threshold.  Verified: conformance 2035/2035 both modes
+(pure accelerator — no rows moved); kernel benchmarks show a flat O(1) probe
+(~6-8ns int / ~10-11ns str) vs ~2.3ns/entry linear, with map==map 32x and a
+lookup-loop 65x at N=256 (`benchmark/eval/results/2026-06-27-Mac*`);
+independent adversarial review CLEAN, no P0/P1
+(`doc/implementation-plan/rewrite/reviews/2026-06-27-m32a-swisstable-index.md`).
+m32.B (codegen-baked index) still planned, blocked on the const-map
+materializer (see the reconciliation note below).  Drafted 2026-06-14;
+reviewed + reconciled + shipped 2026-06-27.
 
 > **What landed (m32.A, 2026-06-27).**  `ArenaMapHeader._pad` →
 > `index_offset`; `kRuntimeAbiVersion` 3 → 4; the shared kernel
@@ -27,11 +29,11 @@ refreshed); codegen wiring 2026-06-27.
 > OOM / tiny / dup-on-build all degrade to (or poison exactly as) the
 > linear path.  Coverage: index-vs-linear parity over the key×size matrix,
 > multi-group probe, H2==0, the ≥2^53 fallback, dup re-validation, and
-> indexed `cel_map_eq_arena` in `runtime/cel_map_test.cc`.  The codegen
-> emission of `cel_map_index_build` as the terminal construction step
-> (`compiler/codegen`, §8) and the WAT trace (§11) are NOT part of this
-> runtime slice — the kernel + ABI are frozen here; wiring codegen to call
-> the new export is the follow-up that turns the win on for compiled maps.
+> indexed `cel_map_eq_arena` in `runtime/cel_map_test.cc`.  Codegen emits
+> `cel_map_index_build` as the terminal construction step (`compiler/codegen`,
+> §8) for map literals and map comprehensions (list comprehensions excluded);
+> e2e coverage in `e2e/m32_swisstable_index_test.cc` and the WAT trace
+> `wat/73_map_swisstable_index.wat` (§11).  All shipped in m32.A.
 
 > **Reconciliation against mainline (2026-06-27).**  The design holds as
 > written; two things to fix before reading §§5–9 literally:
