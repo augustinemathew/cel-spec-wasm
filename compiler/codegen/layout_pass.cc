@@ -111,9 +111,13 @@ class ConstLayoutVisitor : public cel::AstVisitorBase {
 // Eligibility is purely syntactic — there is no compile-time evaluation,
 // so `[1 + 1]` (a call) is NOT eligible and keeps the build path.
 
-// True iff `e` is a literal or a const-materializable list, recursively.
-// Type-valued constants (Repr::kType) and optional (`?x`) list elements
-// are excluded — they fall back to the per-Eval build path.
+// True iff `e` is a literal or a const-materializable list / map,
+// recursively.  Type-valued constants (Repr::kType) and optional (`?x`)
+// list elements / map entries are excluded — they fall back to the
+// per-Eval build path.  A const map with DUPLICATE keys is syntactically
+// eligible here but `MaterializeMap` returns nullopt for it, so the map
+// arm in ConstAggregateVisitor keeps the build path (the runtime then
+// poisons CEL_ERR_DUPLICATE_KEY with today's exact semantics).
 bool IsConstMaterializable(const cel::Expr& e, const WasmAnnotations& ann) {
   switch (e.kind_case()) {
     case cel::ExprKindCase::kConstant: {
@@ -129,6 +133,13 @@ bool IsConstMaterializable(const cel::Expr& e, const WasmAnnotations& ann) {
           e.list_expr().elements().begin(), e.list_expr().elements().end(),
           [&ann](const cel::ListExprElement& el) {
             return !el.optional() && IsConstMaterializable(el.expr(), ann);
+          });
+    case cel::ExprKindCase::kMapExpr:
+      return std::all_of(
+          e.map_expr().entries().begin(), e.map_expr().entries().end(),
+          [&ann](const cel::MapExprEntry& en) {
+            return !en.optional() && IsConstMaterializable(en.key(), ann) &&
+                   IsConstMaterializable(en.value(), ann);
           });
     default:
       return false;
@@ -198,17 +209,27 @@ class ConstAggregateVisitor : public cel::AstVisitorBase {
     if (IsConstMaterializable(expr, annotations_)) MaterializeList(expr);
   }
 
+  void PostVisitMap(const cel::Expr& expr, const cel::MapExpr&) override {
+    if (excluded_accu_.contains(expr.id())) return;
+    if (IsConstMaterializable(expr, annotations_)) MaterializeMap(expr);
+  }
+
  private:
   // Returns the embeddable frame CelValue for a materialized list,
   // memoized per expr id; stamps the node's storage on first build.
-  CelValue MaterializeList(const cel::Expr& expr) {
+  // Returns nullopt iff a nested aggregate failed to materialize (a
+  // duplicate-key const map anywhere in the subtree): the whole subtree
+  // then keeps the per-Eval build path.
+  std::optional<CelValue> MaterializeList(const cel::Expr& expr) {
     auto it = frames_.find(expr.id());
     if (it != frames_.end()) return it->second;
     const cel::ListExpr& l = expr.list_expr();
     std::vector<CelValue> elements;
     elements.reserve(l.elements().size());
     for (const cel::ListExprElement& el : l.elements()) {
-      elements.push_back(ElementValue(el.expr()));
+      std::optional<CelValue> v = ElementValue(el.expr());
+      if (!v.has_value()) return std::nullopt;  // nested dup-key map.
+      elements.push_back(*v);
     }
     const auto r = builder_.MaterializeList(elements);
     annotations_[expr.id()].storage =
@@ -227,15 +248,69 @@ class ConstAggregateVisitor : public cel::AstVisitorBase {
     return r.frame;
   }
 
-  // Precondition: IsConstMaterializable proved `e` is a literal or a
-  // const list, so it is one of those two kinds.
-  CelValue ElementValue(const cel::Expr& e) {
-    if (e.kind_case() == cel::ExprKindCase::kConstant) {
-      // Packed directly into the run; its node is stamped with the run
-      // slot in MaterializeList, so no standalone rodata frame is built.
-      return ConstToCelValue(e.const_expr(), builder_);
+  // Returns the embeddable frame CelValue for a materialized map, memoized
+  // per expr id; stamps the node's storage on first build.  Returns nullopt
+  // iff this map (MaterializeMap → duplicate key) or a nested aggregate
+  // can't materialize — the node then keeps the per-Eval build path so the
+  // runtime poisons CEL_ERR_DUPLICATE_KEY with today's exact semantics.
+  std::optional<CelValue> MaterializeMap(const cel::Expr& expr) {
+    auto it = frames_.find(expr.id());
+    if (it != frames_.end()) return it->second;
+    const cel::MapExpr& mp = expr.map_expr();
+    std::vector<StaticMemoryBuilder::MapEntry> map_entries;
+    map_entries.reserve(mp.entries().size());
+    for (const cel::MapExprEntry& en : mp.entries()) {
+      std::optional<CelValue> k = ElementValue(en.key());
+      std::optional<CelValue> v = ElementValue(en.value());
+      if (!k.has_value() || !v.has_value()) return std::nullopt;
+      map_entries.push_back(StaticMemoryBuilder::MapEntry{*k, *v});
     }
-    return MaterializeList(e);
+    const std::optional<StaticMemoryBuilder::MaterializedMap> r =
+        builder_.MaterializeMap(map_entries);
+    if (!r.has_value()) return std::nullopt;  // duplicate key.
+    StampMapEntryStorage(mp, *r);
+    annotations_[expr.id()].storage =
+        Storage{StorageKind::kStaticRodata, r->frame_offset};
+    frames_.emplace(expr.id(), r->frame);
+    return r->frame;
+  }
+
+  // Stamp each map key/value node with its slot in the 48-byte entry run
+  // (key at +0, value at +24 within each 48-byte entry).  Same rationale
+  // as MaterializeList: lets ConstLayoutVisitor skip redundant standalone
+  // frames and keeps the "no kNone storage" invariant.
+  void StampMapEntryStorage(const cel::MapExpr& mp,
+                            const StaticMemoryBuilder::MaterializedMap& r) {
+    const auto stride = static_cast<uint32_t>(sizeof(CelValue));
+    const auto entry_stride = static_cast<uint32_t>(kCelMapEntryStride);
+    for (uint32_t i = 0; i < mp.entries().size(); ++i) {
+      const uint32_t entry_off = r.entries_offset + (i * entry_stride);
+      annotations_[mp.entries()[i].key().id()].storage =
+          Storage{StorageKind::kStaticRodata, entry_off};
+      annotations_[mp.entries()[i].value().id()].storage =
+          Storage{StorageKind::kStaticRodata, entry_off + stride};
+    }
+  }
+
+  // Precondition: IsConstMaterializable proved `e` is a literal or a
+  // const list / map, so it is one of those kinds.  Returns nullopt iff a
+  // nested aggregate fails to materialize (propagated upward).
+  std::optional<CelValue> ElementValue(const cel::Expr& e) {
+    switch (e.kind_case()) {
+      case cel::ExprKindCase::kConstant:
+        // Packed directly into the run; its node is stamped with the run
+        // slot by the enclosing Materialize*, so no standalone frame.
+        return ConstToCelValue(e.const_expr(), builder_);
+      case cel::ExprKindCase::kListExpr:
+        return MaterializeList(e);
+      case cel::ExprKindCase::kMapExpr:
+        return MaterializeMap(e);
+      default:
+        ABSL_CHECK(false)
+            << "ConstAggregateVisitor::ElementValue: non-materializable kind "
+            << static_cast<int>(e.kind_case());
+        return CelValue{};
+    }
   }
 
   StaticMemoryBuilder& builder_;
@@ -416,7 +491,8 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
   void PreVisitExpr(const cel::Expr& expr) override {
     switch (expr.kind_case()) {
       case cel::ExprKindCase::kListExpr:
-        // A const list already materialized into rodata
+      case cel::ExprKindCase::kMapExpr:
+        // A const list / map already materialized into rodata
         // (ConstAggregateVisitor stamped {kStaticRodata, ...}) needs no
         // workspace slot and is not built per-Eval.
         if (annotations_[expr.id()].storage.kind ==
@@ -424,7 +500,6 @@ class AggregateStorageVisitor : public cel::AstVisitorBase {
           break;
         }
         [[fallthrough]];
-      case cel::ExprKindCase::kMapExpr:
       case cel::ExprKindCase::kStructExpr:
         annotations_[expr.id()].storage =
             Storage{StorageKind::kWorkspaceSlot, slots_.Acquire()};

@@ -462,35 +462,45 @@ TEST(LayoutPassMapTest, ScalarMapLiteralGetsOneSlotRegardlessOfEntryCount) {
   // Per dispatch-doc §4: the kCreateMap result slot is a single
   // CelValue (the wire shape) in one 32B workspace cell.  Entry
   // storage lives in the arena (allocated by `cel_map_insert`),
-  // not the workspace.
-  auto ta = ParseAndCheck(R"({"a": 1, "b": 2, "c": 3})", {});
+  // not the workspace.  A non-constant value (`v`) keeps the per-Eval
+  // build path (an all-const map would materialize into rodata and need
+  // no workspace slot — see the m31 e2e suite); `v` adds one variable
+  // slot, so workspace = 1 var + 1 map slot = 2 × 32B.
+  CheckOptions opts;
+  opts.variable_specs = {"v:int"};
+  auto ta = ParseAndCheck(R"({"a": v, "b": 2, "c": 3})", opts);
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
-  EXPECT_EQ(layout->workspace_bytes, 32u);
+  EXPECT_EQ(layout->workspace_bytes, 64u);
   EXPECT_EQ(layout->peak_slots, 1u);
 }
 
 TEST(LayoutPassMapTest, MapLiteralIndexingReusesSingleSlot) {
-  // `{"a":1}["a"]` — kCreateMap result slot followed by the
+  // `{"a":v}["a"]` — kCreateMap result slot followed by the
   // kCallExpr(`_[_]`) lookup-result slot.  AggregateStorageVisitor
   // releases the map's slot before acquiring the call's, so both
-  // share one cell via the LIFO free list — peak = 1.
-  auto ta = ParseAndCheck(R"({"a": 1}["a"])", {});
+  // share one cell via the LIFO free list — peak = 1.  A non-const value
+  // (`v`) keeps the build path; `v`'s variable slot adds one cell.
+  CheckOptions opts;
+  opts.variable_specs = {"v:int"};
+  auto ta = ParseAndCheck(R"({"a": v}["a"])", opts);
   ASSERT_THAT(ta, IsOk());
   auto resolved = ResolvePass(*ta);
   auto layout = LayoutPass(*ta, *std::move(resolved));
   ASSERT_THAT(layout, IsOk());
 
-  EXPECT_EQ(layout->workspace_bytes, 32u);
+  // 1 variable slot + 1 shared map/call slot = 2 × 32B.
+  EXPECT_EQ(layout->workspace_bytes, 64u);
   EXPECT_EQ(layout->peak_slots, 1u);
 
-  // Root is the kCallExpr; reuses the released map slot.
+  // Root is the kCallExpr; reuses the released map slot (the cell right
+  // after the variable slot).
   const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
   ASSERT_NE(root_ann, nullptr);
   EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
-  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base);
+  EXPECT_EQ(root_ann->storage.payload, layout->workspace_base + 32u);
 }
 
 TEST(LayoutPassMapTest, BoundMapIndexingNeedsOnlyTheCallSlot) {
@@ -546,6 +556,49 @@ TEST(LayoutPassMapTest, ArenaBaseFollowsMapWorkspace) {
   EXPECT_EQ(layout->arena_base,
             layout->workspace_base + layout->workspace_bytes);
   EXPECT_EQ(layout->arena_base % 8u, 0u);
+}
+
+TEST(LayoutPassMapTest, ConstMapLiteralMaterializesToRodata) {
+  // m31/m32.B: a map literal whose keys and values are all constants is
+  // packed into rodata at compile time (ArenaMapHeader + 48-B entry run +,
+  // for N>=threshold, a baked SwissTable index), so the kMapExpr node
+  // carries kStaticRodata (a frame offset) — NOT a workspace slot — and no
+  // per-Eval build happens.  Mirror of ConstListLiteralMaterializesToRodata.
+  auto ta = ParseAndCheck("{1: 10, 2: 20}", {});
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  // No workspace slot for the materialized map (no variables either).
+  EXPECT_EQ(layout->workspace_bytes, 0u);
+  EXPECT_EQ(layout->peak_slots, 0u);
+
+  const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
+  ASSERT_NE(root_ann, nullptr);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kStaticRodata);
+  // The frame offset lands inside the rodata window.
+  EXPECT_GE(root_ann->storage.payload, layout->rodata_base);
+}
+
+TEST(LayoutPassMapTest, NonConstMapLiteralGetsOneWorkspaceSlot) {
+  // A map with a non-constant value (a variable) is NOT eligible for
+  // materialization and keeps the per-Eval build path: the kMapExpr result
+  // is a single CelValue in one 32B workspace cell.  Mirror of
+  // NonConstListLiteralGetsOneWorkspaceSlot.
+  CheckOptions opts;
+  opts.variable_specs = {"v:int"};
+  auto ta = ParseAndCheck("{1: v}", opts);
+  ASSERT_THAT(ta, IsOk());
+  auto resolved = ResolvePass(*ta);
+  ASSERT_THAT(resolved, IsOk());
+  auto layout = LayoutPass(*ta, *std::move(resolved));
+  ASSERT_THAT(layout, IsOk());
+
+  const auto* root_ann = layout->annotations.Find(ta->ast().root_expr().id());
+  ASSERT_NE(root_ann, nullptr);
+  EXPECT_EQ(root_ann->storage.kind, StorageKind::kWorkspaceSlot);
 }
 
 // --- M4.F: kCreateList + kCallExpr(`_[_]`) reserve workspace cells --------

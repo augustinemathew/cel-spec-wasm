@@ -632,11 +632,15 @@ TEST(CompileMapTest, MapTypedIdentLandsAsRefSlotVariable) {
 }
 
 TEST(CompileMapTest, MapLiteralProgramLayoutReservesWorkspaceForMap) {
-  // kCreateMap nodes need a 24-byte slot in the workspace so the
-  // emitted `cel_map_create` call has somewhere to write the
-  // result CelValue.  Compile() must report a non-zero workspace
-  // size for any map-bearing program.
-  auto art_or = Compile("{\"a\": 1}");
+  // A per-Eval-built kCreateMap node needs a 24-byte slot in the
+  // workspace so the emitted `cel_map_create` call has somewhere to write
+  // the result CelValue.  A non-constant value (`m`) keeps the build path
+  // (an all-const map materializes into rodata and needs no workspace —
+  // see the m31 static-aggregate suite).  Compile() must report a
+  // non-zero workspace size for such a map-bearing program.
+  CompileOptions opts;
+  opts.check.variable_specs = {"m:int"};
+  auto art_or = Compile("{\"a\": m}", opts);
   ASSERT_THAT(art_or, IsOk());
   EXPECT_GT(art_or->layout.workspace_bytes, 0u);
 }

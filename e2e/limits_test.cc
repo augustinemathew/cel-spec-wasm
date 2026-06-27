@@ -51,7 +51,8 @@ using ::testing::HasSubstr;
 // Breadth, not depth: stresses the rodata window, not parse recursion.
 std::string IntListLiteral(int n) {
   std::string s = "[1";
-  for (int i = 2; i <= n; ++i) absl::StrAppend(&s, ", ", i);
+  for (int i = 2; i <= n; ++i)
+    absl::StrAppend(&s, ", ", i);
   absl::StrAppend(&s, "]");
   return s;
 }
@@ -60,7 +61,25 @@ std::string IntListLiteral(int n) {
 // operands are a bound variable (zero rodata), so depth is what binds.
 std::string VarAddChain(int n) {
   std::string s = "a";
-  for (int i = 1; i < n; ++i) absl::StrAppend(&s, " + a");
+  for (int i = 1; i < n; ++i)
+    absl::StrAppend(&s, " + a");
+  return s;
+}
+
+// `{"<key 0>": 0, "<key 1>": 1, …}` — a const map literal of `n` entries
+// whose string keys are each `key_len` bytes (a distinct numeric prefix
+// padded with 'a's, so every key is unique).  Used to overflow the
+// fixed 64 KiB codegen key-staging arena: at n=100, key_len=700 the keys
+// sum to ~70 KiB > 64 KiB, while the whole expression source stays far
+// under the 100 000-codepoint frontend limit.
+std::string LongStringKeyMapLiteral(int n, int key_len) {
+  std::string s = "{";
+  for (int i = 0; i < n; ++i) {
+    std::string key = absl::StrCat(i, "_");
+    key.resize(static_cast<size_t>(key_len), 'a');  // pad to key_len bytes
+    absl::StrAppend(&s, i == 0 ? "" : ", ", "\"", key, "\": ", i);
+  }
+  absl::StrAppend(&s, "}");
   return s;
 }
 
@@ -129,6 +148,54 @@ TEST_F(LimitsTest, RodataWindow_10910FlatLiteralsExceedWindow) {
   auto program = Compile(IntListLiteral(10910));
   EXPECT_THAT(program, StatusIs(absl::StatusCode::kResourceExhausted));
   EXPECT_THAT(program.status().message(), HasSubstr("rodata"));
+}
+
+// ── Codegen key-staging arena: large-string-key const map falls back ──
+//
+// A const map literal materializes into rodata with a baked SwissTable
+// index (m31/m32); baking stages every string/bytes KEY into the fixed
+// 64 KiB native codegen arena (CELWASM_ARENA_CAPACITY_BYTES, non-growing)
+// to compute its hash/placement.  When the key bytes overflow that arena
+// the materializer must DECLINE (return nullopt) and the node keeps the
+// per-Eval build path — it must NOT abort the compiler.  This is the
+// regression pin for that fallback: before the fix, StagePlacementKey
+// ABSL_CHECK-aborted the process on a valid, checker-accepted map whose
+// keys merely exceeded the staging arena.
+//
+// The map is a legitimate input (well under the 100 000-codepoint
+// expression limit), so it must compile cleanly AND evaluate correctly:
+// a present key resolves, an absent key errors — identical to a
+// non-const map.
+
+// 100 keys × 700 bytes ≈ 70 KiB of key bytes > the 64 KiB staging arena.
+// Compiles via the build-path fallback (no abort) and evaluates.
+TEST_F(LimitsTest, KeyStagingArena_LargeStringKeyConstMapFallsBackAndCompiles) {
+  EXPECT_THAT(Compile(LongStringKeyMapLiteral(/*n=*/100, /*key_len=*/700)),
+              IsOk());
+}
+
+// The fallen-back map still evaluates correctly: a keyed lookup of a
+// present key returns its value.  Key 42 is "42_" padded to 700 bytes.
+TEST_F(LimitsTest, KeyStagingArena_LargeStringKeyConstMapLookupHit) {
+  std::string key = absl::StrCat(42, "_");
+  key.resize(700, 'a');
+  const std::string expr = absl::StrCat(
+      LongStringKeyMapLiteral(/*n=*/100, /*key_len=*/700), "[\"", key, "\"]");
+  EXPECT_THAT(EvalInt(expr), IsOkAndHolds(42));
+}
+
+// A lookup of an absent key on the fallen-back map surfaces an eval
+// error (no_such_key), exactly as a non-const map would.
+TEST_F(LimitsTest, KeyStagingArena_LargeStringKeyConstMapMissingKeyErrors) {
+  const std::string expr = absl::StrCat(
+      LongStringKeyMapLiteral(/*n=*/100, /*key_len=*/700), "[\"nope\"]");
+  auto program = Compile(expr);
+  ASSERT_THAT(program, IsOk());
+  auto instance = e2e::GlobalEngine().Plan(*program);
+  ASSERT_THAT(instance, IsOk());
+  auto v = instance->Eval();
+  ASSERT_THAT(v, IsOk());
+  EXPECT_TRUE(v->IsError());
 }
 
 // ── Parse nesting depth: exact boundary at kMaxExpressionNestingDepth ──

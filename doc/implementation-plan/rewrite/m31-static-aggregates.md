@@ -1,10 +1,27 @@
 # m31 — compile-time materialization of constant aggregate literals
 
-Status: shipped 2026-06-17 (const **lists** only; const-map
-materialization is the queued follow-up in §8).  What landed: const
-list literals materialize byte-identically into rodata and lower to a
-single `i32.const`; the low-memory window was raised 8 KiB → 256 KiB
-(§10); the rodata-overflow gate and ABI v3 bump shipped with it.
+Status: shipped 2026-06-17 (const lists); const-map materialization
+shipped 2026-06-27 (the m31.A / m32.B follow-up — see §8).  What landed:
+const list AND const map literals materialize byte-identically into
+rodata and lower to a single `i32.const`; for maps with
+`count >= kCelMapIndexThreshold` the SwissTable index is baked
+byte-identically to `cel_map_index_build` (so a lookup in a materialized
+map resolves through the baked index exactly as in a runtime-built one);
+the low-memory window was raised 8 KiB → 256 KiB (§10); the
+rodata-overflow gate and ABI v3 bump shipped with it.
+
+> Const-map delta (§8).  As shipped, the entry run is written in
+> **source order** (matching `cel_map_create` + `cel_map_insert`), NOT a
+> compile-time sort — the earlier "sort + binary-search" and
+> "place-by-hash entry run" sketches were both superseded by m32.A's
+> index-over-dense-run layout: the dense entry run stays source-ordered
+> and a separate SwissTable index block (control bytes + u32 slot array)
+> is appended after it.  `MaterializeMap` bakes that index by reusing the
+> frozen `cel_map_hash.h` kernel over the const keys (staged into the
+> native arena so the kernel reads their bytes), reproducing
+> `cel_map_index_build`'s placement bit-for-bit.  Duplicate-key const
+> maps return `std::nullopt` from `MaterializeMap` and keep the per-Eval
+> build path so the runtime still poisons `CEL_ERR_DUPLICATE_KEY`.
 
 > Plan-vs-execution delta (memory layout, §4).  The as-drafted plan
 > placed materialized aggregates in a **dedicated band** between rodata

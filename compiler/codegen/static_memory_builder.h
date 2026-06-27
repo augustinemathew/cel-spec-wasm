@@ -26,16 +26,20 @@
 // is padded back to 8-byte alignment before the next Allocate,
 // so every frame lands on an 8-byte boundary.
 //
-// Constant lists are materialized too: `MaterializeList` writes the
-// byte-identical in-arena representation the runtime kernels would have
-// built, so a const `[…]` lowers to a single `i32.const` and the
-// read-only kernels cannot tell it from an arena-built list.
+// Constant lists and maps are materialized too: `MaterializeList` /
+// `MaterializeMap` write the byte-identical in-arena representation the
+// runtime kernels would have built, so a const `[…]` / `{…}` lowers to a
+// single `i32.const` and the read-only kernels cannot tell it from an
+// arena-built aggregate.  For maps with `count >= kCelMapIndexThreshold`
+// the SwissTable hash index is baked byte-identically to what
+// `cel_map_index_build` produces, so the index path resolves lookups in
+// a materialized map exactly as in a runtime-built one.
 //
 // Out of scope: messages (host-side proto handles, different
-// machinery) and — for now — maps (the map materializer is a sibling
-// follow-up; maps additionally sort entries at compile time).
+// machinery).
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "absl/strings/string_view.h"
@@ -112,6 +116,59 @@ class StaticMemoryBuilder {
   // An empty list writes `elements_offset = 0` with no run, matching
   // `cel_list_create(out, 0)`.  Infallible, like the scalar Allocates.
   MaterializedAggregate MaterializeList(absl::Span<const CelValue> elements);
+
+  // One compile-time-known map entry: a {key, value} pair of fully-formed
+  // 24-byte CelValue frames.  Like `MaterializeList`'s elements, any
+  // string / bytes / nested-aggregate payload either frame references must
+  // already be allocated in THIS builder so the embedded offsets are final
+  // (innermost-first ordering).
+  struct MapEntry {
+    CelValue key;
+    CelValue value;
+  };
+
+  // Result of materializing a constant map.
+  struct MaterializedMap {
+    // Absolute linear-memory offset of the outer CEL_MAP_ARENA CelValue
+    // frame — what a const map lowers to via a single `i32.const`.
+    uint32_t frame_offset;
+    // Absolute offset of the 48-byte (key,val) entry run (== the header's
+    // `entries_offset`).  Entry `i`'s key lives at `entries_offset + 48*i`
+    // and its value at `entries_offset + 48*i + 24`.  Zero for an empty
+    // map (no run).
+    uint32_t entries_offset;
+    // Absolute offset of the baked SwissTable index block, or 0 when none
+    // was baked (`count < kCelMapIndexThreshold`) — matching the runtime's
+    // `ArenaMapHeader::index_offset` exactly.
+    uint32_t index_offset;
+    // A copy of the value at `frame_offset` — embed this as the value of a
+    // `MapEntry` (or element of a `MaterializeList`) to nest the map.
+    CelValue frame;
+  };
+
+  // Materialize a constant map as the byte-identical in-arena
+  // representation `cel_map_create` + N×`cel_map_insert` (in source order)
+  // followed by the terminal `cel_map_index_build` would build: an
+  // `ArenaMapHeader { count=N, capacity=N, entries_offset, index_offset }`
+  // followed immediately by the contiguous N×48-byte {key,val} entry run
+  // (mirroring `cel_map_create`'s header→run adjacency), then — for
+  // `N >= kCelMapIndexThreshold` — the SwissTable index block (control
+  // bytes + cloned mirror + u32 slot array) placed byte-identically to
+  // `cel_map_index_build`, then the outer `CEL_MAP_ARENA` CelValue frame.
+  //
+  // Entries are written in the given (source) order, matching the runtime
+  // build path so a materialized map and a runtime-built one are
+  // byte-identical (CEL maps have no observable order — the entry run and
+  // the index both depend only on the keys' content, not the offset).
+  //
+  // Returns `std::nullopt` when the entries contain a duplicate key (under
+  // the runtime's `cel_value_eq`): a duplicate-key map literal must keep
+  // the per-Eval build path so it poisons with `CEL_ERR_DUPLICATE_KEY` at
+  // construction time, matching today's semantics.  An empty map writes
+  // `entries_offset = 0` / `index_offset = 0` with no run, matching
+  // `cel_map_create(out, 0)`.  Infallible otherwise (no rodata cap here).
+  std::optional<MaterializedMap> MaterializeMap(
+      absl::Span<const MapEntry> entries);
 
   // Move-return the packed buffer.  After Finalize the builder is
   // consumed.  Use `size_bytes()` beforehand to learn the final size

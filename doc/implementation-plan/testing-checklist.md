@@ -3247,12 +3247,13 @@ error kind is differentially re-derived from cel-cpp on every run by
         `int(-2^63.0)` oracle-settled boundary), uint(-1),
         int('forty-two').
 
-## Rewrite M31 — compile-time materialization of const aggregate literals (lists; shipped 2026-06-17)
+## Rewrite M31 — compile-time materialization of const aggregate literals (lists shipped 2026-06-17; maps shipped 2026-06-27)
 
-Const list literals are written byte-identically into rodata at compile
-time and lower to a single `i32.const`; the low-memory window was raised
-8 KiB → 256 KiB (ABI v3).  Const-map materialization is the queued
-Swiss-table follow-up (m31 §8) — its e2e matrix is staged + GTEST_SKIP'd.
+Const list AND const map literals are written byte-identically into rodata
+at compile time and lower to a single `i32.const`; the low-memory window
+was raised 8 KiB → 256 KiB (ABI v3).  Const-map materialization (the
+Swiss-table follow-up, m31 §8 / m32.B) shipped 2026-06-27 — see its
+dedicated section below.
 
   - [x] `StaticMemoryBuilder::MaterializeList` unit coverage
         (`static_memory_builder_test`) — header/run/frame byte layout,
@@ -3280,8 +3281,50 @@ Swiss-table follow-up (m31 §8) — its e2e matrix is staged + GTEST_SKIP'd.
         (`size([0..4000])`), `MapSizeArenaCliff`, `LiteralIntListInScan10KEvals`.
   - [x] benchmark corpus rodata-capped cells un-skipped + verified on
         celwasm (arith/comprehension/long-string 1000/10000-element cells).
-  - [ ] const-map materialization (Swiss-table) — staged, GTEST_SKIP'd
-        (`ConstMapMaterializationTest`, 18 rows); un-skip when m31 §8 lands.
+  - [x] const-map materialization (Swiss-table) — shipped 2026-06-27
+        (`ConstMapMaterializationTest`, 18 rows now un-skipped: value kinds,
+        key kinds, size/`in`/`==`/nesting, list-of-maps, large 100-entry).
+        See the M31.A / M32.B section below for the unit + keystone +
+        codegen + WAT coverage.
+
+### Rewrite M31.A / M32.B — const-map materialization with baked index (shipped 2026-06-27)
+
+A const map literal (all keys + values const, recursively, no duplicate
+keys, no optional entries) materializes byte-identically into rodata —
+`ArenaMapHeader` + 48-B `{key,val}` run in source order + (for
+`count >= kCelMapIndexThreshold`) the baked SwissTable index — and lowers
+to a single `i32.const`.  The baked index reproduces
+`cel_map_index_build`'s control bytes + slot array bit-for-bit (the
+materializer reuses the frozen `cel_map_hash.h` kernel; string/bytes keys
+are staged into the native arena so the kernel reads their bytes).
+
+  - [x] `StaticMemoryBuilder::MaterializeMap` unit coverage
+        (`static_memory_builder_test`) — empty map (`entries_offset`/
+        `index_offset == 0`), single int entry (no index), N<8 (no index,
+        source order), N>=threshold (index baked, ctrl/slot well-formed),
+        string-key payload adjacency, nested-list value, dup-key → nullopt
+        (below + at threshold + cross-type int/uint), cursor alignment.
+  - [x] **byte-identity keystone** (`StaticMemoryBuilderKeystoneTest`) —
+        materialized vs runtime-built (`cel_map_create` + inserts +
+        `cel_map_index_build`) memcmp of header count/cap + entry run +
+        index block; int keys N∈{4,8,20}, string-key index region N=10.
+  - [x] `LayoutPass` const-map arm (`layout_pass_test`) — const map stamps
+        `kStaticRodata`; non-const map (ident value) keeps the build path;
+        `AggregateStorageVisitor` skips the workspace slot for a
+        materialized map.
+  - [x] codegen lowering (`expr_lower_test`) — const map → single
+        `i32.const` (no `cel_map_create`/insert/`cel_map_index_build`);
+        nested const map; const-map-inside-non-const-list (inner
+        materializes, outer builds); map with ident value keeps the
+        build+index sequence.
+  - [x] WAT trace + runner (`wat/74_static_map_swisstable.wat`,
+        `wat_runner_test`) — pre-materialized 9-entry int map with baked
+        index; `m[5]` resolves through the baked index → CEL_INT 105.
+  - [x] e2e (`m31_static_aggregate_test`, both link modes) — value kinds,
+        key kinds, size/`in`/`==` order-independent, nested const map,
+        list-of-const-maps, large 100-entry map.
+  - [x] conformance held 2035/2035 both modes (maps have no observable
+        order; semantically identical to the build path).
 
 ### Rewrite M32.A — SwissTable hash index for arena maps (runtime-built)
 

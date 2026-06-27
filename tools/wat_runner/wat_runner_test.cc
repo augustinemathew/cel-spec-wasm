@@ -1434,5 +1434,39 @@ TEST(WatRunnerListTest, MaterializedListIndexedProducesValue) {
   EXPECT_EQ(cv.payload.i, 20);
 }
 
+// 74_static_map_swisstable.wat — 9-entry int map MATERIALIZED at compile
+// time WITH its baked SwissTable index (m32.B).
+//
+// The ArenaMapHeader + 48-B entry run + baked control-byte/slot index
+// block + outer CEL_MAP_ARENA frame are written into the data segment;
+// $eval performs no construction, only cel_map_lookup_arena over the
+// static layout.  hdr->index_offset is non-zero (baked), so the lookup
+// resolves m[5] through the BAKED index (cel_map_index_find), proving a
+// materialized index-baked map reads identically to a runtime-built one.
+// Result CelValue at out_slot=600 must be CEL_INT(105).
+// ─────────────────────────────────────────────────────────
+
+TEST(WatRunnerMapTest, MaterializedMapWithBakedIndexResolvesLookup) {
+  auto wat = LoadWat("74_static_map_swisstable.wat");
+  ASSERT_THAT(wat, IsOk());
+  WatRunInput in;
+  in.wat = *wat;
+  auto out = RunWat(in);
+  ASSERT_THAT(out, IsOk());
+  EXPECT_EQ(out->eval_return, 600u);
+  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
+  EXPECT_EQ(cv.kind, CEL_INT);
+  EXPECT_EQ(cv.payload.i, 105);
+  // The materialized header carries a non-zero index_offset (the baked
+  // index), so the lookup above went through the indexed path, not a scan.
+  CelValue map_cv = DecodeCelValue(out->memory_after, 552u);
+  ASSERT_EQ(map_cv.kind, CEL_MAP_ARENA);
+  const uint32_t header_ptr = map_cv.payload.arena_map.header_ptr;
+  uint32_t index_offset = 0;
+  std::memcpy(&index_offset, out->memory_after.data() + header_ptr + 12u,
+              sizeof(index_offset));
+  EXPECT_EQ(index_offset, 464u) << "baked index_offset must be present";
+}
+
 }  // namespace
 }  // namespace celwasm
