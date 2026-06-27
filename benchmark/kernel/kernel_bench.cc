@@ -30,6 +30,7 @@
 // rather than crashing.
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -323,6 +324,210 @@ void BM_MapEqDispatchArena(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_MapEqDispatchArena);
+
+// ============================================================
+// SwissTable map-index crossover sweep (cel_map_index.c).
+//
+// Race the index probe against the linear scan over a map-size sweep.
+// state.range(0) = entry count N; state.range(1) = MapPath (0=linear,
+// 1=swiss).  The crossover N* is the smallest swept N where the swiss
+// arm beats the linear arm; read it off the linear/swiss ratio down
+// each N column.  Pins kCelMapIndexThreshold (design §10); see
+// benchmark/m32-swisstable-bench-plan.md §2.
+//
+// A/B seam (plan §3.1 / gap G1): `cel_map_create` + `cel_map_insert`
+// builds a dense-entries map with `index_offset == 0` (every keyed
+// kernel linear-scans).  The kSwiss arm calls the TERMINAL
+// `cel_map_index_build`; the kLinear arm skips it.  `cel_map_index_build`
+// itself gates on `count >= kCelMapIndexThreshold` (cel_map_index.c),
+// so below the threshold the swiss arm equals the linear arm (no index
+// is published) — that gate IS the production behaviour, and the sweep
+// measures it as-shipped rather than forcing a sub-threshold index.
+// ============================================================
+
+enum class MapPath : uint8_t { kLinear = 0, kSwiss = 1 };
+
+// Build an N-entry int-keyed arena map, keys 0..N-1 in insertion order.
+// kSwiss → call cel_map_index_build (gated at kCelMapIndexThreshold);
+// kLinear → leave index_offset == 0.  Returns the map slot.
+uint32_t BuildIntMap(int64_t n, MapPath path) {
+  uint32_t m = AllocSlot();
+  cel_map_create(m, static_cast<uint32_t>(n));
+  for (int64_t i = 0; i < n; ++i) {
+    uint32_t k = cel_make_int(i);
+    uint32_t v = cel_make_int(i * 10);
+    cel_map_insert(m, k, v);
+  }
+  if (path == MapPath::kSwiss) cel_map_index_build(m);
+  return m;
+}
+
+// N-entry string-keyed map, keys "key0000".."keyNNNN" (7 bytes each,
+// distinct).  Same A/B seam as BuildIntMap.
+uint32_t BuildStrMap(int64_t n, MapPath path) {
+  uint32_t m = AllocSlot();
+  cel_map_create(m, static_cast<uint32_t>(n));
+  for (int64_t i = 0; i < n; ++i) {
+    char key_buf[8];
+    std::snprintf(key_buf, sizeof(key_buf), "key%04d",
+                  static_cast<int>(i));  // 7 chars + NUL
+    uint32_t k = cel_make_string(key_buf, 7u);
+    uint32_t v = cel_make_int(i * 10);
+    cel_map_insert(m, k, v);
+  }
+  if (path == MapPath::kSwiss) cel_map_index_build(m);
+  return m;
+}
+
+// The size sweep covers below / at / above every candidate threshold
+// out to the multi-group-probe regime.  Plan §1.1 lists N up to 1024,
+// but the native bench arena is fixed at CELWASM_ARENA_CAPACITY_BYTES
+// (64 KiB; cel_layout.h): an N=1024 int map alone needs ~98 KiB
+// (2N CelValue keys+values + an N×48 B entries run) and OOMs, and the
+// equality benches build two maps.  256 is the largest N that fits both
+// a single map and a two-map equality pair, and it spans the crossover
+// + asymptotic regimes the threshold decision needs.
+#define CEL_IDX_SWEEP ->ArgsProduct({{2, 4, 8, 16, 32, 64, 128, 256}, {0, 1}})
+
+// ── lookup: hit at the middle of the insertion run (avg linear cost) ──
+void BM_MapLookupArenaHit_Int(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  uint32_t m = BuildIntMap(n, static_cast<MapPath>(state.range(1)));
+  uint32_t key = cel_make_int(n / 2);  // middle-of-run hit
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_map_lookup_arena(out, m, key);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_MapLookupArenaHit_Int) CEL_IDX_SWEEP;
+
+void BM_MapLookupArenaHit_Str(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  uint32_t m = BuildStrMap(n, static_cast<MapPath>(state.range(1)));
+  char mid[8];
+  std::snprintf(mid, sizeof(mid), "key%04d", static_cast<int>(n / 2));
+  uint32_t key = cel_make_string(mid, 7u);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_map_lookup_arena(out, m, key);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_MapLookupArenaHit_Str) CEL_IDX_SWEEP;
+
+// ── lookup miss: linear-scan worst case (full N compares) → widest gap ─
+void BM_MapLookupArenaMiss_Int(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  uint32_t m = BuildIntMap(n, static_cast<MapPath>(state.range(1)));
+  uint32_t key = cel_make_int(n + 1);  // never present
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_map_lookup_arena(out, m, key);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_MapLookupArenaMiss_Int) CEL_IDX_SWEEP;
+
+void BM_MapLookupArenaMiss_Str(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  uint32_t m = BuildStrMap(n, static_cast<MapPath>(state.range(1)));
+  uint32_t key = cel_make_string("zzzzzzz", 7u);  // never present
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_map_lookup_arena(out, m, key);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_MapLookupArenaMiss_Str) CEL_IDX_SWEEP;
+
+// ── membership (`k in m`): same index path as lookup ──
+void BM_MapInArenaHit_Int(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  uint32_t m = BuildIntMap(n, static_cast<MapPath>(state.range(1)));
+  uint32_t key = cel_make_int(n / 2);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_map_in_arena(out, key, m);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_MapInArenaHit_Int) CEL_IDX_SWEEP;
+
+void BM_MapInArenaMiss_Int(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  uint32_t m = BuildIntMap(n, static_cast<MapPath>(state.range(1)));
+  uint32_t key = cel_make_int(n + 1);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_map_in_arena(out, key, m);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_MapInArenaMiss_Int) CEL_IDX_SWEEP;
+
+// ── map equality: O(n^2) linear inner match → O(n) indexed.  The bend
+// from quadratic to linear is the marquee result.  Operand `a` is the
+// outer walk (never indexed); operand `b` is the inner-matched side
+// whose index the kSwiss arm toggles. ──
+void BM_MapEqArena_Int(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  auto path = static_cast<MapPath>(state.range(1));
+  uint32_t a = BuildIntMap(n, MapPath::kLinear);  // outer walk
+  uint32_t b = BuildIntMap(n, path);              // inner-matched
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_map_eq_arena(out, a, b);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_MapEqArena_Int) CEL_IDX_SWEEP;
+
+void BM_MapEqArena_Str(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  auto path = static_cast<MapPath>(state.range(1));
+  uint32_t a = BuildStrMap(n, MapPath::kLinear);
+  uint32_t b = BuildStrMap(n, path);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_map_eq_arena(out, a, b);
+    benchmark::DoNotOptimize(out);
+  }
+}
+BENCHMARK(BM_MapEqArena_Str) CEL_IDX_SWEEP;
+
+// ── N-lookups loop: the comprehension proxy with no compile-path
+// dependency (plan gap G3).  One timed iteration probes all N keys —
+// O(N^2) over a linear map, O(N) over an indexed one.  The inner loop
+// mints N keys per outer iteration; rewind the arena cursor each
+// iteration (same trick as BM_UnknownMerge) so the mints don't
+// accumulate and OOM. ──
+void BM_MapLookupLoop_Int(benchmark::State& state) {
+  ResetArena();
+  const int64_t n = state.range(0);
+  uint32_t m = BuildIntMap(n, static_cast<MapPath>(state.range(1)));
+  uint32_t out = AllocSlot();
+  uint32_t rewind = *reinterpret_cast<uint32_t*>(cel_mem_base() + 8);
+  for (auto _ : state) {
+    *reinterpret_cast<uint32_t*>(cel_mem_base() + 8) = rewind;
+    for (int64_t i = 0; i < n; ++i) {
+      cel_map_lookup_arena(out, m, cel_make_int(i));
+      benchmark::DoNotOptimize(out);
+    }
+  }
+}
+BENCHMARK(BM_MapLookupLoop_Int)
+    ->ArgsProduct({{8, 16, 32, 64, 128, 256}, {0, 1}});
+
+#undef CEL_IDX_SWEEP
 
 // ============================================================
 // 3VL kernels (cel_3vl.c).

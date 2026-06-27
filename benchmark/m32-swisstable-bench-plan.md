@@ -1,10 +1,33 @@
 # m32 SwissTable map index — benchmark plan
 
-Status: plan — drafted 2026-06-14, not yet started.  Owns ONLY the
+Status: measured 2026-06-27 (Mac.lan, Apple Silicon, `-c opt`).  Owns the
 `benchmark/` deliverables for m32 (the SwissTable hash index over arena
 maps, design doc `doc/implementation-plan/rewrite/m32-swisstable-map-index.md`).
-Code lands when m32 lands; this doc is the drop-in spec so the benches
-are written against a frozen target.
+The kernel crossover sweep (§1.1) and the eval-corpus size-sweep cells
+(§1.2) are implemented and run; the threshold decision (§2) is settled.
+See §8 "Measured results" at the bottom for the as-run numbers and the
+`kCelMapIndexThreshold` verdict.
+
+> Plan-vs-execution delta: the size sweep is capped at **N=256** (plan
+> §1.1 listed N up to 1024).  The native bench arena is fixed at
+> `CELWASM_ARENA_CAPACITY_BYTES` = 64 KiB (cel_layout.h); an N=1024 int
+> map alone needs ~98 KiB (2N CelValue keys+values + an N×48 B entries
+> run) and OOMs/segfaults, and the equality benches build two maps.  256
+> is the largest N that fits a two-map equality pair and already spans
+> the crossover + asymptotic regimes the threshold decision needs.
+>
+> Plan-vs-execution delta: the A/B `kSwiss`/`kLinear` toggle (§3.1) works
+> via the `cel_map_create`+`cel_map_insert` / `cel_map_index_build` seam
+> (G1 confirmed), BUT `cel_map_index_build` itself gates on
+> `count >= kCelMapIndexThreshold` (cel_map_index.c) — so for N < 8 the
+> `kSwiss` arm publishes no index and equals `kLinear`.  The swept
+> crossover therefore lands at N=8 for every kernel, which is the
+> as-shipped behaviour, not the *true* break-even.  The true break-even
+> is read off the flat indexed-probe cost (~6-8 ns, N-independent) vs the
+> linear slope (~2.3 ns/entry): it sits at N≈3-4.  Measuring an indexed
+> probe below the threshold would need a gate bypass; per CLAUDE.md
+> ("report if you need a knob") that runtime change was NOT made — the
+> flat-probe extrapolation settles §14 #3 without it.
 
 ## 0. What we are demonstrating
 
@@ -588,3 +611,207 @@ smoke-test before keeping):
   `map-list-dispatch.md`, `testing-checklist.md`,
   `feature-pipeline-checklist.md` from this agent.
 ```
+
+## 8. Measured results (Mac.lan, Apple Silicon, `-c opt`, 2026-06-27)
+
+Host: Mac.lan (Apple Silicon, 10 cores), `bazel run -c opt`,
+Google Benchmark 1.9.1, `--benchmark_min_time=0.2s`.  Kernel sweep:
+`benchmark/kernel:kernel_bench` (native `//runtime:cel_runtime`, no
+wasm).  All numbers are CPU ns/op.
+
+### 8.1 Implemented benches
+
+**Kernel tier** (`benchmark/kernel/kernel_bench.cc`, "SwissTable
+map-index crossover sweep" section): `BM_MapLookupArenaHit_{Int,Str}`,
+`BM_MapLookupArenaMiss_{Int,Str}`, `BM_MapInArena{Hit,Miss}_Int`,
+`BM_MapEqArena_{Int,Str}`, `BM_MapLookupLoop_Int`.  Each is an A/B grid
+`->ArgsProduct({{2,4,8,16,32,64,128,256},{0,1}})` where `range(1)`
+selects the path (`0`=linear, no `cel_map_index_build`; `1`=swiss,
+terminal `cel_map_index_build`).  Map built once per `state`; the timed
+window is the kernel probe alone.
+
+**Eval tier** (corpus cells, run through Compile→Plan→Eval vs cel-cpp):
+`index.yaml` → `mapIntN{8,64,256}` / `mapStrN{8,64,256}`;
+`maps.yaml` → `inIntN{8,64,256}` / `inStrN{8,64,256}` /
+`eqIntN{64,256}`; `comprehensions.yaml` → `mapLookupLoop{64,256}`.
+All 16 cells parity-pass (identical result label on celwasm + cel-cpp).
+
+### 8.2 Kernel crossover sweep (linear vs indexed, ns/op)
+
+#### `m[k]` hit, int keys (middle-of-run) — `BM_MapLookupArenaHit_Int`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 2 | 6.3 | 6.2 | 1.0× |
+| 4 | 9.1 | 9.0 | 1.0× |
+| 8 | 14.4 | 6.8 | 2.1× |
+| 16 | 23.1 | 7.2 | 3.2× |
+| 32 | 45.4 | 7.2 | 6.3× |
+| 64 | 80.9 | 7.6 | 10.7× |
+| 128 | 152.1 | 8.4 | 18.1× |
+| 256 | 294.0 | 7.9 | 37.0× |
+
+#### `m[k]` hit, string keys (7 B, memcmp) — `BM_MapLookupArenaHit_Str`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 2 | 8.4 | 9.9 | 0.8× |
+| 4 | 12.1 | 11.9 | 1.0× |
+| 8 | 18.3 | 10.4 | 1.8× |
+| 16 | 29.5 | 10.2 | 2.9× |
+| 32 | 52.4 | 10.7 | 4.9× |
+| 64 | 107.3 | 11.4 | 9.4× |
+| 128 | 189.5 | 10.9 | 17.4× |
+| 256 | 359.6 | 11.3 | 31.7× |
+
+#### `m[k]` miss, int keys (linear worst case) — `BM_MapLookupArenaMiss_Int`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 2 | 6.5 | 6.2 | 1.0× |
+| 4 | 12.2 | 12.1 | 1.0× |
+| 8 | 20.9 | 5.0 | 4.2× |
+| 16 | 41.4 | 5.4 | 7.6× |
+| 32 | 77.2 | 5.6 | 13.7× |
+| 64 | 148.6 | 6.0 | 24.9× |
+| 128 | 290.9 | 6.8 | 42.7× |
+| 256 | 577.7 | 6.5 | 88.9× |
+
+#### `m[k]` miss, string keys — `BM_MapLookupArenaMiss_Str`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 2 | 4.7 | 4.7 | 1.0× |
+| 4 | 8.4 | 8.4 | 1.0× |
+| 8 | 13.1 | 7.7 | 1.7× |
+| 16 | 24.8 | 7.8 | 3.2× |
+| 32 | 54.6 | 7.9 | 6.9× |
+| 64 | 102.3 | 8.1 | 12.6× |
+| 128 | 197.6 | 8.4 | 23.5× |
+| 256 | 388.1 | 8.8 | 43.9× |
+
+#### `k in m` true, int keys — `BM_MapInArenaHit_Int`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 2 | 7.0 | 7.0 | 1.0× |
+| 4 | 9.6 | 9.6 | 1.0× |
+| 8 | 14.4 | 7.2 | 2.0× |
+| 16 | 23.1 | 7.5 | 3.1× |
+| 32 | 45.9 | 7.8 | 5.9× |
+| 64 | 81.7 | 8.0 | 10.3× |
+| 128 | 153.1 | 8.1 | 19.0× |
+| 256 | 296.7 | 8.3 | 35.9× |
+
+#### `k in m` false, int keys — `BM_MapInArenaMiss_Int`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 2 | 6.7 | 6.7 | 1.0× |
+| 4 | 12.2 | 12.2 | 1.0× |
+| 8 | 21.4 | 5.4 | 4.0× |
+| 16 | 41.9 | 5.7 | 7.4× |
+| 32 | 77.5 | 5.7 | 13.6× |
+| 64 | 148.8 | 6.3 | 23.8× |
+| 128 | 291.9 | 6.2 | 47.0× |
+| 256 | 578.4 | 6.5 | 89.6× |
+
+#### `m1 == m2` equal, int keys (O(n²)→O(n)) — `BM_MapEqArena_Int`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 2 | 16.8 | 16.1 | 1.0× |
+| 4 | 40.6 | 41.0 | 1.0× |
+| 8 | 118.5 | 70.6 | 1.7× |
+| 16 | 415.4 | 135.7 | 3.1× |
+| 32 | 1424.7 | 281.9 | 5.1× |
+| 64 | 5124.3 | 559.8 | 9.2× |
+| 128 | 19464.9 | 1121.0 | 17.4× |
+| 256 | 75494.9 | 2330.5 | 32.4× |
+
+#### `m1 == m2` equal, string keys — `BM_MapEqArena_Str`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 2 | 19.7 | 19.7 | 1.0× |
+| 4 | 48.8 | 49.6 | 1.0× |
+| 8 | 156.0 | 100.3 | 1.6× |
+| 16 | 548.3 | 192.4 | 2.9× |
+| 32 | 2069.6 | 377.8 | 5.5× |
+| 64 | 7178.2 | 757.4 | 9.5× |
+| 128 | 25588.8 | 1542.0 | 16.6× |
+| 256 | 93496.3 | 3160.7 | 29.6× |
+
+#### N lookups over an N-entry map (comprehension proxy) — `BM_MapLookupLoop_Int`
+
+| N | linear ns | indexed ns | linear/indexed |
+|---:|---:|---:|---:|
+| 8 | 125.9 | 38.7 | 3.3× |
+| 16 | 438.8 | 87.2 | 5.0× |
+| 32 | 1718.7 | 166.2 | 10.3× |
+| 64 | 6480.9 | 351.3 | 18.4× |
+| 128 | 25225.4 | 736.7 | 34.2× |
+| 256 | 98988.7 | 1515.5 | 65.3× |
+
+### 8.3 Crossover analysis & threshold verdict
+
+The indexed probe is **flat at ~6-8 ns (int) / ~10-11 ns (str)
+regardless of N** — O(1) as designed.  The linear scan grows
+~2.3 ns/entry (int hit) up to the full-N worst case on a miss.
+
+`cel_map_index_build` gates on `count >= kCelMapIndexThreshold` (= 8),
+so for N < 8 the swiss arm publishes **no** index and equals the linear
+arm — the swept "crossover" therefore lands at N=8 for every kernel.
+That is the as-shipped behaviour, not the *true* break-even.  The true
+break-even is read off the flat indexed cost vs the linear slope:
+
+- **int keys:** linear hit is 6.3 ns @ N=2, 9.1 ns @ N=4, 14.4 ns @
+  N=8; the indexed probe is ~6.8 ns.  Break-even ≈ **N=3-4**.
+- **string keys:** linear hit is 8.4 ns @ N=2, 12.1 ns @ N=4, 18.3 ns
+  @ N=8; the indexed probe is ~10.4 ns.  Break-even ≈ **N=3-4** (the
+  memcmp per-compare cost is higher, so string crosses no later than
+  int — consistent with the plan's §2.1 expectation).
+
+**Verdict: `kCelMapIndexThreshold` HELD AT 8.**  Rationale (per §14 #3,
+"prefer the lower/string-key crossover for a single constant"):
+
+1. 8 sits *at or just above* the true break-even (~3-4) for BOTH key
+   types — so no map below the threshold ever pays index overhead, and
+   every map at the threshold already wins ≥1.8× (int 14.4→6.8 ns,
+   str 18.3→10.4 ns at N=8; misses win ≥1.7×).
+2. 8 aligns with `kGroupWidth` (one SWAR group), keeping the index
+   geometry clean.
+3. Lowering to 4 would buy a marginal win only in the N=4-7 band, where
+   the linear scan is already cheap (9-14 ns) and the per-build index
+   cost (not amortised for a one-shot literal) would erode it.  Not
+   worth a non-power-of-two, non-group-aligned constant.
+
+Measuring an indexed probe *below* the gate would require bypassing the
+`count >= kCelMapIndexThreshold` check inside `cel_map_index_build` —
+i.e. a runtime knob.  Per CLAUDE.md ("report if you need a knob") that
+runtime change was NOT made; the flat-probe extrapolation above settles
+the question without it.  Hit and miss crossovers agree (both at the
+gate; both flat-probe break-even ≈ 3-4), so no >1-bucket disagreement to
+document beyond this.
+
+### 8.4 Marquee result — O(n²) → O(n)
+
+`BM_MapEqArena_Int` (equal N-entry maps, inner match indexed) bends from
+quadratic to linear: **N=256 goes 75.5 µs → 2.3 µs (32×)**; string keys
+93.5 µs → 3.2 µs (30×).  `BM_MapLookupLoop_Int` (N lookups over an
+N-entry map — the comprehension proxy) is **99 µs → 1.5 µs at N=256
+(65×)**.  These are the per-lookup O(n) wins a comprehension over a
+large map now realises.
+
+### 8.5 Eval-tier note
+
+The eval-corpus cells run the *full* Compile→Plan→Eval, and the var-key
+cells re-materialize the literal map + rebuild the index on **every**
+Eval (the map header is not const-folded for a `m[k]` with a bound key).
+So at large N these cells are **materialization-dominated**, not
+lookup-dominated, and read slower than cel-cpp — which is exactly why the
+lookup-isolation crossover lives at the kernel tier (map staged once
+outside the timed loop).  The eval cells are corroborating (correctness
++ end-to-end parity), not the crossover evidence.  Numbers flow through
+the standard auto-publish pipeline (`results/<date>-<host>.md` + the
+README Results section).

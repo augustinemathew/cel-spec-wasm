@@ -206,8 +206,19 @@ enum {
 // SwissTable hash index; below it the map stays index-free and every
 // keyed kernel linear-scans.  ≤8 × 48B entries fit a few cache lines
 // and a linear scan beats hash + indirection; 8 also aligns with
-// kGroupWidth.  Bench-tunable — see
-// `doc/implementation-plan/rewrite/m32-swisstable-map-index.md` §10.
+// kGroupWidth.
+//
+// Held at 8, confirmed by the kernel crossover sweep on Mac.lan
+// (Apple Silicon) 2026-06-27 (benchmark/m32-swisstable-bench-plan.md §2,
+// benchmark/kernel:kernel_bench, -c opt): the indexed probe is flat at
+// ~6-8 ns regardless of N, while the linear scan grows ~2.3 ns/entry, so
+// the true break-even sits at N≈3-4 for both int and string keys (linear
+// N=4 hit: int 9.1 ns / str 12.1 ns vs indexed ~6.8 / ~10.4 ns).  8 is
+// the conservative pick — at or just above the break-even for the
+// string-key axis (per §14 #3, prefer the lower/string-key crossover for
+// a single constant), so a tiny map never pays index overhead while
+// every map at the threshold already wins ≥1.8× (int 14.4→6.8 ns,
+// str 18.3→10.4 ns at N=8).  See §10 closeout for the full table.
 enum {
   kCelMapIndexThreshold = 8,
 };

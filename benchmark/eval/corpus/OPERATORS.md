@@ -225,6 +225,9 @@ Surfaces: `lists.yaml` (BM prefix `in_list`), `maps.yaml` (`map`).
 | map<int,V>     | 10 keys, var + const    | maps.inInt, maps.inIntConst | ✓ |
 | map<uint,V>    | 10 keys, var + const    | maps.inUint, maps.inUintConst | ✓ |
 | map<bool,V>    | 2 keys, var + const     | maps.inBool, maps.inBoolConst | ✓ |
+| map<int,V> size sweep (m32 index) | 8/64/256 keys | maps.inIntN{8,64,256} | ✓ |
+| map<string,V> size sweep (m32 index) | 8/64/256 keys | maps.inStrN{8,64,256} | ✓ |
+| map<int,V> `==` (m32 O(n²)→O(n)) | 64/256 keys | maps.eqIntN{64,256} | ✓ |
 
 The bound cells mirror the legacy `bench/in_operator_bench.cc`
 shapes (BM_Eval_In_IntList_Bound_WorstCase, BM_Eval_In_1M_*,
@@ -247,6 +250,8 @@ Surface: `index.yaml` (BM prefix `idx`).
 | map[int], var + const key | idx.mapInt, idx.mapIntConst | ✓ |
 | map[uint], var + const key | idx.mapUint, idx.mapUintConst | ✓ |
 | map[bool], var + const key | idx.mapBool, idx.mapBoolConst | ✓ |
+| map[int] size sweep (m32 index) | idx.mapIntN{8,64,256} | ✓ |
+| map[string] size sweep (m32 index) | idx.mapStrN{8,64,256} | ✓ |
 
 ---
 
@@ -275,6 +280,7 @@ Surface: `comprehensions.yaml` (BM prefix `compr`).  Ranges are
 | `map`        | compr.map20 | ✓ |
 | `filter`     | compr.filter20 | ✓ |
 | `exists` over map keys | compr.existsMapKey | ✓ |
+| N lookups over N-entry map (m32 index) | compr.mapLookupLoop{64,256} | ✓ |
 
 ---
 
