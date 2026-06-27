@@ -391,5 +391,209 @@ TEST(PartialEvalOracle, PatternOnLoopVarIsNoOp) {
   EXPECT_TRUE(r.value.bool_value()) << "30 > 10 → exists is true";
 }
 
+// ── m32 SwissTable map-index numeric-key canonicalization gate
+//    (m32-swisstable-map-index.md §5, §5.1, decision §14 #4).
+//
+//    The SwissTable invariant is: keys cel-cpp considers EQUAL must hash
+//    identically.  The hash kernel canonicalizes `int N`, `uint N`, and
+//    integral `double N.0` to one token so they collide.  The P0 merge
+//    gate is the `≥ 2^53` boundary: above it an integral double can
+//    compare-equal to a RANGE of int64s (the double has only 52 mantissa
+//    bits), so truncation-to-token can pick a different int than the one
+//    a linear scan would compare-equal.  These cases oracle-confirm where
+//    cel-cpp's cross-type numeric equality is exact vs lossy, freezing
+//    the `≥ 2^53 → linear-scan fallback` threshold before the kernel is
+//    locked.  EvalWithCelCpp takes only (source, container) — every case
+//    is a literal expression.
+//
+//    2^53     = 9007199254740992
+//    2^53 + 1 = 9007199254740993  (NOT representable as a double; the
+//               double literal 9007199254740993.0 rounds to 2^53)
+//    2^53 + 2 = 9007199254740994  (representable)
+
+// Helper: assert a literal expression evaluates to a non-error bool and
+// return its value.
+bool OracleBool(absl::string_view source) {
+  auto r = testdata::EvalWithCelCpp(source, kP3);
+  ABSL_CHECK_OK(r.status()) << source;
+  ABSL_CHECK(!r->is_error) << source << ": " << r->error_message;
+  ABSL_CHECK(r->value.has_bool_value()) << source << ": not a bool result";
+  return r->value.bool_value();
+}
+
+// ---- Cross-type map-key membership (the membership shape the index
+//      must preserve: a uint/double lookup key finding an int stored
+//      key).
+//
+//      KEY FINDING: cel-cpp's CHECKER rejects a homogeneously-typed
+//      cross-type membership expression — `1u in {1:'a'}` is a
+//      compile/type-check error because the map literal's key type is
+//      `int` and the `in` overload requires the element type to match.
+//      Cross-type numeric membership only reaches the RUNTIME (where the
+//      numeric-aware key compare lives) when the lookup key is `dyn(...)`
+//      (or the map is `dyn`).  The hash kernel's cross-type
+//      canonicalization is therefore exercised exactly on the
+//      `dyn`-wrapped lookup path; the homogeneous literal never gets
+//      there.  Both shapes are pinned below. ----
+
+TEST(MapKeyNumericCrossType, UintLiteralKeyRejectedByChecker) {
+  // No dyn(): the checker rejects uint-in-map<int,...>.
+  auto r = testdata::EvalWithCelCpp("1u in {1:'a'}", kP3);
+  EXPECT_FALSE(r.status().ok())
+      << "expected a type-check failure for cross-type membership";
+}
+TEST(MapKeyNumericCrossType, UintKeyFindsIntEntryViaDyn) {
+  EXPECT_TRUE(OracleBool("dyn(1u) in {1:'a'}"));
+}
+TEST(MapKeyNumericCrossType, DoubleKeyFindsIntEntryViaDyn) {
+  EXPECT_TRUE(OracleBool("dyn(1.0) in {1:'a'}"));
+}
+TEST(MapKeyNumericCrossType, DoubleKeyFindsUintEntryViaDyn) {
+  EXPECT_TRUE(OracleBool("dyn(2.0) in {1:'a', 2u:'b'}"));
+}
+TEST(MapKeyNumericCrossType, NonIntegralDoubleKeyMissesViaDyn) {
+  // A non-integral double cannot compare-equal to any integer key.
+  EXPECT_FALSE(OracleBool("dyn(1.5) in {1:'a', 2:'b'}"));
+}
+
+// ---- Cross-type equality at / around 2^53.  These pin where int↔double
+//      equality is EXACT and where rounding makes a double equal a
+//      neighbor int.
+//
+//      As with membership, heterogeneous `==` is a RUNTIME feature: the
+//      checker has no `int == double` overload, so a homogeneous literal
+//      comparison fails type-check.  `dyn(...)` on one side routes to the
+//      runtime cross-type equality kernel (the same numeric compare the
+//      map key path uses).  This is itself a finding — cross-type numeric
+//      equality is reachable only through `dyn`. ----
+
+TEST(MapKeyNumericCrossType, IntEqDoubleHomogeneousRejectedByChecker) {
+  auto r =
+      testdata::EvalWithCelCpp("9007199254740992 == 9007199254740992.0", kP3);
+  EXPECT_FALSE(r.status().ok())
+      << "expected a type-check failure for homogeneous int==double";
+}
+TEST(MapKeyNumericCrossType, IntEqDoubleExactAt2Pow53) {
+  // 2^53 is exactly representable; equality is exact.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740992) == 9007199254740992.0"));
+}
+TEST(MapKeyNumericCrossType, IntPlus1EqDoubleAt2Pow53) {
+  // OBSERVED: 2^53+1 (int) == 2^53.0 (double) is TRUE.  cel-cpp's
+  // cross-type `==` does NOT round the int to double (which would make
+  // them unequal — (double)(2^53+1) == 2^53 only by coincidence here);
+  // it compares MATHEMATICALLY, and because the double 2^53.0 sits within
+  // rounding range of 2^53+1 cel-cpp reports equal.  In fact cel-cpp's
+  // numeric cross-compare (`cel::internal::Number`) treats an integral
+  // double as the integer it rounds to under `==`: 2^53.0 widens to the
+  // int 2^53, and... see the asymmetry probe below — `==` and map-`in`
+  // DISAGREE here.  The raw observed verdict is pinned:
+  EXPECT_TRUE(OracleBool("dyn(9007199254740993) == 9007199254740992.0"));
+}
+TEST(MapKeyNumericCrossType, IntEqDoubleLiteralRoundsDown) {
+  // The double literal 9007199254740993.0 is NOT representable; it rounds
+  // to 2^53 (9007199254740992.0).  OBSERVED: 2^53+1 (int) == that double
+  // is TRUE — same lossy verdict as the 2^53.0-literal case above.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740993) == 9007199254740993.0"));
+}
+TEST(MapKeyNumericCrossType, IntEqRoundedDoubleNeighbor) {
+  // The double literal 9007199254740993.0 rounds to 2^53; so 2^53 (int)
+  // compares equal to it.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740992) == 9007199254740993.0"));
+}
+TEST(MapKeyNumericCrossType, IntPlus2EqDoubleExact) {
+  // 2^53+2 is representable as a double; equality is exact.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740994) == 9007199254740994.0"));
+}
+TEST(MapKeyNumericCrossType, UintEqDoubleAt2Pow53Lossy) {
+  // uint side: OBSERVED 2^53+1 (uint) == 2^53.0 (double) is TRUE — same
+  // lossy verdict as the int side.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740993u) == 9007199254740992.0"));
+}
+TEST(MapKeyNumericCrossType, UintEqDoubleExactAt2Pow53) {
+  EXPECT_TRUE(OracleBool("dyn(9007199254740992u) == 9007199254740992.0"));
+}
+TEST(MapKeyNumericCrossType, IntEqDoubleExactBelow2Pow53) {
+  // Just below 2^53 every int64 is exactly representable; equality exact.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740991) == 9007199254740991.0"));
+}
+
+// ---- Large-int double map lookup: the actual index probe shape — a
+//      double lookup key probing for a large-int stored key. ----
+
+TEST(MapKeyNumericCrossType, DoubleAt2Pow53FindsIntEntry) {
+  EXPECT_TRUE(OracleBool("dyn(9007199254740992.0) in {9007199254740992: 'a'}"));
+}
+TEST(MapKeyNumericCrossType, DoubleLiteralRoundsToStoredIntKey) {
+  // The lookup-key double 9007199254740993.0 rounds to 2^53; the stored
+  // int key is 2^53.  Does the double find it?  (This is exactly the
+  // §5.1 hazard: truncation-to-token would token-ize the double as
+  // 2^53+1 and MISS, but cel-cpp's linear scan compares double-equal and
+  // HITS.)
+  EXPECT_TRUE(OracleBool("dyn(9007199254740993.0) in {9007199254740992: 'a'}"));
+}
+TEST(MapKeyNumericCrossType, DoubleAt2Pow53MissesNeighborIntKey) {
+  // OBSERVED: FALSE — and this is THE load-bearing asymmetry.  The
+  // lookup-key double 9007199254740992.0 (== 2^53) probing a map whose
+  // only key is the int 2^53+1 returns NO MATCH, even though the `==`
+  // operator reports `2^53+1 == 2^53.0` is TRUE (see IntPlus1Eq...
+  // above).  cel-cpp's map key membership therefore does NOT use the same
+  // lossy `==` comparison: map-key matching is EXACT (the double must
+  // equal the int's exact mathematical value), so 2^53.0 ≠ 2^53+1 as map
+  // keys.  This means a map-index hash kernel canonicalizing a double to
+  // its TRUNCATED integer value matches cel-cpp's map semantics — and the
+  // §5.1 hazard ("a double near a rounding boundary equals a RANGE of
+  // ints") does NOT apply to MAP KEYS, only to the bare `==` operator.
+  EXPECT_FALSE(
+      OracleBool("dyn(9007199254740992.0) in {9007199254740993: 'a'}"));
+}
+TEST(MapKeyNumericCrossType, DoubleAt2Pow53Plus2FindsIntEntry) {
+  // Both representable; exact hit.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740994.0) in {9007199254740994: 'a'}"));
+}
+
+// Confirming probe for the §5.1 verdict: the map-key match is EXACT, not
+// the lossy `==`.  Lookup double 2^53+2.0 (exactly representable, value
+// 9007199254740994) against a map keyed by the int 2^53 — these differ by
+// 2, so an exact match misses.  (A lossy double-widening match would also
+// miss here; the discriminating case is DoubleAt2Pow53MissesNeighborIntKey
+// above, where `==` says equal but map-`in` says miss.)
+TEST(MapKeyNumericCrossType, DoubleExactNeqStoredIntMisses) {
+  EXPECT_FALSE(
+      OracleBool("dyn(9007199254740994.0) in {9007199254740992: 'a'}"));
+}
+
+// ---- Cross-kind duplicate-key map literals: does cel-cpp raise a
+//      duplicate-key error or accept the literal?  (The runtime's
+//      insert-time dup check must match this.)
+//
+//      OBSERVED: {1:'a', 1u:'b'} is ACCEPTED (no error) — int 1 and
+//      uint 1 are DISTINCT map keys to cel-cpp's literal builder, despite
+//      `1 == 1u` being true under the `==` operator.  But {1:'a', 1.0:'b'}
+//      IS a duplicate-key error.  So the map-literal dup check treats
+//      int-vs-uint as distinct kinds but int-vs-double(integral) as the
+//      same key.  (cel-cpp builds map literals keyed by `cel::Value`,
+//      whose hash/eq distinguishes int and uint kinds but folds an
+//      integral double onto its integer.) ----
+
+testdata::OracleResult OracleEval(absl::string_view source) {
+  auto r = testdata::EvalWithCelCpp(source, kP3);
+  ABSL_CHECK_OK(r.status()) << source;
+  return *std::move(r);
+}
+
+TEST(MapKeyNumericCrossType, DupKeyIntAndUintAccepted) {
+  // OBSERVED: int 1 and uint 1 are DISTINCT map keys — no duplicate error.
+  auto r = OracleEval("{1: 'a', 1u: 'b'}");
+  EXPECT_FALSE(r.is_error)
+      << "int and uint keys are distinct in a map literal; got error: "
+      << r.error_message;
+}
+TEST(MapKeyNumericCrossType, DupKeyIntAndDoubleIsError) {
+  // OBSERVED: int 1 and integral double 1.0 ARE the same key — duplicate
+  // error.
+  auto r = OracleEval("{1: 'a', 1.0: 'b'}");
+  EXPECT_TRUE(r.is_error) << "expected a duplicate-key CEL error; got value";
+}
+
 }  // namespace
 }  // namespace celwasm
