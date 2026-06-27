@@ -1,171 +1,90 @@
 #ifndef CELWASM_COMPILER_CODEGEN_OVERLOAD_TABLE_H_
 #define CELWASM_COMPILER_CODEGEN_OVERLOAD_TABLE_H_
 
-// Maps CEL overload ids (e.g. `kAddInt`, `kSizeString`) to the wasm
-// import that implements them.  Built-ins come from a frozen
-// `kBuiltinSeeds` array; custom host functions are registered by the
-// embedder at compile time via `OverloadTableBuilder::RegisterCustom`.
-// Both funnel into the same immutable `OverloadTable`.
+// Maps a cel-cpp overload id (e.g. "add_int64") to the wasm import that
+// implements it.  Built-in operators come from a frozen seed table that
+// pairs each overload id with a `cel_runtime.wasm` helper name; the
+// helper's import module ("cel") and arity are taken from the runtime
+// catalogue (`abi/runtime_catalogue.h`) — the single source of truth for
+// built-in functions.  Embedder-registered custom functions are layered
+// on top.  The result is an immutable `OverloadTable` with two queries:
+//
+//   - `Lookup(overload_id)` — resolve to the def codegen calls.
+//   - `impls()`             — enumerate every def, for import install.
 
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <string>
 #include <vector>
 
-#include "absl/base/attributes.h"
 #include "absl/container/flat_hash_map.h"
-#include "absl/container/flat_hash_set.h"
-#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 
 namespace celwasm {
 
-// Wasm import module a helper comes from.  The expr module imports
-// from several modules today:
+// Which wasm import module an overload's function lives under.  The first
+// three resolve to fixed module strings; `kUser` uses the per-overload
+// alias in `OverloadDef::wasm_import_module_name` (a foreign-component /
+// CEL-defined backend declares its own module name).
+enum class ImportModuleSource : uint8_t {
+  kCel = 0,      // "cel"      — cel_runtime.wasm exports (built-in seeds)
+  kCelHost = 1,  // "cel_host" — host trampolines
+  kCelFn = 2,    // "cel_fn"   — host-backed custom functions
+  kUser = 3,     // uses OverloadDef::wasm_import_module_name (foreign backend)
+};
+
+// One overload: a CEL overload id paired with the wasm import that
+// implements it.  Built-in standard overloads and embedder-declared
+// custom functions all flow through this one type, in three distinct
+// shapes — every field of each shown below.
 //
-//   kCelRuntime — "cel" — runtime .wasm exports (cel_int_add_at_vv, …).
-//   kCelHost   — "cel_host" — built-in host trampolines (cel_get_field, …).
-//   kCelFn     — "cel_fn"   — host-backed custom fns.
-//   kUserModule — <impl.module_name> — foreign-wasm-backed custom fns
-//                                       or CEL-defined backend exports.
+//   1) built-in — a CEL spec standard overload, e.g. `1 + 2`.  Build()
+//      fills the function name + num_args from the runtime catalogue.
+//        overload_id               = "add_int64"   (the CEL spec id)
+//        wasm_import_function_name = "cel_int_add_at_vv"
+//        wasm_import_module_type   = kCel
+//        wasm_import_module_name   = ""             (module name → "cel")
+//        num_args                  = 3              (out_slot + 2 args)
 //
-// Built-in seeds use only kCelRuntime and kCelHost; kCelFn and
-// kUserModule carry custom functions.  See `m13-custom-fns.md` §5.3
-// for the design context.
-enum class ImportModule : uint8_t {
-  kCelRuntime = 0,
-  kCelHost = 1,
-  kCelFn = 2,
-  kUserModule = 3,
+//   2) @host / @component custom — a trusted C++ lambda OR a sandboxed
+//      wasm component, e.g. `myorg.up(s)`.  The two share ONE shape: a
+//      component fn is a host fn at the call site (m24), so both import
+//      from "cel_fn" and the trampoline picks lambda-vs-component at
+//      runtime.
+//        overload_id               = "up_str"
+//        wasm_import_function_name = "up_str"
+//        wasm_import_module_type   = kCelFn
+//        wasm_import_module_name   = ""             (module name → "cel_fn")
+//        num_args                  = 2              (out_slot + 1 arg)
+//
+//   3) @native — a CEL-defined function compiled to its own wasm module,
+//      e.g. `mylib.pct(n)`.
+//        overload_id               = "pct_int"
+//        wasm_import_function_name = "pct_int"
+//        wasm_import_module_type   = kUser
+//        wasm_import_module_name   = "mylib"        (the module alias)
+//        num_args                  = 2
+struct OverloadDef {
+  // The table's lookup key, and a CEL spec concept rather than a local
+  // one: it is the spec's canonical name for one specific typed overload
+  // of a function (e.g. "add_int64" for `int + int`, "size_string" for
+  // `size(string)`), defined by the CEL standard environment.  It is the
+  // exact same string the type-checker writes onto the call's AST node —
+  // the checked AST's `cel.expr.Reference.overload_id`.  Used verbatim.
+  std::string overload_id;
+  std::string wasm_import_function_name;  // the imported wasm function
+  ImportModuleSource wasm_import_module_type = ImportModuleSource::kCel;
+  // The wasm import module string when `wasm_import_module_type == kUser`;
+  // empty otherwise (the name is then derived from the type).
+  std::string wasm_import_module_name;
+  uint8_t num_args = 0;  // i32 param count (out_slot + args); always >= 1
 };
 
-// Returns the fixed wasm-import-module string for the three closed-set
-// variants (`"cel"`, `"cel_host"`, `"cel_fn"`).  CHECKs on
-// `kUserModule` — that variant's name is per-`OverloadImpl`, not
-// per-kind, so use the overload below.
-absl::string_view ImportModuleName(ImportModule m);
-
-struct OverloadImpl {
-  ImportModule module = ImportModule::kCelRuntime;
-  // Wasm import name within `module`.  Built-ins and customs are
-  // symmetric: each row names one specific host-visible function.
-  //   Built-in: "cel_int_add_at_vv" (kCelRuntime).
-  //   Custom:   "my_upper_string"   (kCelHost / kCelFn / kUserModule).
-  // For built-ins this view points at a `constexpr` string in
-  // `kBuiltinSeeds`; for customs it points into the frozen table's
-  // owned storage (std::deque<std::string>, stable under move).
-  absl::string_view name;
-  // Number of i32 wasm function parameters this helper takes (one
-  // out_slot + N arg slots, so a unary helper has num_args=2).
-  // Populated for every built-in seed at Build() time from the ABI
-  // catalogue (`abi/runtime_catalogue.h`), and for customs at
-  // `RegisterCustom` time.  Always >= 1 (out_slot is mandatory): the
-  // catalogue lookup CHECK-fails for a missing built-in, and
-  // RegisterCustom requires num_args >= 1.
-  uint8_t num_args = 0;
-  // Only populated when `module == kUserModule`.  The wasm import
-  // module string — declared alias from `<alias>.<fnname>(...)`.
-  // For customs this view points into the frozen table's owned
-  // storage; empty otherwise.
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  absl::string_view module_name = {};
-};
-
-// Returns the wasm-import-module string for a specific row — handles
-// `kUserModule` by returning `impl.module_name`.  Use this at every
-// site that emits wasm imports; the bare-enum overload above is only
-// for log messages / fixed-variant checks.
-absl::string_view ImportModuleName(const OverloadImpl& impl);
-
-// `InferHelperArity` was removed 2026-05-22.  Helper arities now
-// come from the ABI catalogue in `abi/runtime_catalogue.h`
-// — the single source of truth across codegen, the engine's
-// runtime-export allowlist, and the wasm linker's `--export=` set.
-// Callers that need arity for a built-in helper name use
-// `abi::FindBuiltinHelper(module, name)->num_args`; callers that
-// need it for a custom-fn helper read `OverloadImpl::num_args`
-// (populated by `RegisterCustom`).
-
-struct Seed {
-  // NOLINTNEXTLINE(readability-redundant-member-init) — see OverloadImpl::name.
-  absl::string_view overload_id = {};
-  OverloadImpl impl = {};
-};
-
-class OverloadTable;
-
-class OverloadTableBuilder {
- public:
-  // Seeds every row in `kBuiltinSeeds`.
-  OverloadTableBuilder();
-
-  // Registers a custom host function.
-  //
-  // `overload_id` is the string the cel-cpp checker will stamp onto
-  // resolved call nodes — the same value passed to
-  // `MakeOverloadDecl` when the embedder declares the function via
-  // `TypeCheckerBuilder::AddFunction` (e.g.
-  // `MakeOverloadDecl("my_upper_string", StringType(), StringType())`
-  // for a `my.upper(string) -> string` function — see
-  // `third_party/cel-cpp/checker/type_checker_builder.h` and
-  // `third_party/cel-cpp/common/decl.h`).  cel-cpp records this on
-  // the `FunctionReference::overloads()` entry in the checked AST's
-  // reference map; ResolvePass uses it as the lookup key here.
-  //
-  // `module` selects the wasm import namespace:
-  //   kCelHost     — legacy host trampoline.
-  //   kCelFn       — host-backed customs.
-  //   kUserModule  — foreign-wasm-backed or CEL-defined backend.
-  // kCelRuntime is reserved for built-in seeds and CHECKs here.
-  //
-  // `module_name` is required when `module == kUserModule` (the
-  // alias from `<alias>.<fnname>(...)` in the .celfn IDL).  For
-  // kCelHost / kCelFn it MUST be empty — the import-module name is
-  // fixed by the kind.
-  //
-  // `helper_name` is the wasm import name the expr module will
-  // reference.  By convention it matches `overload_id`, but the
-  // embedder may pick any unique name — only `helper_name` is
-  // visible in the emitted wasm.
-  //
-  // `num_args` is the wasm function arity: 1 (out_slot) plus the
-  // number of CEL arguments.  E.g. a `bool isAdmin(User)` custom is
-  // num_args=2; `bool allow(User, string)` is num_args=3.  Must be
-  // ≥ 1 (out_slot is required); CHECKs otherwise.
-  //
-  // Returns `AlreadyExists` if `overload_id` collides with either a
-  // built-in (CEL spec forbids shadowing) or a prior custom
-  // registration.  Caller-owned string_views are copied into stable
-  // storage, so they need not outlive the call.
-  ABSL_MUST_USE_RESULT absl::Status RegisterCustom(
-      absl::string_view overload_id, ImportModule module,
-      absl::string_view module_name, absl::string_view helper_name,
-      uint8_t num_args);
-
-  OverloadTable Build() &&;
-
- private:
-  // `= {}` silences cppcoreguidelines-pro-type-member-init on the
-  // constructor body; readability-redundant-member-init is the
-  // contradicting twin (see NOLINTs on each line).
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::deque<std::string> custom_ids_ = {};  // owns custom overload-id strings
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::deque<std::string> custom_helper_names_ =
-      {};  // owns custom helper-name strings
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::deque<std::string> custom_module_names_ =
-      {};  // owns kUserModule alias strings (e.g. "rules")
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::vector<OverloadImpl> impls_ = {};  // indexed by (interned_id - 1)
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  absl::flat_hash_map<absl::string_view, uint32_t> index_ =
-      {};  // id → interned_id
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  absl::flat_hash_set<absl::string_view> builtin_ids_ =
-      {};  // for collision msgs
-};
+// The wasm import-module string for `def`: the fixed name for
+// kCel/kCelHost/kCelFn, or `def.wasm_import_module_name` for kUser.
+absl::string_view ImportModuleName(const OverloadDef& def);
 
 class OverloadTable {
  public:
@@ -174,74 +93,45 @@ class OverloadTable {
   OverloadTable(const OverloadTable&) = delete;
   OverloadTable& operator=(const OverloadTable&) = delete;
 
-  // Returns nullptr if the overload isn't registered — codegen treats
-  // this as Unimplemented and aborts the compile with the id in the
-  // error message.
-  const OverloadImpl* Lookup(absl::string_view overload_id) const;
+  // Builds the immutable table: the built-in seed set (source kCel, arity
+  // from the runtime catalogue) plus `customs`, in that order.  Returns
+  // `AlreadyExists` if a custom's `overload_id` collides with a built-in
+  // (CEL forbids shadowing) or an earlier custom.  CHECK-fails if a
+  // seed's helper is missing from the catalogue, a custom has
+  // `num_args == 0` or `wasm_import_module_type == kCel`, or a custom's
+  // `wasm_import_module_name` is set inconsistently with the kUser type.
+  static absl::StatusOr<OverloadTable> Build(
+      absl::Span<const OverloadDef> customs = {});
 
-  // Dense 1-based id for fitting into NodeAnnotation.overload_id.  0
-  // is reserved for "unresolved".  Built-ins come first in
-  // `kBuiltinSeeds` order; customs follow in registration order.
-  // Returns 0 if `overload_id` is not registered.
-  uint32_t InternOverloadId(absl::string_view overload_id) const;
+  // Resolve a cel-cpp overload id to its def, or nullptr — codegen
+  // treats nullptr as Unimplemented and aborts the compile with the id
+  // in the error message.  Valid for the lifetime of the table.
+  const OverloadDef* Lookup(absl::string_view overload_id) const;
 
-  // Reverse of InternOverloadId — called only with ids the builder
-  // itself assigned.  CHECKs on out-of-range.
-  const OverloadImpl& LookupById(uint32_t interned_id) const;
-
-  // Enumerate the `OverloadImpl` rows reached by the compiled
-  // expression.  Codegen tracks the set of interned ids it emitted
-  // and hands them back here.  Unknown ids are silently skipped.
-  // Returned pointers reference the table's internal storage and
-  // are valid for the lifetime of the table.
-  //
-  // Each row carries enough information to emit a wasm import:
-  // `ImportModuleName(*p)` resolves the wasm import-module string
-  // (handles `kUserModule` correctly via `module_name`), and
-  // `p->num_args` gives the import's arity.
-  std::vector<const OverloadImpl*> UsedImports(
-      const absl::flat_hash_set<uint32_t>& used_ids) const;
-
-  size_t size() const {
-    return impls_.size();
+  // Every def, built-ins first then customs in registration order — the
+  // set of wasm imports an emitted module installs.  Valid for the
+  // table's lifetime.
+  absl::Span<const OverloadDef> impls() const {
+    return impls_;
   }
 
  private:
-  friend class OverloadTableBuilder;
-  OverloadTable(std::deque<std::string> custom_ids,
-                std::deque<std::string> custom_helper_names,
-                std::deque<std::string> custom_module_names,
-                std::vector<OverloadImpl> impls,
-                absl::flat_hash_map<absl::string_view, uint32_t> index);
+  OverloadTable() = default;
 
-  // `= {}` silences cppcoreguidelines-pro-type-member-init false
-  // positives — the constructor uses an init list that does cover
-  // every member, but clang-tidy mis-tracks that with mem-init NOLINTs
-  // alone, so prefer brace-init at the declarators.
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::deque<std::string> custom_ids_ = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::deque<std::string> custom_helper_names_ = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::deque<std::string> custom_module_names_ = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::vector<OverloadImpl> impls_ = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  absl::flat_hash_map<absl::string_view, uint32_t> index_ = {};
+  std::vector<OverloadDef> impls_;
+  // overload_id -> index into `impls_`.  Keys are owned copies, so the
+  // map is self-contained and `impls_` can reallocate during Build.
+  absl::flat_hash_map<std::string, size_t> index_;
 };
 
-// Returns true iff `overload_id` matches a `StandardOverloadIds`
-// entry that the v2 OverloadTable deliberately doesn't seed.  Three
-// reasons land an id here: (1) special-cased in `expr_lower.cc`
-// (control flow, `_[_]`, polymorphic `equals` / `not_equals`);
-// (2) deferred to a later v2 milestone (cross-type numeric
-// ladder, timestamp / duration arithmetic, regex `matches`);
-// (3) not on the v2 critical path (type conversions, timestamp
-// accessors).  See the `kExplicitlyUnimplementedIds` list in
-// `overload_table.cc` for the complete set.  The
-// `overload_table_test::CoverageTripwire` test asserts every
-// cel-cpp `StandardOverloadIds::k*` value is either resolvable
-// here via `OverloadTable::Lookup` or in this set.
+// True iff `overload_id` is a cel-cpp `StandardOverloadIds` entry the
+// built-in seed set deliberately omits.  Two reasons land an id here:
+// (1) special-cased in `expr_lower.cc` (control flow `_?_:_`, indexing
+// `_[_]`, the comprehension-internal `not_strictly_false`); (2) the
+// dyn-passthrough `to_dyn`.  See `kExplicitlyUnimplementedIds` in
+// `overload_table.cc`.  The `overload_table_test::CoverageTripwire` test
+// asserts every cel-cpp `StandardOverloadIds::k*` value is either
+// resolvable via `Lookup` or in this set.
 bool OverloadTableIsExplicitlyUnimplemented(absl::string_view overload_id);
 
 }  // namespace celwasm

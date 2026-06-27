@@ -69,7 +69,7 @@ struct RegisteredCustomModule {
 // `&callback` as its `env` pointer).
 struct RegisteredHostCallback {
   // Total wasm function arity — params.size() + 1 (out_slot).
-  // Matches the underlying `OverloadImpl::num_args`.
+  // Matches the underlying `OverloadDef::num_args`.
   std::uint8_t num_args = 0;
   celwasm::HostCallback callback;
 };

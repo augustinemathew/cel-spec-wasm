@@ -829,7 +829,7 @@ absl::StatusOr<BinaryenExpressionRef> EmitKIndexCall(
 // Shape mirrors `EmitKIndexCall`: emit each arg sub-expression
 // (returns its CelValue offset), prepend the out_slot constant,
 // emit a single `BinaryenCall` to the helper named by
-// `OverloadTable::Lookup(ann.overload_id)->name`, then wrap in a
+// `OverloadTable::Lookup(ann.overload_id)->wasm_import_function_name`, then wrap in a
 // `(block (call …) (i32.const out_slot))` so the whole call
 // expression value-types as the i32 offset of its result CelValue.
 //
@@ -1014,14 +1014,14 @@ absl::StatusOr<absl::string_view> ResolveCallHelper(const OverloadTable& table,
         call.function(),
         "` has empty overload_id (ResolvePass left the annotation unstamped)"));
   }
-  const OverloadImpl* impl = table.Lookup(ann.overload_id);
+  const OverloadDef* impl = table.Lookup(ann.overload_id);
   if (impl == nullptr) {
     return absl::UnimplementedError(
         absl::StrCat("expr_lower: kCallExpr expr_id=", expr.id(), " function=`",
                      call.function(), "` overload_id=`", ann.overload_id,
                      "` not registered in OverloadTable"));
   }
-  return impl->name;
+  return impl->wasm_import_function_name;
 }
 
 // Emits the operand slot offsets a kCallExpr's helper consumes —
