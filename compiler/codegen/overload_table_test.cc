@@ -1,12 +1,10 @@
 #include "compiler/codegen/overload_table.h"
 
-#include <algorithm>
-#include <cstdint>
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
@@ -15,376 +13,168 @@
 #include "gtest/gtest.h"
 
 // Overload ids in this file mirror cel-cpp's `MakeOverloadDecl`
-// convention (see `third_party/cel-cpp/checker/type_checker_builder_factory_test.cc`
-// and `third_party/cel-cpp/common/standard_definitions.h`):
-//   - Typed-suffix form per overload:     "add_int", "my_upper_string".
-//   - Scalars named by their CEL type:    int / uint / double / string / bytes.
-//   - Custom functions typically reuse    the overload id as the wasm
-//     import name so only one name needs  tracking.
-// Using realistic names keeps the test readable as a usage example for
-// future embedders consulting `RegisterCustom`'s docstring.
+// convention (see `third_party/cel-cpp/common/standard_definitions.h`):
+// typed-suffix per overload ("add_int", "my_upper_string"), scalars
+// named by their CEL type.  Custom functions reuse the overload id as
+// the wasm import name, so only one name needs tracking.
 namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
 
-TEST(ImportModuleNameTest, MapsEveryEnumerator) {
-  EXPECT_EQ(ImportModuleName(ImportModule::kCelRuntime), "cel");
-  EXPECT_EQ(ImportModuleName(ImportModule::kCelHost), "cel_host");
-}
-
-// Snapshot of the M5.E builtin seed count.  Used by a few tests to
-// compute the first available custom id and to assert the seed
-// table didn't unexpectedly grow / shrink.  Update with the seed
-// list itself.
-// M9.B: 85 → 86 — added `type` seed pointing at `cel_type_of_at_v`.
-// M10.A: 86 → 92 — added 6 identity-conversion seeds
-// (`<kind>_to_<kind>` for bool/int64/uint64/double/string/bytes),
-// all pointing at `cel_copy_slot`.
-// M10.B: 92 → 98 — added 6 numeric inter-conversion seeds
-// (`uint64_to_int64` / `double_to_int64` / `int64_to_uint64` /
-// `double_to_uint64` / `int64_to_double` / `uint64_to_double`).
-// M10.C: 98 → 102 — added 4 string-parse seeds
-// (`string_to_int64` / `string_to_uint64` / `string_to_double` /
-// `string_to_bool`).
-// M10.D: 102 → 106 — added 4 number/bool→string seeds
-// (`int64_to_string` / `uint64_to_string` / `bool_to_string` /
-// `double_to_string`).
-// M10.E: 106 → 108 — added 2 bytes/string interconversion seeds
-// (`string_to_bytes` / `bytes_to_string`).
-// M7B.B: 108 → 122 — added 14 timestamp/duration seeds (6 arithmetic
-// helpers + 8 ordering helpers).
-// M7B.C: 122 → 136 — added 14 accessor seeds (10 ts UTC + 4 dur
-// accessors).
-// M7B.D: 136 → 146 — added 10 conversion seeds (4 int<->ts/dur
-// pure-wasm + 2 identities via cel_copy_slot + 4 host parse/format
-// trampolines).
-// M7B.E: 146 → 156 — added 10 with-TZ accessor shim seeds; all
-// route through the single `cel_host.cel_timestamp_tz_accessor`
-// trampoline with a per-shim `accessor_kind` constant.
-// Phase C C2: 156 → 158 — added the regex `matches` +
-// `matches_string` overload ids; both point at the self-hosted
-// RE2-backed `cel_matches_at_vv` kernel (`cel_matches.cc`).
-// M12.F: 158 → 177 — added 19 string_ext overload seeds for the
-// cel-cpp `strings` extension library (charAt, indexOf ×2,
-// lastIndexOf ×2, lowerAscii, upperAscii, replace ×2, split ×2,
-// substring ×2, trim, join ×2, quote, format, reverse).
-// All 19 kernels are self-hosted in `cel_runtime.wasm`; see
-// `rewrite/m12-string-ext.md` §4.2.
-// M14: 177 → 191 — added 14 optional<T> overload seeds (optional.of/
-// ofNonZeroValue/none, value/hasValue/or/orValue, select-field, the
-// map/list optindex variants); kernels in `cel_optional.c`.
-// M16: 191 → 249 — added 58 math_ext overload seeds (16 scalar +
-// 12 bitwise + 30 @min/@max).  greatest/least expand to @min/@max
-// via parser macros; the 6 unary @min/@max ids are identity and
-// bind to `cel_copy_slot`.  Kernels self-hosted in `cel_math_ext.c`;
-// see `rewrite/m16-math-ext.md`.
-// M17: 249 → 251 — added 2 encoders (base64) overload seeds
-// (`base64_encode_bytes` / `base64_decode_string`), self-hosted in
-// `cel_runtime.wasm` (`cel_base64_{encode,decode}_at_v`); see
-// `rewrite/m17-encoders-ext.md` §4.2.
-//
-// The seed count rises monotonically as kernels land.  When it
-// changes, update both `kBuiltinSeeds`'s std::array size in
-// `overload_table.cc` and this constant.
+// Built-in seed count.  Rises monotonically as kernels land; update it
+// alongside `kBuiltinSeeds`'s std::array size in `overload_table.cc`.
 constexpr size_t kBuiltinSeedCount = 271;
 
-TEST(OverloadTableTest, BuiltinSeedsArePopulated) {
-  // M5.E populated `kBuiltinSeeds` with the cel-cpp standard
-  // overload ids the v2 runtime supports.  The empty-table phase
-  // is over; this test pins the count and a representative
-  // arithmetic + container helper resolution.
-  OverloadTableBuilder builder;
-  OverloadTable table = std::move(builder).Build();
-  EXPECT_EQ(table.size(), kBuiltinSeedCount);
+TEST(OverloadTableTest, BuildSeedsBuiltinsFromCatalogue) {
+  auto table = OverloadTable::Build();
+  ASSERT_THAT(table, IsOk());
+  EXPECT_EQ(table->impls().size(), kBuiltinSeedCount);
 
-  const OverloadImpl* add_int = table.Lookup(cel::StandardOverloadIds::kAddInt);
+  const OverloadDef* add_int = table->Lookup(cel::StandardOverloadIds::kAddInt);
   ASSERT_NE(add_int, nullptr);
-  EXPECT_EQ(add_int->module, ImportModule::kCelRuntime);
-  EXPECT_EQ(add_int->name, "cel_int_add_at_vv");
+  EXPECT_EQ(add_int->wasm_import_module_type, ImportModuleSource::kCel);
+  EXPECT_EQ(ImportModuleName(*add_int), "cel");
+  EXPECT_EQ(add_int->wasm_import_function_name, "cel_int_add_at_vv");
+  // Arity comes from the runtime catalogue (out_slot + N args).
+  EXPECT_GE(add_int->num_args, 1);
 
-  // `size_list` names the kDynamic dispatcher (Option B — see
-  // `overload_table.cc` design comment near `kBuiltinSeeds`).  The
-  // dispatcher itself ships in M5.D step 2; this assertion locks
-  // that codegen will NOT emit the arena-only fast path through
-  // the table.
-  const OverloadImpl* size_list =
-      table.Lookup(cel::StandardOverloadIds::kSizeList);
+  // `size_list` names the kDynamic dispatcher (Option B), not the
+  // arena-only fast path.
+  const OverloadDef* size_list =
+      table->Lookup(cel::StandardOverloadIds::kSizeList);
   ASSERT_NE(size_list, nullptr);
-  EXPECT_EQ(size_list->name, "cel_list_size");
+  EXPECT_EQ(size_list->wasm_import_function_name, "cel_list_size");
 }
 
-TEST(OverloadTableTest, RegisterCustomAppendsPastBuiltinSeeds) {
-  // Mirrors an embedder declaring `my.upper(string) -> string` via
-  //   MakeFunctionDecl("my.upper",
-  //     MakeOverloadDecl("my_upper_string", StringType(), StringType()))
-  // and wiring its compile-time implementation through cel_host.
-  // Customs intern at `kBuiltinSeedCount + 1` (1-based, after the
-  // builtins).
-  OverloadTableBuilder builder;
-  EXPECT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "", "my_upper_string", 2),
-              IsOk());
-  OverloadTable table = std::move(builder).Build();
+TEST(OverloadTableTest, LookupUnknownReturnsNull) {
+  auto table = OverloadTable::Build();
+  ASSERT_THAT(table, IsOk());
+  EXPECT_EQ(table->Lookup("my_unregistered_fn"), nullptr);
+}
 
-  EXPECT_EQ(table.size(), kBuiltinSeedCount + 1u);
-  const OverloadImpl* impl = table.Lookup("my_upper_string");
+TEST(OverloadTableTest, CustomsAppendAfterBuiltinsInOrder) {
+  const std::vector<OverloadDef> customs = {
+      {"my_log_int", "my_log_int", ImportModuleSource::kCelFn, "", 2},
+      {"my_log_double", "my_log_double", ImportModuleSource::kCelFn, "", 2},
+  };
+  auto table = OverloadTable::Build(customs);
+  ASSERT_THAT(table, IsOk());
+  ASSERT_EQ(table->impls().size(), kBuiltinSeedCount + 2u);
+  // Customs land after the built-in seeds, in registration order.
+  EXPECT_EQ(table->impls()[kBuiltinSeedCount].wasm_import_function_name,
+            "my_log_int");
+  EXPECT_EQ(table->impls()[kBuiltinSeedCount + 1].wasm_import_function_name,
+            "my_log_double");
+
+  const OverloadDef* impl = table->Lookup("my_log_int");
   ASSERT_NE(impl, nullptr);
-  EXPECT_EQ(impl->module, ImportModule::kCelHost);
-  EXPECT_EQ(impl->name, "my_upper_string");
-
-  const uint32_t id = table.InternOverloadId("my_upper_string");
-  EXPECT_EQ(id, kBuiltinSeedCount + 1u);
-  EXPECT_EQ(&table.LookupById(id), impl);
+  EXPECT_EQ(impl->wasm_import_module_type, ImportModuleSource::kCelFn);
+  EXPECT_EQ(ImportModuleName(*impl), "cel_fn");
+  EXPECT_EQ(impl->wasm_import_function_name, "my_log_int");
+  EXPECT_EQ(impl->num_args, 2);
 }
 
-TEST(OverloadTableTest, RegisterCustomCollidingWithBuiltinIsAlreadyExists) {
-  // M5.E: customs cannot shadow built-ins.  CEL spec forbids
-  // overriding standard overloads; OverloadTable enforces this at
-  // the builder layer with the failing id in the error message.
-  OverloadTableBuilder builder;
-  EXPECT_THAT(builder.RegisterCustom("add_int64", ImportModule::kCelHost, "",
-                                     "my_add_int_override", 2),
+TEST(OverloadTableTest, CustomShadowingBuiltinIsAlreadyExists) {
+  // CEL forbids overriding a standard overload.
+  const std::vector<OverloadDef> customs = {
+      {"add_int64", "my_add_override", ImportModuleSource::kCelFn, "", 2}};
+  EXPECT_THAT(OverloadTable::Build(customs),
               StatusIs(absl::StatusCode::kAlreadyExists,
                        testing::HasSubstr("add_int64")));
 }
 
-TEST(OverloadTableTest, DuplicateCustomRegistrationIsAlreadyExists) {
-  // cel-cpp's FunctionRegistry rejects double-registration of the
-  // same overload id; OverloadTable enforces the same rule so the
-  // failure is caught at compile time with the id in the message.
-  OverloadTableBuilder builder;
-  ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "", "my_upper_v1", 2),
-              IsOk());
-  EXPECT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "", "my_upper_v2", 2),
+TEST(OverloadTableTest, DuplicateCustomIsAlreadyExists) {
+  const std::vector<OverloadDef> customs = {
+      {"my_upper_string", "my_upper_v1", ImportModuleSource::kCelFn, "", 2},
+      {"my_upper_string", "my_upper_v2", ImportModuleSource::kCelFn, "", 2}};
+  EXPECT_THAT(OverloadTable::Build(customs),
               StatusIs(absl::StatusCode::kAlreadyExists,
                        testing::HasSubstr("my_upper_string")));
 }
 
-TEST(OverloadTableTest, InternUnknownReturnsZero) {
-  OverloadTableBuilder builder;
-  ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "", "my_upper_string", 2),
-              IsOk());
-  OverloadTable table = std::move(builder).Build();
-  EXPECT_EQ(table.InternOverloadId("my_unregistered_fn"), 0u);
-  EXPECT_EQ(table.Lookup("my_unregistered_fn"), nullptr);
-}
-
-TEST(OverloadTableTest, InternsAssignedInRegistrationOrder) {
-  // Customs are appended after the built-in seeds and intern
-  // contiguously in registration order.  Use distinct overload ids
-  // (not in `kBuiltinSeeds`) so the `RegisterCustom` calls don't
-  // collide with the standard names.
-  OverloadTableBuilder builder;
-  ASSERT_THAT(builder.RegisterCustom("my_log_int", ImportModule::kCelHost, "",
-                                     "my_log_int", 2),
-              IsOk());
-  ASSERT_THAT(builder.RegisterCustom("my_log_double", ImportModule::kCelHost,
-                                     "", "my_log_double", 2),
-              IsOk());
-  ASSERT_THAT(
-      builder.RegisterCustom("my_reverse_string", ImportModule::kCelHost, "",
-                             "my_reverse_string", 2),
-      IsOk());
-  OverloadTable table = std::move(builder).Build();
-  const uint32_t base = kBuiltinSeedCount;
-  EXPECT_EQ(table.InternOverloadId("my_log_int"), base + 1u);
-  EXPECT_EQ(table.InternOverloadId("my_log_double"), base + 2u);
-  EXPECT_EQ(table.InternOverloadId("my_reverse_string"), base + 3u);
-  EXPECT_EQ(table.LookupById(base + 1u).name, "my_log_int");
-  EXPECT_EQ(table.LookupById(base + 2u).name, "my_log_double");
-  EXPECT_EQ(table.LookupById(base + 3u).name, "my_reverse_string");
-}
-
-TEST(OverloadTableTest, RegisterCustomCopiesIdAndHelperName) {
-  // The string_view inputs must be safe to dangle after the call.
-  // We pass in heap-constructed strings and then destroy them before
-  // any lookup on the frozen table.
-  OverloadTableBuilder builder;
-  {
-    std::string id = "my_upper_string";
-    std::string name = "my_upper_string";
-    ASSERT_THAT(builder.RegisterCustom(id, ImportModule::kCelHost, "", name, 2),
-                IsOk());
-  }
-  OverloadTable table = std::move(builder).Build();
-  const OverloadImpl* impl = table.Lookup("my_upper_string");
+TEST(OverloadTableTest, ForeignModuleCustomCarriesItsAlias) {
+  // A CEL-defined / foreign-component backend (source kUser) imports
+  // under a per-module alias rather than the host-callback "cel_fn".
+  const std::vector<OverloadDef> customs = {
+      {"allow_string_string", "allow_string_string", ImportModuleSource::kUser,
+       "rules", 3}};
+  auto table = OverloadTable::Build(customs);
+  ASSERT_THAT(table, IsOk());
+  const OverloadDef* impl = table->Lookup("allow_string_string");
   ASSERT_NE(impl, nullptr);
-  EXPECT_EQ(impl->name, "my_upper_string");
-}
-
-TEST(OverloadTableTest, LookupSurvivesOuterTableMove) {
-  OverloadTableBuilder builder;
-  ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "", "my_upper_string", 2),
-              IsOk());
-  OverloadTable a = std::move(builder).Build();
-  OverloadTable b = std::move(a);
-  const OverloadImpl* impl = b.Lookup("my_upper_string");
-  ASSERT_NE(impl, nullptr);
-  EXPECT_EQ(impl->name, "my_upper_string");
-  EXPECT_EQ(b.InternOverloadId("my_upper_string"), kBuiltinSeedCount + 1u);
-}
-
-TEST(OverloadTableTest, UsedImportsFiltersToRequestedIds) {
-  // An expression that references `my.upper(x)` and `my.trim(z)` but
-  // not `my.lower(y)` should produce two wasm imports, not three —
-  // unused customs stay off the module's import list.
-  OverloadTableBuilder builder;
-  ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "", "my_upper_string", 2),
-              IsOk());
-  ASSERT_THAT(builder.RegisterCustom("my_lower_string", ImportModule::kCelHost,
-                                     "", "my_lower_string", 2),
-              IsOk());
-  ASSERT_THAT(builder.RegisterCustom("my_trim_string", ImportModule::kCelHost,
-                                     "", "my_trim_string", 2),
-              IsOk());
-  OverloadTable table = std::move(builder).Build();
-  const absl::flat_hash_set<uint32_t> used = {
-      table.InternOverloadId("my_upper_string"),
-      table.InternOverloadId("my_trim_string"),
-  };
-  auto imports = table.UsedImports(used);
-  ASSERT_EQ(imports.size(), 2u);
-  // Hash-set iteration order is unspecified; sort results by name
-  // (string content, not pointer value) before comparing — the
-  // comparator orders by `a->name`, which is deterministic.
-  // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order)
-  std::sort(imports.begin(), imports.end(),
-            [](const OverloadImpl* a, const OverloadImpl* b) {
-              return a->name < b->name;
-            });
-  EXPECT_EQ(imports[0]->module, ImportModule::kCelHost);
-  EXPECT_EQ(imports[0]->name, "my_trim_string");
-  EXPECT_EQ(imports[1]->module, ImportModule::kCelHost);
-  EXPECT_EQ(imports[1]->name, "my_upper_string");
-}
-
-TEST(OverloadTableTest, UsedImportsSilentlySkipsUnknownIds) {
-  OverloadTableBuilder builder;
-  ASSERT_THAT(builder.RegisterCustom("my_upper_string", ImportModule::kCelHost,
-                                     "", "my_upper_string", 2),
-              IsOk());
-  OverloadTable table = std::move(builder).Build();
-  // M10.B note: id `99` used to be a safe "unknown" placeholder when
-  // kBuiltinSeeds was at 92 (one custom registered → id 93, leaving
-  // 99 unused).  M10.B grew kBuiltinSeeds to 98, so 99 now names the
-  // first custom and the test would fail.  Use a far-out value
-  // (`kBuiltinSeedCount + 1000`) to stay unknown as more seeds land.
-  const absl::flat_hash_set<uint32_t> used = {
-      0u, static_cast<uint32_t>(kBuiltinSeedCount + 1000)};
-  const auto imports = table.UsedImports(used);
-  EXPECT_TRUE(imports.empty());
-}
-
-// `InferHelperArity` and its name-suffix sniff are gone — arity now
-// comes from the ABI catalogue (`abi/runtime_catalogue`).
-// The per-suffix unit tests that used to live here moved to
-// `runtime_catalogue_test.cc::KernelArityCanaries`; the seed-table
-// integration test `OverloadTableSeedArityAgainstCatalogue` below
-// exercises the wiring path that consumes the catalogue.
-
-// ── M13.A — kUserModule registration + ImportModuleName(impl) ──
-
-TEST(OverloadTableTest, RegisterCustomKUserModuleRoundTrips) {
-  // Foreign-backed custom: module = kUserModule, module_name = "rules".
-  OverloadTableBuilder builder;
-  ASSERT_THAT(
-      builder.RegisterCustom("allow_string_string", ImportModule::kUserModule,
-                             /*module_name=*/"rules",
-                             /*helper_name=*/"allow_string_string",
-                             /*num_args=*/3),
-      IsOk());
-  OverloadTable table = std::move(builder).Build();
-
-  const OverloadImpl* impl = table.Lookup("allow_string_string");
-  ASSERT_NE(impl, nullptr);
-  EXPECT_EQ(impl->module, ImportModule::kUserModule);
-  EXPECT_EQ(impl->module_name, "rules");
-  EXPECT_EQ(impl->name, "allow_string_string");
-  EXPECT_EQ(impl->num_args, 3);
-  // ImportModuleName(impl) returns the per-impl alias for kUserModule.
+  EXPECT_EQ(impl->wasm_import_module_type, ImportModuleSource::kUser);
   EXPECT_EQ(ImportModuleName(*impl), "rules");
+  EXPECT_EQ(impl->wasm_import_function_name, "allow_string_string");
+  EXPECT_EQ(impl->num_args, 3);
 }
 
 TEST(OverloadTableTest, TwoForeignAliasesSameHelperBothLand) {
-  // `rules.allow_string` and `policy.allow_string` are distinct
-  // wasm imports under different aliases.  OverloadTable's
-  // collision rule is on overload-id, NOT on (module, helper).  So
-  // the two MUST use distinct overload-ids.
-  OverloadTableBuilder builder;
-  ASSERT_THAT(
-      builder.RegisterCustom("allow_string_string", ImportModule::kUserModule,
-                             "rules", "allow_string_string", 3),
-      IsOk());
-  // Different overload-id — same helper name, same num_args, different
-  // alias.  Both legal; both end up as distinct wasm imports.
-  ASSERT_THAT(builder.RegisterCustom("allow_string_string_v2",
-                                     ImportModule::kUserModule, "policy",
-                                     "allow_string_string", 3),
-              IsOk());
-  OverloadTable table = std::move(builder).Build();
-
-  const OverloadImpl* rules = table.Lookup("allow_string_string");
-  const OverloadImpl* policy = table.Lookup("allow_string_string_v2");
+  // Distinct overload ids, same helper name, different alias — both
+  // legal, both distinct wasm imports.  Collision is keyed on the
+  // overload id, not on (module, helper).
+  const std::vector<OverloadDef> customs = {
+      {"allow_string_string", "allow_string_string", ImportModuleSource::kUser,
+       "rules", 3},
+      {"allow_string_string_v2", "allow_string_string",
+       ImportModuleSource::kUser, "policy", 3}};
+  auto table = OverloadTable::Build(customs);
+  ASSERT_THAT(table, IsOk());
+  const OverloadDef* rules = table->Lookup("allow_string_string");
+  const OverloadDef* policy = table->Lookup("allow_string_string_v2");
   ASSERT_NE(rules, nullptr);
   ASSERT_NE(policy, nullptr);
   EXPECT_EQ(ImportModuleName(*rules), "rules");
   EXPECT_EQ(ImportModuleName(*policy), "policy");
-  EXPECT_EQ(rules->name, policy->name);  // same wasm export name
+  EXPECT_EQ(rules->wasm_import_function_name,
+            policy->wasm_import_function_name);  // same wasm export
 }
 
-TEST(OverloadTableTest, RegisterCustomKUserModuleWithoutAliasIsAbort) {
-  // kUserModule requires a non-empty module_name; passing empty
-  // should CHECK at registration time.
-  OverloadTableBuilder builder;
-  EXPECT_DEATH(
-      (void)builder.RegisterCustom("foo_int", ImportModule::kUserModule,
-                                   /*module_name=*/"", "foo_int", 2),
-      "module_name");
+TEST(OverloadTableTest, LookupSurvivesTableMove) {
+  const std::vector<OverloadDef> customs = {
+      {"my_upper_string", "my_upper_string", ImportModuleSource::kCelFn, "",
+       2}};
+  auto built = OverloadTable::Build(customs);
+  ASSERT_THAT(built, IsOk());
+  OverloadTable a = *std::move(built);
+  OverloadTable b = std::move(a);
+  const OverloadDef* impl = b.Lookup("my_upper_string");
+  ASSERT_NE(impl, nullptr);
+  EXPECT_EQ(impl->wasm_import_function_name, "my_upper_string");
 }
 
-TEST(OverloadTableTest, RegisterCustomKCelHostWithAliasIsAbort) {
-  // Non-kUserModule custom MUST leave module_name empty.
-  OverloadTableBuilder builder;
-  EXPECT_DEATH(
-      (void)builder.RegisterCustom("foo_int", ImportModule::kCelHost,
-                                   /*module_name=*/"some_alias", "foo_int", 2),
-      "module_name");
+TEST(OverloadTableTest, CustomInputsNeedNotOutliveBuild) {
+  // OverloadDef owns its strings, and the table copies them; the
+  // caller's source strings can be destroyed before any lookup.
+  auto table = [] {
+    std::string id = "my_upper_string";
+    std::vector<OverloadDef> customs = {
+        {id, id, ImportModuleSource::kCelFn, "", 2}};
+    return OverloadTable::Build(customs);
+  }();
+  ASSERT_THAT(table, IsOk());
+  const OverloadDef* impl = table->Lookup("my_upper_string");
+  ASSERT_NE(impl, nullptr);
+  EXPECT_EQ(impl->wasm_import_function_name, "my_upper_string");
 }
 
-// ── M5.E coverage tripwire ────────────────────────────────────
-// Asserts every cel-cpp `StandardOverloadIds::k*` constant is
-// classified by the v2 OverloadTable as either:
-//   - resolvable (a row in `kBuiltinSeeds` returns non-null
-//     from `OverloadTable::Lookup`), or
-//   - explicitly unimplemented (`OverloadTableIsExplicitlyUnimplemented`
-//     returns true).
+// ── coverage tripwire ─────────────────────────────────────────
+// Asserts every cel-cpp `StandardOverloadIds::k*` constant is classified
+// by the OverloadTable as either resolvable (a `kBuiltinSeeds` row, so
+// `Lookup` is non-null) or explicitly unimplemented
+// (`OverloadTableIsExplicitlyUnimplemented` returns true).  A failure
+// means cel-cpp added a new overload id that nothing here classifies —
+// it MUST land in `kBuiltinSeeds` (with a runtime helper) or
+// `kExplicitlyUnimplementedIds` (with a reason).
+
+// Every `static constexpr absl::string_view k*` member of
+// `cel::StandardOverloadIds`, in source-file order — see
+// `third_party/cel-cpp/common/standard_definitions.h`.  When cel-cpp
+// adds a new id, append it here and classify it in `overload_table.cc`.
 //
-// Failing this test means cel-cpp added a new overload id that the
-// v2 OverloadTable doesn't know about — every new id MUST land in
-// either `kBuiltinSeeds` (with a runtime helper) or
-// `kExplicitlyUnimplementedIds` (with a comment naming the milestone
-// it'll land in or why it's deferred).  This is the forcing
-// function `m5-kcall-comprehensions.md §2.2 / design.md §4.5`
-// describes — silent additions to cel-cpp's standard library no
-// longer go unnoticed.
-
-// Returns every `static constexpr absl::string_view k*` member of
-// `cel::StandardOverloadIds` in source-file order — see
-// `third_party/cel-cpp/common/standard_definitions.h`.  Pulled out
-// of the tripwire test body so the test stays under the lint
-// function-size threshold.  When cel-cpp adds a new id, append it
-// here and classify it in `overload_table.cc`.
-//
-// `EveryStandardOverloadId` *is* the enumeration; splitting it into
-// chunked helpers would obscure the "every standard id, in source-
-// file order" invariant that is the whole point of the tripwire.
+// `EveryStandardOverloadId` *is* the enumeration; chunking it would
+// obscure the "every standard id, in source order" invariant.
 std::vector<absl::string_view>
 EveryStandardOverloadId() {  // NOLINT(readability-function-size)
   using S = cel::StandardOverloadIds;
@@ -571,18 +361,19 @@ EveryStandardOverloadId() {  // NOLINT(readability-function-size)
 }
 
 TEST(OverloadTableTest, CoverageTripwireClassifiesEveryStandardId) {
-  OverloadTable table = OverloadTableBuilder().Build();
+  auto table = OverloadTable::Build();
+  ASSERT_THAT(table, IsOk());
   for (absl::string_view id : EveryStandardOverloadId()) {
-    const bool resolvable = table.Lookup(id) != nullptr;
+    const bool resolvable = table->Lookup(id) != nullptr;
     const bool unimplemented = OverloadTableIsExplicitlyUnimplemented(id);
     EXPECT_TRUE(resolvable || unimplemented)
         << "cel-cpp StandardOverloadIds id `" << id << "` is unclassified — "
         << "add it to `kBuiltinSeeds` (with a runtime helper) or to "
-        << "`kExplicitlyUnimplementedIds` (with a comment naming the deferral "
-        << "milestone) in compiler/codegen/overload_table.cc.";
+        << "`kExplicitlyUnimplementedIds` (with a reason) in "
+        << "compiler/codegen/overload_table.cc.";
     EXPECT_FALSE(resolvable && unimplemented)
         << "id `" << id << "` is BOTH resolvable AND in "
-        << "kExplicitlyUnimplementedIds; remove from one of the two sets.";
+        << "kExplicitlyUnimplementedIds; remove it from one of the two sets.";
   }
 }
 

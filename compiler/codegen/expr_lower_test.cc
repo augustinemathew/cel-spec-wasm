@@ -65,11 +65,10 @@ Pipeline RunPipelineWithVars(absl::string_view expression,
   return Pipeline{*std::move(ta), *std::move(layout)};
 }
 
-// Per-test OverloadTable.  Tests that don't need customs can reuse
-// the default-built table; tests that exercise `RegisterCustom`
-// (none in this file today; M6 territory) build their own.
+// Per-test OverloadTable.  Tests that don't need customs reuse the
+// default-built table (built-in seeds only).
 OverloadTable DefaultOverloadTable() {
-  return OverloadTableBuilder().Build();
+  return OverloadTable::Build().value();
 }
 
 // Convenience: lower the pipeline through `LowerToEvalFunction` with
@@ -126,16 +125,15 @@ void InstallOneOverloadImport(WasmModule& m, const std::string& name) {
 void InstallOverloadImportsForTest(WasmModule& m) {
   static const auto* const kTable = new OverloadTable(DefaultOverloadTable());
   std::vector<std::string> seen;
-  for (uint32_t id = 1; id <= kTable->size(); ++id) {
-    const OverloadImpl& impl = kTable->LookupById(id);
-    if (impl.module != ImportModule::kCelRuntime) continue;
-    const std::string name(impl.name);
+  for (const OverloadDef& impl : kTable->impls()) {
+    if (impl.wasm_import_module_type != ImportModuleSource::kCel) continue;
+    const std::string name(impl.wasm_import_function_name);
     if (std::any_of(seen.begin(), seen.end(), [&](const std::string& s) {
           return s == name;
         })) {
       continue;
     }
-    if (IsPendingOverloadImpl(impl.name)) continue;
+    if (IsPendingOverloadImpl(impl.wasm_import_function_name)) continue;
     InstallOneOverloadImport(m, name);
     seen.push_back(name);
   }

@@ -278,7 +278,7 @@ void InstallListImports(WasmModule& mod) {
 // the import once.
 // Install a single overload helper as a wasm import with the
 // correct arity-derived parameter shape.  Arity comes from
-// `OverloadImpl::num_args` (pre-populated by the OverloadTable
+// `OverloadDef::num_args` (pre-populated by the OverloadTable
 // builder for built-ins via `InferHelperArity`, and by
 // `RegisterCustom` for customs).  Returns true if an import was
 // installed; false if `num_args` is 0 (caller skips installation —
@@ -340,10 +340,9 @@ void InstallOverloadImportsExport(WasmModule& mod,
   // per Compile — microseconds total, noise next to parse/check and
   // Binaryen IR construction.  Not worth gating on link mode.
   absl::flat_hash_set<std::pair<std::string, std::string>> installed;
-  for (uint32_t id = 1; id <= overload_table.size(); ++id) {
-    const OverloadImpl& impl = overload_table.LookupById(id);
+  for (const OverloadDef& impl : overload_table.impls()) {
     const absl::string_view module_name = ImportModuleName(impl);
-    const std::string helper_name(impl.name);
+    const std::string helper_name(impl.wasm_import_function_name);
     auto key = std::make_pair(std::string(module_name), helper_name);
     if (installed.contains(key)) continue;
     if (BinaryenGetFunction(mod.raw(), helper_name.c_str()) != nullptr) {
@@ -504,26 +503,20 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
 }
 
 // Build the OverloadTable from the built-in seeds plus the
-// embedder's `function_libraries`.  Each library decl maps to one
-// `RegisterCustom` row:
-//   - `overload_id`         = decl's synthesised id (the cel-cpp
-//     checker stamps this on resolved call nodes; ResolvePass uses
-//     it as the OverloadTable lookup key).
-//   - `module`              = the wasm import-module routing:
-//                             host-callback path (`cel_fn`) for
-//                             `kHost` and `kForeignComponent`
-//                             (Component-Model backend dispatched
-//                             via a host callback — m24 §2-§3
-//                             "a component fn is a host fn at the
-//                             call site"); per-module `kUserModule`
-//                             for `kCelDefined`.
-//   - `module_name`         = the per-decl module string for kUserModule
-//                             (empty for kCelFn — OverloadTable hardcodes
-//                             the import-module string for kCelFn).
-//   - `helper_name`         = same as `overload_id` (one wasm
-//     import per decl; the IDL guarantees uniqueness).
-//   - `num_args`            = wasm function arity (1 out_slot + N
-//     CEL args, as recorded on `CelfnDecl::num_args`).
+// embedder's `function_libraries`.  Each library decl maps to one custom
+// `OverloadDef`:
+//   - `overload_id`              = decl's synthesised id (the cel-cpp
+//     checker stamps this on resolved call nodes; ResolvePass uses it as
+//     the OverloadTable lookup key).
+//   - `wasm_import_function_name` = same as `overload_id` (one wasm import
+//     per decl; the IDL guarantees uniqueness).
+//   - `wasm_import_module_type`   = `kCelFn` (the host-callback module) for
+//     `kHost` and `kForeignComponent` (a Component-Model backend is a host
+//     fn at the call site — m24 §2-§3); `kUser` for `kCelDefined`.
+//   - `wasm_import_module_name`   = the decl's per-module alias for
+//     `kCelDefined` (`kUser`); empty otherwise.
+//   - `num_args`                  = wasm function arity (1 out_slot + N CEL
+//     args, as recorded on `CelfnDecl::num_args`).
 bool DispatchesViaCelFn(CelfnDecl::Backend backend) {
   return backend == CelfnDecl::Backend::kHost ||
          backend == CelfnDecl::Backend::kForeignComponent;
@@ -531,23 +524,21 @@ bool DispatchesViaCelFn(CelfnDecl::Backend backend) {
 
 absl::StatusOr<OverloadTable> BuildOverloadTable(
     const std::vector<FunctionLibrary>& libraries) {
-  OverloadTableBuilder builder;
+  std::vector<OverloadDef> customs;
   for (const auto& lib : libraries) {
     for (const auto& decl : lib.decls()) {
       const bool via_cel_fn = DispatchesViaCelFn(decl.backend);
-      const ImportModule import_module =
-          via_cel_fn ? ImportModule::kCelFn : ImportModule::kUserModule;
-      const absl::string_view module_name =
-          via_cel_fn ? absl::string_view("") : decl.module_name;
-      if (auto s = builder.RegisterCustom(decl.overload_id, import_module,
-                                          module_name, decl.overload_id,
-                                          decl.num_args);
-          !s.ok()) {
-        return s;
-      }
+      customs.push_back(OverloadDef{
+          /*overload_id=*/std::string(decl.overload_id),
+          /*wasm_import_function_name=*/std::string(decl.overload_id),
+          /*wasm_import_module_type=*/
+          via_cel_fn ? ImportModuleSource::kCelFn : ImportModuleSource::kUser,
+          /*wasm_import_module_name=*/
+          via_cel_fn ? std::string() : std::string(decl.module_name),
+          /*num_args=*/decl.num_args});
     }
   }
-  return std::move(builder).Build();
+  return OverloadTable::Build(customs);
 }
 
 // Adopt the wrapper-stripped runtime wasm as the base Binaryen

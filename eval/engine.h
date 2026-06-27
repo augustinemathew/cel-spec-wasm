@@ -142,7 +142,7 @@ class Engine {
   // `FunctionLibrary::Builder::AddHost(...)` (e.g. `upper_string`,
   // `is_admin_message_acme_User`).  `num_args` is the total wasm
   // function arity — `params.size() + 1` (the +1 is the out_slot
-  // every callback receives).  Matches `OverloadImpl::num_args` 1:1.
+  // every callback receives).  Matches `OverloadDef::num_args` 1:1.
   //
   // Conflict checks:
   //   - `overload_id` already registered → AlreadyExists
