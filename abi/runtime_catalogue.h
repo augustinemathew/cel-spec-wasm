@@ -107,7 +107,11 @@ absl::string_view AbiModuleName(AbiModule m);
 // v3: reserved low-memory window raised 8 KiB → 256 KiB
 // (`--global-base=262144`) so large constant aggregates materialize
 // into rodata.
-constexpr uint32_t kRuntimeAbiVersion = 3;
+// v4: `ArenaMapHeader._pad` repurposed as `index_offset` (the
+// SwissTable hash-index block offset) and `cel_map_index_build` added
+// to the codegen-helper catalogue.  See
+// `doc/implementation-plan/rewrite/m32-swisstable-map-index.md`.
+constexpr uint32_t kRuntimeAbiVersion = 4;
 
 // All helpers exported by `cel_runtime.wasm` (module name "cel").
 // Loaded once from the generated, embedded `CelRuntimeCatalogue`

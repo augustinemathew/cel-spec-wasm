@@ -23,6 +23,22 @@ static int is_valid_map_key_kind(uint32_t kind) {
          kind == CEL_STRING;
 }
 
+// A double lookup key with magnitude ≥ 2^53 must bypass the hash index
+// and linear-scan instead.  Under the lossy `cel_value_eq` map-key
+// comparison, such a double is map-equal to a *range* of int64s that
+// all round to it, but a single hash token can only land it on one slot
+// — so the index could falsely miss a key the linear scan would hit.
+// Keeping these (rare) keys on the linear path keeps the index in exact
+// parity with the scan.  See m32-swisstable-map-index.md §5.1.
+static int key_forces_linear(const CelValue* key) {
+  if (key->kind != CEL_DOUBLE) return 0;
+  const double d = key->payload.d;
+  // 2^53 == 9007199254740992.0.  `-d >= 2^53` covers the negative side
+  // without <math.h>; NaN compares false on both, which is correct (a
+  // NaN key never matches a stored int/uint key under cel_value_eq).
+  return d >= 9007199254740992.0 || -d >= 9007199254740992.0;
+}
+
 static ArenaMapHeader* arena_map_header(const CelValue* m) {
   return (ArenaMapHeader*)(cel_memory_base_() +
                            m->payload.arena_map.header_ptr);
@@ -76,7 +92,7 @@ void cel_map_create(uint32_t out_slot, uint32_t initial_capacity) {
   hdr->count = 0;
   hdr->capacity = initial_capacity;
   hdr->entries_offset = entries_off;
-  hdr->_pad = 0;
+  hdr->index_offset = 0;  // built later by cel_map_index_build (or never).
   out->kind = CEL_MAP_ARENA;
   out->payload.arena_map.header_ptr = hdr_off;
 }
@@ -192,6 +208,18 @@ void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
     return;
   }
   ArenaMapHeader* hdr = arena_map_header(m);
+  // Hash-index fast path: usable only when an index is built AND the key
+  // does not force a linear scan (§5.1).  cel_map_index_find returns
+  // UINT32_MAX when index_offset == 0, so the fallback is the same scan.
+  if (hdr->index_offset != 0 && !key_forces_linear(key)) {
+    const uint32_t idx = cel_map_index_find(hdr, key);
+    if (idx != UINT32_MAX) {
+      *out = *arena_map_entry_val(hdr, idx);
+      return;
+    }
+    poison(out, CEL_ERR_NO_SUCH_KEY);
+    return;
+  }
   for (uint32_t i = 0; i < hdr->count; ++i) {
     if (cel_value_eq(arena_map_entry_key(hdr, i), key)) {
       *out = *arena_map_entry_val(hdr, i);
@@ -1003,6 +1031,12 @@ void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
     return;
   }
   ArenaMapHeader* hdr = arena_map_header(m);
+  // Hash-index fast path, mirroring cel_map_lookup_arena: usable only
+  // when an index is built and the key does not force linear (§5.1).
+  if (hdr->index_offset != 0 && !key_forces_linear(k)) {
+    write_bool(out, cel_map_index_find(hdr, k) != UINT32_MAX ? 1 : 0);
+    return;
+  }
   for (uint32_t i = 0; i < hdr->count; ++i) {
     if (cel_value_eq(arena_map_entry_key(hdr, i), k)) {
       write_bool(out, 1);
@@ -1022,6 +1056,17 @@ void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
 static int arena_map_entry_matches(ArenaMapHeader* ha, uint32_t i,
                                    ArenaMapHeader* hb, uint32_t* scratch) {
   const CelValue* ka = arena_map_entry_key(ha, i);
+  // Stored keys are always scalar (is_valid_map_key_kind: bool/int/uint/
+  // string), never a double, so `key_forces_linear` never trips here and
+  // the index on `hb` — when built — turns this O(n) inner scan into
+  // O(1).  cel_map_index_find returns UINT32_MAX when hb has no index,
+  // so the linear arm below still covers the unindexed case.
+  if (hb->index_offset != 0) {
+    const uint32_t j = cel_map_index_find(hb, ka);
+    if (j == UINT32_MAX) return 0;
+    return deep_values_equal(scratch, arena_map_entry_val_off(ha, i),
+                             arena_map_entry_val_off(hb, j));
+  }
   for (uint32_t j = 0; j < hb->count; ++j) {
     if (cel_value_eq(ka, arena_map_entry_key(hb, j))) {
       return deep_values_equal(scratch, arena_map_entry_val_off(ha, i),

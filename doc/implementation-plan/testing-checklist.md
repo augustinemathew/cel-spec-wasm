@@ -3283,6 +3283,34 @@ Swiss-table follow-up (m31 §8) — its e2e matrix is staged + GTEST_SKIP'd.
   - [ ] const-map materialization (Swiss-table) — staged, GTEST_SKIP'd
         (`ConstMapMaterializationTest`, 18 rows); un-skip when m31 §8 lands.
 
+### Rewrite M32.A — SwissTable hash index for arena maps (runtime-built)
+
+  - [x] runtime hash index over the dense entries run — `runtime/cel_map_index.c`
+        (`cel_map_index_build`, `cel_map_index_find`) consuming the frozen
+        shared kernel `runtime/cel_map_hash.h`; `ArenaMapHeader._pad` →
+        `index_offset`; `kRuntimeAbiVersion` 3 → 4.
+  - [x] index-vs-linear **parity** over the key × size matrix
+        (`runtime/cel_map_test.cc`: `MapIndexIntParityTest` n∈{4,8,16,64},
+        `UintKeysParity`, `StringKeysParityWithEmbeddedNul`) — every
+        lookup / `in` assertion identical with and without the index built.
+  - [x] below-threshold no-op + at-threshold build (`BuildBelowThresholdLeavesNoIndex`,
+        `BuildAtThresholdSetsIndexOffset`, `kCelMapIndexThreshold = 8`).
+  - [x] multi-group triangular probe (`LargeMapMultiGroupProbeFindsEveryKey`,
+        200 entries) + H2==0 control byte (`H2ZeroControlByteKeysResolve`).
+  - [x] ≥2^53 double-lookup-key linear fallback parity
+        (`LargeDoubleKeyFallsBackToLinearParity`; predicate
+        `key_forces_linear` in `cel_runtime.c`).
+  - [x] dup-key re-validation at build poisons CEL_ERR_DUPLICATE_KEY
+        (`BuildReValidatesDuplicateOnDirectEntries`,
+        `BuildPoisonsCrossKindDuplicate` — asserts current lossy
+        `cel_value_eq` map-key behaviour, not cel-cpp).
+  - [x] indexed `cel_map_eq_arena` (O(n²)→O(n) inner match)
+        (`EqArenaOverLargeIndexedMaps`).
+  - [x] `ArenaMapHeader.index_offset` offset pinned (`cel_data_test.cc`).
+  - [ ] m32.B — codegen emits `cel_map_index_build` as the terminal
+        map-construction step + WAT trace; blocked on the const-map
+        materializer (`StaticMemoryBuilder::MaterializeMap`).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

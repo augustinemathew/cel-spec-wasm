@@ -72,7 +72,13 @@ typedef struct {
   uint32_t count;
   uint32_t capacity;
   uint32_t entries_offset;
-  uint32_t _pad;
+  // SwissTable hash-index block offset (was `_pad`).  0 => no index
+  // built; every keyed kernel falls back to a linear scan over the
+  // dense entries run.  Arena offset 0 is never a valid allocation
+  // (it is the absent sentinel everywhere in this runtime), so 0 is an
+  // unambiguous "no index" marker.  Built by `cel_map_index_build`;
+  // see `doc/implementation-plan/rewrite/m32-swisstable-map-index.md`.
+  uint32_t index_offset;
 } ArenaMapHeader;
 
 _Static_assert(sizeof(ArenaMapHeader) == 16,
@@ -194,6 +200,16 @@ enum {
 // it to walk arena lists.
 enum {
   kCelListEntryStride = 24,
+};
+
+// Minimum live-entry count at which `cel_map_index_build` builds a
+// SwissTable hash index; below it the map stays index-free and every
+// keyed kernel linear-scans.  ≤8 × 48B entries fit a few cache lines
+// and a linear scan beats hash + indirection; 8 also aligns with
+// kGroupWidth.  Bench-tunable — see
+// `doc/implementation-plan/rewrite/m32-swisstable-map-index.md` §10.
+enum {
+  kCelMapIndexThreshold = 8,
 };
 
 _Static_assert(sizeof(CelValue) == kCelListEntryStride,
