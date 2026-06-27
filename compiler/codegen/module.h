@@ -7,13 +7,17 @@
 // definitions, exports, custom sections (for `cel.abi`), validate, and
 // serialize.  Anything else is reachable through `raw()`.
 //
-// The expr module (emitted per-expression) defines and exports its own
-// memory, installs its rodata as an active data segment at offset 16
-// (per design doc §6.1), imports `cel.arena_reset` / `cel.arena_alloc`, and
-// exports `$eval`.  The runtime module (pre-compiled from
-// `runtime/cel_runtime.c`) imports the memory back.  M1's codegen only
-// emits the expr side, but `AddMemoryImport` is kept so a future
-// codegen-emitted runtime wrapper is a one-liner.
+// The expr module is emitted per expression: it imports the runtime
+// helpers it calls (`cel.arena_reset`, the `cel_host.*` trampolines, the
+// overload-table helpers) and exports `$eval`.  Where its linear memory
+// comes from depends on the link mode (see
+// `rewrite/m28-configurable-linking.md`): DYNAMIC imports the runtime's
+// shared memory (`AddMemoryImport`) with rodata installed as active data
+// segments over it; STATIC emits `$eval` into the adopted runtime module
+// (`Adopt`) with rodata appended via `AddActiveDataSegment`.  `SetMemory`
+// (define + export an own memory) serves standalone-module callers and
+// tests.  Rodata lands at offset 16 — past the two reserved low slots
+// (see `rewrite/design.md` §6).
 
 #include <cstdint>
 #include <optional>
