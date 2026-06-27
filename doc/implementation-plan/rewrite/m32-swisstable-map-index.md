@@ -1,8 +1,32 @@
 # m32 — SwissTable hash index for arena maps
 
-Status: plan — drafted 2026-06-14; reviewed + reconciled against mainline
-2026-06-27 (dependency clarified, file:line cites refreshed).  Not yet
-started.
+Status: m32.A in progress — the shared hash kernel (`cel_map_hash.h`) and the
+runtime index kernels (`cel_map_index.c`; `cel_map_lookup/in/eq` dispatch)
+have landed, but are DORMANT: no compiled module calls `cel_map_index_build`
+yet, so every map still linear-scans until the codegen wiring lands.
+Remaining for m32.A: codegen emits the terminal build call, then conformance
+(monotonic), benchmarks, independent review.  m32.B (codegen-baked index)
+still planned, blocked on the const-map materializer (see the reconciliation
+note below).  Drafted 2026-06-14; reviewed + reconciled against mainline
+2026-06-27 (dependency clarified, file:line cites refreshed).
+
+> **What landed (m32.A, 2026-06-27).**  `ArenaMapHeader._pad` →
+> `index_offset`; `kRuntimeAbiVersion` 3 → 4; the shared kernel
+> `runtime/cel_map_hash.h` (already in tree) is consumed by a new
+> `runtime/cel_map_index.c` providing `cel_map_index_build` (codegen-export,
+> terminal map-construction step) + `cel_map_index_find`.  The keyed kernels
+> `cel_map_lookup_arena` / `cel_map_in_arena` / `cel_map_eq_arena` use the
+> index when `index_offset != 0` and the key does not force linear (the
+> ≥2^53 double-key fallback, §5.1), else the existing linear scan verbatim.
+> Below `kCelMapIndexThreshold = 8` no index is built.  Pure accelerator:
+> OOM / tiny / dup-on-build all degrade to (or poison exactly as) the
+> linear path.  Coverage: index-vs-linear parity over the key×size matrix,
+> multi-group probe, H2==0, the ≥2^53 fallback, dup re-validation, and
+> indexed `cel_map_eq_arena` in `runtime/cel_map_test.cc`.  The codegen
+> emission of `cel_map_index_build` as the terminal construction step
+> (`compiler/codegen`, §8) and the WAT trace (§11) are NOT part of this
+> runtime slice — the kernel + ABI are frozen here; wiring codegen to call
+> the new export is the follow-up that turns the win on for compiled maps.
 
 > **Reconciliation against mainline (2026-06-27).**  The design holds as
 > written; two things to fix before reading §§5–9 literally:

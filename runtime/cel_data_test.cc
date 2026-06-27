@@ -30,6 +30,7 @@ TEST(CelData, ArenaMapHeaderLayout) {
   EXPECT_EQ(offsetof(ArenaMapHeader, count), 0u);
   EXPECT_EQ(offsetof(ArenaMapHeader, capacity), 4u);
   EXPECT_EQ(offsetof(ArenaMapHeader, entries_offset), 8u);
+  EXPECT_EQ(offsetof(ArenaMapHeader, index_offset), 12u);
   EXPECT_EQ(static_cast<uint32_t>(kCelMapEntryStride), 2u * sizeof(CelValue));
 }
 

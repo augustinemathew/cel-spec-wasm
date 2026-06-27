@@ -86,6 +86,39 @@ void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
 // cel:codegen-export
 void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot);
 
+// Build the SwissTable hash index over an arena map's dense entries
+// run, as the TERMINAL map-construction step emitted by codegen after
+// the last `cel_map_insert` / `cel_map_insert_at`.  The index is a
+// PURE ACCELERATOR: it never changes semantics, only the cost of the
+// keyed kernels (`cel_map_lookup_arena`, `cel_map_in_arena`,
+// `cel_map_eq_arena`), which fall back to a linear scan whenever
+// `hdr->index_offset == 0`.
+//
+// No-op (leaves `index_offset == 0`) when:
+//   - `map_slot` is not a live CEL_MAP_ARENA (poisoned / wrong kind),
+//   - `count < kCelMapIndexThreshold` (linear scan wins for tiny maps),
+//   - the index-block arena allocation fails (degrade, never poison).
+//
+// As it places each entry it re-validates uniqueness: if two stored
+// keys `cel_value_eq`, the map is poisoned with CEL_ERR_DUPLICATE_KEY
+// exactly as the per-insert dup path does.  Because `cel_map_insert`
+// already rejects literal duplicates linearly, this only fires for the
+// dynamic / direct-construction paths that bypass that check.
+//
+// Layout + invariants:
+// `doc/implementation-plan/rewrite/m32-swisstable-map-index.md` §3.2.
+// cel:codegen-export
+void cel_map_index_build(uint32_t map_slot);
+
+// Probe the hash index for `key`, returning the matching entry index in
+// `[0, count)` or UINT32_MAX on miss.  Returns UINT32_MAX immediately
+// when `hdr->index_offset == 0` (no index → caller linear-scans).
+// Equality is confirmed by `cel_value_eq` after every H2 group match,
+// so hash collisions are harmless.  Used by the keyed kernels; declared
+// here (rather than file-static) so they can share one implementation
+// across TUs.
+uint32_t cel_map_index_find(const ArenaMapHeader* hdr, const CelValue* key);
+
 // =====================================================================
 // Aggregate-op kArena fast paths for maps.
 //
