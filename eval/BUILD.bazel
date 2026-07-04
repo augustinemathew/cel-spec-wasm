@@ -55,6 +55,29 @@ cc_test(
     ],
 )
 
+# ResourceLimits — public sandbox bounds (eval deadline + memory cap)
+# enforced on every Instance::Eval.  Configured via
+# Engine::Builder::WithResourceLimits.  Leaf.
+cc_library(
+    name = "resource_limits",
+    hdrs = ["resource_limits.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "resource_limits_test",
+    size = "small",
+    srcs = ["resource_limits_test.cc"],
+    deps = [
+        ":resource_limits",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Value — user-facing counterpart to the 24-byte wire CelValue.  Owns
 # its payload by value; safe to copy / move / pass by value.  Aggregate
 # builders (List/Map/Message) are signature-final stubs until their
@@ -726,6 +749,7 @@ cc_library(
     tags = ["manual"],
     deps = [
         ":host_callback",
+        ":resource_limits",
         "//compiler/celfn:function_library",
         "//third_party/wasmtime:wasmtime",
     ],
@@ -865,6 +889,7 @@ cc_library(
         ":instance",
         ":instance_impl",
         ":module_imports",
+        ":resource_limits",
         ":typed_function",
         ":value",
         ":wasmtime_engine_state",
@@ -878,6 +903,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
         "@com_google_protobuf//:protobuf",
         "//third_party/wasmtime:wasmtime",

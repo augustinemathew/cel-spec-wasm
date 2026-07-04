@@ -24,13 +24,17 @@
 #ifndef CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_
 #define CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_
 
+#include <condition_variable>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "compiler/celfn/function_library.h"
 #include "eval/host_callback.h"  // for celwasm::HostCallback
+#include "eval/resource_limits.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -88,6 +92,29 @@ struct RegisteredComponent {
 struct WasmtimeEngineState {
   wasm_engine_t* engine = nullptr;
   wasmtime_module_t* runtime_module = nullptr;
+
+  // Sandbox bounds applied to every Plan/Eval on this Engine (see
+  // eval/resource_limits.h).  Copied from the Builder at Build().
+  ResourceLimits limits;
+
+  // Precomputed epoch deadline, in ticks of the background epoch
+  // thread (one tick == `kEpochTickInterval`).  Zero means the
+  // wall-clock deadline is disabled (`limits.max_eval_time <= 0`), in
+  // which case no epoch config, no timer thread, and no per-Eval
+  // deadline are installed.  Copied into `InstanceImpl` at Plan time
+  // so `Instance::Eval` can re-arm the store deadline without a
+  // back-reference to the engine.
+  uint64_t epoch_deadline_ticks = 0;
+
+  // Background timer that advances wasmtime's epoch clock so an
+  // epoch deadline actually fires.  Runs iff `epoch_deadline_ticks >
+  // 0`; started in `InitWasmtime` after `engine` is created and
+  // joined FIRST in the destructor (before `engine` is deleted — the
+  // thread calls `wasmtime_engine_increment_epoch(engine)`).
+  std::thread epoch_thread;
+  std::mutex epoch_mu;
+  std::condition_variable epoch_cv;
+  bool epoch_stop = false;  // guarded by epoch_mu
 
   // M13 Slice C.1 — engine-owned custom-fn state.  Populated by
   // `Engine::AddModule` and `Engine::AddFunction`; consumed by

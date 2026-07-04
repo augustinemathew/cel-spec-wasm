@@ -15,6 +15,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
@@ -52,13 +53,47 @@ absl::Status WasmtimeErrorToStatus(absl::string_view context,
 }
 
 absl::Status WasmTrapToStatus(absl::string_view context, wasm_trap_t* trap) {
+  // A wall-clock eval-deadline hit (ResourceLimits::max_eval_time)
+  // arrives as an epoch-interrupt trap.  Classify it as
+  // ResourceExhausted so the embedder can distinguish "timed out" from
+  // a genuine runtime fault.  Two shapes reach here:
+  //   - the deadline fires in the expression itself → the outer $eval
+  //     trap carries WASMTIME_TRAP_CODE_INTERRUPT directly;
+  //   - it fires inside a @component call → the component trampoline
+  //     re-wraps it as a fresh trap whose message carries "interrupt"
+  //     (the code is lost across `wasmtime_component_func_call`'s
+  //     error channel), so fall back to a message probe.
+  wasmtime_trap_code_t code = 0;
+  const bool is_interrupt_code =
+      wasmtime_trap_code(trap, &code) && code == WASMTIME_TRAP_CODE_INTERRUPT;
   wasm_byte_vec_t msg;
   wasm_trap_message(trap, &msg);
-  absl::Status s = absl::InternalError(
-      absl::StrCat(context, ": ", absl::string_view(msg.data, msg.size)));
+  const absl::string_view text(msg.data, msg.size);
+  const bool is_interrupt = is_interrupt_code ||
+                            absl::StrContains(text, "interrupt") ||
+                            absl::StrContains(text, "epoch deadline");
+  absl::Status s = is_interrupt
+                       ? absl::ResourceExhaustedError(absl::StrCat(
+                             context,
+                             ": evaluation exceeded the configured time limit "
+                             "(ResourceLimits::max_eval_time)"))
+                       : absl::InternalError(absl::StrCat(context, ": ", text));
   wasm_byte_vec_delete(&msg);
   wasm_trap_delete(trap);
   return s;
+}
+
+// Re-arm the per-Eval wall-clock deadline on `ctx` when one is
+// configured (`ticks > 0`; zero == disabled / Unlimited).  Sets the
+// store's epoch deadline to `current_epoch + ticks`, so every wasm
+// entry on a reused Instance — activation marshalling and the $eval
+// call alike — starts with a fresh full time budget.  A no-op when
+// the deadline is disabled, so the trusted-only path stays free of
+// any per-Eval cost.
+void ArmEvalDeadline(wasmtime_context_t* ctx, uint64_t ticks) {
+  if (ticks > 0) {
+    wasmtime_context_set_epoch_deadline(ctx, ticks);
+  }
 }
 
 // Read `len` bytes at `offset` from the host-owned memory.
@@ -1271,6 +1306,9 @@ absl::StatusOr<Value> Instance::Eval() {
   // miss path.
   impl_->host_env.mem_size =
       static_cast<uint32_t>(wasmtime_sharedmemory_data_size(impl_->memory));
+  // Arm the wall-clock deadline for this $eval call (no-op when
+  // disabled).  Also covers a bare `Eval()` with no activation.
+  ArmEvalDeadline(ctx, impl_->epoch_deadline_ticks);
   wasmtime_func_t fn = impl_->eval_fn;
   // Unchecked invocation: `$eval`'s signature is the fixed export
   // contract `[] -> [i32 result_offset]`, proven once at Plan by
@@ -1301,6 +1339,13 @@ absl::StatusOr<Value> Instance::Eval(const Activation& activation) {
   impl_->host_env.refs.Reset();
   impl_->host_env.bindings.unknown_patterns = {};
 
+  // Arm the wall-clock deadline before marshalling: MarshalActivation
+  // re-enters wasm (the activation-buffer malloc), which is itself
+  // epoch-checked, so a reused Instance whose prior deadline window has
+  // elapsed must not trap here.  The $eval call re-arms again inside
+  // Eval().
+  ArmEvalDeadline(ctx, impl_->epoch_deadline_ticks);
+
   // For every declared variable, look up in the activation and
   // write its CelValue into the pre-assigned workspace slot.  This
   // must run BEFORE the $eval call — $eval's prelude writes each
@@ -1323,6 +1368,9 @@ absl::StatusOr<Value> Instance::PartialEval(
   // CEL_UNKNOWN on FULL pattern matches.
   impl_->host_env.refs.Reset();
   impl_->host_env.bindings.unknown_patterns = unknowns;
+
+  // Arm the deadline before marshalling (see Eval(Activation) above).
+  ArmEvalDeadline(ctx, impl_->epoch_deadline_ticks);
 
   if (auto s = MarshalActivation(ctx, impl_.get(), activation); !s.ok()) {
     // Reset before bailing — the next call must see a clean state

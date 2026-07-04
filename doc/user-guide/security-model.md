@@ -55,12 +55,19 @@ The guarantees, precisely:
   context: no filesystem preopens, no environment, no stdio
   (`eval/engine.cc::InitStore`). There is no path from CEL evaluation to
   the filesystem, network, clock-as-capability, or process control.
-- **No unbounded control flow.** CEL is a *total* language. Comprehensions
-  lower to counted loops; recursive `@native` bodies are rejected at
-  compile. An expression cannot spin forever.
+- **No unbounded control flow — enforced two ways.** A CEL *expression* is
+  total by construction: comprehensions lower to counted loops, recursive
+  `@native` bodies are rejected at compile, so it cannot spin forever. A
+  `@component` is *not* CEL — it is arbitrary guest wasm that *can* loop
+  forever or grow memory without bound — so it is bounded at runtime by a
+  wall-clock **eval deadline** and a **memory cap** (`ResourceLimits`,
+  below). Both are on by default. A component that hangs or over-allocates
+  is trapped, not tolerated.
 - **Failures unwind, they don't corrupt.** A guest trap or a panic in a
   component surfaces as a non-OK `absl::Status` or a CEL error value — the
-  host stays intact. (One residual exception, at *compile* time, in §3.)
+  host stays intact. A hit eval deadline surfaces as a
+  `ResourceExhausted` status. (One residual exception, at *compile* time,
+  in §3.)
 
 ## 2. The trust model — three decisions
 
@@ -71,7 +78,7 @@ of them needs real thought:
 |---|---|---|
 | **CEL expression source** | 🟡 **Semi-trusted** | Sandboxed once compiled — but *compilation* runs in your process, and one input shape can still crash the compiler (§3). Compile untrusted source in a separate worker (§4). |
 | **`@host` functions** | 🔴 **Fully trusted** | Your C++ lambdas, your address space, your privileges. The sandbox does nothing for you here. |
-| **`@component` functions** | 🟢 **Untrusted OK** | Own memory, trap-stubbed imports, failures become CEL errors. The path for third-party / customer code. |
+| **`@component` functions** | 🟢 **Untrusted OK** | Own memory, trap-stubbed imports, bounded by an eval deadline + memory cap (§2.5); a trap or timeout surfaces as a non-OK status, never a hang. The path for third-party / customer code. |
 | **`Program` bytes** | 🔴 **Trusted compiler only** | Treat like a shared library; see below. |
 
 The decision that matters most is **how you let an expression call back
@@ -120,6 +127,42 @@ your `@host` functions — with arguments of its choosing**. So:
 ```
 
 Signing/validation of Program artifacts is future work.
+
+### 2.5 Resource limits — the eval deadline and memory cap
+
+Because a `@component` runs arbitrary guest wasm, two bounds keep an
+untrusted one from hurting the host. Both are configured on the Engine
+and apply to every `Instance::Eval` — the expression AND any
+`@component` it calls share one per-Eval store, so one deadline and one
+memory cap cover both.
+
+| Bound | Default | What it stops | On breach |
+|---|---|---|---|
+| `max_eval_time` | **1 s** | a component that loops forever (or hangs in its own constructor at `Plan`) | the Eval traps and returns `ResourceExhausted`; the calling thread is never left spinning |
+| `max_memory_bytes` | **64 MiB** | a component that grows its linear memory without bound | the growth request fails (the guest sees the allocation fail), surfacing as a clean eval error rather than host OOM |
+
+```cpp
+// Tighten the deadline for a hostile-input tier:
+auto engine = celwasm::Engine::NewBuilder()
+    .WithResourceLimits({.max_eval_time = absl::Milliseconds(50)})
+    .Build();
+
+// Or, for a fully-trusted deployment that wants raw throughput and no
+// background timer thread, opt out entirely:
+auto engine = celwasm::Engine::NewBuilder()
+    .WithResourceLimits(celwasm::ResourceLimits::Unlimited())
+    .Build();
+```
+
+The deadline is enforced with wasmtime epoch interruption: near-zero
+steady-state cost in JIT'd code plus one background timer thread per
+Engine, started only when a deadline is set. `Unlimited()` disables both
+bounds (and the timer thread). See `eval/resource_limits.h` and
+`eval/engine.h::Engine::Builder::WithResourceLimits`.
+
+> **Note.** These bounds do not apply to `@host` functions — those are
+> your own trusted C++, running in your process with no wasm boundary to
+> interrupt. A blocking or looping `@host` lambda is yours to bound.
 
 ## 3. The honest list — known limitations
 

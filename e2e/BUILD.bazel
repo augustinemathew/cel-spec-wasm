@@ -878,6 +878,34 @@ link_mode_e2e_cc_test(
     ],
 )
 
+# ResourceLimits enforcement on the @component path — deadline + memory
+# cap.  Plain cc_test (dynamic mode); limits are engine-level and
+# link-mode-independent.
+cc_test(
+    name = "component_resource_limits_test",
+    size = "large",
+    srcs = ["component_resource_limits_test.cc"],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:resource_limits",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
 cc_test(
     name = "foreign_fn_type_matrix_test",
     size = "large",

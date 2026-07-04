@@ -302,9 +302,11 @@ Beta — usable and honest about what remains. The known gaps:
 - **Language bindings beyond C++ are designed, not built** — the `.wasm` +
   `cel.abi` already carry everything a Go/TS/Rust shim needs.
 - **Hardening continues** — differential fuzzing and a sanitizer gate ship
-  today; allocator caps and a release-versioning policy are still to come.
-  See the [security model](doc/user-guide/security-model.md) for the
-  current threat-model boundaries.
+  today, and every `Eval` is bounded by a wall-clock deadline and a
+  linear-memory cap (`ResourceLimits`, on by default) so an untrusted
+  `@component` cannot hang or OOM the host; a release-versioning policy is
+  still to come. See the [security model](doc/user-guide/security-model.md)
+  for the current threat-model boundaries.
 
 Every known gap is pinned by a skipped-with-reason test
 (`e2e/known_bugs_test.cc`) or a backlog entry

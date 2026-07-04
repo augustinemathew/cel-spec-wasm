@@ -45,6 +45,13 @@ struct HostFnEnv {
 struct InstanceImpl {
   wasmtime_store_t* store = nullptr;
   wasmtime_linker_t* linker = nullptr;
+
+  // Per-Eval wall-clock deadline, in epoch ticks, copied from
+  // `WasmtimeEngineState::epoch_deadline_ticks` at Plan time.  Zero
+  // means the deadline is disabled (Unlimited / non-positive
+  // max_eval_time); non-zero means `Instance::Eval` re-arms the store
+  // epoch deadline before each wasm entry.  See eval/resource_limits.h.
+  uint64_t epoch_deadline_ticks = 0;
   wasmtime_module_t* expr_module = nullptr;
   // Phase C: the runtime is built for wasm32-wasi-threads and exports
   // its memory as `shared`.  All host-side reads / writes go through

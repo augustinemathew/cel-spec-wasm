@@ -16,7 +16,7 @@ implementation source, runs the whole compile pipeline (`cel generate` →
 > [`demo_component`](../../e2e/foreign_component_fixtures/cel_wasm_component_demo/)
 > fixture exercises in CI. String returns from the component side
 > currently route through a libc++ code path that we'd like to skip
-> rather than fully support — see [Performance follow-ups](#9-performance-follow-ups).
+> rather than fully support — see [Performance follow-ups](#9-performance-follow-ups-open-invitation).
 > The Go path (TinyGo) is designed; the `--language=go` arm is planned.
 
 ---
@@ -338,7 +338,74 @@ This document covers `@component.` exclusively. For host functions see
 
 ---
 
-## 7. Performance + size
+## 7. Limits and error handling
+
+### 7.1 Resource limits
+
+Because a component is arbitrary guest wasm — not a total CEL expression
+— it can loop forever or grow memory without bound. The engine bounds
+both on every `Instance::Eval`, and the bounds are **on by default**:
+
+| Bound | Default | On breach |
+|---|---|---|
+| `max_eval_time` | 1 s | the Eval traps and returns a `ResourceExhausted` status; the calling thread never hangs |
+| `max_memory_bytes` | 64 MiB (per linear memory) | `memory.grow` past the cap fails; the guest sees the allocation fail |
+
+The deadline also bounds component instantiation at `Plan` time, so a
+component that hangs in its own constructor is caught there too. Tune or
+disable via the Engine builder:
+
+```cpp
+// Tighter deadline for an untrusted tier:
+auto engine = celwasm::Engine::NewBuilder()
+    .WithResourceLimits({.max_eval_time = absl::Milliseconds(50)})
+    .Build();
+
+// Fully-trusted, max throughput, no background timer thread:
+auto engine = celwasm::Engine::NewBuilder()
+    .WithResourceLimits(celwasm::ResourceLimits::Unlimited())
+    .Build();
+```
+
+See [`eval/resource_limits.h`](../../eval/resource_limits.h) and the
+[security model](security-model.md#25-resource-limits--the-eval-deadline-and-memory-cap).
+
+### 7.2 What a component can signal
+
+A component function returns **one value** of its declared return type.
+It has **no channel to return a CEL error or unknown** the way an
+`@host` function does (host functions surface `absl::Status` /
+`ReturnError` — see [writing host functions](writing-host-functions.md)).
+A component signals failure only by **trapping** (e.g. `unreachable`, an
+out-of-bounds access, or hitting the eval deadline). Any trap unwinds
+the whole evaluation: `Instance::Eval` returns a **non-OK
+`absl::Status`** — not a CEL error *value* the surrounding expression
+could catch. So:
+
+- To return a *value-level* "no result", model it in the return type
+  (e.g. a sentinel, or return `bool` alongside a separate call) — a
+  component cannot hand back `optional<T>` (it is rejected at the
+  boundary, §5).
+- A deadline hit surfaces as `ResourceExhausted`; other traps surface as
+  `Internal` with the trap message.
+- Argument-level errors/unknowns ARE handled: if the expression passes
+  an error or unknown value as a component argument, the call is
+  short-circuited (3-valued-logic absorb) before the component runs —
+  the component never sees it.
+
+### 7.3 Registration is validated at `Plan`, not `AddComponent`
+
+`Engine::AddComponent(bytes, lib)` parses the component bytes and
+conflict-checks overload-ids, but the check that each declared function
+is actually **exported** by the component (with the kebab-case name the
+engine derives) happens when you first `Plan` a program that uses it —
+surfacing as a `FailedPrecondition` from `Plan`, not from
+`AddComponent`. Register early, but expect a missing/renamed export to
+be reported at `Plan`.
+
+---
+
+## 8. Performance + size
 
 Per-call overhead, M-series Mac, `-c opt`, fastbuild noise removed:
 
@@ -365,7 +432,7 @@ same process / memory.
 
 ---
 
-## 8. Performance follow-ups (open invitation)
+## 9. Performance follow-ups (open invitation)
 
 A handful of optimisations are in the design queue but not yet wired —
 all of them target the per-call boundary cost:
@@ -395,7 +462,7 @@ If you have a workload where any of these would matter, the
 [bench harness](../../benchmark/component/foreign_component_bench.cc) is the
 right place to add a row and measure.
 
-## 9. Where to look next
+## 10. Where to look next
 
 - **Working demo**:
   [`e2e/foreign_component_fixtures/cel_wasm_component_demo/`](../../e2e/foreign_component_fixtures/cel_wasm_component_demo/)

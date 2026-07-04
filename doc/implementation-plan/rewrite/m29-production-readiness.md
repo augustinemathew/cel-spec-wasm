@@ -54,6 +54,24 @@ no bindings beyond C++ (designed-not-built stays honest in the README).
       of the fix. Exit: hostile bracket input returns
       `ResourceExhausted` on a default-stack thread; regression test
       runs WITHOUT `RunWithLargeStack`.
+- [x] **A3 — component resource limits (SHIPPED 2026-07-04)**: an
+      untrusted `@component` is arbitrary guest wasm and could hang or
+      OOM the host — the wasmtime store had no fuel/epoch/memory limit,
+      so the security-model "cannot starve the host / Untrusted OK"
+      claim was unbacked. Fixed: a public `ResourceLimits`
+      (`eval/resource_limits.h`) with a wall-clock eval deadline
+      (default 1s, wasmtime epoch interruption + a per-Engine timer
+      thread) and a per-memory cap (default 64 MiB, `wasmtime_store_
+      limiter`), configured via `Engine::Builder::WithResourceLimits`
+      and on by default; `Unlimited()` opts out. The deadline also
+      bounds Plan-time component instantiation (a hang in a component
+      ctor). A hit deadline maps to `ResourceExhausted`. Also bounded
+      the attacker-controlled `len` in `RandomGetBytesStub`. Tests:
+      `eval/resource_limits_test.cc` (value semantics) +
+      `e2e/component_resource_limits_test.cc` (infinite-loop →
+      ResourceExhausted, memory cap refuses oversized growth, Unlimited
+      opt-out, default doesn't false-trip). Docs: security-model §2.5,
+      component guide §7, README status bullet.
 - [ ] **A2 — trap-instead-of-error aggregates**: the README bullet
       "oversized literal aggregates can trap the runtime". Pinned by
       the arena-cliff family in `known_bugs_test.cc`

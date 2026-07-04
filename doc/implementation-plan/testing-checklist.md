@@ -3354,6 +3354,29 @@ are staged into the native arena so the kernel reads their bytes).
         map-construction step + WAT trace; blocked on the const-map
         materializer (`StaticMemoryBuilder::MaterializeMap`).
 
+### Resource limits — eval deadline + memory cap (shipped 2026-07-04)
+
+Sandbox bounds enforced on every `Instance::Eval`, covering the
+expression and any `@component` it calls (`eval/resource_limits.h`,
+`Engine::Builder::WithResourceLimits`).
+
+  - [x] `ResourceLimits` value semantics — Default/Unlimited presets,
+        independent field override (`eval/resource_limits_test.cc`).
+  - [x] infinite-loop `@component` traps at the deadline →
+        `ResourceExhausted`, not a hang
+        (`e2e/component_resource_limits_test.cc::InfiniteLoopComponentTrapsAtDeadline`).
+  - [x] default 1s deadline does not false-trip a fast component
+        (`DefaultDeadlineDoesNotTripFastComponent`).
+  - [x] `Unlimited()` opt-out still evaluates a normal component
+        (`UnlimitedOptOutStillEvaluatesNormally`).
+  - [x] memory cap refuses oversized component `memory.grow` (guest
+        sees -1), and no-cap allows it
+        (`MemoryCapRefusesOversizedComponentGrowth`,
+        `UnlimitedMemoryAllowsLargeComponentGrowth`).
+  - [ ] `RandomGetBytesStub` huge-`len` bound — guarded in code, not
+        e2e'd (needs a wasip2 libc++ component that calls `wasi:random`
+        with a large count; not expressible in inline WAT).
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

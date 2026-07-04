@@ -1,9 +1,12 @@
 #include "eval/engine.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -13,6 +16,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "compiler/celfn/function_library.h"
 #include "compiler/program.h"
@@ -24,6 +28,7 @@
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/module_imports.h"
 #include "eval/internal/wasmtime_engine_state.h"
+#include "eval/resource_limits.h"
 #include "eval/typed_function.h"
 #include "google/protobuf/descriptor.h"
 #include "runtime/cel_data.h"
@@ -107,9 +112,43 @@ absl::Status RegisterWasiStubs(wasmtime_linker_t* linker) {
   return absl::OkStatus();
 }
 
+// One tick of the background epoch timer.  The wall-clock deadline is
+// quantised to this interval: a `max_eval_time` of N ms becomes
+// ceil(N) ticks and the timer advances the epoch once per tick.  1 ms
+// keeps the deadline precise to ~1 ms while the timer wakes at most
+// ~1000×/s per Engine.
+constexpr std::chrono::milliseconds kEpochTickInterval{1};
+
+// Ticks (of kEpochTickInterval) covering `d`, rounding up so a
+// positive deadline is always at least one tick.  Precondition: d > 0.
+uint64_t EpochDeadlineTicks(absl::Duration d) {
+  const int64_t ns = absl::ToInt64Nanoseconds(d);
+  constexpr int64_t kTickNs = 1000000;  // 1 ms
+  const int64_t ticks = (ns + kTickNs - 1) / kTickNs;
+  return ticks > 0 ? static_cast<uint64_t>(ticks) : 1;
+}
+
+// Spawn the per-Engine epoch timer, which advances wasmtime's epoch
+// clock once per `kEpochTickInterval` so a store epoch deadline
+// actually fires.  Runs until `~WasmtimeEngineState` sets `epoch_stop`
+// and joins.  Only called when a wall-clock deadline is enabled.
+void StartEpochTimer(celwasm::WasmtimeEngineState* state) {
+  state->epoch_thread = std::thread([state]() {
+    std::unique_lock<std::mutex> lk(state->epoch_mu);
+    while (!state->epoch_stop) {
+      state->epoch_cv.wait_for(lk, kEpochTickInterval, [state]() {
+        return state->epoch_stop;
+      });
+      if (state->epoch_stop) break;
+      wasmtime_engine_increment_epoch(state->engine);
+    }
+  });
+}
+
 absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime(
-    bool jit_perf_map) {
+    bool jit_perf_map, const celwasm::ResourceLimits& limits) {
   auto state = std::make_shared<celwasm::WasmtimeEngineState>();
+  const bool deadline_enabled = limits.max_eval_time > absl::ZeroDuration();
   // The cel_runtime module's aggregate-op dispatchers
   // (`cel_map_lookup`, etc.) emit `return_call` via clang
   // `__attribute__((musttail))` + `-mtail-call`.  wasmtime rejects
@@ -128,6 +167,17 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime(
   // `rewrite/phase-c-plan.md` §7.2.
   wasmtime_config_wasm_threads_set(config, true);
   wasmtime_config_shared_memory_set(config, true);
+  // Wall-clock eval deadline (eval/resource_limits.h): enabling epoch
+  // interruption makes wasmtime insert deadline checks at loop
+  // back-edges and call entries so a runaway component (or its
+  // constructor) can be trapped instead of hanging the host.  The
+  // deadline is armed per-store in InitStore / per-Eval in
+  // Instance::Eval; the background timer that advances the epoch is
+  // started below.  Left off entirely when the deadline is disabled so
+  // the trusted-only path pays neither the check nor a timer thread.
+  if (deadline_enabled) {
+    wasmtime_config_epoch_interruption_set(config, true);
+  }
   // Opt-in JIT symbolication for sampling profilers — see
   // `Engine::Builder::EnableJitPerfMap`.
   if (jit_perf_map) {
@@ -144,6 +194,11 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime(
     return absl::InternalError(
         absl::StrCat("wasmtime_module_new(runtime): ",
                      WasmtimeErrorToStatus("", err).message()));
+  }
+  state->limits = limits;
+  if (deadline_enabled) {
+    state->epoch_deadline_ticks = EpochDeadlineTicks(limits.max_eval_time);
+    StartEpochTimer(state.get());
   }
   return state;
 }
@@ -163,6 +218,28 @@ absl::Status InitStore(celwasm::WasmtimeEngineState* state,
   impl->store = wasmtime_store_new(state->engine, nullptr, nullptr);
   if (impl->store == nullptr) {
     return absl::InternalError("wasmtime_store_new returned null");
+  }
+  // Memory cap (eval/resource_limits.h): bound how far any single
+  // linear memory in this store — the expression runtime's and each
+  // component's — may grow.  A negative value keeps wasmtime's default
+  // (unlimited); only `memory_size` is constrained, the other
+  // dimensions keep their defaults.
+  if (state->limits.max_memory_bytes > 0) {
+    wasmtime_store_limiter(impl->store,
+                           static_cast<int64_t>(state->limits.max_memory_bytes),
+                           /*table_elements=*/-1, /*instances=*/-1,
+                           /*tables=*/-1, /*memories=*/-1);
+  }
+  // Carry the per-Eval deadline into the Instance so `Instance::Eval`
+  // can re-arm it without a back-reference to the engine.  Arm it now
+  // too: with epoch interruption enabled, Plan-time wasm execution
+  // (runtime + expr instantiation, and any untrusted component
+  // constructor) is itself checked, so a component that hangs in its
+  // ctor is bounded here rather than hanging Plan.
+  impl->epoch_deadline_ticks = state->epoch_deadline_ticks;
+  if (impl->epoch_deadline_ticks > 0) {
+    wasmtime_context_set_epoch_deadline(wasmtime_store_context(impl->store),
+                                        impl->epoch_deadline_ticks);
   }
   // cel_runtime.wasm links absl + cctz, which pulls in wasi-libc
   // functions that reference env / stdio / clocks.  Hand wasmtime
@@ -992,7 +1069,20 @@ wasmtime_error_t* RandomGetBytesStub(
     wasmtime_component_val_t* results, size_t nresults) {
   ABSL_CHECK_EQ(nargs, 1u);
   ABSL_CHECK_EQ(nresults, 1u);
+  // `len` is component-controlled.  libc++'s hash-seed init asks for a
+  // handful of bytes; a real preview2 random impl would too.  Cap the
+  // request so a component asking for a huge count cannot drive an
+  // unbounded host allocation here (the store memory limiter bounds
+  // the component's OWN memory, but this list is allocated host-side).
+  // Beyond the cap, return an error so the component's call fails
+  // cleanly rather than OOMing the host.
+  constexpr uint64_t kMaxRandomBytes = uint64_t{1} << 20;  // 1 MiB
   const uint64_t len = args[0].of.u64;
+  if (len > kMaxRandomBytes) {
+    return wasmtime_error_new(
+        "wasi:random/random get-random-bytes: requested length exceeds the "
+        "1 MiB cap");
+  }
   results[0].kind = WASMTIME_COMPONENT_LIST;
   wasmtime_component_vallist_new_uninit(&results[0].of.list,
                                         static_cast<size_t>(len));
@@ -1645,7 +1735,7 @@ absl::Status Engine::AddComponent(absl::Span<const uint8_t> component_bytes,
 // ——— Engine::Builder ———
 
 absl::StatusOr<Engine> Engine::Builder::Build() const&& {
-  auto state_or = InitWasmtime(jit_perf_map_);
+  auto state_or = InitWasmtime(jit_perf_map_, limits_);
   if (!state_or.ok()) return state_or.status();
   return Engine(std::move(*state_or));
 }

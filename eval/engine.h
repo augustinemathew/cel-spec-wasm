@@ -44,6 +44,7 @@
 #include "compiler/program.h"
 #include "eval/host_callback.h"
 #include "eval/instance.h"
+#include "eval/resource_limits.h"
 #include "eval/typed_function.h"
 
 namespace celwasm {
@@ -279,6 +280,30 @@ class Engine::Builder {
     return std::move(*this);
   }
 
+  // Set the sandbox resource bounds enforced on every `Instance::Eval`
+  // built from this Engine — a wall-clock eval deadline and a linear-
+  // memory cap that bound BOTH the expression and any `@component`
+  // functions it calls (see `eval/resource_limits.h`).
+  //
+  // Defaults (when this is not called) are `ResourceLimits::Default()`:
+  // a 1s deadline + 64 MiB per-memory cap, sized so loading an
+  // untrusted component is safe out of the box.  Pass
+  // `ResourceLimits::Unlimited()` to disable enforcement (no deadline,
+  // hence no background timer thread, and no memory cap) when every
+  // loaded component is trusted and raw throughput is the priority.
+  //
+  //   auto engine = Engine::NewBuilder()
+  //       .WithResourceLimits({.max_eval_time = absl::Milliseconds(100)})
+  //       .Build();
+  Builder& WithResourceLimits(ResourceLimits limits) & {
+    limits_ = limits;
+    return *this;
+  }
+  Builder&& WithResourceLimits(ResourceLimits limits) && {
+    limits_ = limits;
+    return std::move(*this);
+  }
+
   // Allocate the wasm engine + parse `cel_runtime.wasm` into a
   // module.  Returns Internal on wasmtime allocation failure.
   // Single-use: && enforces consumption at the call site (const so
@@ -287,6 +312,7 @@ class Engine::Builder {
 
  private:
   bool jit_perf_map_ = false;
+  ResourceLimits limits_ = ResourceLimits::Default();
 };
 
 }  // namespace celwasm

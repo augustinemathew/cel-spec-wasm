@@ -5,6 +5,17 @@
 namespace celwasm {
 
 WasmtimeEngineState::~WasmtimeEngineState() {
+  // Stop the epoch timer FIRST — it calls
+  // `wasmtime_engine_increment_epoch(engine)`, so it must be joined
+  // before the engine (or anything it touches) is torn down.
+  if (epoch_thread.joinable()) {
+    {
+      std::lock_guard<std::mutex> lk(epoch_mu);
+      epoch_stop = true;
+    }
+    epoch_cv.notify_all();
+    epoch_thread.join();
+  }
   // Destruction order: modules + components before engine (wasmtime owns
   // them through their engine in the C API).
   for (auto& [alias, mod] : custom_modules) {
