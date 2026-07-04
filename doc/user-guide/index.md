@@ -513,7 +513,7 @@ Intended properties (target shape — see the Status callout above):
 
 ---
 
-## 8. Component functions — cross-component linking (Rust / Go / C) ✅
+## 8. Component functions — cross-component linking (C++ today; Rust / Go designed)
 
 > **→ Full guide: [Writing component functions](writing-component-functions.md).**
 > The `cel_wasm_component` Bazel macro, `.celfn` declaration, the C++
@@ -593,6 +593,13 @@ WASI reactor, and binds its exports to the declared `@component` fns.
 The **plain** targets are the lightest and the recommended default for
 a pure compute function; choose **WASI** when the function genuinely
 needs libc or stdlib facilities.
+
+> **Shipped-path caveat (C++ / wasm32-wasip2).** The full WASI context
+> described here is the design target for the unshipped Go path. The
+> shipped C++ path grants a component only a deterministic `wasi:random`
+> stub (for libc++'s hash seed); any other WASI (`filesystem` / `clocks`
+> / `io` / `cli`) traps with a named error — see
+> [security-model.md](security-model.md).
 
 > **Empirically confirmed (probe — `foreign-go-bindgen-findings.md`).**
 > A stock-Go module (`GOOS=wasip1`) is a reactor: `_initialize` is

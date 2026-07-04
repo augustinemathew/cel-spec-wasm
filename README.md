@@ -216,7 +216,7 @@ sandboxed away from your process?
 | Runs | in your address space, as a C++ lambda | in an isolated wasm instance with its own linear memory |
 | Author language | C++ | anything with a `wasm32-wasip2` toolchain (C++ today; TinyGo planned) |
 | Can read host memory / syscall | yes — whatever the C++ does | no — cannot escape, perform I/O, or starve the host |
-| Update | re-link your binary | hot-swap: hand new bytes to `AddComponent` |
+| Update | re-link your binary | swap in new bytes by registering the component on a fresh `Engine` (`AddComponent` rejects re-registering an existing overload-id) |
 | Per-call cost | ~3 µs | ~4 µs |
 
 ```celfn

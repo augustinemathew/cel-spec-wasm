@@ -1663,23 +1663,24 @@ absl::Status Engine::BindParsedFunction(absl::string_view celfn_decl,
   return AddFunction(decl.overload_id, fn.num_args, std::move(fn.callback));
 }
 
-// ——— Engine::AddComponent (m24 §3.5 — forward-declared, not yet wired) ———
+// ——— Engine::AddComponent ———
 //
-// The full implementation per m24 §3.5 is:
+// Registers a Component-Model component as the backend for the
+// `kForeignComponent` decls in `lib`.  At registration time this does
+// only cheap, eager work:
 //
-//   1. Instantiate the component with the wasmtime component API.
-//   2. For each `kForeignComponent` decl in `lib`, validate the
-//      component exports a typed fn with a matching FuncType.
-//   3. Register a host callback (via `AddFunction`) whose body marshals
-//      args through the per-fn typed WIT codec (m24 §4–§7) into the
-//      component's typed export, then marshals the result back.
+//   1. Reject empty component bytes.
+//   2. Conflict-check the decls' overload-ids against every
+//      already-registered host callback and prior component.
+//   3. Parse the component bytes (surfacing malformed-component
+//      errors here rather than at first Plan) and store the parsed
+//      `wasmtime_component_t*` alongside the library.
 //
-// The Component-Model surface of the vendored wasmtime C API is the
-// open prerequisite (m24 §13 — "verify the vendored build exposes it;
-// the C API's component surface is thinner than Rust's — may force a
-// shim").  This sibling is the surface the e2e test matrix
-// (e2e/foreign_fn_type_matrix_test.cc) is written against; tests SKIP
-// until this returns ok.
+// It does NOT instantiate the component or check that the declared
+// fns are actually exported — that is deferred to per-Plan
+// instantiation (`InstantiateAndBindComponents`), where a missing
+// export fails Plan with FailedPrecondition and a signature mismatch
+// is caught per value at call time.
 
 absl::Status Engine::AddComponent(absl::Span<const uint8_t> component_bytes,
                                   const FunctionLibrary& lib) {

@@ -414,19 +414,19 @@ Two competing implementations exist, **neither live on this branch**:
   custom ABI — params `(out_slot, arg0...)`, no `arena_reset`
   (caller's arena), result via `cel_copy_slot`. It has **zero callers
   and zero tests** on this branch.
-- **Bundled library module** (this branch's orphaned header):
-  `compiler/celfn/library_module.h:45` declares
+- **Bundled library module** (this branch's since-deleted header):
+  `compiler/celfn/library_module.h` (deleted per m29 §F2) declared
   `CompileLibraryBodies(lib, parent_opts)` with a full contract —
   bundle every kCelDefined body into one wasm module exporting each
   body under its overload-id, resolved at Plan via
   `Engine::AddModule`. Facts: no `.cc` ever existed (git `--follow`
-  over all branches is empty), no BUILD target, no includer;
-  `compiler/internal/compile.h:107-127` defines
-  `CompiledArtifact.library_modules` "produced by
-  CompileLibraryBodies" that nothing populates, and
+  over all branches is empty), no BUILD target, no includer; the
+  `CompiledArtifact.library_modules` field it was meant to feed is
+  likewise gone from `compiler/internal/compile.h`, and
   `Compiler::Compile` discards everything but `wasm_bytes` anyway
-  (compiler.cc:195). Master thus has the *header* of this design, the
-  *docs* of the other, and the working code of neither.
+  (compiler.cc:195). Master thus has, since the header's deletion,
+  neither the header nor the working code of this design — only the
+  *docs* of it and its sibling.
 
 The three options, with the evidence weighed:
 
@@ -437,8 +437,9 @@ The three options, with the evidence weighed:
    branch reorg and the configurable-linking work; the port is a
    re-land, not a merge, and the rodata-band layout must be
    re-validated against the current memory gates.
-2. **Build the library-module producer** `library_module.h`
-   describes. Pro: the contract is already written, and it composes
+2. **Build the library-module producer** the now-deleted
+   `library_module.h` described. Pro: the contract was already
+   written (in that removed header), and it composes
    with `AddModule` (an existing, tested Engine surface); library
    bodies become shareable across programs. Con: it has never run
    anywhere; it adds a second module to every Plan and a cross-module
@@ -465,9 +466,9 @@ not-done path fails loudly at the edge, never silently miscompiles.
 > way: the probe — `SetModuleName("foo").AddCelDefined("is_num",
 > bool, {string}, "s == '1'")` → Compile `is_num('1')` → Plan —
 > pinning today's failure shape before any code moves. Whichever
-> branch loses, its artifacts go: option 1 ⇒ delete
-> `library_module.h` + the `library_modules` plumbing in `compile.h`
-> and the stale header citations (`layout_pass.h:57`,
+> branch loses, its artifacts go: option 1 ⇒ (the `library_module.h`
+> header and its `library_modules` plumbing in `compile.h` are already
+> deleted) remove the stale header citations (`layout_pass.h:57`,
 > `expr_lower_internal.h:51`); option 2 ⇒ delete or wire
 > `LowerToCustomFn`.
 

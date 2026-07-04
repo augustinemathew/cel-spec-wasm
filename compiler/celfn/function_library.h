@@ -38,10 +38,10 @@
 namespace celwasm {
 
 // CEL type as it appears in a custom-fn signature.  Mirrors §3.6 of
-// m13-custom-fns.md, extended by §6 of m24-foreign-fn-component-backend.md
-// (the foreign-component author surface adds `type` and `optional<T>` to
-// the declarable matrix; existing host backend does not yet
-// admit either — see m24 §6 for the type-to-WIT-to-C++ mapping).
+// m13-custom-fns.md.  Note: `type` and `optional<T>` are permanently
+// out of scope as *foreign-component* declarable shapes — the
+// kForeignComponent surface rejects both at `Builder::Build()` (see
+// m24 §14 "Permanently out of scope, not deferred").
 struct CelfnType {
   enum class Kind : uint8_t {
     kBool,
@@ -56,14 +56,13 @@ struct CelfnType {
     kList,
     kMap,
     kProto,
-    kType,      // CEL `type` (the type-of-types).  m24 §6: WIT `string`,
-                // C++ `std::string` (the type name).  Only reachable
-                // through `kForeignComponent` decls today.
-    kOptional,  // CEL `optional<T>`.  m24 §6: WIT `option<wit T>`, C++
-                // `std::optional<C++ T>`.  Element type in
-                // `optional_element[0]`.  Only reachable through
-                // `kForeignComponent` decls; the @host adapter has no
-                // canonical spelling.
+    kType,      // CEL `type` (the type-of-types).  NOT admitted at the
+                // foreign-component boundary — kForeignComponent decls
+                // that mention it are rejected at Build() (m24 §14).
+    kOptional,  // CEL `optional<T>`.  Element type in
+                // `optional_element[0]`.  NOT admitted at the
+                // foreign-component boundary — kForeignComponent decls
+                // that mention it are rejected at Build() (m24 §14).
   };
 
   Kind kind = Kind::kBool;
@@ -103,8 +102,10 @@ struct CelfnDecl {
                         // through a per-fn typed WIT export of a
                         // Component-Model component registered via
                         // `Engine::AddComponent(bytes, lib)`.  Admits
-                        // protos (as serialized bytes, m24 §8); admits
-                        // `type` and `optional<T>` per m24 §6.
+                        // protos (as serialized bytes, m24 §8); does
+                        // NOT admit `type` or `optional<T>` — both are
+                        // permanently rejected at the component
+                        // boundary (m24 §14).
   };
 
   Backend backend = Backend::kHost;
@@ -180,8 +181,9 @@ class FunctionLibrary {
     // `Engine::AddComponent(component_bytes, lib)`.
     //
     // Admits `proto(...)` arguments and returns — they cross as
-    // serialized bytes (m24 §8).  Admits `type` and `optional<T>` per
-    // m24 §6.
+    // serialized bytes (m24 §8).  Does NOT admit `type` or
+    // `optional<T>`: both are permanently rejected at `Build()` for
+    // kForeignComponent decls (m24 §14).
     Builder& AddForeignComponent(absl::string_view fn_name,
                                  CelfnType return_type,
                                  std::vector<CelfnParam> params);

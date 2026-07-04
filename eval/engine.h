@@ -154,21 +154,21 @@ class Engine {
                                                 HostCallback impl);
 
   // Register a Component-Model component as the backend for every
-  // `kForeignComponent` decl in `lib`.  Per m24 §3.5: instantiate the
-  // component with the wasmtime component API, validate each declared
-  // fn is exported with the matching `FuncType`, and bind a host
-  // callback (via the existing `AddFunction` path) whose body marshals
-  // args via the per-fn typed WIT codec → the component's typed export
-  // → marshals the result.
+  // `kForeignComponent` decl in `lib`.  Registration is eager but
+  // cheap: it parses + stores the component bytes and conflict-checks
+  // the overload-ids.  It does NOT instantiate the component or verify
+  // that the declared fns are exported — the component is instantiated
+  // per `Plan` into each Instance's store, and it is there that a
+  // missing export fails with FailedPrecondition (an exported fn's
+  // type is matched per value at call time, not at registration).
   //
-  // Conflict checks (same shape as `AddFunction`):
+  // AddComponent's own checks:
+  //   - `component_bytes` is empty → InvalidArgument.
   //   - Any `overload_id` from `lib`'s kForeignComponent decls already
-  //     registered → AlreadyExists.
+  //     registered (by an earlier `AddFunction` or component) →
+  //     AlreadyExists.
   //   - `component_bytes` fail to parse as a Component-Model component
-  //     → InvalidArgument.
-  //   - A declared fn is not exported by the component, or its
-  //     exported `FuncType` does not match the decl's signature →
-  //     FailedPrecondition.
+  //     → the wasmtime parse error (InvalidArgument-shaped).
   //
   // **NOT thread-safe** — same contract as `AddFunction` / `AddModule`.
   //

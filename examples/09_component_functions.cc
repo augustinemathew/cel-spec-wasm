@@ -59,9 +59,10 @@ std::vector<uint8_t> LoadComponentBytes(const char* argv0) {
           std::istreambuf_iterator<char>()};
 }
 
-// The embedder's mirror of adder.idl.  AddComponent validates the
-// component's exports against these declarations — a missing or
-// mis-typed export is rejected at registration, not at eval.
+// The embedder's mirror of adder.idl.  AddComponent parses the
+// component bytes and conflict-checks the overload-ids; the
+// export ↔ declaration match is validated at first `Plan`
+// (FailedPrecondition), not at registration.
 celwasm::FunctionLibrary BuildAdderLibrary() {
   auto lib =
       celwasm::FunctionLibrary::Builder()

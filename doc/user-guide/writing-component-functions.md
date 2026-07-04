@@ -196,7 +196,7 @@ both sides sees the natural language-native message type.
 // In fns.idl
 Module customfn;
 
-bool             @component.is_admin(proto(acme.User) u);
+bool             @component.is_adult(proto(acme.User) u);
 proto(acme.User) @component.capitalize(proto(acme.User) u);
 ```
 
@@ -437,9 +437,10 @@ same process / memory.
 A handful of optimisations are in the design queue but not yet wired —
 all of them target the per-call boundary cost:
 
-- **AOT-cache the component instance.** Today every `Engine` rebuilds
-  the wasmtime component instance from bytes at `AddComponent` time.
-  Caching the cwasm machine code (`wasmtime::Module::serialize`) on
+- **AOT-cache the component instance.** `AddComponent` only parses +
+  stores the component bytes; the wasmtime component instance is built
+  fresh per `Plan`, into each Instance's store. Caching the cwasm
+  machine code (`wasmtime::Module::serialize`) on
   disk and skipping Cranelift on the warm path would amortise the
   ~240-300 µs Plan cost across processes — the same lever already
   documented for the expression module

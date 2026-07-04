@@ -533,8 +533,9 @@ work or unverified questions.
   ceilings (the `in`-list cliff at ~327 ints); the boundary tests flip
   back to value checks when it lands.
 - The `@native` library-module fork — its producer
-  (`CompileLibraryBodies` / `rodata_base_override`) is declared but
-  unbuilt; it gets a producer or gets deleted
+  (`CompileLibraryBodies` / `rodata_base_override`) was declared in
+  `compiler/celfn/library_module.h`, since deleted (m29 §F2); it stays
+  unimplemented until a producer is built
   ([`05-custom-functions.md`](05-custom-functions.md)).
 
 **Unverified questions** (the `V…` tracking items — repr edge cases,
