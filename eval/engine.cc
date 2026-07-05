@@ -112,36 +112,76 @@ absl::Status RegisterWasiStubs(wasmtime_linker_t* linker) {
   return absl::OkStatus();
 }
 
-// One tick of the background epoch timer.  The wall-clock deadline is
-// quantised to this interval: a `max_eval_time` of N ms becomes
-// ceil(N) ticks and the timer advances the epoch once per tick.  1 ms
-// keeps the deadline precise to ~1 ms while the timer wakes at most
-// ~1000×/s per Engine.
-constexpr std::chrono::milliseconds kEpochTickInterval{1};
+// How long the idle-parked timer keeps ticking after the last Eval
+// finishes before deep-parking.  Bridges the sub-25ms gaps in a busy
+// back-to-back Eval loop so it doesn't churn the park/wake handshake
+// (a futex wake per Eval).  Also the worst-case extra latency before
+// the deadline starts being enforced for an Eval that begins mid-linger
+// — negligible against any realistic (>=25ms) deadline.
+constexpr std::chrono::milliseconds kEpochIdleLinger{25};
 
-// Ticks (of kEpochTickInterval) covering `d`, rounding up so a
-// positive deadline is always at least one tick.  Precondition: d > 0.
-uint64_t EpochDeadlineTicks(absl::Duration d) {
-  const int64_t ns = absl::ToInt64Nanoseconds(d);
-  constexpr int64_t kTickNs = 1000000;  // 1 ms
-  const int64_t ticks = (ns + kTickNs - 1) / kTickNs;
-  return ticks > 0 ? static_cast<uint64_t>(ticks) : 1;
+struct EpochSchedule {
+  std::chrono::nanoseconds tick;  // timer tick period
+  uint64_t ticks;                 // ticks spanning the deadline
+};
+
+// Coarse, deadline-adaptive tick: ~max_eval_time/16, clamped to
+// [1ms, 100ms].  A 1s deadline ticks ~16×/s (not 1000×), a 50ms
+// deadline still gets ~16 checks, and a very long deadline is capped at
+// 100ms granularity.  `ticks` is how many ticks span the deadline (the
+// value armed via `wasmtime_context_set_epoch_deadline`).
+// Precondition: d > 0.
+EpochSchedule ComputeEpochSchedule(absl::Duration d) {
+  absl::Duration tick = d / 16;
+  if (tick < absl::Milliseconds(1)) tick = absl::Milliseconds(1);
+  if (tick > absl::Milliseconds(100)) tick = absl::Milliseconds(100);
+  const int64_t tick_ns = absl::ToInt64Nanoseconds(tick);
+  const int64_t d_ns = absl::ToInt64Nanoseconds(d);
+  uint64_t ticks = static_cast<uint64_t>((d_ns + tick_ns - 1) / tick_ns);
+  if (ticks == 0) ticks = 1;
+  return {std::chrono::nanoseconds(tick_ns), ticks};
 }
 
-// Spawn the per-Engine epoch timer, which advances wasmtime's epoch
-// clock once per `kEpochTickInterval` so a store epoch deadline
-// actually fires.  Runs until `~WasmtimeEngineState` sets `epoch_stop`
-// and joins.  Only called when a wall-clock deadline is enabled.
-void StartEpochTimer(celwasm::WasmtimeEngineState* state) {
-  state->epoch_thread = std::thread([state]() {
-    std::unique_lock<std::mutex> lk(state->epoch_mu);
-    while (!state->epoch_stop) {
-      state->epoch_cv.wait_for(lk, kEpochTickInterval, [state]() {
-        return state->epoch_stop;
+// The per-Engine epoch timer body.  Advances wasmtime's epoch clock so
+// a store epoch deadline can fire — but only WHILE an evaluation is in
+// flight (`epoch_active > 0`).  When idle it deep-parks on `epoch_cv`
+// at zero cost until `EpochEnter` wakes it or the destructor stops it.
+void RunEpochTimer(celwasm::WasmtimeEngineState* state) {
+  const std::chrono::nanoseconds tick = state->epoch_tick_interval;
+  std::unique_lock<std::mutex> lk(state->epoch_mu);
+  while (!state->epoch_stop) {
+    if (state->epoch_active > 0) {
+      // Active: tick at the coarse cadence; wake early when the last
+      // Eval finishes (active hits 0) or on shutdown.
+      state->epoch_cv.wait_for(lk, tick, [state]() {
+        return state->epoch_stop || state->epoch_active == 0;
       });
       if (state->epoch_stop) break;
-      wasmtime_engine_increment_epoch(state->engine);
+      if (state->epoch_active > 0) {
+        wasmtime_engine_increment_epoch(state->engine);
+      }
+    } else {
+      // Idle: linger briefly, then deep-park at zero cost if still idle.
+      state->epoch_cv.wait_for(lk, kEpochIdleLinger, [state]() {
+        return state->epoch_stop || state->epoch_active > 0;
+      });
+      if (state->epoch_stop) break;
+      if (state->epoch_active == 0) {
+        state->epoch_parked = true;
+        state->epoch_cv.wait(lk, [state]() {
+          return state->epoch_stop || state->epoch_active > 0;
+        });
+        state->epoch_parked = false;
+      }
     }
+  }
+}
+
+// Start the idle-parked epoch timer.  Runs until `~WasmtimeEngineState`
+// sets `epoch_stop` and joins.  Only called when a deadline is enabled.
+void StartEpochTimer(celwasm::WasmtimeEngineState* state) {
+  state->epoch_thread = std::thread([state]() {
+    RunEpochTimer(state);
   });
 }
 
@@ -197,7 +237,9 @@ absl::StatusOr<std::shared_ptr<celwasm::WasmtimeEngineState>> InitWasmtime(
   }
   state->limits = limits;
   if (deadline_enabled) {
-    state->epoch_deadline_ticks = EpochDeadlineTicks(limits.max_eval_time);
+    const EpochSchedule sched = ComputeEpochSchedule(limits.max_eval_time);
+    state->epoch_tick_interval = sched.tick;
+    state->epoch_deadline_ticks = sched.ticks;
     StartEpochTimer(state.get());
   }
   return state;
@@ -1530,6 +1572,10 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   if (auto s = InitPlanState(wasmtime_.get(), impl.get(), program); !s.ok()) {
     return s;
   }
+  // InitPlanState armed the store's epoch deadline; keep the timer
+  // ticking across instantiation so an untrusted component that hangs
+  // in its own constructor is bounded here rather than hanging Plan.
+  EpochActiveScope epoch_scope(wasmtime_.get());
   // Route on the module's actual import shape; when a cel.abi
   // section is present, cross-check its link_mode label against
   // that shape (mislabeled / corrupted artifacts fail here).

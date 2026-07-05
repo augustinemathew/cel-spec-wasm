@@ -156,9 +156,12 @@ auto engine = celwasm::Engine::NewBuilder()
 
 The deadline is enforced with wasmtime epoch interruption: near-zero
 steady-state cost in JIT'd code plus one background timer thread per
-Engine, started only when a deadline is set. `Unlimited()` disables both
-bounds (and the timer thread). See `eval/resource_limits.h` and
-`eval/engine.h::Engine::Builder::WithResourceLimits`.
+Engine, started only when a deadline is set. That timer is
+*idle-parked* — it blocks at zero cost whenever no evaluation is in
+flight and ticks only (at a coarse ~deadline/16 cadence) while one is
+running, so an idle Engine burns no CPU. `Unlimited()` disables both
+bounds (and the timer thread entirely). See `eval/resource_limits.h`
+and `eval/engine.h::Engine::Builder::WithResourceLimits`.
 
 > **Note.** These bounds do not apply to `@host` functions — those are
 > your own trusted C++, running in your process with no wasm boundary to

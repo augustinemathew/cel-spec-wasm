@@ -1293,6 +1293,9 @@ std::size_t Instance::memory_size_bytes() const {
 }
 
 absl::StatusOr<Value> Instance::Eval() {
+  // Keep the epoch timer ticking for this call so the wall-clock
+  // deadline can fire (no-op when the deadline is disabled).
+  EpochActiveScope epoch_scope(wasmtime_.get());
   wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
   // Re-seed the per-Eval linear-memory size snapshot the host
   // trampolines bounds-check against (see
@@ -1330,6 +1333,9 @@ absl::StatusOr<Value> Instance::Eval() {
 }
 
 absl::StatusOr<Value> Instance::Eval(const Activation& activation) {
+  // Cover marshalling (which re-enters wasm) + the $eval call under one
+  // active span; the nested Eval() adds its own (refcounted) no-op.
+  EpochActiveScope epoch_scope(wasmtime_.get());
   wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
   // Reset the externref table before each Eval so message slots
   // from prior evals don't leak into this one (per the
@@ -1361,6 +1367,7 @@ absl::StatusOr<Value> Instance::Eval(const Activation& activation) {
 absl::StatusOr<Value> Instance::PartialEval(
     const Activation& activation,
     absl::Span<const celwasm::AttributePattern> unknowns) {
+  EpochActiveScope epoch_scope(wasmtime_.get());
   wasmtime_context_t* ctx = wasmtime_store_context(impl_->store);
 
   // Reset per-eval state.  Unlike Eval(), we then populate

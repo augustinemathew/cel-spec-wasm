@@ -24,6 +24,7 @@
 #ifndef CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_
 #define CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <map>
@@ -97,24 +98,46 @@ struct WasmtimeEngineState {
   // eval/resource_limits.h).  Copied from the Builder at Build().
   ResourceLimits limits;
 
-  // Precomputed epoch deadline, in ticks of the background epoch
-  // thread (one tick == `kEpochTickInterval`).  Zero means the
-  // wall-clock deadline is disabled (`limits.max_eval_time <= 0`), in
-  // which case no epoch config, no timer thread, and no per-Eval
-  // deadline are installed.  Copied into `InstanceImpl` at Plan time
-  // so `Instance::Eval` can re-arm the store deadline without a
-  // back-reference to the engine.
+  // Precomputed epoch deadline, in ticks of `epoch_tick_interval`.
+  // Zero means the wall-clock deadline is disabled
+  // (`limits.max_eval_time <= 0`), in which case no epoch config, no
+  // timer thread, and no per-Eval deadline are installed.  Copied into
+  // `InstanceImpl` at Plan time so `Instance::Eval` can re-arm the
+  // store deadline without a back-reference to the engine.
   uint64_t epoch_deadline_ticks = 0;
+  // The timer's tick period — coarse and deadline-adaptive
+  // (~max_eval_time / 16, clamped to [1ms, 100ms]) so a 1s deadline
+  // ticks ~16×, not 1000×.
+  std::chrono::nanoseconds epoch_tick_interval{0};
 
-  // Background timer that advances wasmtime's epoch clock so an
-  // epoch deadline actually fires.  Runs iff `epoch_deadline_ticks >
-  // 0`; started in `InitWasmtime` after `engine` is created and
-  // joined FIRST in the destructor (before `engine` is deleted — the
-  // thread calls `wasmtime_engine_increment_epoch(engine)`).
+  // Background timer that advances wasmtime's epoch clock so an epoch
+  // deadline actually fires.  Runs iff `epoch_deadline_ticks > 0`;
+  // started in `InitWasmtime` after `engine` is created and joined
+  // FIRST in the destructor (before `engine` is deleted — the thread
+  // calls `wasmtime_engine_increment_epoch(engine)`).
+  //
+  // It is IDLE-PARKED: it blocks on `epoch_cv` (zero CPU, no wakeups)
+  // whenever no evaluation is in flight, and ticks only while
+  // `epoch_active > 0`.  `EpochEnter`/`EpochLeave` (called by the RAII
+  // `EpochActiveScope` around each Eval and Plan-time instantiation)
+  // bracket the active spans; a short idle linger keeps a tight
+  // back-to-back Eval loop from re-parking (so only a genuinely idle
+  // Engine's first Eval pays the wake).  All three fields below plus
+  // `epoch_active` / `epoch_parked` are guarded by `epoch_mu`.
   std::thread epoch_thread;
   std::mutex epoch_mu;
   std::condition_variable epoch_cv;
-  bool epoch_stop = false;  // guarded by epoch_mu
+  bool epoch_stop = false;
+  uint64_t epoch_active = 0;  // # of in-flight deadline-bounded spans
+  bool epoch_parked = false;  // true while the timer is deep-parked
+
+  // Bracket a wasm-executing span (an Eval, or Plan-time component
+  // instantiation) so the epoch timer ticks for its duration.  No-op
+  // when the deadline is disabled (`epoch_deadline_ticks == 0`), so the
+  // trusted/Unlimited path pays nothing.  Prefer the RAII
+  // `EpochActiveScope` below over calling these directly.
+  void EpochEnter();
+  void EpochLeave();
 
   // M13 Slice C.1 — engine-owned custom-fn state.  Populated by
   // `Engine::AddModule` and `Engine::AddFunction`; consumed by
@@ -134,6 +157,27 @@ struct WasmtimeEngineState {
   ~WasmtimeEngineState();
   WasmtimeEngineState(const WasmtimeEngineState&) = delete;
   WasmtimeEngineState& operator=(const WasmtimeEngineState&) = delete;
+};
+
+// RAII bracket that keeps the epoch timer ticking (so the wall-clock
+// deadline can fire) for the lifetime of a wasm-executing scope — an
+// `Instance::Eval` or the Plan-time component instantiation.  No-op
+// when the deadline is disabled.
+class EpochActiveScope {
+ public:
+  // `state` must outlive the scope (it does: the caller holds a
+  // shared_ptr to it for the whole Eval / Plan).
+  explicit EpochActiveScope(WasmtimeEngineState* state) : state_(state) {
+    state_->EpochEnter();
+  }
+  ~EpochActiveScope() {
+    state_->EpochLeave();
+  }
+  EpochActiveScope(const EpochActiveScope&) = delete;
+  EpochActiveScope& operator=(const EpochActiveScope&) = delete;
+
+ private:
+  WasmtimeEngineState* state_;
 };
 
 }  // namespace celwasm

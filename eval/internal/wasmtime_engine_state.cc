@@ -1,8 +1,27 @@
 #include "eval/internal/wasmtime_engine_state.h"
 
+#include <mutex>
+
 #include "wasmtime/component.h"
 
 namespace celwasm {
+
+void WasmtimeEngineState::EpochEnter() {
+  if (epoch_deadline_ticks == 0) return;  // deadline disabled — no timer
+  std::lock_guard<std::mutex> lk(epoch_mu);
+  // On the idle→active edge, wake the timer if it is deep-parked.  A
+  // short linger in the timer loop means a busy back-to-back Eval loop
+  // finds it un-parked and skips the notify.
+  if (++epoch_active == 1 && epoch_parked) {
+    epoch_cv.notify_one();
+  }
+}
+
+void WasmtimeEngineState::EpochLeave() {
+  if (epoch_deadline_ticks == 0) return;
+  std::lock_guard<std::mutex> lk(epoch_mu);
+  --epoch_active;  // the timer notices on its next tick and re-parks
+}
 
 WasmtimeEngineState::~WasmtimeEngineState() {
   // Stop the epoch timer FIRST — it calls

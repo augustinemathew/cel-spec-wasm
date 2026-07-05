@@ -35,10 +35,12 @@ struct ResourceLimits {
   //
   // Enforced via wasmtime epoch interruption: near-zero steady-state
   // cost in JIT'd code (a check at loop back-edges and call entries),
-  // plus one background timer thread per Engine that is spawned only
-  // when this is positive.  `absl::ZeroDuration()` (or any
-  // non-positive value) disables the deadline entirely — no timer
-  // thread, no checks.
+  // plus one background timer thread per Engine.  That timer is
+  // idle-parked — it blocks at zero cost whenever no evaluation is in
+  // flight and only ticks (at a coarse ~deadline/16 cadence) while one
+  // is running — so an idle Engine costs nothing.  `absl::ZeroDuration()`
+  // (or any non-positive value) disables the deadline entirely: no
+  // timer thread, no checks, no per-Eval bookkeeping.
   absl::Duration max_eval_time = absl::Seconds(1);
 
   // Per-memory ceiling, in bytes, on wasm linear-memory growth.  It
