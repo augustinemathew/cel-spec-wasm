@@ -18,8 +18,6 @@ Status: **beta**
 The pipeline, sandbox, and conformance results are real and reproducible; the
 hardening work that remains is listed plainly, not buried.
 
-📖 **[Documentation site →](https://augustinemathew.github.io/cel-spec-wasm/)**
-
 ## CEL in 60 seconds
 
 *Skip ahead if you already use CEL.*
@@ -223,8 +221,29 @@ and `optionals` (26/70; the remainder require `dyn`).
 
 ## Custom functions — two trust models
 
-A single decision governs extension: does the function's code need to be
-sandboxed away from your process?
+A CEL expression can only see what the host hands it — no I/O, no
+syscalls. Custom functions are the deliberate escape hatch: the host
+registers extra functions with the runtime, and rule authors call them
+like built-ins. A pricing rule that needs the customer's negotiated
+discount, or a fraud rule that needs a live risk score, calls a function
+the host chose to expose:
+
+```cel
+// discount_pct is a custom function the host registered.
+price - price * discount_pct(tier) / 100
+```
+
+Custom functions come in two flavors, and the single decision that picks
+between them is trust — does the function's code belong inside your
+process?
+
+- **`@host` — trusted.** Your own C++, running in your address space: a
+  lookup against an in-memory cache, a call into a library you already
+  ship.
+- **`@component` — untrusted.** Code you didn't write and don't want in
+  your process: a customer-authored scoring function, a partner's policy
+  plugin. It runs in its own WebAssembly sandbox and can be hot-swapped
+  at runtime.
 
 | | `@host` — trusted C++ | `@component` — sandboxed wasm |
 | --- | --- | --- |
@@ -251,9 +270,9 @@ engine.BindFunction("int @host.length(string s);",
                     });
 ```
 
-The `@component` path is what makes third-party policy plugins,
-customer-authored predicates, and not-yet-reviewed code safe to load at
-all — a capability a stock in-process CEL runtime does not provide. Guides:
+The `@component` path is what makes not-yet-reviewed third-party code
+safe to load at all — a capability a stock in-process CEL runtime does
+not provide. Guides:
 [host functions](doc/user-guide/writing-host-functions.md) ·
 [component functions](doc/user-guide/writing-component-functions.md);
 runnable: [`examples/04`](examples/04_host_functions.cc),
@@ -343,7 +362,8 @@ build-essential` on Linux). Docker image at
 ## Author
 
 cel-wasm is created and maintained by **Augustine Mathew**
-([augustine.mathew@gmail.com](mailto:augustine.mathew@gmail.com)). It is an
+([augustine.mathew@gmail.com](mailto:augustine.mathew@gmail.com) ·
+[LinkedIn](https://www.linkedin.com/in/augustine-m/)). It is an
 independent project, not affiliated with or endorsed by any employer. See
 [NOTICE](NOTICE) and [AUTHORS](AUTHORS).
 
