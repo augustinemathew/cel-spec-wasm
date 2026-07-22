@@ -29,6 +29,7 @@ on:
     # concurrency group below) before its disk cache is saved.
     paths-ignore:
       - "**.md"
+      - "doc/img/**"
   pull_request:
   workflow_dispatch:
     inputs:

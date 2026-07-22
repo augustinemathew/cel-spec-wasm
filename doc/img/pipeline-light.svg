@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="250" viewBox="0 0 940 250" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#8c959f"/>
+    </marker>
+  </defs>
+
+  <!-- phase bands -->
+  <rect x="12" y="52" width="580" height="120" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <rect x="608" y="52" width="320" height="120" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="24" y="42" font-size="13" font-weight="600" fill="#57606a">COMPILE TIME &#183; once</text>
+  <text x="620" y="42" font-size="13" font-weight="600" fill="#57606a">RUN TIME &#183; every request</text>
+
+  <!-- compile-time stages -->
+  <g font-size="13">
+    <rect x="28" y="76" width="112" height="70" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="84" y="105" text-anchor="middle" font-weight="600" fill="#1f2328">CEL source</text>
+    <text x="84" y="124" text-anchor="middle" font-size="11.5" fill="#57606a">+ declarations</text>
+
+    <rect x="168" y="76" width="122" height="70" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="229" y="99" text-anchor="middle" font-weight="600" fill="#1f2328">parse + check</text>
+    <text x="229" y="118" text-anchor="middle" font-size="11.5" fill="#57606a">cel-cpp</text>
+    <text x="229" y="134" text-anchor="middle" font-size="11.5" fill="#57606a">rejects dyn</text>
+
+    <rect x="318" y="76" width="122" height="70" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="379" y="99" text-anchor="middle" font-weight="600" fill="#1f2328">lower + codegen</text>
+    <text x="379" y="118" text-anchor="middle" font-size="11.5" fill="#57606a">typed IR</text>
+    <text x="379" y="134" text-anchor="middle" font-size="11.5" fill="#57606a">Binaryen</text>
+
+    <rect x="468" y="76" width="108" height="70" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+    <text x="522" y="99" text-anchor="middle" font-weight="600" fill="#0969da">Program</text>
+    <text x="522" y="118" text-anchor="middle" font-size="11.5" fill="#0969da">.wasm + cel.abi</text>
+    <text x="522" y="134" text-anchor="middle" font-size="11.5" fill="#0969da">portable bytes</text>
+
+    <!-- run-time stages -->
+    <rect x="624" y="76" width="108" height="70" rx="6" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="678" y="99" text-anchor="middle" font-weight="600" fill="#1f2328">Plan</text>
+    <text x="678" y="118" text-anchor="middle" font-size="11.5" fill="#57606a">Cranelift JIT &#8594;</text>
+    <text x="678" y="134" text-anchor="middle" font-size="11.5" fill="#57606a">machine code</text>
+
+    <rect x="760" y="76" width="152" height="70" rx="6" fill="#dafbe1" stroke="#4ac26b"/>
+    <text x="836" y="99" text-anchor="middle" font-weight="600" fill="#1a7f37">Eval in sandbox</text>
+    <text x="836" y="118" text-anchor="middle" font-size="11.5" fill="#1a7f37">Instance.Eval(Activation)</text>
+    <text x="836" y="134" text-anchor="middle" font-size="11.5" fill="#1a7f37">&#8594; Value</text>
+  </g>
+
+  <!-- arrows -->
+  <g stroke="#8c959f" stroke-width="1.5" marker-end="url(#arr)">
+    <line x1="140" y1="111" x2="166" y2="111"/>
+    <line x1="290" y1="111" x2="316" y2="111"/>
+    <line x1="440" y1="111" x2="466" y2="111"/>
+    <line x1="576" y1="111" x2="622" y2="111"/>
+    <line x1="732" y1="111" x2="758" y2="111"/>
+  </g>
+
+  <!-- captions -->
+  <text x="522" y="196" text-anchor="middle" font-size="12" fill="#0969da">compile in one process &#183; ship the bytes &#183; evaluate in another</text>
+  <text x="836" y="196" text-anchor="middle" font-size="12" fill="#1a7f37">bounded memory &#183; no syscalls &#183; no I/O</text>
+  <text x="836" y="214" text-anchor="middle" font-size="12" fill="#1a7f37">@component functions isolated here too</text>
+</svg>

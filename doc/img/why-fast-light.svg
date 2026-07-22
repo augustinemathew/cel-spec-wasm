@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="430" viewBox="0 0 900 430" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <!-- Left panel: interpreter -->
+  <rect x="10" y="10" width="430" height="380" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="30" y="40" font-size="15" font-weight="600" fill="#1f2328">cel-cpp — interpreter</text>
+  <text x="30" y="60" font-size="12.5" fill="#57606a">re-dispatches through its expression plan, every eval</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">
+    <rect x="30" y="76" width="250" height="30" rx="5" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="42" y="95" fill="#1f2328">fetch next step</text>
+    <rect x="30" y="120" width="250" height="30" rx="5" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="42" y="139" fill="#1f2328">dispatch: step-&gt;Evaluate()</text>
+    <rect x="30" y="164" width="250" height="30" rx="5" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="42" y="183" fill="#1f2328">push boxed CelValue(1)</text>
+    <rect x="30" y="208" width="250" height="30" rx="5" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="42" y="227" fill="#1f2328">push boxed CelValue(2)</text>
+    <rect x="30" y="252" width="250" height="30" rx="5" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="42" y="271" fill="#1f2328">apply "_+_": pop, add, check</text>
+    <rect x="30" y="296" width="250" height="30" rx="5" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="42" y="315" fill="#1f2328">box result CelValue(3)</text>
+  </g>
+  <g stroke="#8c959f" stroke-width="1.4">
+    <line x1="155" y1="106" x2="155" y2="118"/>
+    <line x1="155" y1="150" x2="155" y2="162"/>
+    <line x1="155" y1="194" x2="155" y2="206"/>
+    <line x1="155" y1="238" x2="155" y2="250"/>
+    <line x1="155" y1="282" x2="155" y2="294"/>
+  </g>
+
+  <g font-size="12" fill="#cf222e">
+    <text x="296" y="139">&#8592; indirect call per step:</text>
+    <text x="306" y="155">branch mispredicts</text>
+    <text x="296" y="227">&#8592; values boxed as variants:</text>
+    <text x="306" y="243">loads chase the heap</text>
+  </g>
+  <text x="30" y="362" font-size="13" font-weight="600" fill="#cf222e">measured: ~32 ns per added operation</text>
+
+  <!-- Right panel: compiled -->
+  <rect x="460" y="10" width="430" height="380" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="480" y="40" font-size="15" font-weight="600" fill="#1f2328">cel-wasm — compiled to machine code</text>
+  <text x="480" y="60" font-size="12.5" fill="#57606a">the actual emitted eval body for 1 + 2 (disassembled)</text>
+
+  <rect x="480" y="76" width="390" height="108" rx="5" fill="#ffffff" stroke="#d0d7de"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#1f2328">
+    <text x="494" y="100">call cel_reset            ;; arena reset</text>
+    <text x="494" y="122">call cel_int_add(&amp;r,&amp;c1,&amp;c2) ;; ONE direct call</text>
+    <text x="494" y="144">return &amp;r                 ;; result slot</text>
+    <text x="494" y="170" fill="#57606a">;; Cranelift turns this into machine code at Plan</text>
+  </g>
+
+  <rect x="480" y="200" width="390" height="66" rx="5" fill="#ffffff" stroke="#d0d7de"/>
+  <g font-size="12" fill="#57606a">
+    <text x="494" y="222">cel_int_add: overflow-checked i64 add over fixed</text>
+    <text x="494" y="240">24-byte slots in linear memory — resolved to a</text>
+    <text x="494" y="258">direct call at compile time.</text>
+  </g>
+
+  <g font-size="12" fill="#1a7f37">
+    <text x="480" y="298">no dispatch, no overload lookup, no boxing</text>
+    <text x="480" y="316">operand slots at fixed offsets — hot in the data cache</text>
+    <text x="480" y="334">short straight-line code — hot in the instruction cache</text>
+  </g>
+  <text x="480" y="362" font-size="13" font-weight="600" fill="#1a7f37">measured: ~1.7 ns per added operation</text>
+
+  <text x="450" y="416" font-size="12" fill="#57606a" text-anchor="middle">Per-operation slopes from the arithmetic length sweep (benchmark/README.md); boundary floor excluded on both sides.</text>
+</svg>
