@@ -1,20 +1,20 @@
 # CI for cel-wasm.
 #
-# Runner: macos-14 (Apple Silicon) — the toolchain combination the repo
-# is developed and continuously verified on.  A Linux job is
-# deliberately absent until cleanup-backlog #1 (wasi_sdk alias
-# resolution at bazel analysis time on Linux) is re-verified; add an
-# ubuntu job when that closes.
-#
-# The pipeline mirrors the local gates, in order:
+# Primary leg: ubuntu-24.04 — cheap (free-tier minutes at 1× on the
+# public repo) and fast to schedule.  It runs the complete gate set:
 #   1. `third_party/fetch_cel_cpp.sh` — vendored cel-cpp is fetched on
 #      demand (only the pinned SHA is committed); bazel module
 #      resolution fails without it.
-#   2. `bazel build //...` then `bazel test //...` — the standard
-#      sweep (fastbuild, same config as local dev + the pre-push gate).
+#   2. `bazel build //...` then `bazel test //...` — every unit test
+#      (fastbuild, same config as local dev + the pre-push gate).
 #   3. `scripts/run_full_suite.sh` — manual-tagged targets (which
 #      `bazel test //...` does NOT pick up; they carry the load-bearing
 #      e2e assertions) plus the dual-mode conformance gate.
+#
+# macOS (Apple Silicon) leg: workflow_dispatch only.  The project is
+# developed and pre-push-gated on Apple Silicon locally, so a per-push
+# macOS job is redundant coverage at 10× the runner cost — dispatch it
+# on demand (e.g. before a release cut).
 #
 # Cache: a bazel disk cache keyed on MODULE.bazel + the cel-cpp pin.
 # Cold runs compile cel-cpp from source (~tens of minutes); warm runs
@@ -25,17 +25,36 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: "Also run the macOS (Apple Silicon) leg"
+        type: boolean
+        default: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: macos-14
+  # Linux leg — host deps mirror docker/Dockerfile: clang+lld are
+  # required (the runtime C needs clang; gold crashes on the host
+  # link), tzdata-legacy supplies the US/* timezone aliases the
+  # conformance corpus reads.  Verified 2026-06-10 in the
+  # docker/Dockerfile container: full sweep green after the
+  # wasm_clang.sh fuse-ld fix (130/133 with only parallel-load
+  # timeout artifacts, since re-sized).
+  test-linux:
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install host deps (mirrors docker/Dockerfile)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
@@ -61,24 +80,12 @@ jobs:
       - name: Manual-tagged targets + dual-mode conformance gate
         run: scripts/run_full_suite.sh
 
-  # Linux leg — host deps mirror docker/Dockerfile: clang+lld are
-  # required (the runtime C needs clang; gold crashes on the host
-  # link), tzdata-legacy supplies the US/* timezone aliases the
-  # conformance corpus reads.  Verified 2026-06-10 in the
-  # docker/Dockerfile container: full sweep green after the
-  # wasm_clang.sh fuse-ld fix (130/133 with only parallel-load
-  # timeout artifacts, since re-sized).
-  test-linux:
-    runs-on: ubuntu-24.04
+  test-macos:
+    if: github.event_name == 'workflow_dispatch' && inputs.macos
+    runs-on: macos-14
     timeout-minutes: 120
-    env:
-      CC: clang
-      CXX: clang++
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh

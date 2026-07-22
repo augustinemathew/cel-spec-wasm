@@ -12,10 +12,14 @@
 # `workflow_dispatch` lets you run it on demand with custom
 # seeds/depth; the nightly schedule runs the defaults.
 #
-# Setup mirrors ci.yml's macOS job (fetch the pinned cel-cpp, restore
-# the bazel disk cache).  A divergence fails the job; the summary +
-# the per-seed DIVERGE lines are in the step log, and the offending
-# source can be re-run locally with `scripts/fuzz.sh repro`.
+# Setup mirrors ci.yml's Linux job (fetch the pinned cel-cpp, restore
+# the bazel disk cache).  Running nightly on ubuntu does double duty:
+# the runner is cheap, and touching the shared Linux disk cache every
+# night keeps it from expiring (GitHub evicts caches unused for 7
+# days), so per-push ci runs stay warm.  A divergence fails the job;
+# the summary + the per-seed DIVERGE lines are in the step log, and
+# the offending source can be re-run locally with
+# `scripts/fuzz.sh repro`.
 name: fuzz
 
 on:
@@ -37,10 +41,16 @@ concurrency:
 
 jobs:
   sweep:
-    runs-on: macos-14
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install host deps (mirrors docker/Dockerfile)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
