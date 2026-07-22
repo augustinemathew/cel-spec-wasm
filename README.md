@@ -211,14 +211,15 @@ for high-throughput compile services or shipping many programs.
 **Where it wins** — repetition to amortize, and work moved to compile
 time:
 
-| Workload | speedup vs cel-cpp |
-| --- | :---: |
-| 1000-term arithmetic chain over variables (int / double) | 18× / 19× |
-| 1000-term string-concat chain | 3.1× |
-| constant list folded at compile time (`size([…100])` / `[…1000]`) | 26× / 224× |
-| constant-map lookup, 256 entries, baked hash index (`m[k]` / `k in m`) | 118× / 198× |
-| comprehension `[1…20].map(x, x * 2)` | 34× |
-| complex regex `.matches()` | ~59× † |
+| Workload | cel-cpp | cel-wasm | speedup |
+| --- | :---: | :---: | :---: |
+| 1000-term int arithmetic chain over variables | 32.0 µs | 1.8 µs | 18× |
+| 1000-term string-concat chain | 128 µs | 41 µs | 3.1× |
+| constant list folded at compile time (`size([…1000])`) | 8.9 µs | 40 ns | 224× |
+| constant-map lookup, 256 entries, baked hash index (`m[k]`) | 11.5 µs | 98 ns | 118× |
+| constant-map membership, 256 entries (`k in m`) | 20.2 µs | 102 ns | 198× |
+| comprehension `[1…20].map(x, x * 2)` inside `size()` | 5.4 µs | 162 ns | 34× |
+| complex regex `.matches()` | 9.1 µs | 154 ns | 59× † |
 
 † A runtime-configuration difference, not codegen: cel-wasm caches the
 compiled RE2 pattern per Instance; `cel-cpp`'s default runtime recompiles
@@ -227,11 +228,11 @@ of the gap).
 
 **Where it loses** — and why, named honestly:
 
-| Workload | gap | cause |
-| --- | :---: | --- |
-| single proto / duration accessor (`m.str_to_i32["b"]`, duration `==`) | ~1.1–1.7× slower | each read crosses one host trampoline; amortized as soon as the expression does more than a single accessor. |
-| early-exit `in` over a 1000-string activation-bound list | ~14× slower | a bound aggregate is copied into the sandbox every Eval, so a first-element hit still pays the full marshal; cel-cpp reads the host list by reference. |
-| `contains()` on a 10 KB string | ~6× slower | cel-cpp reaches the host libc's vectorized substring search; the wasm kernel is a scalar loop. |
+| Workload | cel-cpp | cel-wasm | gap | cause |
+| --- | :---: | :---: | :---: | --- |
+| single proto map accessor (`m.str_to_i32["b"]`) | 104 ns | 175 ns | 1.7× slower | each read crosses one host trampoline; amortized as soon as the expression does more than a single accessor. |
+| early-exit `in` over a 1000-string activation-bound list | 76 ns | 1.1 µs | 14× slower | a bound aggregate is copied into the sandbox every Eval, so a first-element hit still pays the full marshal; cel-cpp reads the host list by reference. |
+| `contains()` on a 10 KB string | 243 ns | 1.4 µs | 5.7× slower | cel-cpp reaches the host libc's vectorized substring search; the wasm kernel is a scalar loop. |
 
 Full methodology and per-cell numbers:
 [`benchmark/eval/results/`](benchmark/eval/results/) and
