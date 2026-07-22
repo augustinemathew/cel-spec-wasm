@@ -8,10 +8,11 @@
 answers *"is this allowed?"* in [Kubernetes](https://kubernetes.io/),
 [Envoy](https://www.envoyproxy.io/), and
 [Google Cloud IAM](https://cloud.google.com/iam).**
-It type-checks a CEL expression, compiles it to a portable, sandboxed
-WebAssembly *Program*, and evaluates that Program as native code — no
-interpreter in your process, and no way for the expression to escape its
-sandbox.
+It type-checks a CEL expression, compiles it to a portable WebAssembly
+*Program*, and JIT-compiles that Program to machine code once at load
+time — so evaluation runs native code inside a WebAssembly sandbox
+rather than an interpreter walking a CEL AST, and the expression touches
+the host only through imports it is explicitly granted.
 
 Created and maintained by Augustine Mathew. 
 
@@ -72,13 +73,15 @@ sandboxed WebAssembly, once — and gets three properties from it:
   understands CEL; every host runs the identical `.wasm` bytes, so
   cross-language semantic drift is structurally impossible rather than
   merely tested-for.
-- **Sandboxed by construction.** What runs is native code confined to a
-  WebAssembly sandbox — bounded linear memory, no syscalls, no I/O, no
-  unbounded recursion. The expression cannot reach the host even in
-  principle, and the guarantee extends, uniquely, to *custom functions*.
-- **Native speed.** Ahead-of-time lowering plus a native JIT removes the
-  AST walk and tree dispatch from the eval path; by the time an expression
-  is evaluated, it is native code.
+- **Sandboxed by construction.** The expression executes inside a
+  WebAssembly sandbox: bounded linear memory, no syscalls, no I/O, and
+  host access only through the imports the runtime explicitly grants
+  (declared field reads and functions). Termination is the language's
+  guarantee — CEL has no unbounded loops or recursion to compile. The
+  sandbox extends, uniquely, to *custom functions*.
+- **Native speed.** Ahead-of-time lowering plus a JIT removes the AST
+  walk and tree dispatch from the eval path; what executes per Eval is
+  machine code, not an interpreter loop.
 
 ## How it works
 
@@ -102,7 +105,7 @@ sandboxed WebAssembly, once — and gets three properties from it:
   ┌ WebAssembly sandbox ────────────────────────────
   │   Instance.Eval(Activation)
   │     native code + cel runtime kernel
-  │     no syscalls · no I/O · no unbounded loops
+  │     bounded memory · no syscalls · no I/O
   │     @component custom functions run here, isolated
   └─────────────────────────────────────────────────
         │
@@ -113,7 +116,11 @@ sandboxed WebAssembly, once — and gets three properties from it:
 The five nouns — `Compiler → Program → Engine → Instance → Value` — are the
 whole public API surface. `Program` is the compatibility boundary: it is
 plain bytes, so you can compile in one process, write it to disk, and
-evaluate it in a process that never links the compiler.
+evaluate it in a process that never links the compiler. On the eval side,
+`Engine` embeds a WebAssembly runtime
+([wasmtime](https://wasmtime.dev/), Cranelift) that compiles the Program
+to machine code once at `Plan` time; per-Eval there is no interpreter in
+the path — the wasm has already been JIT-compiled.
 
 ## Try it
 
@@ -252,7 +259,7 @@ process?
 | --- | --- | --- |
 | Runs | in your address space, as a C++ lambda | in an isolated wasm instance with its own linear memory |
 | Author language | C++ | anything with a `wasm32-wasip2` toolchain (C++ today; TinyGo planned) |
-| Can read host memory / syscall | yes — whatever the C++ does | no — cannot escape, perform I/O, or starve the host |
+| Can read host memory / syscall | yes — whatever the C++ does | no — cannot escape the sandbox or perform I/O |
 | Update | re-link your binary | hot-swap: hand new bytes to `AddComponent` |
 | Per-call cost | ~3 µs | ~4 µs |
 
@@ -331,7 +338,8 @@ The known gaps, each pinned by a skipped-with-reason test
 - **Language bindings beyond C++ are designed, not built** — the `.wasm` +
   `cel.abi` already carry everything a Go/TS/Rust shim needs.
 - **Hardening continues** — differential fuzzing and a sanitizer gate ship
-  today; allocator caps and a release-versioning policy are still to come.
+  today; allocator caps, CPU-time limits for component functions, and a
+  release-versioning policy are still to come.
   See the [security model](doc/user-guide/security-model.md) for the
   current threat-model boundaries.
 
