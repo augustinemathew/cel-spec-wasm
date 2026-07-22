@@ -1,69 +1,80 @@
 # cel-wasm
 
-[![CI](https://github.com/augustinemathew/cel-spec-wasm/actions/workflows/ci.yml/badge.svg)](https://github.com/augustinemathew/cel-spec-wasm/actions/workflows/ci.yml)
-[![Docs](https://github.com/augustinemathew/cel-spec-wasm/actions/workflows/pages.yml/badge.svg)](https://augustinemathew.github.io/cel-spec-wasm/)
-[![Conformance](https://img.shields.io/badge/CEL%20conformance-2035%20pass%20·%200%20fail-success)](conformance/README.md)
+[![Conformance](https://img.shields.io/badge/CEL%20conformance-2035%2F2035%20applicable%20·%200%20fail-success)](conformance/README.md)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 **cel-wasm is an ahead-of-time compiler and runtime for
-[CEL](https://github.com/google/cel-spec).** It type-checks a CEL
-expression, compiles it to a portable, sandboxed WebAssembly *Program*,
-and evaluates that Program as native code — so a host can run sensitive or
-untrusted policy expressions at native speed without embedding a CEL
-interpreter, and without the expression being able to escape its sandbox.
+[CEL](https://github.com/google/cel-spec), the expression language that
+answers *"is this allowed?"* in Kubernetes, Envoy, and Google Cloud IAM.**
+It type-checks a CEL expression, compiles it to a portable, sandboxed
+WebAssembly *Program*, and evaluates that Program as native code — no
+interpreter in your process, and no way for the expression to escape its
+sandbox.
 
-Created and maintained by Augustine Mathew. Status: **beta** — the
-pipeline, sandbox, and conformance results are real and reproducible; the
+Created and maintained by Augustine Mathew. 
+
+Status: **beta**
+
+The pipeline, sandbox, and conformance results are real and reproducible; the
 hardening work that remains is listed plainly, not buried.
 
 📖 **[Documentation site →](https://augustinemathew.github.io/cel-spec-wasm/)**
 
-## The problem it addresses
+## CEL in 60 seconds
 
-CEL is the expression language Kubernetes, Envoy, Istio, and IAM use to
-answer *"is this allowed?"*. Today each host embeds its own interpreter —
-`cel-cpp`, `cel-go`, `cel-rust` — and those implementations drift in
-behavior and performance, while running policy logic *in-process*, where a
-bad or hostile expression is a liability.
+*Skip ahead if you already use CEL.*
 
-cel-wasm changes the shape of the problem. One compiler lowers the
-expression to a portable `.wasm` module **once**; any host then runs the
-identical bytes. That yields two properties at the same time:
+Every production system accumulates rules that change faster than the code
+enforcing them: who may call this API, which requests route where, when an
+alert should fire. Hard-code them and every policy tweak is a deploy;
+embed a scripting language and you have handed rule authors a
+Turing-complete foothold inside your process.
+
+CEL — the Common Expression Language, from Google — is the middle path: a
+small language for expressing **rules**, usually boolean conditions,
+occasionally computed values. A rule is a single expression with familiar
+C-like syntax. It is statically typeable, mutation-free, and deliberately
+**not Turing-complete**: evaluation runs in linear time and always
+terminates. The canonical example from the CEL spec:
+
+```cel
+// Approve the withdrawal?
+account.balance >= transaction.withdrawal
+    || (account.overdraftProtection
+    && account.overdraftLimit >= transaction.withdrawal - account.balance)
+```
+
+The host application declares the variables (`account`, `transaction`) and
+their types up front, binds concrete values at request time, and
+evaluates — here, to a `bool`. Because an expression cannot loop forever,
+mutate anything, or perform I/O, it is safe to accept from a config file,
+an API request, or a customer. That is why CEL is the policy language of
+Kubernetes (validation and admission rules), Envoy and Istio (RBAC and
+routing), and Google Cloud IAM (conditional access).
+
+## What cel-wasm changes
+
+Each CEL host today embeds its own tree-walking interpreter — `cel-cpp`,
+`cel-go`, `cel-rust` — with two costs: the implementations drift in
+behavior and performance, and the rule runs *in-process*, where a bad or
+hostile expression is a liability.
+
+cel-wasm makes one deliberate design decision — compile the expression to
+sandboxed WebAssembly, once — and gets three properties from it:
 
 - **One source of CEL semantics.** The compiler is the only component that
-  understands CEL. Every host executes the same artifact, so cross-language
-  semantic drift is structurally impossible rather than merely tested-for.
+  understands CEL; every host runs the identical `.wasm` bytes, so
+  cross-language semantic drift is structurally impossible rather than
+  merely tested-for.
 - **Sandboxed by construction.** What runs is native code confined to a
   WebAssembly sandbox — bounded linear memory, no syscalls, no I/O, no
   unbounded recursion. The expression cannot reach the host even in
-  principle, and that guarantee extends, uniquely, to *custom functions*.
-
-## Design philosophy — speed and security from one decision
-
-The defining choice is to make the compile target do double duty.
-Compiling to sandboxed WebAssembly is a deliberate compromise that buys
-speed *and* security from a single design, rather than trading one for the
-other:
-
-- **Security comes from the target.** A CEL expression lowered to a
-  sandboxed `.wasm` *physically cannot* make a syscall, read host memory,
-  perform I/O, recurse without bound, or hang the process. Untrusted custom
-  functions can run as isolated components with their own linear memory.
-  This is a stronger guarantee than an in-process interpreter can offer.
-- **Speed comes from the same target.** Ahead-of-time lowering plus a
-  native JIT removes the AST walk and tree dispatch from the eval path. By
-  the time an expression is evaluated, it is native code.
-- **The cost, stated up front.** Serving both goals from one artifact costs
-  the **static subset** — no `dyn`, variables typed in advance — and a
-  per-Eval boundary that some workloads amortize and some don't. That is a
-  conscious trade, documented in
-  [Performance](#performance-a-crossover-not-a-headline) and
-  [What cel-wasm doesn't do](#what-cel-wasm-doesnt-do), not papered over.
+  principle, and the guarantee extends, uniquely, to *custom functions*.
+- **Native speed.** Ahead-of-time lowering plus a native JIT removes the
+  AST walk and tree dispatch from the eval path; by the time an expression
+  is evaluated, it is native code.
 
 ## How it works
-
-A CEL expression travels through one compile pipeline to a `Program`, and
-that `Program` is planned once and evaluated many times:
 
 ```
   CEL source  +  variable & function declarations
@@ -148,29 +159,32 @@ handling, and a sandboxed component function.
 
 ## Performance: a crossover, not a headline
 
-cel-wasm is not unconditionally faster than a tree-walking interpreter, and
-there is no single representative multiplier — the result is two-sided and
-workload-dependent, so both surfaces are shown directly. Numbers below are
-the 2026-06-17 run, static-link mode (the default), identical expressions
-and inputs on both engines, `-c opt`, Apple Silicon
-([`benchmark/eval/results/2026-06-17-Mac.md`](benchmark/eval/results/2026-06-17-Mac.md)).
-The shape is predictable: the crossover is roughly ten operations. Above
-it, removing the AST walk more than pays for the one-time wasm boundary
-crossing; at the bottom, basic single operations now land at **parity**
-(`a == b` ≈ 1.0×, after the boundary cost was optimized down).
+cel-wasm is not unconditionally faster than a tree-walking interpreter,
+and there is no single representative multiplier — the result is two-sided
+and workload-dependent, so both surfaces are shown directly. Numbers below
+are the 2026-06-27 run, static-link mode (the default), identical
+expressions and inputs on both engines, `-c opt`, Apple Silicon
+([`benchmark/eval/results/2026-06-27-Mac.md`](benchmark/eval/results/2026-06-27-Mac.md)).
+The shape is predictable: the per-operator crossover is roughly three to
+fourteen operations depending on the family (regression table in
+[`benchmark/README.md`](benchmark/README.md)); below it the fixed
+sandbox-boundary cost dominates, above it removing the AST walk more than
+pays for it.
 
-**Where it wins** — repetition to amortize, and constants folded at compile
+**Where it wins** — repetition to amortize, and work moved to compile
 time:
 
 | Workload | speedup vs cel-cpp |
 | --- | :---: |
-| 1000-term arithmetic chain (int / double) | 18× / 20× |
+| 1000-term arithmetic chain over variables (int / double) | 18× / 19× |
 | 1000-term string-concat chain | 3.1× |
-| constant list literal folded to a constant (`size([…100])` / `[…1000]`) | 25× / 220× |
+| constant list folded at compile time (`size([…100])` / `[…1000]`) | 26× / 224× |
+| constant-map lookup, 256 entries, baked hash index (`m[k]` / `k in m`) | 118× / 198× |
+| comprehension `[1…20].map(x, x * 2)` | 34× |
 | complex regex `.matches()` | ~59× † |
 
-† This is a runtime-configuration difference, not codegen: cel-wasm caches
-the compiled RE2 pattern per Instance, while `cel-cpp`'s default runtime
+† A runtime-configuration difference, not codegen: cel-wasm caches the
+compiled RE2 pattern per Instance, while `cel-cpp`'s default runtime
 recompiles it per evaluation (its optional precompilation extension would
 close most of the gap). Quoted with that caveat on purpose.
 
@@ -178,8 +192,9 @@ close most of the gap). Quoted with that caveat on purpose.
 
 | Workload | gap | cause |
 | --- | :---: | --- |
-| 100-entry **map** literal construction | ~43× slower | constant **map** literals are still rebuilt every Eval; constant **list** literals were fixed in m31 (they now fold to a compile-time constant), and const-map folding is the queued follow-up. |
-| single proto / timestamp accessor (`m.f64`, `ts - ts`) | ~1.5–2× slower | each read crosses one host trampoline; the cost is amortized away as soon as the expression does more than a single field read. |
+| single proto / duration accessor (`m.str_to_i32["b"]`, duration `==`) | ~1.1–1.7× slower | each read crosses one host trampoline; amortized as soon as the expression does more than a single accessor. |
+| early-exit `in` over a 1000-string activation-bound list | ~14× slower | a bound aggregate is copied into the sandbox every Eval, so a first-element hit still pays the full marshal; cel-cpp reads the host list by reference. |
+| `contains()` on a 10 KB string | ~6× slower | cel-cpp reaches the host libc's vectorized substring search; the wasm kernel is a scalar loop. |
 
 Full methodology and per-cell numbers:
 [`benchmark/eval/results/`](benchmark/eval/results/) and
@@ -192,10 +207,10 @@ Scored against the upstream CEL conformance corpus, in both link modes:
 
 | | |
 | --- | --- |
-| Passing | **2035 / 2516** of the corpus (80.9%) |
-| Of rows attempted | **2035 / 2035 = 100%** (excludes the by-design skips below) |
-| Intentional skips | 481 — static subset / `dyn` (227, outside the static subset by design), check-disabled rows (144), and not-yet-shipped scope (110: extensions 55, check-only 25, spec edges 18, type-env 12) |
+| Passing | **2035 / 2035 of applicable rows (100%)** — the 481 inapplicable rows are mostly the `dyn` feature, outside the static subset by design |
 | Failing | **0** |
+| Inapplicable | 481 — `dyn` (227), check-disabled rows (144), and not-yet-shipped scope (110: extensions 55, check-only 25, spec edges 18, type-env 12) |
+| Whole corpus | 2035 / 2516 (80.9%) |
 
 Skips are categorized, not hidden: the 227 `dyn` rows are a deliberate
 scope decision; the rest are tracked implementation work. Live per-fixture
@@ -250,65 +265,53 @@ The properties above are the point of the project, so they are enforced
 rather than asserted:
 
 - **The reference implementation is the oracle.** A test harness links the
-  real `cel-cpp` parser, checker, and runtime and evaluates expressions
-  end-to-end; it is the authoritative tiebreaker for any question of
-  semantics — value, canonical form, error-vs-value, rounding, overflow.
-  Expected results are confirmed against it, not reasoned from memory.
-- **Differential fuzzing.** A fuzzer drives both engines on generated
-  expressions and diffs the results, so divergences from `cel-cpp` are
-  found mechanically rather than waited for.
-- **Fail closed on the unsupported.** The static subset is enforced at a
-  single gate; `dyn` and shapes the compiler cannot lower are rejected at
-  compile time with a status, never miscompiled silently.
-- **Benchmarks are reported two-sided.** Every regression versus `cel-cpp`
-  is published with its architectural cause, as above.
+  real `cel-cpp` parser, checker, and runtime end-to-end; expected results
+  are confirmed against it, not reasoned from memory.
+- **Differential fuzzing** drives both engines on generated expressions
+  and diffs the results, so divergences from `cel-cpp` are found
+  mechanically rather than waited for.
+- **Fail closed on the unsupported.** `dyn` and shapes the compiler cannot
+  lower are rejected at compile time with a status, never miscompiled
+  silently — and every fixed capability limit is pinned by a
+  just-inside / just-past test pair (`e2e/limits_test.cc`).
+- **Benchmarks are reported two-sided**, every loss with its architectural
+  cause, as above.
 - **The compiler/runtime boundary is structural.** `Program` is a frozen
-  byte artifact; the compiler depends only on shared type vocabulary, never
-  on the evaluator — so the compiler stays independently buildable and the
-  artifact stays portable.
+  byte artifact; the compiler never links the evaluator, so the artifact
+  stays portable and the compiler independently buildable.
 
 Architecture and design docs: [`doc/README.md`](doc/README.md).
 
-## What cel-wasm doesn't do
+## Scope and status
 
 cel-wasm targets CEL's **static subset** by design — variables and
-intermediates are statically typed and declared up front:
-
-- **No dynamic typing (`dyn`).** This is the load-bearing 227-row
-  conformance skip and a deliberate trade.
-- **`@native` CEL-defined helper bodies** type-check today, but body
-  codegen has not shipped.
-- A handful of named edges: `cel.@block`, proto2 extension-field accessors,
-  multi-byte-UTF-8 `size()`.
-
-If your workload needs the full dynamic surface, use
+intermediates are statically typed and declared up front. If your workload
+needs the full dynamic surface, use
 [`cel-cpp`](https://github.com/google/cel-cpp) or
-[`cel-go`](https://github.com/google/cel-go). cel-wasm trades that surface
-for AOT speed, portability, and the sandbox; it is not a drop-in
+[`cel-go`](https://github.com/google/cel-go); cel-wasm trades that surface
+for AOT speed, portability, and the sandbox. It is not a drop-in
 replacement.
 
-## Status and limitations
+The known gaps, each pinned by a skipped-with-reason test
+(`e2e/known_bugs_test.cc`) or a backlog entry
+([`doc/implementation-plan/cleanup-backlog.md`](doc/implementation-plan/cleanup-backlog.md)):
 
-Beta — usable and honest about what remains. The known gaps:
-
-- **Constant `map` literals are rebuilt every Eval** (the ~43× row above).
-  Constant `list` literals already fold to a compile-time constant (m31);
-  const-map folding is the queued follow-up.
-- **Very large constant `map` literals do not compile** — a capability
-  limit, not a crash: an oversized literal is rejected *at compile* with a
-  graceful `ResourceExhausted`; put large constant data in an
-  activation-bound variable instead. (Large constant `list` literals now
-  compile, after m31 raised the static window.)
+- **No dynamic typing (`dyn`).** The load-bearing 227-row conformance skip
+  and a deliberate trade.
+- **`@native` CEL-defined helper bodies** type-check today, but body
+  codegen has not shipped.
+- **Very large constant literals do not compile** — a capability limit,
+  not a crash: an oversized constant list or map is rejected *at compile*
+  with a graceful `ResourceExhausted`; put large constant data in an
+  activation-bound variable instead.
+- A handful of named edges: `cel.@block`, proto2 extension-field
+  accessors, multi-byte-UTF-8 `size()`.
 - **Language bindings beyond C++ are designed, not built** — the `.wasm` +
   `cel.abi` already carry everything a Go/TS/Rust shim needs.
 - **Hardening continues** — differential fuzzing and a sanitizer gate ship
   today; allocator caps and a release-versioning policy are still to come.
   See the [security model](doc/user-guide/security-model.md) for the
   current threat-model boundaries.
-
-Every known gap is pinned by a skipped-with-reason test
-(`e2e/known_bugs_test.cc`) or a backlog entry
-([`doc/implementation-plan/cleanup-backlog.md`](doc/implementation-plan/cleanup-backlog.md)).
 
 ## Documentation
 
