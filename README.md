@@ -48,19 +48,20 @@ use CEL for policy.
 ## Quick start
 
 ```bash
-# One-time: fetch the vendored parser/type-checker.
+# One-time: fetch the vendored parser/type-checker, build the CLI.
 third_party/fetch_cel_cpp.sh
+bazel build //tools/cel:cel
 
 # Evaluate CEL end-to-end: compile → wasm → JIT → native.
-bazel run //tools/cel:cel -- eval '1 + 2 + 3'                          # => 6
-bazel run //tools/cel:cel -- eval 'a * b' --var a:int=6 --var b:int=7  # => 42
+bazel-bin/tools/cel/cel eval '1 + 2 + 3'                          # => 6
+bazel-bin/tools/cel/cel eval 'a * b' --var a:int=6 --var b:int=7  # => 42
 
 # Compile to a wasm artifact you can ship and evaluate elsewhere.
-bazel run //tools/cel:cel -- compile 'a * b + 1' \
+bazel-bin/tools/cel/cel compile 'a * b + 1' \
     --var a:int --var b:int --output /tmp/expr.wasm
 
-# Or run the smallest complete embed:
-bazel run //examples:01_hello_world
+# Or build and run the smallest complete embed:
+bazel build //examples:01_hello_world && bazel-bin/examples/01_hello_world
 ```
 
 Embedding from C++:
