@@ -107,38 +107,17 @@ buys three properties:
   I/O. Host access only through explicitly granted imports. Termination
   is the language's guarantee — CEL has no unbounded loops. The sandbox
   extends to custom functions.
-- **Native speed.** What executes per Eval is machine code, not an
-  interpreter loop.
+- **Native speed.** Not from WebAssembly itself — from the runtime
+  behind it, which emits machine code. What executes per Eval is that
+  machine code, not an interpreter loop.
+  [How that translates to instructions →](#why-is-it-fast)
 
 ## How it works
 
-```
-  CEL source  +  variable & function declarations
-        │
-        │   cel-cpp parser + type-checker          (reused, not reimplemented)
-        ▼
-  type-checked AST
-        │
-        │   static-subset validation               (reject `dyn` & unsupported shapes)
-        ▼
-  typed IR  +  annotations
-        │
-        │   lowering · memory layout · codegen      (Binaryen)
-        ▼
-  Program  =  .wasm bytes  +  cel.abi               ← portable, inspectable artifact
-        │
-        │   Engine.Plan → JIT to native code        (one JIT per Program)
-        ▼
-  ┌ WebAssembly sandbox ────────────────────────────
-  │   Instance.Eval(Activation)
-  │     native code + cel runtime kernel
-  │     bounded memory · no syscalls · no I/O
-  │     @component custom functions run here, isolated
-  └─────────────────────────────────────────────────
-        │
-        ▼
-  Value
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/img/pipeline-dark.svg">
+  <img alt="Pipeline: CEL source → parse + check (cel-cpp) → lower + codegen (Binaryen) → Program (.wasm + cel.abi, portable bytes) → Plan (Cranelift JIT to machine code) → Eval in the WebAssembly sandbox → Value" src="doc/img/pipeline-light.svg">
+</picture>
 
 The five nouns — `Compiler → Program → Engine → Instance → Value` — are
 the whole public API. `Program` is plain bytes: compile in one process,
@@ -148,6 +127,22 @@ compiler. On the eval side, `Engine` embeds a WebAssembly runtime
 once, at `Plan` time.
 
 ## Performance
+
+### Why is it fast?
+
+WebAssembly alone adds no speed — it is just a portable instruction
+format. The speed comes from what surrounds it: the compiler resolves
+every operator to a direct, type-specialized call ahead of time, and the
+WebAssembly runtime (wasmtime's Cranelift) emits machine code from that
+once, at `Plan` time — so each eval executes straight-line code over
+fixed linear-memory slots instead of re-dispatching an expression tree.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/img/why-fast-dark.svg">
+  <img alt="1 + 2 evaluated: cel-cpp dispatches per step through boxed values (~32 ns per added operation); cel-wasm's emitted eval body is an arena reset plus one direct call to an overflow-checked add kernel over fixed linear-memory slots (~1.7 ns per added operation)" src="doc/img/why-fast-light.svg">
+</picture>
+
+### Measured, both sides
 
 cel-wasm is not unconditionally faster than an interpreter. The result
 is workload-dependent, so both sides are shown. All numbers: 2026-06-27
