@@ -32,7 +32,7 @@ done
 cd "$(dirname "$0")/.."
 
 echo "==> Default test suite"
-bazel test $PROJ
+bazel test --test_output=errors $PROJ
 
 echo "==> Manual-tagged targets"
 # Query-driven: a hardcoded list rotted the first time targets were
@@ -47,7 +47,7 @@ if [[ -z "$MANUAL_TARGETS" ]]; then
 fi
 echo "$MANUAL_TARGETS" | wc -l | xargs echo "    manual targets:"
 # shellcheck disable=SC2086
-bazel test $MANUAL_TARGETS
+bazel test --test_output=errors $MANUAL_TARGETS
 
 if [[ $QUICK -eq 0 ]]; then
   echo "==> Conformance gate (both link modes, monotonic baselines)"
