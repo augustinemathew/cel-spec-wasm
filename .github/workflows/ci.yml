@@ -24,6 +24,11 @@ name: ci
 on:
   push:
     branches: [master]
+    # Markdown cannot affect the build or tests; skipping doc-only
+    # pushes also stops them cancelling a long in-flight run (the
+    # concurrency group below) before its disk cache is saved.
+    paths-ignore:
+      - "**.md"
   pull_request:
   workflow_dispatch:
     inputs:
