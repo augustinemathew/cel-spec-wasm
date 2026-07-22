@@ -2,8 +2,8 @@
 
 This is the embedder's guide to the CEL-to-WebAssembly AOT compiler: how
 to compile a CEL expression to a wasm module, evaluate it, bind
-variables, and extend the language with custom functions (host-backed,
-CEL-defined, or Component-Model components written in Rust/Go/C).
+variables, and extend the language with custom functions (host-backed
+C++, or sandboxed Component-Model components).
 
 Every code snippet uses the real public API (`compiler/compiler.h`,
 `compiler/program.h`, `eval/engine.h`, `eval/instance.h`,
@@ -280,11 +280,12 @@ three backends, distinguished by the *shape* of the declaration:
 | Backend | Declaration shape | Who provides the body | Registered on |
 |---|---|---|---|
 | **Host** | `int @host.length(string s);` | your C++ at runtime | `Engine::AddFunction` |
-| **CEL-defined** ⛔ | `int @native.addone(int x) = x + 1;` | a CEL expression body | nothing — *would be* compiled in (parses + type-checks today, does not evaluate — §7) |
+| **CEL-defined** ⛔ | `int @native.addone(int x) = x + 1;` | a CEL expression body | **not yet implemented** — reserved syntax; see §7 |
 | **Component** ✅ | `bool @component.allow(string subject, string action);` | a wasm Component-Model component (C++ today, TinyGo/Rust designed) | `Engine::AddComponent` |
 
-The backend is the **module prefix**: `@host` (C++ impl), `@native`
-(CEL body, with `= …`), or `@component` (Component-Model component).
+The backend is the **module prefix**: `@host` (C++ impl), `@component`
+(Component-Model component), or `@native` (reserved for CEL-defined
+bodies — unimplemented, §7).
 Every declaration carries an `@<backend>.` prefix; there is no
 unprefixed form. (Grammar reference: `m13-custom-fns.md` §3.0.)
 
@@ -311,20 +312,16 @@ leading `this` on the first param for method-style dispatch
 
 ### 5.1 Building a reusable expression library (`.celfn` files)
 
-The point of the IDL is to **refactor ad-hoc CEL expressions into a
-named, documented, reusable library** — a project "standard library" of
-expressions. You write a `.celfn` file, document each function with a
-doc-comment, load the whole file, and register it on the Compiler:
+The point of the IDL is a **named, documented, reusable library of
+function declarations** — a project "standard library". You write a
+`.celfn` file, document each function with a doc-comment, load the whole
+file, and register it on the Compiler:
 
 ```celfn
-// policy.celfn  — a library of reusable policy expressions
+// policy.celfn  — a library of policy function declarations
 
 /// True if the user is an adult (>= 18) per their proto `age` field.
-bool @native.is_adult(this proto(acme.User) u) = u.age >= 18 ;
-
-/// Risk score for a transaction amount: 0 (low) … 2 (high).
-int @native.risk(int amount) =
-    amount > 10000 ? 2 : (amount > 1000 ? 1 : 0) ;
+bool @host.is_adult(proto(acme.User) u) ;
 
 /// Look up today's rate for `currency` from the host rate table.
 double @host.rate(string currency) ;
@@ -345,9 +342,12 @@ b.AddLibrary(*lib);
 auto compiler = std::move(b).Build();
 
 // Now expressions reuse the library:
-auto p1 = compiler->Compile("is_adult(u) && risk(amount) < 2");
+auto p1 = compiler->Compile("is_adult(u) && rate('USD') < 2.0");
 auto p2 = compiler->Compile("rate('USD') * 1.05");
 ```
+
+At eval time, bind each `@host` declaration to its C++ impl on the
+`Engine` (§6).
 
 **Doc-comments.** ✅ A `///` run (or a `/** … */` block) directly above a
 declaration is captured as that function's **description** (sigils + one
@@ -445,71 +445,18 @@ lambda. **Full detail + worked examples:
 > **Component backend note:** a `@component` decl crosses into a
 > separately-instantiated Component-Model component, so values are
 > marshalled across the boundary (proto messages travel as serialized
-> bytes; see §8). The shared-memory zero-copy path used by `@host` /
-> `@native` is not available across that boundary.
+> bytes; see §8). The shared-memory zero-copy path used by `@host`
+> is not available across that boundary.
 
 ## 7. CEL-defined functions (`@native`) ⛔
 
-A CEL-defined function has a body written in CEL itself. The *intent* is
-that it compiles **into the same wasm module** as the expression (no
-separate module, no host callback, no runtime registration):
-
-> **Status: designed + declared, not implemented.** A `@native` decl
-> **parses and type-checks today** — the grammar accepts it, the
-> `FunctionLibrary` captures the body, and the checker registers the
-> overload so call sites type-check and `Compile` succeeds. But it does
-> **not evaluate**: no body-lowering code exists in the tree, not even
-> a scaffold. The pipeline (`compiler/internal/compile.cc`) has no
-> stage that lowers library bodies, `CompiledArtifact`
-> (`compiler/internal/compile.h`) carries no library-module field, and
-> `eval/engine.cc`'s `Plan` never registers a CEL-defined library
-> module. (The earlier "N-functions-in-one-module" codegen did not
-> survive the repo reorg, and the `library_module.h` scaffold that
-> outlived it has since been deleted too.) So compiling `addone(41)`
-> succeeds, but evaluating it cannot produce a result on this branch.
-> The syntax + API below is the **target** shape.
-
-```celfn
-int    @native.addone(int x)      = x + 1;
-string @native.greet(string name) = "hi " + name;
-bool   @native.is_adult(this proto(acme.User) u) = u.age >= 18;   // method form
-```
-
-```cpp
-auto b = celwasm::Compiler::NewBuilder();
-b.AddFunction("int @native.addone(int x) = x + 1;");
-auto compiler = std::move(b).Build();
-auto program  = compiler->Compile("addone(41)");           // no Engine::AddFunction
-
-auto engine   = celwasm::Engine::NewBuilder().Build();
-auto instance = engine->Plan(*program);
-auto v = instance->Eval();                                  // ⛔ target → 42;
-                                                            // does not evaluate today
-```
-
-Intended properties (target shape — see the Status callout above):
-
-- The body is type-checked with its params injected as variables; it may
-  reference **only its own declared params** (not the outer
-  expression's variables). (This much is real today — type-checking
-  works; it is *body lowering / eval* that is unimplemented.)
-- Bodies are intended to lower to internal wasm functions in disjoint
-  static memory bands; many small functions would be fine, but the
-  expression + all bodies must fit the reserved low-memory region (else
-  `ResourceExhausted`).
-- **Recursion is rejected.** CEL is a total language; a self- or
-  mutually-recursive body (a cycle in the CEL-defined call graph) is
-  rejected at compile time with `InvalidArgument`. A non-cyclic call
-  chain (`f` calls `g` calls a builtin) is fine.
-- A CEL-defined body is designed to be able to call host functions and
-  other (non-cyclic) CEL-defined functions.
-
-> **Current eval coverage:** none — `@native` bodies do **not** evaluate
-> on this branch. The body-lowering producer does not exist in the tree
-> (no codegen, no registration, no e2e); scalar/string returns are
-> **not** proven end-to-end today. When the producer lands, `list`/`map`
-> params/returns inside CEL-defined bodies will additionally share the
-> marshalling gap described in §6.2.
+> **Not implemented — treat `@native` as reserved syntax.** The grammar
+> reserves the `@native` backend for functions whose body is written in
+> CEL itself and compiled into the same wasm module as the expression.
+> Today a `@native` declaration parses and type-checks (so call sites
+> compile), but no body lowering exists: a program that calls one
+> compiles and then fails to evaluate. Use `@host` (§6) or
+> `@component` (§8) for function bodies that need to run.
 
 ---
 
@@ -521,10 +468,10 @@ Intended properties (target shape — see the Status callout above):
 > performance follow-ups. This section is the in-index summary.
 
 A component function is implemented by a **Component-Model component**
-**you** produce from another language (Rust, TinyGo, C, …). Unlike
-CEL-defined functions (same module, shared memory) or host functions
-(C++ in the embedder), a component has **its own linear memory** — so
-values must be *marshalled* across the boundary by a host trampoline.
+**you** produce from another language (Rust, TinyGo, C, …). Unlike a
+host function (C++ in the embedder), a component has **its own linear
+memory** — so values must be *marshalled* across the boundary by a host
+trampoline.
 
 ### 8.1 Declaration and registration ✅
 
@@ -744,7 +691,7 @@ func IsAdmin(u *acmepb.User) bool { return u.GetRole() == "admin" }
 Host side: serialize `u` → bytes → `cabi_realloc` + copy into the
 component → pass `(ptr, len)`. A returned proto is symmetric: the
 component side marshals, the host deserializes against the descriptor.
-The trade vs. `@host`/`@native` (which pass a zero-copy `msg_slot`
+The trade vs. `@host` (which passes a zero-copy `msg_slot`
 handle) is a serialize/deserialize **per call** — inherent to the
 component-memory boundary. Both sides need the proto generated from the
 same `.proto`.
@@ -781,7 +728,7 @@ same `.proto`.
 > notes for the unshipped Go authoring path** (§8.4) — none of that
 > machinery exists in the shipped C++ pipeline.
 
-A component function can fail in ways a `@host`/`@native` function can't:
+A component function can fail in ways a `@host` function can't:
 it runs untrusted guest code in its own memory, and a Go `panic` (or a
 runtime fault — nil deref, index out of range) **unwinds to a wasm
 `unreachable`**, surfacing to the host as a trap, not a return. The
@@ -843,9 +790,9 @@ wrong answer.
 ### 8.7 What about `Engine::AddModule`?
 
 `Engine::AddModule(alias, wasm_bytes)` — a non-component, alias-keyed
-"register a core wasm module" API — is reserved for the `@native`
-CEL-defined backend's planned multi-module emission (§7) and is **not**
-the registration path for `@component` decls. Use `AddComponent` for
+"register a core wasm module" API — is reserved for the unimplemented
+`@native` backend (§7) and is **not** the registration path for
+`@component` decls. Use `AddComponent` for
 every component-backed function; do not reach for `AddModule`.
 
 ---
@@ -916,20 +863,19 @@ ok, `1` compile/eval failure, `2` usage; diagnostics on stderr, the
 ### 9.1 Does evaluation need the `.celfn` IDL? (the compile/run split)
 
 **No — the `.celfn` IDL is a *compile-time-only* input.** It is consumed
-by the `Compiler` to type-check call sites and, for `@native` functions,
-to lower their bodies; none of it is needed to *run* a compiled
-`Program`. What a precompiled `.wasm` needs at run time depends on the
+by the `Compiler` to type-check call sites; none of it is needed to
+*run* a compiled `Program`. What a precompiled `.wasm` needs at run time depends on the
 backend of the functions it calls:
 
 | Function backend | Needed at run time (eval) | `.celfn` IDL needed at run time? |
 |---|---|---|
-| **`@native`** (CEL-defined) ⛔ | nothing — the body is *intended* to be compiled *into* the wasm (single-module); body lowering is unimplemented today (§7), so a `@native`-using program does not evaluate yet | **No** (by design — would be fully self-contained) |
+| **`@native`** (CEL-defined) ⛔ | n/a — the backend is unimplemented (§7); a program that calls one does not evaluate | **No** |
 | **`@component`** ⛔ | the component's **bytes**, plus the `FunctionLibrary` so the engine knows which decls to bind (`Engine::AddComponent` / a planned `--component path.wasm`) | **Partially** — `AddComponent` takes the library so it can bind every `@component` decl to a matching export; you supply both the *bytes* and the parsed IDL |
 | **`@host`** | a **C++ impl** registered via `Engine::AddFunction` | **No, but** — the IDL only declares the *signature*; the *behavior* is C++ the generic CLI can't supply, so a wasm with host imports isn't runnable by stock `cel` at all |
 
-So for the common non-host cases the answer is clean: a `@native`-heavy
-expression compiles to a self-contained `.wasm` that `cel run` (when it
-lands) or `Engine::Plan` evaluates with **no IDL and no extra modules**;
+So the answer is clean: a pure-CEL expression compiles to a
+self-contained `.wasm` that `Engine::Plan` evaluates with **no IDL and
+no extra modules**;
 a `@component`-using expression additionally needs the component bytes
 **and the library** (so the engine knows which `@component` decls to bind
 to which exports). The variable schema needed to bind `--var` travels in
@@ -956,8 +902,7 @@ variables too (§3.3).
 | **Host fns** — proto / list / map args, aggregate / new-string returns | ✅ (m21) |
 | Typed `AddTypedFunction` + `HostCallContext` adapter | ✅ (m21); raw 4-arg `HostCallback` removed |
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
-| **CEL-defined fns** (`@native`) — body lowering + eval (scalar/string/any return) | ⛔ no body-lowering code in the tree (the former `library_module.h` scaffold has been deleted); never registered in `Plan`. Does not evaluate (§7) |
-| **CEL-defined fns** (`@native`) — list/map params/returns | ⛔ blocked on the body-lowering producer above (the host-side marshalling those would reuse is now shipped — see §6) |
+| **CEL-defined fns** (`@native`) — body lowering + eval | ⛔ not implemented (§7); a `@native`-using program does not evaluate |
 | **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent`; proto args/returns via the manual-tagged `demo_component_proto` fixture; component-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
 | **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
