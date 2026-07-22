@@ -243,6 +243,11 @@ cc_test(
     # become known_bugs_test.cc entries; see file header in
     # cel_oracle_property_test.cc.
     tags = ["manual"],
+    # Static link: in Linux fastbuild's default dynamic mode, the
+    # fuzztest→riegeli zstd shared object fails symbol resolution at
+    # load time (undefined ZSTD_getDictID_fromDict) and the binary
+    # dies before main.  macOS links this fine either way.
+    linkstatic = True,
     deps = [
         ":oracle_harness",
         "//eval:value",
