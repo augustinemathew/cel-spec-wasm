@@ -5,7 +5,9 @@
 
 **cel-wasm is an ahead-of-time compiler and runtime for
 [CEL](https://github.com/google/cel-spec), the expression language that
-answers *"is this allowed?"* in Kubernetes, Envoy, and Google Cloud IAM.**
+answers *"is this allowed?"* in [Kubernetes](https://kubernetes.io/),
+[Envoy](https://www.envoyproxy.io/), and
+[Google Cloud IAM](https://cloud.google.com/iam).**
 It type-checks a CEL expression, compiles it to a portable, sandboxed
 WebAssembly *Program*, and evaluates that Program as native code — no
 interpreter in your process, and no way for the expression to escape its
@@ -16,7 +18,9 @@ Created and maintained by Augustine Mathew.
 Status: **beta**
 
 The pipeline, sandbox, and conformance results are real and reproducible; the
-hardening work that remains is listed plainly, not buried.
+hardening work that remains is listed plainly, not buried. Parts of the
+documentation and the differential-fuzz suite are stale and being brought
+up to date.
 
 ## CEL in 60 seconds
 
@@ -47,8 +51,12 @@ their types up front, binds concrete values at request time, and
 evaluates — here, to a `bool`. Because an expression cannot loop forever,
 mutate anything, or perform I/O, it is safe to accept from a config file,
 an API request, or a customer. That is why CEL is the policy language of
-Kubernetes (validation and admission rules), Envoy and Istio (RBAC and
-routing), and Google Cloud IAM (conditional access).
+[Kubernetes](https://kubernetes.io/docs/reference/using-api/cel/)
+(validation and admission rules),
+[Envoy](https://www.envoyproxy.io/) and [Istio](https://istio.io/) (RBAC
+and routing), and
+[Google Cloud IAM](https://cloud.google.com/iam/docs/conditions-overview)
+(conditional access).
 
 ## What cel-wasm changes
 
@@ -148,26 +156,22 @@ bool allowed = instance.Eval(act)->AsBool().value();            // => true
 ```
 
 This snippet is [`examples/02_variables.cc`](examples/02_variables.cc),
-condensed. Every example is a buildable target run by
-`//examples:examples_smoke_test` on each `bazel test` sweep, so the code in
-the docs is code that executes. The [`examples/`](examples/) directory
-covers variables, saving and reloading compiled programs, custom host
-functions, partial evaluation with unknowns, protobuf messages, error
-handling, and a sandboxed component function.
+condensed; every snippet in the docs is a buildable target run on each
+`bazel test` sweep. The [`examples/`](examples/) directory covers saving
+and reloading compiled programs, custom functions, partial evaluation,
+protobuf messages, and error handling.
 
 ## Performance: a crossover, not a headline
 
-cel-wasm is not unconditionally faster than a tree-walking interpreter,
-and there is no single representative multiplier — the result is two-sided
-and workload-dependent, so both surfaces are shown directly. Numbers below
-are the 2026-06-27 run, static-link mode (the default), identical
-expressions and inputs on both engines, `-c opt`, Apple Silicon
-([`benchmark/eval/results/2026-06-27-Mac.md`](benchmark/eval/results/2026-06-27-Mac.md)).
-The shape is predictable: the per-operator crossover is roughly three to
-fourteen operations depending on the family (regression table in
-[`benchmark/README.md`](benchmark/README.md)); below it the fixed
-sandbox-boundary cost dominates, above it removing the AST walk more than
-pays for it.
+cel-wasm is not unconditionally faster than a tree-walking interpreter —
+the result is workload-dependent, so both surfaces are shown. Numbers are
+the 2026-06-27 run: identical expressions and inputs on both engines,
+static-link mode (the default), `-c opt`, Apple Silicon
+([full tables](benchmark/eval/results/2026-06-27-Mac.md)). The shape is
+predictable: the crossover is roughly 3–14 operations depending on the
+operator family ([regression table](benchmark/README.md)); below it the
+fixed sandbox-boundary cost dominates, above it removing the AST walk
+more than pays for it.
 
 **Where it wins** — repetition to amortize, and work moved to compile
 time:
@@ -182,9 +186,9 @@ time:
 | complex regex `.matches()` | ~59× † |
 
 † A runtime-configuration difference, not codegen: cel-wasm caches the
-compiled RE2 pattern per Instance, while `cel-cpp`'s default runtime
-recompiles it per evaluation (its optional precompilation extension would
-close most of the gap). Quoted with that caveat on purpose.
+compiled RE2 pattern per Instance; `cel-cpp`'s default runtime recompiles
+it per evaluation (its optional precompilation extension would close most
+of the gap).
 
 **Where it loses** — and why, named honestly:
 
@@ -210,10 +214,9 @@ Scored against the upstream CEL conformance corpus, in both link modes:
 | Inapplicable | 481 — `dyn` (227), check-disabled rows (144), and not-yet-shipped scope (110: extensions 55, check-only 25, spec edges 18, type-env 12) |
 | Whole corpus | 2035 / 2516 (80.9%) |
 
-Skips are categorized, not hidden: the 227 `dyn` rows are a deliberate
-scope decision; the rest are tracked implementation work. Live per-fixture
-breakdown (autogenerated): [`conformance/README.md`](conformance/README.md);
-reproduce with `bazel run //conformance:run_conformance`.
+Per-fixture breakdown (autogenerated):
+[`conformance/README.md`](conformance/README.md); reproduce with
+`bazel run //conformance:run_conformance`.
 
 Extensions implemented today: `string_ext` (including `strings.format` —
 172/216, 0 fails), `math_ext` (194/199, 0 fails), `network_ext` (69/69),
