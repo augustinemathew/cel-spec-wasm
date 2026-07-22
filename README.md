@@ -13,8 +13,6 @@ It compiles a type-checked CEL expression to a portable WebAssembly
 sandbox. No AST-walking interpreter. No host access beyond explicitly
 granted imports.
 
-Created and maintained by Augustine Mathew.
-
 Status: **beta**
 
 The pipeline, sandbox, and conformance results are reproducible.
