@@ -183,8 +183,8 @@ more than pays for it.
 ### What it costs to embed
 
 The numbers an embedder asks first — measured with the public API on
-Apple Silicon, `-c opt`, for a small arithmetic expression (reproduce
-with `bazel run -c opt //benchmark/compiler:stage_bench`):
+Apple Silicon, `-c opt`, for `a * b + 1` with `a`, `b` declared as
+`int` (reproduce with `bazel run -c opt //benchmark/compiler:stage_bench`):
 
 | | static link (default) | dynamic link |
 | --- | :---: | :---: |
