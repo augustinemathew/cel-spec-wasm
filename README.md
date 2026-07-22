@@ -350,6 +350,15 @@ toolchain (wasi-sdk, the WebAssembly engine, Binaryen). You need
 `brew install llvm` on macOS, `apt install clang lld build-essential` on
 Linux. Docker image: [`docker/Dockerfile`](docker/Dockerfile).
 
+## Why not LLVM?
+
+Considered, yes. LLVM would emit excellent native code, but it is a
+heavyweight toolchain to embed and its compilation times are far
+higher — the wrong trade for turning many small policy expressions
+around quickly. And native code has no sandbox: the WebAssembly target
+is what makes the compiled expression safe to run, with Binaryen and
+Cranelift keeping the pipeline light and fast.
+
 ## Author
 
 cel-wasm is created and maintained by **Augustine Mathew**
