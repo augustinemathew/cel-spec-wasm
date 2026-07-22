@@ -180,6 +180,34 @@ operator family ([regression table](benchmark/README.md)); below it the
 fixed sandbox-boundary cost dominates, above it removing the AST walk
 more than pays for it.
 
+### What it costs to embed
+
+The numbers an embedder asks first — measured with the public API on
+Apple Silicon, `-c opt`, for a small arithmetic expression (reproduce
+with `bazel run -c opt //benchmark/compiler:stage_bench`):
+
+| | static link (default) | dynamic link |
+| --- | :---: | :---: |
+| `Compile` a new expression | ~60 ms | ~0.5 ms |
+| `Plan` (JIT) a compiled Program | ~65 ms | ~0.5 ms |
+| `Eval`, steady state (floor) | ~50 ns | ~290 ns |
+| Program artifact size | ~2.4 MB | ~6.5 KB |
+
+One-time costs: `Engine` construction is ~70 ms per process; a cold
+process reaches its first eval result in under a second. Each `Instance`
+owns its Program's linear memory (default two 64 KiB wasm pages,
+configurable). `Engine` is shared (thread-safe `Plan`); bind one
+`Instance` per worker thread and reuse an `Activation` per eval.
+
+The two link modes are the same trade in opposite directions. Static
+(the default) merges and optimizes the entire runtime kernel into each
+Program — compile is ~60 ms of real parallel work, but the artifact is
+self-contained and eval is fastest. Dynamic keeps the runtime shared at
+`Plan` time — compile and Plan drop to ~0.5 ms and the artifact to
+kilobytes, at ~6× the per-eval floor (cross-module call overhead). Rule
+of thumb: static for compile-once / eval-many policy serving, dynamic
+for high-throughput compile services or shipping many programs.
+
 **Where it wins** — repetition to amortize, and work moved to compile
 time:
 
