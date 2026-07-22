@@ -350,7 +350,9 @@ toolchain (wasi-sdk, the WebAssembly engine, Binaryen). You need
 `brew install llvm` on macOS, `apt install clang lld build-essential` on
 Linux. Docker image: [`docker/Dockerfile`](docker/Dockerfile).
 
-## Why not LLVM?
+## Design choices
+
+### Why not LLVM?
 
 Considered, yes. LLVM would emit excellent native code, but it is a
 heavyweight toolchain to embed and its compilation times are far
@@ -358,6 +360,19 @@ higher — the wrong trade for turning many small policy expressions
 around quickly. And native code has no sandbox: the WebAssembly target
 is what makes the compiled expression safe to run, with Binaryen and
 Cranelift keeping the pipeline light and fast.
+
+### Why wasmtime as the runtime?
+
+There are many WebAssembly runtimes: [V8](https://v8.dev/) (the JIT
+inside Chrome and Node), [Wasmer](https://wasmer.io/),
+[WAMR](https://github.com/bytecodealliance/wasm-micro-runtime),
+[wazero](https://wazero.dev/), and more.
+[wasmtime](https://wasmtime.dev/) fits this job best: a standalone
+runtime with a mature C API, written in memory-safe Rust — the right
+foundation for a security boundary — and its Cranelift backend compiles
+fast while emitting code that is plenty good for expression-sized
+programs. Cranelift trades a few percent of peak code quality for much
+faster compilation: the same trade this project makes everywhere.
 
 ## Author
 
