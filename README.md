@@ -382,6 +382,13 @@ cel-wasm is created and maintained by **Augustine Mathew**
 independent project, not affiliated with or endorsed by any employer.
 See [NOTICE](NOTICE) and [AUTHORS](AUTHORS).
 
+**Provenance note:** this repository began as a fork of
+[google/cel-spec](https://github.com/google/cel-spec) — the CEL language
+definition and the conformance corpus are its heritage. The git history
+and GitHub contributor list therefore include upstream cel-spec
+contributors; the cel-wasm compiler, runtime, and tooling are the work
+of the author above.
+
 *The internal C++ namespace is `celwasm::`; the project name is
 `cel-wasm`, matching `cel-cpp` / `cel-go`.*
 
