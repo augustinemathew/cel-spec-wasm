@@ -56,7 +56,8 @@ jobs:
         run: third_party/fetch_cel_cpp.sh
 
       - name: Restore bazel disk cache
-        uses: actions/cache@v4
+        id: bazel-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/bazel-disk-cache
           key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
@@ -77,3 +78,10 @@ jobs:
         # step.  Defaults for the nightly schedule; overridable via
         # workflow_dispatch inputs.
         run: scripts/fuzz.sh sweep "${{ github.event.inputs.seeds || '300' }}" "${{ github.event.inputs.depth || '6' }}"
+
+      - name: Save bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}

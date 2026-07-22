@@ -66,7 +66,8 @@ jobs:
         run: third_party/fetch_cel_cpp.sh
 
       - name: Restore bazel disk cache
-        uses: actions/cache@v4
+        id: bazel-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/bazel-disk-cache
           key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
@@ -85,6 +86,16 @@ jobs:
 
       - name: Manual-tagged targets + dual-mode conformance gate
         run: scripts/run_full_suite.sh
+
+      # Save even when a test fails: the compiled cel-cpp objects are
+      # the expensive part, and actions/cache's combined action skips
+      # its save on job failure — which kept every retry cold.
+      - name: Save bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
 
   test-macos:
     if: github.event_name == 'workflow_dispatch' && inputs.macos
@@ -97,7 +108,8 @@ jobs:
         run: third_party/fetch_cel_cpp.sh
 
       - name: Restore bazel disk cache
-        uses: actions/cache@v4
+        id: bazel-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/bazel-disk-cache
           key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
@@ -116,3 +128,10 @@ jobs:
 
       - name: Manual-tagged targets + dual-mode conformance gate
         run: scripts/run_full_suite.sh
+
+      - name: Save bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
