@@ -725,7 +725,35 @@ void BM_StringContains(benchmark::State& state) {
   }
   state.SetBytesProcessed(state.iterations() * n);
 }
-BENCHMARK(BM_StringContains)->Arg(8)->Arg(64)->Arg(4096);
+BENCHMARK(BM_StringContains)->Arg(8)->Arg(64)->Arg(4096)->Arg(16384);
+
+// Adversarial anchor-common shape: haystack is all 'f', needle "foo"
+// is absent — EVERY byte is a false anchor candidate, so this
+// measures the verify-loop overhead per candidate rather than raw
+// scan throughput (BM_StringContains above, where the anchor byte is
+// absent until the tail, measures the opposite extreme).  A search
+// rewrite that wins the scan but regresses candidate handling shows
+// up here and not there.
+//
+// Cross-target caveat: this binary links the NATIVE runtime, where
+// the pre-SWAR baseline was the host libc's vectorized memchr — so
+// native numbers can move differently from the production wasm
+// kernel (pinned by the eval-level `long_strings/containsLong_N`
+// cells, where wasm32 musl memchr was the baseline).
+void BM_StringContainsAnchorCommon(benchmark::State& state) {
+  const int64_t n = state.range(0);
+  ResetArena();
+  std::string hay(static_cast<size_t>(n), 'f');
+  uint32_t a = cel_make_string(hay.data(), static_cast<uint32_t>(n));
+  uint32_t needle = cel_make_string("foo", 3u);
+  uint32_t out = AllocSlot();
+  for (auto _ : state) {
+    cel_string_contains_at_vv(out, a, needle);
+    benchmark::DoNotOptimize(out);
+  }
+  state.SetBytesProcessed(state.iterations() * n);
+}
+BENCHMARK(BM_StringContainsAnchorCommon)->Arg(64)->Arg(4096)->Arg(16384);
 
 // ============================================================
 // M7B duration / timestamp microbenches.

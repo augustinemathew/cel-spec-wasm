@@ -151,6 +151,96 @@ INSTANTIATE_TEST_SUITE_P(
       return std::string(info.param.name);
     });
 
+// ── contains: word-granularity boundary matrix ───────────────────────
+//
+// `span_contains` scans the haystack 8 bytes at a time (SWAR has-zero
+// trick over an i64) with a byte-wise tail.  These cases pin the edges
+// that byte-oriented semantics tests above never stress: matches at
+// every offset relative to the 8-byte word grid, the sub-8-byte tail
+// path, high-bit bytes (the `byte >= 0x81` arm of the bit trick's
+// false-positive filter), NUL as a legal anchor byte, and anchor-dense
+// haystacks where every position is a false candidate.
+
+// A 3-byte needle placed at every possible offset of a 27-byte
+// haystack: offsets 0..24 cover match-at-start, matches straddling
+// both word boundaries (offsets 6, 7, 14, 15), matches wholly inside
+// the tail, and match-at-very-end.
+TEST_F(StringOpsTest, ContainsHitAtEveryWordOffset) {
+  constexpr uint32_t kHay = 27;
+  for (uint32_t off = 0; off + 3 <= kHay; ++off) {
+    std::string hay(kHay, 'x');
+    hay[off] = 'N';
+    hay[off + 1] = 'D';
+    hay[off + 2] = 'L';
+    uint32_t out = MakeOut();
+    cel_string_contains_at_vv(out, cel_make_string(hay.data(), kHay),
+                              cel_make_string("NDL", 3));
+    EXPECT_TRUE(ReadBool(out)) << "offset " << off;
+  }
+}
+
+// Miss at every haystack length 1..17: lengths spanning zero, one,
+// and two full words plus every tail size, so both loop exits (word
+// loop and byte tail) run without a candidate.
+TEST_F(StringOpsTest, ContainsMissAtEveryTailLength) {
+  for (uint32_t n = 1; n <= 17; ++n) {
+    std::string hay(n, 'x');
+    uint32_t out = MakeOut();
+    cel_string_contains_at_vv(out, cel_make_string(hay.data(), n),
+                              cel_make_string("q", 1));
+    EXPECT_FALSE(ReadBool(out)) << "length " << n;
+  }
+}
+
+// High-bit lanes: bytes >= 0x81 keep their high bit through the
+// SWAR subtract and must be cancelled by the `~x` filter — a false
+// positive here would return true for a needle that never occurs.
+TEST_F(StringOpsTest, ContainsHighBitBytesNoFalsePositive) {
+  const char hay[16] = {'\x80', '\x80', '\x80', '\x80', '\xff', '\xfe',
+                        '\x80', '\x80', '\x80', '\x80', '\x80', '\x80',
+                        '\x80', '\x80', '\x80', '\x80'};
+  const char hit[2] = {'\xff', '\xfe'};
+  uint32_t out = MakeOut();
+  cel_string_contains_at_vv(out, cel_make_string(hay, 16),
+                            cel_make_string(hit, 2));
+  EXPECT_TRUE(ReadBool(out));
+  const char miss[1] = {'\x81'};
+  out = MakeOut();
+  cel_string_contains_at_vv(out, cel_make_string(hay, 16),
+                            cel_make_string(miss, 1));
+  EXPECT_FALSE(ReadBool(out));
+}
+
+// NUL is a legal byte in CEL strings (spans are length-delimited);
+// as the needle's first byte it is the SWAR anchor value 0x00.
+TEST_F(StringOpsTest, ContainsEmbeddedNulAnchor) {
+  const char hay[11] = {'a', 'b', 'c', 'd', 'e', 'f',
+                        'g', '\0', 'z', 'a', 'b'};
+  const char ndl[2] = {'\0', 'z'};
+  uint32_t out = MakeOut();
+  cel_string_contains_at_vv(out, cel_make_string(hay, 11),
+                            cel_make_string(ndl, 2));
+  EXPECT_TRUE(ReadBool(out));
+  const char ndl2[2] = {'\0', 'q'};
+  out = MakeOut();
+  cel_string_contains_at_vv(out, cel_make_string(hay, 11),
+                            cel_make_string(ndl2, 2));
+  EXPECT_FALSE(ReadBool(out));
+}
+
+// Anchor-dense miss: every haystack byte matches the needle's first
+// byte, so the scan re-anchors at every position and the verify
+// rejects each time — the candidate-loop worst case must terminate
+// and return false (and its cost is pinned by the kernel bench's
+// AnchorCommon rows).
+TEST_F(StringOpsTest, ContainsDenseFalseAnchorsMiss) {
+  std::string hay(21, 'a');
+  uint32_t out = MakeOut();
+  cel_string_contains_at_vv(out, cel_make_string(hay.data(), 21),
+                            cel_make_string("ab", 2));
+  EXPECT_FALSE(ReadBool(out));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     StartsWith, BinaryStringBoolTest,
     ::testing::Values(

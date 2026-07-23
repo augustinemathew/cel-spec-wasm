@@ -53,15 +53,41 @@ static int span_match_at(const CelSpan* hay, uint32_t off, const CelSpan* sub) {
   return cel_byteptr_equal_(ph, ps, sub->len);
 }
 
+// 8-byte SWAR memchr.  musl's memchr scans one `size_t` (4 bytes on
+// wasm32) per iteration; wasm has native i64 ALU ops and tolerates
+// unaligned loads, so scanning a uint64_t per iteration halves the
+// trip count with the same has-zero bit trick and no alignment
+// prologue.  The trick: in `w ^ pat`, bytes equal to `c` become 0x00;
+// `(x - 0x01…) & ~x & 0x80…` sets the high bit of every zero byte
+// (borrow across lanes can corrupt flags ABOVE the lowest zero byte,
+// so only the lowest flag is trusted — exactly what a forward scan
+// consumes; wasm is little-endian, so ctz locates that byte).
+static const uint8_t* swar_memchr_(const uint8_t* p, uint8_t c, uint32_t n) {
+  const uint64_t ones = 0x0101010101010101ull;
+  const uint64_t highs = 0x8080808080808080ull;
+  const uint64_t pat = ones * c;
+  while (n >= 8) {
+    uint64_t w;
+    memcpy(&w, p, 8);  // single unaligned i64 load
+    const uint64_t x = w ^ pat;
+    const uint64_t hit = (x - ones) & ~x & highs;
+    if (hit) return p + (__builtin_ctzll(hit) >> 3);
+    p += 8;
+    n -= 8;
+  }
+  for (; n != 0; --n, ++p) {
+    if (*p == c) return p;
+  }
+  return NULL;
+}
+
 // Substring search.  langdef pins string ops to byte granularity (no
 // Unicode normalisation); cel-cpp's `StringContains::Apply` is also a
-// byte scan.  We anchor on the substring's first byte: `memchr` finds
-// the next candidate start, and only there do we compare the full
-// `sub`.  This skips every haystack position whose first byte can't
-// begin a match, and `memchr` itself (wasi-libc / musl) scans
-// word-at-a-time via the has-zero bit-trick rather than byte-by-byte —
-// so a needle whose first byte is absent costs one word-parallel pass,
-// not `hay.len` failed compares.
+// byte scan.  We anchor on the substring's first byte: the SWAR scan
+// finds the next candidate start, and only there do we compare the
+// full `sub`.  This skips every haystack position whose first byte
+// can't begin a match; a needle whose first byte is absent costs one
+// word-parallel pass, not `hay.len` failed compares.
 static int span_contains(const CelSpan* hay, const CelSpan* sub) {
   if (sub->len == 0) return 1;
   if (sub->len > hay->len) return 0;
@@ -71,7 +97,7 @@ static int span_contains(const CelSpan* hay, const CelSpan* sub) {
   const uint32_t last = hay->len - sub->len;  // last valid start offset
   uint32_t i = 0;
   for (;;) {
-    const uint8_t* hit = memchr(hbeg + i, ps[0], (size_t)(last - i) + 1);
+    const uint8_t* hit = swar_memchr_(hbeg + i, ps[0], last - i + 1);
     if (hit == NULL) return 0;
     const uint32_t pos = (uint32_t)(hit - hbeg);
     if (cel_byteptr_equal_(hbeg + pos, ps, sub->len)) return 1;
