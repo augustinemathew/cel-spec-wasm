@@ -12,11 +12,11 @@ so you can evaluate sensitive or untrusted policy expressions at native speed,
 on every host, with no way for the expression to escape the sandbox, read host
 memory, do I/O, or hang the process.**
 
-Up to **25× faster** than the `cel-cpp` interpreter on repeated evaluation,
-**0 conformance failures**, and one portable artifact that runs byte-for-byte
-everywhere. Stock CEL is a tree-walking interpreter, re-implemented per host
-language; cel-wasm compiles instead — no AST walk and no interpreter at eval
-time, just Cranelift-emitted native code in a bounded, syscall-free sandbox.
+**0 conformance failures**, honest two-sided benchmarks, and one portable
+artifact that runs byte-for-byte everywhere. Stock CEL is a tree-walking
+interpreter, re-implemented per host language; cel-wasm compiles instead —
+no AST walk and no interpreter at eval time, just Cranelift-emitted native
+code in a bounded, syscall-free sandbox.
 
 !!! abstract "Built for two shapes of workload"
 
@@ -33,8 +33,9 @@ time, just Cranelift-emitted native code in a bounded, syscall-free sandbox.
     native speed, with no per-host interpreter to drift.
 
 ```bash
-bazel run //tools/cel:cel -- eval 'age >= 18 && country in ["US","CA"]' \
-      --var age:int=25 --var country:string=US
+bazel build //tools/cel:cel   # once
+bazel-bin/tools/cel/cel eval 'age >= 18 && country in ["US","CA"]' \
+      --var age:int=25 --var 'country:string="US"'
 # => true     # parsed → checked → wasm → Cranelift JIT → native
 ```
 

@@ -32,6 +32,8 @@ on:
       - "doc/img/**"
       # Published benchmark tables (md + csv) can't affect tests.
       - "benchmark/eval/results/**"
+      # Docs-site config only affects the Pages build.
+      - "mkdocs.yml"
   pull_request:
   workflow_dispatch:
     inputs:

@@ -256,7 +256,7 @@ your process?
 | Author language | C++ | anything with a `wasm32-wasip2` toolchain (C++ today; TinyGo planned) |
 | Can read host memory / syscall | yes — whatever the C++ does | no — cannot escape the sandbox or perform I/O |
 | Update | re-link your binary | hot-swap: hand new bytes to `AddComponent` |
-| Per-call cost | ~3 µs | ~4 µs |
+| Per-call cost | ~110 ns | ~450 ns |
 
 ```celfn
 int  @host.length(string s);                           // trusted C++ path
