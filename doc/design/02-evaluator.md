@@ -450,17 +450,5 @@ static init and there's no per-store WASI context to wire instead.
 The unverified questions catalogued during the notes pass (the exact
 component-arity trap site, zero-arg `Eval()` handle-table growth, the
 host-callback status-code contract) live in the
-[`design/notes/`](https://github.com/augustinemathew/cel-spec-wasm/tree/master/doc/design/notes)
+[`design/notes/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/design/notes)
 working material rather than inline, so they don't clutter the design.
-
-## History
-
-This doc supersedes the evaluator-surface content of the milestone-era
-plans under `doc/implementation-plan/rewrite/` — `cel-host-surface.md`
-(surface sections; its wire sections went to `03-abi-and-memory.md`),
-`m21-host-call-adapter.md`, the eval half of
-`two-phase-runtime-isolation.md`, and the eval sections of
-`m24-foreign-fn-component-backend.md` — each carrying an archive banner
-pointing here. Where this doc contradicts a stale public-header comment
-(`engine.h`'s AddComponent/memory text, `value.h`'s builder and numbering
-claims, `instance.h`'s decode claims), this doc is the corrected record.

@@ -472,28 +472,3 @@ end state.
   value assertions.
 - Header-comment reconciliation for the stale designs listed in §7,
   riding the same commits as the corresponding doc sections.
-
-## History
-
-This doc supersedes, for runtime content:
-
-- `doc/implementation-plan/rewrite/wasi/DESIGN.md` — the WASI
-  migration design (memory-ownership flip, arena-to-BSS move,
-  invariant catalogue). Remains in place as migration history; its
-  memory-model sections are superseded by §5 here and by
-  03-abi-and-memory.md.
-- `doc/implementation-plan/rewrite/cel-runtime-c-split-plan.md` — the
-  per-topic TU split of the original monolithic `cel_runtime.c`; the
-  split shipped, and its load-bearing residue (`cel_internal.h`
-  static-inline helpers + `-flto`) is recorded in §1.1.
-- `doc/implementation-plan/runtime-catalogue-genrule.md` — the
-  marker-derived catalogue mechanism, folded into §6 (including the
-  deletion of the consistency test it documented).
-
-Source notes: `doc/design/notes/runtime-kernel.md`,
-`doc/design/notes/90-abi-memory-consistency.md`,
-`doc/design/notes/00-consolidated-findings.md` (§4 outline, runtime
-rows of the discrepancy register). The chained-arena description in §5
-postdates those notes (cleanup-backlog #34, verified against
-`runtime/cel_arena.c` as merged); where the notes describe the
-fixed-capacity arena, this doc is the corrected telling.

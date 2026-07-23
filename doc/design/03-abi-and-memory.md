@@ -632,7 +632,7 @@ contract.
 > Conformance held at 1966 in both modes. (The logic-op
 > UNKNOWN-over-ERROR scope note above was settled later the same
 > day, when the §8.2 probe surfaced the divergence; conformance held
-> at 1973/0 both modes through that fix.)
+> green in both modes through that fix; 2035/0 today.)
 
 ## 9. The component boundary (WIT vocabulary)
 
@@ -705,25 +705,3 @@ Any new unknown producer/consumer MUST speak the descriptor shape;
 a raw id in `payload.unk` re-opens the fork. (§8.1 and §8.3 were
 resolved 2026-06-10 with the V3/V4 evidence recorded inline; the
 error wire and both 3VL precedence rules are settled contract.)
-
-## History
-
-Supersedes, for wire and memory content:
-`doc/implementation-plan/rewrite/cel-host-surface.md` (wire sections;
-the message-carrying error wire it specifies never shipped),
-`…/memory-layout-design.md` (its bounded-layout promise shipped late
-and differently — §4.4; its fixed 64 KiB arena and 24-byte workspace
-cells are superseded by §5 and §4.2), and `…/abi-refactor.md` (its
-hand-written `AbiHelper` POD was replaced by the generated proto;
-its consistency test was deleted as tautological, §7).
-
-Source notes: `doc/design/notes/{abi-shared,runtime-kernel,
-codegen-memory,eval-internal,90-abi-memory-consistency,
-91-contract-coherence}.md`, code-verified 2026-06-10. Where the
-notes describe the pre-merge tree — fixed-capacity arena, no-op
-`SlotAllocator::Release`, 24-byte workspace cells, no workspace
-gate — this doc is the corrected telling, re-verified against
-`runtime/cel_arena.c`,
-`compiler/codegen/{slot_allocator,layout_pass}.cc`,
-`compiler/memory_layout.h`, `compiler/internal/compile.cc`, and
-`eval/engine.cc` as merged.

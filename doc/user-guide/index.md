@@ -16,16 +16,11 @@ about what evaluates today vs. what is planned.
 > 🟡 = surface declared, behavior partial/aspirational; ⛔ = designed,
 > not yet implemented. A consolidated status table is in §10.
 
-> **Detailed guides.** Topics that warrant a deep dive with worked
-> examples live on their own pages; this index is the overview + the
-> compile/run API. So far:
-> - [Writing host functions](writing-host-functions.md) — the typed,
->   context, and raw APIs; proto / list / map args; returns; errors;
->   the canonical-type and kind-safety rules.
-> - [Writing component functions](writing-component-functions.md) — the
->   `@component.` backend end-to-end: `.celfn` + `user_fns.cc` →
->   `cel_wasm_component` macro → Component-Model `.wasm` →
->   `Engine::AddComponent`. C++ today; TinyGo planned.
+> **Detailed guides.** This index is the compile/run API. Deep dives
+> live on their own pages:
+> - [Custom functions — the three backends](custom-functions.md)
+> - [Writing host functions](writing-host-functions.md)
+> - [Writing component functions](writing-component-functions.md)
 
 ---
 
@@ -182,7 +177,7 @@ many threads** — each call mints an independent store/linker/memory,
 sharing only the (thread-safe) engine + parsed runtime module.
 
 > **Not** thread-safe: `Engine::AddFunction` / `AddComponent` (custom-fn
-> registration — see §6, §8). Configure those once at startup, *then*
+> registration — see [custom functions](custom-functions.md)). Configure those once at startup, *then*
 > `Plan` from many threads.
 
 ### 4.2 Plan — Program → Instance
@@ -272,528 +267,20 @@ bool err    = v.IsError();
 
 ---
 
-## 5. Extending CEL with custom functions — overview
+## 5. Custom functions
 
-Custom functions are declared in a small **`.celfn` IDL** and come in
-three backends, distinguished by the *shape* of the declaration:
+CEL is extended with your own functions through a small `.celfn` IDL
+with three backends: `@host` (trusted C++ in your process),
+`@component` (sandboxed WebAssembly, hot-swappable), and `@native`
+(reserved, unimplemented). The full overview — declarations,
+libraries, registration, and the backend comparison — is on its own
+page:
 
-| Backend | Declaration shape | Who provides the body | Registered on |
-|---|---|---|---|
-| **Host** | `int @host.length(string s);` | your C++ at runtime | `Engine::AddFunction` |
-| **CEL-defined** ⛔ | `int @native.addone(int x) = x + 1;` | a CEL expression body | **not yet implemented** — reserved syntax; see §7 |
-| **Component** ✅ | `bool @component.allow(string subject, string action);` | a wasm Component-Model component (C++ today, TinyGo/Rust designed) | `Engine::AddComponent` |
-
-The backend is the **module prefix**: `@host` (C++ impl), `@component`
-(Component-Model component), or `@native` (reserved for CEL-defined
-bodies — unimplemented, §7).
-Every declaration carries an `@<backend>.` prefix; there is no
-unprefixed form. (Grammar reference: `m13-custom-fns.md` §3.0.)
-
-Register declarations on the `Compiler` so call sites type-check:
-
-```cpp
-auto b = celwasm::Compiler::NewBuilder();
-b.AddFunction("int @host.length(string s);");       // one decl from a string
-b.AddLibrary(*celwasm::ParseCelfnSource(celfn_text));   // a whole .celfn file/library (StatusOr — check in real code)
-auto compiler = std::move(b).Build();
-```
-
-`AddFunction(celfn_source)` parses one (or more) decl from a string;
-`AddLibrary(FunctionLibrary)` registers a parsed `.celfn` library (build
-one with `celwasm::ParseCelfnSource(text)` or programmatically via
-`FunctionLibrary::Builder`). A call to an unregistered function fails at
-compile time with `"undeclared reference to '<fn>'"`.
-
-The IDL type grammar (`compiler/celfn/function_library.h`):
-`bool int uint double string bytes null Duration Timestamp`,
-`list<T>`, `map<K,V>` (K ∈ bool/int/uint/string), `proto(<fqn>)`, and a
-leading `this` on the first param for method-style dispatch
-(`x.is_admin()`).
-
-### 5.1 Building a reusable expression library (`.celfn` files)
-
-The point of the IDL is a **named, documented, reusable library of
-function declarations** — a project "standard library". You write a
-`.celfn` file, document each function with a doc-comment, load the whole
-file, and register it on the Compiler:
-
-```celfn
-// policy.celfn  — a library of policy function declarations
-
-/// True if the user is an adult (>= 18) per their proto `age` field.
-bool @host.is_adult(proto(acme.User) u) ;
-
-/// Look up today's rate for `currency` from the host rate table.
-double @host.rate(string currency) ;
-```
-
-Parse the **whole file** into a `FunctionLibrary` and plug it into the
-Compiler. **Reading the file is the caller's concern** — the API
-accepts the entire IDL as a *string* (it does no file I/O itself; that
-keeps it embeddable + testable):
-
-```cpp
-std::string text = ReadFileToString("policy.celfn");   // YOUR file read
-auto lib = celwasm::ParseCelfnSource(text);                // StatusOr<FunctionLibrary>
-
-auto b = celwasm::Compiler::NewBuilder();
-b.DeclareVariable("u", celwasm::CelType::Message("acme.User"));
-b.AddLibrary(*lib);
-auto compiler = std::move(b).Build();
-
-// Now expressions reuse the library:
-auto p1 = compiler->Compile("is_adult(u) && rate('USD') < 2.0");
-auto p2 = compiler->Compile("rate('USD') * 1.05");
-```
-
-At eval time, bind each `@host` declaration to its C++ impl on the
-`Engine` (§6).
-
-**Doc-comments.** ✅ A `///` run (or a `/** … */` block) directly above a
-declaration is captured as that function's **description** (sigils + one
-leading space stripped, lines joined) and exposed on `CelfnDecl` via the
-library's introspection surface — so you can generate reference docs or a
-function picker. 🟡 *Carrying the description into the Program's `cel.abi`
-for cross-process introspection is not wired yet; today it's reachable
-via `FunctionLibrary::decls()` on the in-process library.*
-
-**Introspecting the library.** Walk the registered functions (name,
-signature, backend, description) to list or document what's available:
-
-```cpp
-for (const celwasm::FunctionLibrary& lib : compiler->function_libraries()) {
-  for (const celwasm::CelfnDecl& d : lib.decls()) {
-    // d.fn_name, d.params, d.return_type, d.backend, d.description
-  }
-}
-```
-
-> **Grammar status.** ✅ The `@host`/`@native`/`@component` prefix-module
-> grammar + doc-comment capture shown here is the **in-tree grammar**
-> (`m13-custom-fns.md` §3.0): the backend is selected by the `@<backend>.`
-> module token, every declaration carries one (there is no unprefixed
-> form), and a `///` run or `/** … */` block above a decl is captured as
-> its `description`. The loading model is unchanged: `ParseCelfnSource(text)`
-> takes the whole IDL as a string and the caller reads the file.
+- **[Custom functions — the three backends](custom-functions.md)**
+- [Writing host functions](writing-host-functions.md) — worked examples
+- [Writing component functions](writing-component-functions.md) — build a sandboxed plugin
 
 ---
-
-## 6. Host functions (`@host.`)
-
-A host function is implemented by your C++ at runtime. The expression
-imports it; you register the impl on the `Engine`.
-
-> **→ Full guide: [Writing host functions](writing-host-functions.md).**
-> The typed `AddTypedFunction` API (recommended), the `HostCallContext`
-> accessors, proto / list / map args, owning returns, unknown/error
-> handling, and the canonical-type + kind-safety rules — all with
-> worked examples. This section is the in-index summary.
-
-### 6.1 The typed API — `AddTypedFunction` ✅ (recommended)
-
-Write a plain C++ lambda over **canonical CEL types**; the binding
-decodes each argument, calls you, and encodes the result. No slots, no
-`memcpy`, no kind-checking by hand:
-
-```cpp
-auto b = celwasm::Compiler::NewBuilder();
-b.DeclareVariable("x", celwasm::CelType::Int());
-b.AddFunction("int @host.double_it(int x);");        // overload-id: double_it_int
-auto program = (*std::move(b).Build()).Compile("double_it(x)");
-
-auto engine = celwasm::Engine::NewBuilder().Build();
-engine->AddTypedFunction("double_it_int",
-    [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; });   // ✅
-```
-
-The lambda must return `absl::StatusOr<R>`. Only canonical CEL types
-compile — `int`/`float`/`char*`/by-value proto are a **compile error**,
-never a silent narrowing. Each CEL type maps to exactly one C++ type:
-`int`→`int64_t`, `uint`→`uint64_t`, `double`→`double`, `bool`→`bool`,
-`string`/`bytes`→`absl::string_view` (return `std::string`),
-`Duration`→`absl::Duration`, `Timestamp`→`absl::Time`,
-`proto(M)`→`const M&` (or `const google::protobuf::Message*` for the
-polymorphic, no-cast form; return `std::unique_ptr<M>`, owning),
-`list<T>`→`HostListView`, `map<K,V>`→`HostMapView`, any→`Value`.
-Proto / list / map arguments and newly-allocated string / aggregate
-returns all work — `list<proto(...)>` and `map<…,proto(...)>` compose by
-recursing into element/value backings.
-
-### 6.2 The context API — `HostCallContext&` ✅ (per-arg control)
-
-When you need per-argument control (dynamic arity, mixed handling), the
-`HostCallback` is `std::function<absl::Status(HostCallContext&)>`; every
-accessor is kind-checked and returns `absl::StatusOr<T>`:
-
-```cpp
-engine->AddFunction("clamp_int_int_int", /*num_args=*/4,   // 3 params + out_slot
-    [](celwasm::HostCallContext& ctx) -> absl::Status {
-      auto v = ctx.ArgInt(0);  if (!v.ok()) return v.status();
-      // ... ctx.ArgString / ArgProto / ArgList / ArgMap / ArgValue ...
-      return ctx.ReturnInt(*v);
-    });
-```
-
-Unknown / error arguments are **auto-absorbed by the trampoline before
-your callback runs** (so a body only ever sees all-known args); a
-function may explicitly emit an unknown via `ctx.ReturnUnknown()`
-(stamping `celwasm::kFunctionUnknownSentinel`). `num_args` for
-`AddFunction` is `params + 1`; `AddTypedFunction` derives arity from the
-lambda. **Full detail + worked examples:
-[Writing host functions](writing-host-functions.md).**
-
-> **Component backend note:** a `@component` decl crosses into a
-> separately-instantiated Component-Model component, so values are
-> marshalled across the boundary (proto messages travel as serialized
-> bytes; see §8). The shared-memory zero-copy path used by `@host`
-> is not available across that boundary.
-
-## 7. CEL-defined functions (`@native`) ⛔
-
-> **Not implemented — treat `@native` as reserved syntax.** The grammar
-> reserves the `@native` backend for functions whose body is written in
-> CEL itself and compiled into the same wasm module as the expression.
-> Today a `@native` declaration parses and type-checks (so call sites
-> compile), but no body lowering exists: a program that calls one
-> compiles and then fails to evaluate. Use `@host` (§6) or
-> `@component` (§8) for function bodies that need to run.
-
----
-
-## 8. Component functions — cross-component linking (Rust / Go / C) ✅
-
-> **→ Full guide: [Writing component functions](writing-component-functions.md).**
-> The `cel_wasm_component` Bazel macro, `.celfn` declaration, the C++
-> author surface, the proto path, the type matrix, and the open
-> performance follow-ups. This section is the in-index summary.
-
-A component function is implemented by a **Component-Model component**
-**you** produce from another language (Rust, TinyGo, C, …). Unlike a
-host function (C++ in the embedder), a component has **its own linear
-memory** — so values must be *marshalled* across the boundary by a host
-trampoline.
-
-### 8.1 Declaration and registration ✅
-
-A component decl carries the `@component.` prefix; the embedder declares
-the same shape on the C++ side (so the engine knows which exports to
-bind) and supplies the component bytes at runtime:
-
-```cpp
-// Compile time: the decl makes `allow(...)` type-check.
-b.AddFunction("bool @component.allow(string subject, string action);");
-
-// Run time: supply the component's bytes + the library so the engine
-// can two-level-resolve each `@component` decl against the component's
-// WIT interface exports (e.g. `cel:customfn/fns@0.1.0#allow-string-string`).
-engine->AddComponent(rules_component_bytes, lib);
-```
-
-Building the `rules_component_bytes` from a `.celfn` + `user_fns.cc` is
-one Bazel macro call — see
-[Writing component functions §2](writing-component-functions.md#2-quick-start--c).
-
-### 8.2 One fixed Component-Model ABI + generated shims
-
-A component call is bridged by **three generated pieces**: (1) **caller
-slot glue** the compiler emits in the expr module — it reads each
-argument's 24-byte CelValue from its slot and writes it into the call's
-arg area, and reads the result back from the out_slot; (2) the
-**language-agnostic host trampoline** — hand-written C++ that does the
-cross-memory lift/lower, dispatching on CEL type, not source language;
-(3) the **per-language component shim** that `celfnc` (driven by the
-generated WIT) produces so your Rust/Go function signature looks natural
-while the wire contract stays fixed. The slot read/write (1) is the
-universal contract — `@host` functions use the same slot glue, minus
-the cross-memory copy.
-
-The trampoline does a **recursive lift/lower** following the WASI
-Component Model canonical ABI: it copies (lowers) the CEL argument
-values into the component's memory (allocating there via the component's
-exported `cabi_realloc`), calls the export, then copies (lifts) the
-result back out. Supported types: scalars, `string`, `bytes`, `list<T>`,
-`map<K,V>`, nested aggregates, `Duration`, `Timestamp`, and **proto
-messages serialized to bytes** (§8.5). `type` and `optional` are
-rejected at the component boundary. A guest failure (trap) fails the
-Eval cleanly rather than producing a wrong value — see §8.6.
-
-### 8.3 WASI vs plain — which toolchain target?
-
-> **What ships today:** the C++ authoring path — `cel_wasm_component`
-> compiles your `user_fns.cc` under **wasm32-wasip2**, which emits a
-> Component-Model component directly.  The rest of this section (and
-> the stock-Go / TinyGo material in §8.4) is **probe-validated design
-> background for the unshipped Go authoring path**.
-
-Components differ in whether they pull in WASI and whether they
-own/initialize their memory:
-
-| Toolchain target | Memory | Init call | Notes |
-|---|---|---|---|
-| **Plain** `wasm32-unknown-unknown` (Rust `no_std`), `--target=wasm32 -nostdlib` (C) | defines its own, no WASI | none | smallest; closest to hand-WAT; just exports the fn + `cabi_realloc` |
-| **WASI reactor** `wasm32-wasip1 -mexec-model=reactor` (C/clang), TinyGo `-target=wasip1 -buildmode=c-shared` | defines its own | **must call `_initialize`** | full libc available; the host calls `_initialize` once after instantiation before any export |
-| Stock Go (`GOOS=wasip1`), Rust `wasm32-wasi` | defines + WASI imports | yes | heavier runtime; full WASI preview1 stdlib |
-
-The engine negotiates this at `AddComponent` time: it instantiates the
-component in the same store, calls `_initialize` if the component is a
-WASI reactor, and binds its exports to the declared `@component` fns.
-The **plain** targets are the lightest and the recommended default for
-a pure compute function; choose **WASI** when the function genuinely
-needs libc or stdlib facilities.
-
-> **Empirically confirmed (probe — `foreign-go-bindgen-findings.md`).**
-> A stock-Go module (`GOOS=wasip1`) is a reactor: `_initialize` is
-> **mandatory** (skipping it traps), and it imports a real
-> `wasi_snapshot_preview1` surface (10–17 funcs incl. `fd_write`,
-> `random_get`, `clock_time_get`, `fd_prestat_*`) — so the engine must
-> wire a **full WASI preview1 context**, not just call `_initialize` and
-> stub the imports. **TinyGo carries the scalar/string path only** (118
-> KB, 2 WASI imports) — it **cannot** carry the §8.5 proto path: TinyGo's
-> incomplete reflection traps in `proto.Unmarshal` at runtime.
-
-> A second, deferred model — reusable *separately-instantiated* library
-> modules sharing the runtime's memory via `__memory_base` relocation —
-> is prototyped (`modules-and-ffi.md` §4.5) but not the v1 path.
-
-### 8.4 Worked example: a component function in Go (`GOOS=wasip1`) ⛔ design notes
-
-> **Go authoring is not shipped.**  The shipped path is C++ via the
-> `cel_wasm_component` macro — see
-> [Writing component functions](writing-component-functions.md) for the
-> working end-to-end example.  Everything below is the probe-validated
-> *target* shape for the Go path (`cel generate --language=go` is
-> pending; the in-tree plan favours TinyGo for size, with stock Go as
-> the proto-capable fallback — see writing-component-functions §4).
-
-Say you want an authorization predicate `allow(subject, action)`
-implemented in Go and reused across many CEL expressions.
-
-**1. Declare it** in your `.celfn`:
-
-```celfn
-/// True if `subject` may perform `action`, per the Go policy component.
-bool @component.allow(string subject, string action);
-```
-
-**2. Write the Go function.** You write a *natural* Go function; the
-`celfnc`-generated glue (`rules_celfn.go`) handles the canonical-ABI
-marshalling and the wasm export, so you don't hand-write pointer math:
-
-```go
-// rules.go
-package main
-
-//celfn:export allow
-func Allow(subject, action string) bool {
-    return subject == "admin" || action == "read"
-}
-
-func main() {} // required; a reactor module has no real entry point
-```
-
-Under the hood the generated glue produces the fixed-ABI exports the
-host trampoline calls — one per function, named by the **overload id**
-(`fn_name` + each arg's type token, joined by `_`), plus the canonical
-ABI allocator the host uses to place arguments in *this* component's
-memory:
-
-```go
-//go:wasmexport allow_string_string   // export name == overload id (verbatim)
-func _allow_string_string(subjPtr, subjLen, actPtr, actLen uint32) uint32 {
-    if Allow(strFromMem(subjPtr, subjLen), strFromMem(actPtr, actLen)) {
-        return 1
-    }
-    return 0
-}
-
-//go:wasmexport cabi_realloc   // host allocates arg bytes in our memory through this
-func _cabi_realloc(ptr, oldLen, align, newLen uint32) uint32 { /* … */ }
-```
-
-*(Shown value-only for clarity — the real generated export also carries
-a `recover()` guard and a status slot so a panic surfaces as a CEL
-error, not a trap or a spurious `false`; see §8.6.)*
-
-**3. Build it** to a component (WASI-reactor core module wrapped with
-`wasm-tools component new`):
-
-```bash
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o rules.core.wasm ./rules
-wasm-tools component new rules.core.wasm -o rules.wasm
-# TinyGo — far smaller (118 KB vs 1.6 MB) for a SCALAR/STRING fn, but
-# cannot carry the §8.5 proto path (reflection trap); also needs
-# -buildmode=c-shared for the //go:wasmexport reactor shape:
-#   tinygo build -target=wasip1 -buildmode=c-shared -o rules.core.wasm ./rules
-```
-
-**4. Register + use** — the decl makes the call type-check at compile
-time; the component bytes are supplied to the Engine at run time, along
-with the library so the engine knows which decls to bind:
-
-```cpp
-auto lib = *celwasm::ParseCelfnSource(
-    "bool @component.allow(string subject, string action);");
-
-auto b = celwasm::Compiler::NewBuilder();
-b.DeclareVariable("subject", celwasm::CelType::String());
-b.AddLibrary(lib);
-auto compiler = std::move(b).Build();
-auto program  = compiler->Compile(R"(allow(subject, "read"))");
-
-auto engine = celwasm::Engine::NewBuilder().Build();
-engine->AddComponent(ReadFileToBytes("rules.wasm"), lib);
-
-auto instance = engine->Plan(*program);
-celwasm::Activation act;
-act.Bind("subject", celwasm::Value::String("guest"));
-auto v = instance->Eval(act);     // host: _initialize(rules) once at AddComponent,
-                                  // then lowers the two strings into the component's
-                                  // memory, calls allow_string_string, lifts the
-                                  // bool → true
-```
-
-At `AddComponent` the engine instantiates `rules.wasm` in the same
-store **with a full WASI preview1 context** (a stock-Go module imports
-`fd_write`/`random_get`/`clock_time_get`/`fd_prestat_*`… — these must be
-provided, not stubbed), calls `_initialize` (Go wasip1 is a reactor —
-mandatory, skipping it traps), and binds every `@component` decl in the
-library to a matching exported function. Per call, the host trampoline
-lowers the CEL `string` args into the component's memory (via
-`cabi_realloc`), invokes `allow_string_string`, and lifts the `bool`
-result back. *(All confirmed by the probe —
-`foreign-go-bindgen-findings.md`.)*
-
-### 8.5 Proto messages cross as serialized bytes
-
-A proto message lives in the host's interner, not in the component's
-memory, so it cannot cross by handle. The component ABI carries it as
-**serialized bytes** instead: the host passes the proto's
-**binary-serialized bytes** (a `(ptr, len)` byte reference allocated in
-the component's memory via `cabi_realloc`), and the component side's
-generated glue **deserializes** them into that language's generated
-message type. The wire is plain protobuf binary — language-agnostic —
-so it works for any language with a protobuf runtime:
-
-```celfn
-/// ✅ shipped on the C++ path (the `demo_component_proto` fixture,
-/// manual-tagged — libprotobuf under wasm32-wasip2 is a slow build);
-/// the Go snippet below is design notes (§8.4).
-bool @component.is_admin(proto(acme.User) u);
-```
-
-```go
-//celfn:export is_admin
-func IsAdmin(u *acmepb.User) bool { return u.GetRole() == "admin" }
-// generated glue: var u acmepb.User; proto.Unmarshal(argBytes, &u); → IsAdmin(&u)
-// (argBytes = the host-serialized acme.User, copied into our memory)
-```
-
-Host side: serialize `u` → bytes → `cabi_realloc` + copy into the
-component → pass `(ptr, len)`. A returned proto is symmetric: the
-component side marshals, the host deserializes against the descriptor.
-The trade vs. `@host` (which passes a zero-copy `msg_slot`
-handle) is a serialize/deserialize **per call** — inherent to the
-component-memory boundary. Both sides need the proto generated from the
-same `.proto`.
-
-> **Probe-confirmed, with two real costs.** `proto.Unmarshal` does link
-> and run inside stock-Go wasip1 wasm (validated end-to-end). But: (1) it
-> pulls the **Go protobuf runtime into the module — ~+4.7 MB** (a 1.6 MB
-> string module → 6.4 MB) and ~7 extra WASI imports; (2) it requires
-> **stock Go — NOT TinyGo** (TinyGo's incomplete reflection traps in
-> `proto.Unmarshal` at `reflect.NewAt`). So a proto-bearing foreign
-> module is stock-Go, multi-MB, opt-in. See
-> `foreign-go-bindgen-findings.md`.
-
-> **Status of §8.4/§8.5:** the component backend is **shipped for C++
-> authoring** — the host trampoline, the `celfnc` C++ emitters, the
-> `cel_wasm_component` macro, `Engine::AddComponent` (implemented in
-> `eval/engine.cc`), and the proto-as-serialized-bytes path all run
-> end-to-end (`e2e/foreign_component_fixtures/cel_wasm_component_demo/`;
-> proto via the manual-tagged `demo_component_proto` target).  The **Go
-> authoring path is designed, not implemented** — the §8.4 shapes are
-> probe-validated (Go 1.24, wasmtime; see
-> `foreign-go-bindgen-findings.md`) but `cel generate --language=go`
-> does not exist yet.
-
-### 8.6 When a component function fails — panics, traps, and the error channel
-
-> **What ships today:** a component function that traps mid-call
-> surfaces as a **failed Eval** (a non-OK `absl::Status`) — the
-> embedding process does not crash, and the failure cannot masquerade
-> as a legitimate value (pinned by
-> `e2e/foreign_component_dispatch_test.cc`,
-> `TrappingComponentFnFailsEvalCleanly`).  The `recover()` shim, the
-> ABI `status` slot, and the re-instantiate policy below are **design
-> notes for the unshipped Go authoring path** (§8.4) — none of that
-> machinery exists in the shipped C++ pipeline.
-
-A component function can fail in ways a `@host` function can't:
-it runs untrusted guest code in its own memory, and a Go `panic` (or a
-runtime fault — nil deref, index out of range) **unwinds to a wasm
-`unreachable`**, surfacing to the host as a trap, not a return. The
-design handles this so a failure becomes a CEL **error value**, never a
-crash and never a wrong answer:
-
-- **A Go panic is a wasm trap (`TrapCode.UNREACHABLE`), not a WASI
-  `proc_exit`.** The host trampoline catches it as an ordinary
-  `wasmtime::Trap` and maps it to a CEL error (`kError`) for that eval —
-  the embedding process does **not** crash, and the trap unwinds cleanly
-  back to the caller. *(Probe-confirmed for explicit `panic()`, nil
-  deref, and index-OOB — `foreign-go-bindgen-findings.md`.)*
-
-- **The generated shim wraps your function in `recover()`**, so the
-  common case never even traps:
-
-  ```go
-  //go:wasmexport allow_string_string   // export name == overload id (verbatim)
-  func _allow_string_string(...) (status uint32) {   // status: 0 = ok, 1 = component error
-      defer func() {
-          if recover() != nil { status = 1 }   // panic → typed error, no trap
-      }()
-      // … lift args, call your Allow(...), lower the result …
-      return
-  }
-  ```
-
-  `celfnc` emits this guard around every user call. It catches **both**
-  explicit `panic()` and runtime panics, turning them into a clean
-  `status = 1` return rather than a trap — so the instance is never left
-  in the ambiguous post-abort state.
-
-- **The fixed ABI carries a `status` slot alongside the value**, so a
-  component error is **distinguishable from a legitimate `false` / `0` /
-  empty result**. This matters: a predicate `bool @component.allow(...)`
-  that *fails* must not masquerade as `allow → false`. On `status != 0`
-  the trampoline writes a CEL error; your expression then sees an error
-  (which propagates per CEL's error semantics), not a spurious `false`.
-  *(This is an ABI addition over the bare value-return — `modules-and-ffi.md`
-  §5.3; surfaced by the panic probe.)*
-
-- **Instance recovery policy.** On an *uncaught* component trap (one the
-  shim's `recover()` didn't catch), the engine writes `kError` and
-  **re-instantiates the component** before the next eval (a fresh
-  `_initialize` — cheap). Go's `fatalpanic` is nominally fatal, so the
-  engine does not trust reuse of a component that has aborted, even
-  though reuse *appeared* safe in the probe. The `recover()` shim makes
-  uncaught traps rare regardless.
-
-The takeaway for an embedder: **write your Go function as if a panic is
-caught and reported as a CEL error.** Don't swallow bad input to `false`
-— if your function genuinely can't produce a value (e.g. a malformed
-serialized proto in the §8.5 path), `panic` (or return the error path)
-and let it surface as a CEL error, rather than returning a plausible
-wrong answer.
-
----
-
-### 8.7 What about `Engine::AddModule`?
-
-`Engine::AddModule(alias, wasm_bytes)` — a non-component, alias-keyed
-"register a core wasm module" API — is reserved for the unimplemented
-`@native` backend (§7) and is **not** the registration path for
-`@component` decls. Use `AddComponent` for
-every component-backed function; do not reach for `AddModule`.
 
 ---
 
@@ -808,7 +295,7 @@ CLI (`tools/cel/`, built via
 | `cel check <expr>` | parse + type-check; print `OK` or the error | compile only |
 | `cel compile <expr>` | compile to wasm bytes (`--output PATH`, else stdout) | compile only |
 | `cel eval <expr>` | **compile *and* evaluate** in one shot; print the result | compile + run |
-| `cel generate` | emit component-function bindings (`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl` file — the front half of the `cel_wasm_component` macro (§8) | codegen only |
+| `cel generate` | emit component-function bindings (`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl` file — the front half of the `cel_wasm_component` macro ([component functions](writing-component-functions.md)) | codegen only |
 
 ```bash
 cel eval    "1 + 2 + 3"                              # → 6   (compile + evaluate)
@@ -857,8 +344,8 @@ ok, `1` compile/eval failure, `2` usage; diagnostics on stderr, the
 > compiles/evaluates standalone expressions only — there is no way to
 > point it at a custom-function library. The planned `--celfn <file>`
 > flag has the CLI read the file and feed `ParseCelfnSource` →
-> `AddLibrary` (file reading is the CLI's job, not the library's — §5.1);
-> until then, use the C++ API (§5.1) for custom functions.
+> `AddLibrary` (file reading is the CLI's job, not the library's);
+> until then, use the [C++ API](custom-functions.md) for custom functions.
 
 ### 9.1 Does evaluation need the `.celfn` IDL? (the compile/run split)
 
@@ -869,7 +356,7 @@ backend of the functions it calls:
 
 | Function backend | Needed at run time (eval) | `.celfn` IDL needed at run time? |
 |---|---|---|
-| **`@native`** (CEL-defined) ⛔ | n/a — the backend is unimplemented (§7); a program that calls one does not evaluate | **No** |
+| **`@native`** (CEL-defined) ⛔ | n/a — the backend is unimplemented ([details](custom-functions.md#7-cel-defined-functions-native)); a program that calls one does not evaluate | **No** |
 | **`@component`** ⛔ | the component's **bytes**, plus the `FunctionLibrary` so the engine knows which decls to bind (`Engine::AddComponent` / a planned `--component path.wasm`) | **Partially** — `AddComponent` takes the library so it can bind every `@component` decl to a matching export; you supply both the *bytes* and the parsed IDL |
 | **`@host`** | a **C++ impl** registered via `Engine::AddFunction` | **No, but** — the IDL only declares the *signature*; the *behavior* is C++ the generic CLI can't supply, so a wasm with host imports isn't runnable by stock `cel` at all |
 
@@ -902,7 +389,7 @@ variables too (§3.3).
 | **Host fns** — proto / list / map args, aggregate / new-string returns | ✅ (m21) |
 | Typed `AddTypedFunction` + `HostCallContext` adapter | ✅ (m21); raw 4-arg `HostCallback` removed |
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
-| **CEL-defined fns** (`@native`) — body lowering + eval | ⛔ not implemented (§7); a `@native`-using program does not evaluate |
+| **CEL-defined fns** (`@native`) — body lowering + eval | ⛔ not implemented ([details](custom-functions.md#7-cel-defined-functions-native)); a `@native`-using program does not evaluate |
 | **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent`; proto args/returns via the manual-tagged `demo_component_proto` fixture; component-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
 | **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |

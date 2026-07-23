@@ -567,18 +567,3 @@ you're changing the pipeline and need the invariants exact. The prose in
 | `ValidateExprStaticRegion` | `StaticLayout` | pass/fail | region end ≤ 8192, both modes | static install CHECK assumes it ran |
 | Module bootstrap | link mode | `WasmModule` (imports installed / runtime adopted) | every call target resolves | lowering needs imports installed first |
 | `LowerExportAndFinalise` | all of the above | bytes + `cel.abi` | one shared tail; validate→optimize→serialize | optimizing an unvalidated module mutates unproven IR |
-
-## History
-
-This doc supersedes the compiler sections of the milestone-era plans
-under `doc/implementation-plan/rewrite/` — `design.md`,
-`memory-layout-design.md` (jointly with `03-abi-and-memory.md`),
-`map-list-dispatch.md`, `m5-kcall-comprehensions.md` and follow-on,
-`cross-numeric-ordering-plan.md`, `slice2-control-flow-plan.md`,
-`dyn-passthrough-plan.md` — each of which carries an archive banner
-pointing here. Where the as-shipped shape diverged from those plans
-(the eager `&&`/`||` lowering, the `kind == CEL_BOOL` ternary probe, the
-narrower origin-inference table), this doc is the corrected record. The
-WAT corpus under `rewrite/wat/` and the walkthroughs in `wat-traces.md`
-remain the maintained lowering reference; this doc cites, never copies,
-them.
