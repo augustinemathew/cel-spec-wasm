@@ -340,15 +340,17 @@ This document covers `@component.` exclusively. For host functions see
 
 ## 7. Performance + size
 
-Per-call overhead, M-series Mac, `-c opt`, fastbuild noise removed:
+Per-call overhead, M-series Mac, `-c opt` (re-measured 2026-07-22;
+reproduce with `bazel run -c opt
+//benchmark/component:foreign_component_bench`):
 
 | Path | Time / call |
 | --- | ---: |
-| `int+int → int` via component (this macro) | ~4.1 µs |
-| `int+int → int` via host C++ callback | ~3.0 µs |
-| 256 KiB string `len()` via host C++ callback | 6.0 µs @ 40 GiB/s |
+| `int+int → int` via component (this macro) | ~450 ns |
+| `int+int → int` via host C++ callback | ~110 ns |
+| 256 KiB string `len()` via host C++ callback | 3.6 µs @ 68 GiB/s |
 
-So the **canonical-ABI hop costs ~1.1 µs over a native host callback**
+So the **canonical-ABI hop costs ~340 ns over a native host callback**
 on the scalar shape. That's the price of process-like isolation: the
 component runs in its own linear memory, has no access to the host's
 state, and can be swapped at runtime without recompiling the policy.

@@ -10,11 +10,10 @@
 site_name: cel-wasm
 site_description: >-
   An AOT compiler for CEL: lower an expression to a portable .wasm module,
-  then JIT it to native code inside a sandbox. Up to 25× faster than the
-  cel-cpp interpreter on repeated evaluation.
-site_url: https://augustinemathew.github.io/cel-spec-wasm/
-repo_url: https://github.com/augustinemathew/cel-spec-wasm
-repo_name: augustinemathew/cel-spec-wasm
+  then JIT it to native code inside a sandbox.
+site_url: https://augustinemathew.github.io/cel-wasm/
+repo_url: https://github.com/augustinemathew/cel-wasm
+repo_name: augustinemathew/cel-wasm
 edit_uri: edit/master/doc/
 copyright: Apache-2.0
 
@@ -109,5 +108,5 @@ nav:
       - Profiling: profiling.md
       - CEL language definition: langdef.md
       - Contributing: contributing.md
-  - Conformance: https://github.com/augustinemathew/cel-spec-wasm/blob/master/conformance/README.md
-  - Benchmarks: https://github.com/augustinemathew/cel-spec-wasm/blob/master/benchmark/README.md
+  - Conformance: https://github.com/augustinemathew/cel-wasm/blob/master/conformance/README.md
+  - Benchmarks: https://github.com/augustinemathew/cel-wasm/blob/master/benchmark/README.md

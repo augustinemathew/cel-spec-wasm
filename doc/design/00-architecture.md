@@ -411,22 +411,3 @@ build rather than a review.
 <!-- diagram-wanted: lifecycle sequence diagram — one Compile, two
      concurrent Plans, per-thread Eval loops, showing which objects
      are shared vs per-thread (would carry §5 visually) -->
-
-## History
-
-This doc supersedes the architecture content of:
-
-  - `doc/implementation-plan/rewrite/design.md` — the rewrite design
-    baseline (self-declared historical); its still-true goals are
-    restated in §1, its memory-model and pipeline content is carried
-    by `01-compiler.md` and `03-abi-and-memory.md`.
-  - `doc/implementation-plan/rewrite/two-phase-runtime-isolation.md` —
-    the Compiler/Program/Engine/Instance split; §2 here is the
-    as-shipped telling (the doc's Program-holds-wasmtime-state
-    sections describe a rejected intermediate shape).
-  - `doc/implementation-plan/rewrite/m28-configurable-linking.md` —
-    the link-mode fork; §3 here is the as-shipped telling (the doc's
-    early sections predate the static-default flip).
-
-Those files remain in place as dated history with archive banners
-pointing here.
