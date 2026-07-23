@@ -90,6 +90,7 @@ nav:
   - Getting started: user-guide/getting-started.md
   - User guide:
       - Overview: user-guide/index.md
+      - Custom functions: user-guide/custom-functions.md
       - FAQ: user-guide/faq.md
       - Security model: user-guide/security-model.md
       - Writing host functions: user-guide/writing-host-functions.md

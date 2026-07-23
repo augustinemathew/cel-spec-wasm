@@ -478,26 +478,3 @@ Priority order:
    internal contradiction.
 
 ---
-
-## History
-
-This doc supersedes the following as design authority; they remain
-on disk as dated artifacts with status banners:
-
-- `benchmark/DESIGN.md` — the original comparative-system plan.
-  Substantially aspirational as shipped: §§5.2, 8, 11, 12, 13
-  describe a parity binary, `report.py` + test, comparator wrapper
-  layer, `profile.sh`, and a committed `results/` dir, none of which
-  were built. Its corpus/loader/registration design (§§5.1, 5.3,
-  6.x) shipped as specified and is restated in §4 above.
-- `doc/implementation-plan/rewrite/wasi/POST_MIGRATION_BENCH.md` —
-  historical post-WASI-migration baselines (including the CEL_LOG
-  1.4–5.7× measurement). Its reproduction command cites the
-  unregistered `//bench:cel_pipeline_bench` target (V35).
-- `doc/implementation-plan/rewrite/m28-bench-results.md` remains the
-  published-results exemplar (not superseded — it is a dated results
-  artifact), with the §6.2 reproducibility caveat.
-- `bench/README.md` was the live operator manual for the localisation
-  tree until the 2026-06-11 restructure; it is archived at
-  `doc/implementation-plan/rewrite/archive/bench-tree-readme.md`, and
-  `benchmark/README.md` is the live operator manual.

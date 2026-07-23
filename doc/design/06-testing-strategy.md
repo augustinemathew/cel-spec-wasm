@@ -640,18 +640,3 @@ What green does NOT mean — kept here so nobody has to rediscover it:
     pre-merge classifier; the merged spec_unimpl / WKT-compare /
     proto2-extension changes will move pass, skip, AND fail counts on
     the next gated run (V39, V40).
-
-## History
-
-This doc consolidates the testing content of
-`per-component-test-coverage.md` (the M2 incident, §6.1, was its §0;
-its target catalog had rotted against the dual-mode macro renames),
-`rewrite/feature-pipeline-checklist.md` (regenerated as §4.6 with
-post-restructure paths), and the `testing-checklist.md` header (grids
-retained as the ledger appendix). The PBT layer (§2.2) shipped as
-"m27: PBT machinery (Slices A–C1)" per
-`rewrite/m27-pbt-cel-generator.md`; the static-region gate, slot-reuse
-fix, chained-grow arena, and reworked known-bugs pins (§2.3) arrived
-in the perf-stack merge of 2026-06-09; the dual-baseline conformance
-gate shipped with m28 configurable linking. Milestone-named e2e files
-(`e2e/m5_test.cc`, …) keep their historical names as stable paths.

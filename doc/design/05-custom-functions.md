@@ -528,23 +528,3 @@ not-done path fails loudly at the edge, never silently miscompiles.
   `celfn_parser_probe_test` are `manual`-tagged
   (compiler/celfn/BUILD.bazel) and run only via the full-suite query;
   if the reason was ANTLR build cost, record it — otherwise untag.
-
-## History
-
-This doc supersedes the custom-function content of:
-
-- `doc/implementation-plan/rewrite/m13-custom-fns.md` — note its
-  CEL-defined "shipped" claims described a branch that never merged
-  (§6); its decl model, overload-id synthesis, and rejected
-  parallel-table alternative are carried forward here.
-- `doc/implementation-plan/rewrite/m22-foreign-fn.md`
-- `doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md`
-  (compiler/generator sections; eval sections were superseded by
-  02-evaluator.md)
-- `doc/implementation-plan/rewrite/m26-celfnc-and-component-build.md`
-- `doc/implementation-plan/rewrite/modules-and-fnis.md`
-
-Source notes: `doc/design/notes/{celfn,eval-public,eval-internal,
-tools-examples,91-contract-coherence}.md` (code-verified 2026-06-10;
-anchors re-verified post-merge — `compiler/celfn/**` and
-`eval/engine.{h,cc}` untouched; `compile.cc` line anchors updated).
