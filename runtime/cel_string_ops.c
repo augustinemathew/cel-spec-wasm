@@ -84,7 +84,7 @@ static const uint8_t* swar_memchr_(const uint8_t* p, uint8_t c, uint32_t n) {
   return NULL;
 }
 
-#if defined(__wasm_simd128__)
+#ifdef __wasm_simd128__
 #include <wasm_simd128.h>
 
 // 16-byte SIMD memchr: splat the anchor byte, compare a full v128
@@ -94,8 +94,7 @@ static const uint8_t* swar_memchr_(const uint8_t* p, uint8_t c, uint32_t n) {
 // specified alignment-tolerant, so there is no prologue; sub-16-byte
 // tails fall through to the SWAR scan above.  Cranelift lowers this
 // loop to the host's native vector compare (NEON / SSE).
-static const uint8_t* anchor_memchr_(const uint8_t* p, uint8_t c,
-                                     uint32_t n) {
+static const uint8_t* anchor_memchr_(const uint8_t* p, uint8_t c, uint32_t n) {
   const v128_t pat = wasm_i8x16_splat((int8_t)c);
   while (n >= 16) {
     const v128_t w = wasm_v128_load(p);
@@ -109,8 +108,7 @@ static const uint8_t* anchor_memchr_(const uint8_t* p, uint8_t c,
 #else
 // SIMD unavailable (native builds, or a wasm build without
 // -msimd128): the SWAR scan is the anchor path.
-static const uint8_t* anchor_memchr_(const uint8_t* p, uint8_t c,
-                                     uint32_t n) {
+static const uint8_t* anchor_memchr_(const uint8_t* p, uint8_t c, uint32_t n) {
   return swar_memchr_(p, c, n);
 }
 #endif  // __wasm_simd128__
