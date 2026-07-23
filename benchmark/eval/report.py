@@ -421,9 +421,11 @@ def main():
     title = args.title or f"Eval benchmark results — {stamp}, {host}"
 
     # Main report: STATIC-focused — baseline + non-dynamic comparators.
-    main_comps = [c for c in comparators if not is_dynamic(c)]
+    # Main report carries EVERY comparator (static AND dynamic) side by
+    # side — one file answers "static vs dynamic vs cel-cpp" per cell.
+    # The -dynamic sibling files remain for dynamic-in-isolation reads.
     main_doc, main_headline = build_doc(
-        rows, main_comps, args.baseline, title, args.max_expr_width)
+        rows, comparators, args.baseline, title, args.max_expr_width)
 
     # Dynamic report: baseline + dynamic comparators, in its own files.
     dyn_others = [c for c in comparators if is_dynamic(c)]
@@ -444,7 +446,7 @@ def main():
             print(f"wrote {dyn_md}")
     if args.out_csv:
         pathlib.Path(args.out_csv).parent.mkdir(parents=True, exist_ok=True)
-        write_csv(args.out_csv, rows, main_comps)
+        write_csv(args.out_csv, rows, comparators)
         print(f"wrote {args.out_csv}")
         if dyn_comps:
             dyn_csv = dynamic_path(args.out_csv)

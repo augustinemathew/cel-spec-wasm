@@ -146,23 +146,23 @@ _Last run: 2026-07-22 on Mac (full tables: `benchmark/eval/results/`)._
 
 Linear regression over each length-sweep family; slope is the steady-state cost of one more operation, crossover is the expression length where the comparator overtakes cel-cpp.
 
-| surface | operator family | points | cel-cpp slope | cel-cpp setup | celwasm-static slope | celwasm-static setup | celwasm-static crossover vs cel-cpp |
-|---|---|---|---|---|---|---|---|
-| arithmetic | doubleAdd | 5 | 31.2 | 80 | 1.5 | 118 | N ≈ 1 |
-| arithmetic | intAdd | 5 | 32.5 | -77 | 1.7 | 112 | N ≈ 6 |
-| arithmetic | intMul | 5 | 30.9 | 216 | 2.7 | 112 | always wins |
-| arithmetic | intSub | 5 | 31.3 | -47 | 1.7 | 112 | N ≈ 5 |
-| comprehensions | all | 4 | 65.4 | 127 | 4.3 | 40 | always wins |
-| index | mapIntN | 3 | 43.9 | -14 | 0.0 | 89 | N ≈ 2 |
-| index | mapStrN | 3 | 49.6 | -79 | 0.0 | 95 | N ≈ 3 |
-| lists | bound | 5 | 3.5 | -2,917 | 2.6 | -1,653 | N ≈ 1,409 |
-| long_strings | containsLong_N | 4 | 0.0 | 83 | 0.0 | 46 | never wins |
-| maps | inIntN | 3 | 69.6 | -852 | 0.0 | 99 | N ≈ 14 |
-| maps | inStrN | 3 | 49.2 | -19 | 0.0 | 105 | N ≈ 3 |
-| proto | reads | 3 | 80.1 | 62 | 21.0 | 44 | always wins |
-| proto | select_depth | 5 | 43.5 | 48 | 38.8 | 31 | always wins |
-| size | list | 3 | 11.0 | 200 | -0.0 | 40 | always wins |
-| strings | concatChain | 3 | 167.5 | -4,507 | 41.9 | -855 | N ≈ 29 |
+| surface | operator family | points | cel-cpp slope | cel-cpp setup | celwasm-static slope | celwasm-static setup | celwasm-dynamic slope | celwasm-dynamic setup | celwasm-static crossover vs cel-cpp | celwasm-dynamic crossover vs cel-cpp |
+|---|---|---|---|---|---|---|---|---|---|---|
+| arithmetic | doubleAdd | 5 | 31.2 | 80 | 1.5 | 118 | 76.1 | 117 | N ≈ 1 | never wins |
+| arithmetic | intAdd | 5 | 32.5 | -77 | 1.7 | 112 | 77.0 | 76 | N ≈ 6 | never wins |
+| arithmetic | intMul | 5 | 30.9 | 216 | 2.7 | 112 | 78.4 | 175 | always wins | never wins |
+| arithmetic | intSub | 5 | 31.3 | -47 | 1.7 | 112 | 77.0 | 94 | N ≈ 5 | never wins |
+| comprehensions | all | 4 | 65.4 | 127 | 4.3 | 40 | 248.5 | -454 | always wins | never wins |
+| index | mapIntN | 3 | 43.9 | -14 | 0.0 | 89 | 0.0 | 259 | N ≈ 2 | N ≈ 6 |
+| index | mapStrN | 3 | 49.6 | -79 | 0.0 | 95 | -0.0 | 266 | N ≈ 3 | N ≈ 7 |
+| lists | bound | 5 | 3.5 | -2,917 | 2.6 | -1,653 | 2.6 | 440 | N ≈ 1,409 | N ≈ 3,654 |
+| long_strings | containsLong_N | 4 | 0.0 | 83 | 0.0 | 46 | 0.0 | 220 | never wins | never wins |
+| maps | inIntN | 3 | 69.6 | -852 | 0.0 | 99 | -0.0 | 275 | N ≈ 14 | N ≈ 16 |
+| maps | inStrN | 3 | 49.2 | -19 | 0.0 | 105 | -0.0 | 287 | N ≈ 3 | N ≈ 6 |
+| proto | reads | 3 | 80.1 | 62 | 21.0 | 44 | 102.5 | 41 | always wins | never wins |
+| proto | select_depth | 5 | 43.5 | 48 | 38.8 | 31 | 39.4 | 116 | always wins | N ≈ 17 |
+| size | list | 3 | 11.0 | 200 | -0.0 | 40 | 0.0 | 207 | always wins | N ≈ 1 |
+| strings | concatChain | 3 | 167.5 | -4,507 | 41.9 | -855 | 130.7 | -841 | N ≈ 29 | N ≈ 99 |
 
 
 <!-- END AUTO-GENERATED RESULTS -->
