@@ -1,7 +1,7 @@
 # Contributing to cel-wasm
 
 This document is the code-change workflow for the CEL → WASM compiler.
-The rules in [CLAUDE.md](../CLAUDE.md) take precedence over anything
+The rules in [CLAUDE.md](https://github.com/augustinemathew/cel-wasm/blob/master/CLAUDE.md) take precedence over anything
 here; this file is the concrete "how to".
 
 ## First build on a fresh clone
@@ -103,8 +103,8 @@ All tests must pass. For codegen work, also confirm:
 
 - Binaryen validation (`module.Validate()` must return OK).
 - At least one positive and one negative unit test per feature — see
-  [`CLAUDE.md`](../CLAUDE.md) and
-  [`doc/implementation-plan/testing-checklist.md`](implementation-plan/testing-checklist.md).
+  [`CLAUDE.md`](https://github.com/augustinemathew/cel-wasm/blob/master/CLAUDE.md) and
+  [`doc/implementation-plan/testing-checklist.md`](https://github.com/augustinemathew/cel-wasm/blob/master/doc/implementation-plan/testing-checklist.md).
 
 New test targets carry an explicit `size`: `size = "small"` if it runs
 `< 20 s`, else `size = "large"` — never `medium`, and never leave
@@ -119,9 +119,9 @@ dual-emission macro call (`link_mode_e2e_cc_test` /
 Every merged feature:
 
 - Ticks at least one box in
-  [`doc/implementation-plan/testing-checklist.md`](implementation-plan/testing-checklist.md).
+  [`doc/implementation-plan/testing-checklist.md`](https://github.com/augustinemathew/cel-wasm/blob/master/doc/implementation-plan/testing-checklist.md).
 - Is reflected (added or ticked) in the active milestone doc under
-  [`doc/implementation-plan/`](implementation-plan/).
+  [`doc/implementation-plan/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/implementation-plan).
 
 If the user gave new guidance during the work, capture it as a tagged
 bullet in the milestone doc.
@@ -150,7 +150,7 @@ flags a function:
   on the function signature line.
 
 Known exceedances live in
-[`doc/implementation-plan/lint-backlog.md`](implementation-plan/lint-backlog.md);
+[`doc/implementation-plan/lint-backlog.md`](https://github.com/augustinemathew/cel-wasm/blob/master/doc/implementation-plan/lint-backlog.md);
 clear them before they rot.
 
 ## What NOT to do

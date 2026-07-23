@@ -1026,7 +1026,7 @@ interpreter.
 
 The type-checker uses homogeneous equality to surface potential logical errors
 during static analysis, but the runtime uses heterogeneous equality with
-a definition of [numeric equality](#Numbers) which treats all numeric types as
+a definition of [numeric equality](#numbers) which treats all numeric types as
 though they exist on a continuous number line. Semantically, equality would be
 expressed within in CEL as follows:
 

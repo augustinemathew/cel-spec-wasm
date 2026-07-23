@@ -2,7 +2,7 @@
 
 From clone to evaluating CEL in about two minutes, then your first
 C++ embed. Every snippet on this page is backed by a buildable target
-under [`examples/`](../../examples/) that CI runs — nothing here can
+under [`examples/`](https://github.com/augustinemathew/cel-wasm/tree/master/examples) that CI runs — nothing here can
 silently rot.
 
 ## 1. Prerequisites
@@ -13,7 +13,7 @@ silently rot.
 
 macOS (Apple Silicon) and Linux (arm64 / x86_64) are supported. The
 rest of the toolchain — wasi-sdk, wasmtime, Binaryen — is fetched by
-Bazel. Prefer Docker? Use [`docker/Dockerfile`](../../docker/Dockerfile).
+Bazel. Prefer Docker? Use [`docker/Dockerfile`](https://github.com/augustinemathew/cel-wasm/blob/master/docker/Dockerfile).
 
 ## 2. Clone and fetch the front end
 
@@ -110,7 +110,7 @@ deps = [
 
 (Production code checks every `absl::StatusOr` instead of calling
 `.value()` — see
-[`examples/07_error_handling.cc`](../../examples/07_error_handling.cc)
+[`examples/07_error_handling.cc`](https://github.com/augustinemathew/cel-wasm/blob/master/examples/07_error_handling.cc)
 for the error-handling layers.)
 
 ## 5. Tuning a compile — `CompilerOptions`
@@ -135,8 +135,8 @@ auto program = compiler.Compile("a * b + 1", opts).value();
 
 | You want to… | Go to |
 | --- | --- |
-| See every core feature as a ~60-line runnable program | [`examples/`](../../examples/) |
-| Ship the compiled `.wasm` and evaluate it elsewhere | [`examples/03_compile_once_run_anywhere.cc`](../../examples/03_compile_once_run_anywhere.cc) |
+| See every core feature as a ~60-line runnable program | [`examples/`](https://github.com/augustinemathew/cel-wasm/tree/master/examples) |
+| Ship the compiled `.wasm` and evaluate it elsewhere | [`examples/03_compile_once_run_anywhere.cc`](https://github.com/augustinemathew/cel-wasm/blob/master/examples/03_compile_once_run_anywhere.cc) |
 | Add your own functions to CEL (trusted C++) | [Writing host functions](writing-host-functions.md) |
 | Add **sandboxed** functions (untrusted plugins) | [Writing component functions](writing-component-functions.md) |
 | Understand the whole embedder API | [User guide](index.md) |
