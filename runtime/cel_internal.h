@@ -192,6 +192,104 @@ static inline int spans_equal(CelSpan a, CelSpan b) {
   return cel_byteptr_equal_(base + a.ptr, base + b.ptr, a.len);
 }
 
+// ── Anchor-byte scans (shared by contains / indexOf / lastIndexOf) ──
+//
+// 8-byte SWAR memchr.  musl's memchr scans one `size_t` (4 bytes on
+// wasm32) per iteration; wasm has native i64 ALU ops and tolerates
+// unaligned loads, so scanning a uint64_t per iteration halves the
+// trip count with the same has-zero bit trick and no alignment
+// prologue.  In `w ^ pat`, bytes equal to `c` become 0x00;
+// `(x - 0x01…) & ~x & 0x80…` sets the high bit of every zero byte.
+// Borrow across lanes can corrupt flags ABOVE the lowest zero byte,
+// so only the lowest flag is trusted — exactly what a forward scan
+// consumes; wasm is little-endian, so ctz locates that byte.
+//
+// Portable path: `cel_anchor_memchr_` below supersedes it on wasm
+// builds carrying `-msimd128` and reuses it for sub-16-byte tails.
+static inline const uint8_t* cel_swar_memchr_(const uint8_t* p, uint8_t c,
+                                              uint32_t n) {
+  const uint64_t ones = 0x0101010101010101ull;
+  const uint64_t highs = 0x8080808080808080ull;
+  const uint64_t pat = ones * c;
+  while (n >= 8) {
+    uint64_t w;
+    __builtin_memcpy(&w, p, 8);  // single unaligned i64 load
+    const uint64_t x = w ^ pat;
+    const uint64_t hit = (x - ones) & ~x & highs;
+    if (hit) return p + (__builtin_ctzll(hit) >> 3);
+    p += 8;
+    n -= 8;
+  }
+  for (; n != 0; --n, ++p) {
+    if (*p == c) return p;
+  }
+  return NULL;
+}
+
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+
+// 16-byte SIMD memchr: splat the anchor byte, compare a full v128
+// lane-wise, and reduce the equality mask to one bit per lane with
+// i8x16.bitmask — a hit's lane index is ctz of the mask.
+// `wasm_v128_load` is specified alignment-tolerant; sub-16-byte tails
+// fall through to the SWAR scan.  Cranelift lowers this loop to the
+// host's native vector compare (NEON / SSE).
+static inline const uint8_t* cel_anchor_memchr_(const uint8_t* p, uint8_t c,
+                                                uint32_t n) {
+  const v128_t pat = wasm_i8x16_splat((int8_t)c);
+  while (n >= 16) {
+    const v128_t w = wasm_v128_load(p);
+    const uint32_t mask = wasm_i8x16_bitmask(wasm_i8x16_eq(w, pat));
+    if (mask) return p + __builtin_ctz(mask);
+    p += 16;
+    n -= 16;
+  }
+  return cel_swar_memchr_(p, c, n);
+}
+
+// Length of the leading run of ASCII bytes (< 0x80), stepping WHOLE
+// 16-byte blocks only — the return value is a multiple of 16 and the
+// caller walks the remainder byte-wise.  i8x16.bitmask of the raw
+// block IS the per-lane high-bit mask, so "block is ASCII" is one
+// compare against zero.  Used by the UTF-8 search kernels to bulk-
+// advance code-point counts across ASCII spans (1 byte == 1 code
+// point there); block granularity keeps the exact-decode fallback in
+// charge of every non-ASCII byte.
+static inline uint32_t cel_ascii_prefix_blocks_(const uint8_t* p,
+                                                uint32_t n) {
+  uint32_t run = 0;
+  while (n - run >= 16) {
+    const v128_t w = wasm_v128_load(p + run);
+    if (wasm_i8x16_bitmask(w) != 0) break;
+    run += 16;
+  }
+  return run;
+}
+#else
+// SIMD unavailable (native builds, or a wasm build without
+// -msimd128): the SWAR scan is the anchor path.
+static inline const uint8_t* cel_anchor_memchr_(const uint8_t* p, uint8_t c,
+                                                uint32_t n) {
+  return cel_swar_memchr_(p, c, n);
+}
+
+// 8-byte SWAR variant of the ASCII-run scan: a block is ASCII iff no
+// byte has its high bit set.
+static inline uint32_t cel_ascii_prefix_blocks_(const uint8_t* p,
+                                                uint32_t n) {
+  const uint64_t highs = 0x8080808080808080ull;
+  uint32_t run = 0;
+  while (n - run >= 8) {
+    uint64_t w;
+    __builtin_memcpy(&w, p + run, 8);
+    if ((w & highs) != 0) break;
+    run += 8;
+  }
+  return run;
+}
+#endif  // __wasm_simd128__
+
 #ifdef __cplusplus
 }
 #endif

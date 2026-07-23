@@ -24,6 +24,7 @@
 #include "absl/strings/string_view.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_memory.h"
+#include "runtime/cel_internal.h"
 #include "runtime/cel_string_ext_internal.h"
 
 namespace {
@@ -37,27 +38,77 @@ using celwasm::string_ext_internal::WriteInt;
 using celwasm::string_ext_internal::WriteStringFromBytes;
 using celwasm::string_ext_internal::WriteSubspan;
 
-// Index-of search.  Walks the haystack one code-point at a time,
-// emitting code-point indices; `memcmp` on the prefix is the byte-
-// level match.  `pos < 0` is clamped to 0 (cel-cpp parity —
-// `IndexOf(string, pos)` lines ~315-353 clamp negative pos before
-// the search).  Returns the code-point index of the first match,
-// or -1 if no match.
+// Advance the decode walk (`*p`, `*code_points`) forward to the next
+// decode boundary at or past `target`, using the exact `Utf8Decode`
+// stepping the byte-at-a-time loops used — with one accelerator:
+// whole 16-byte blocks of pure ASCII bulk-advance (1 byte == 1 code
+// point there, trivially decode-equivalent), so the scalar decode
+// only ever runs on spans containing non-ASCII bytes.  Returns true
+// iff the walk lands exactly ON `target` (i.e. `target` is a decode
+// boundary); on overshoot — `target` sat inside a multi-byte
+// sequence — `*p` is the first boundary past it.
+bool AdvanceToBoundary(const uint8_t** p, const uint8_t* const end,
+                       const uint8_t* const target, int64_t* code_points) {
+  const uint8_t* q = *p;
+  while (q < target) {
+    const auto span = static_cast<uint32_t>(target - q);
+    const uint32_t ascii = cel_ascii_prefix_blocks_(q, span);
+    if (ascii != 0) {
+      q += ascii;
+      *code_points += ascii;
+      continue;
+    }
+    uint32_t cp = 0;
+    q += Utf8Decode(q, end, &cp);
+    ++*code_points;
+  }
+  *p = q;
+  return q == target;
+}
+
+// Index-of search.  Emits CODE-POINT indices, so the walk must count
+// decode boundaries; `memcmp` on the prefix is the byte-level match.
+// `pos < 0` is clamped to 0 (cel-cpp parity — `IndexOf(string, pos)`
+// lines ~315-353 clamp negative pos before the search).  Returns the
+// code-point index of the first match, or -1 if no match.
+//
+// The non-empty-needle path anchors on the needle's first byte
+// (`cel_anchor_memchr_`: SIMD128 on wasm, SWAR fallback) instead of
+// attempting a match at every boundary — a boundary whose byte
+// differs from the anchor can never match, so outcomes are identical
+// to the plain walk.  Anchors that land inside a multi-byte sequence
+// are rejected by `AdvanceToBoundary` (the plain walk never tests
+// non-boundary offsets).
 int64_t IndexOfImpl(absl::string_view haystack, absl::string_view needle,
                     int64_t pos) {
   pos = std::max<int64_t>(pos, 0);
   const auto* p = reinterpret_cast<const uint8_t*>(haystack.data());
   const uint8_t* const end = p + haystack.size();
   int64_t code_points = 0;
+  if (needle.empty()) {
+    while (static_cast<size_t>(end - p) >= needle.size()) {
+      if (code_points >= pos) return code_points;
+      if (static_cast<size_t>(end - p) == needle.size()) break;
+      uint32_t cp = 0;
+      p += Utf8Decode(p, end, &cp);
+      ++code_points;
+    }
+    return -1;
+  }
+  const uint8_t anchor = static_cast<uint8_t>(needle[0]);
   while (static_cast<size_t>(end - p) >= needle.size()) {
+    const auto window =
+        static_cast<uint32_t>(static_cast<size_t>(end - p) - needle.size() + 1);
+    const uint8_t* hit = cel_anchor_memchr_(p, anchor, window);
+    if (hit == nullptr) return -1;
+    if (!AdvanceToBoundary(&p, end, hit, &code_points)) continue;
     if (code_points >= pos &&
-        (needle.empty() || std::memcmp(p, needle.data(), needle.size()) == 0)) {
+        std::memcmp(p, needle.data(), needle.size()) == 0) {
       return code_points;
     }
     if (static_cast<size_t>(end - p) == needle.size()) break;
     uint32_t cp = 0;
-    const size_t units = Utf8Decode(p, end, &cp);
-    p += units;
+    p += Utf8Decode(p, end, &cp);
     ++code_points;
   }
   return -1;
@@ -78,15 +129,38 @@ int64_t LastIndexOfImpl(absl::string_view haystack, absl::string_view needle,
   const uint8_t* const end = p + haystack.size();
   int64_t last_index = -1;
   int64_t code_points = 0;
+  if (needle.empty()) {
+    while (static_cast<size_t>(end - p) >= needle.size()) {
+      last_index = code_points;
+      const bool past_pos = has_pos && code_points >= pos;
+      if (past_pos || static_cast<size_t>(end - p) == needle.size()) break;
+      uint32_t cp = 0;
+      p += Utf8Decode(p, end, &cp);
+      ++code_points;
+    }
+    return last_index;
+  }
+  // Anchor-accelerated forward walk (see IndexOfImpl): only decode
+  // boundaries whose byte equals the needle's first byte can match,
+  // so jumping anchor-to-anchor visits exactly the boundaries the
+  // plain walk would have matched at.  The bounded form stops at the
+  // first boundary with `code_points >= pos` after testing it —
+  // anchors past that limit are discarded before testing.
+  const uint8_t anchor = static_cast<uint8_t>(needle[0]);
   while (static_cast<size_t>(end - p) >= needle.size()) {
-    if (needle.empty() || std::memcmp(p, needle.data(), needle.size()) == 0) {
+    const auto window =
+        static_cast<uint32_t>(static_cast<size_t>(end - p) - needle.size() + 1);
+    const uint8_t* hit = cel_anchor_memchr_(p, anchor, window);
+    if (hit == nullptr) break;
+    if (!AdvanceToBoundary(&p, end, hit, &code_points)) continue;
+    if (has_pos && code_points > pos) break;
+    if (std::memcmp(p, needle.data(), needle.size()) == 0) {
       last_index = code_points;
     }
     const bool past_pos = has_pos && code_points >= pos;
     if (past_pos || static_cast<size_t>(end - p) == needle.size()) break;
     uint32_t cp = 0;
-    const size_t units = Utf8Decode(p, end, &cp);
-    p += units;
+    p += Utf8Decode(p, end, &cp);
     ++code_points;
   }
   return last_index;

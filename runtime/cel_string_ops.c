@@ -53,71 +53,12 @@ static int span_match_at(const CelSpan* hay, uint32_t off, const CelSpan* sub) {
   return cel_byteptr_equal_(ph, ps, sub->len);
 }
 
-// 8-byte SWAR memchr.  musl's memchr scans one `size_t` (4 bytes on
-// wasm32) per iteration; wasm has native i64 ALU ops and tolerates
-// unaligned loads, so scanning a uint64_t per iteration halves the
-// trip count with the same has-zero bit trick and no alignment
-// prologue.  The trick: in `w ^ pat`, bytes equal to `c` become 0x00;
-// `(x - 0x01…) & ~x & 0x80…` sets the high bit of every zero byte
-// (borrow across lanes can corrupt flags ABOVE the lowest zero byte,
-// so only the lowest flag is trusted — exactly what a forward scan
-// consumes; wasm is little-endian, so ctz locates that byte).
-//
-// This is the portable path: the SIMD128 variant below supersedes it
-// on wasm builds carrying `-msimd128`, and reuses it for tails.
-static const uint8_t* swar_memchr_(const uint8_t* p, uint8_t c, uint32_t n) {
-  const uint64_t ones = 0x0101010101010101ull;
-  const uint64_t highs = 0x8080808080808080ull;
-  const uint64_t pat = ones * c;
-  while (n >= 8) {
-    uint64_t w;
-    memcpy(&w, p, 8);  // single unaligned i64 load
-    const uint64_t x = w ^ pat;
-    const uint64_t hit = (x - ones) & ~x & highs;
-    if (hit) return p + (__builtin_ctzll(hit) >> 3);
-    p += 8;
-    n -= 8;
-  }
-  for (; n != 0; --n, ++p) {
-    if (*p == c) return p;
-  }
-  return NULL;
-}
-
-#ifdef __wasm_simd128__
-#include <wasm_simd128.h>
-
-// 16-byte SIMD memchr: splat the anchor byte, compare a full v128
-// lane-wise, and reduce the equality mask to one bit per lane with
-// i8x16.bitmask — a hit's lane index is ctz of the mask (wasm is
-// little-endian, lane 0 is the lowest address).  `wasm_v128_load` is
-// specified alignment-tolerant, so there is no prologue; sub-16-byte
-// tails fall through to the SWAR scan above.  Cranelift lowers this
-// loop to the host's native vector compare (NEON / SSE).
-static const uint8_t* anchor_memchr_(const uint8_t* p, uint8_t c, uint32_t n) {
-  const v128_t pat = wasm_i8x16_splat((int8_t)c);
-  while (n >= 16) {
-    const v128_t w = wasm_v128_load(p);
-    const uint32_t mask = wasm_i8x16_bitmask(wasm_i8x16_eq(w, pat));
-    if (mask) return p + __builtin_ctz(mask);
-    p += 16;
-    n -= 16;
-  }
-  return swar_memchr_(p, c, n);
-}
-#else
-// SIMD unavailable (native builds, or a wasm build without
-// -msimd128): the SWAR scan is the anchor path.
-static const uint8_t* anchor_memchr_(const uint8_t* p, uint8_t c, uint32_t n) {
-  return swar_memchr_(p, c, n);
-}
-#endif  // __wasm_simd128__
-
 // Substring search.  langdef pins string ops to byte granularity (no
 // Unicode normalisation); cel-cpp's `StringContains::Apply` is also a
-// byte scan.  We anchor on the substring's first byte: the SWAR scan
-// finds the next candidate start, and only there do we compare the
-// full `sub`.  This skips every haystack position whose first byte
+// byte scan.  We anchor on the substring's first byte:
+// `cel_anchor_memchr_` (cel_internal.h — SIMD128 on wasm, SWAR
+// fallback) finds the next candidate start, and only there do we
+// compare the full `sub`.  This skips every haystack position whose first byte
 // can't begin a match; a needle whose first byte is absent costs one
 // word-parallel pass, not `hay.len` failed compares.
 static int span_contains(const CelSpan* hay, const CelSpan* sub) {
@@ -129,7 +70,7 @@ static int span_contains(const CelSpan* hay, const CelSpan* sub) {
   const uint32_t last = hay->len - sub->len;  // last valid start offset
   uint32_t i = 0;
   for (;;) {
-    const uint8_t* hit = anchor_memchr_(hbeg + i, ps[0], last - i + 1);
+    const uint8_t* hit = cel_anchor_memchr_(hbeg + i, ps[0], last - i + 1);
     if (hit == NULL) return 0;
     const uint32_t pos = (uint32_t)(hit - hbeg);
     if (cel_byteptr_equal_(hbeg + pos, ps, sub->len)) return 1;
