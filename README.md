@@ -377,6 +377,20 @@ fast while emitting code that is plenty good for expression-sized
 programs. Cranelift trades a few percent of peak code quality for much
 faster compilation: the same trade this project makes everywhere.
 
+## Why I built this
+
+I'm a compiler engineer on a small crusade. The industry keeps
+embedding slow, interpreted mini-languages in production hot paths,
+and I think we can do better than that — this project is the
+compiler-shaped counterargument: bake the hash table at compile time,
+vectorize the scan, let the JIT emit real machine code, and publish
+the benchmark tables win or lose. CEL is the perfect vehicle — it's
+non-Turing-complete on purpose, which is most of the way to being
+*provable* (give us Lean proofs one day and this thing is formally
+verifiable, too). And honestly, building it solo was tractable because
+Claude turned the unglamorous nine-tenths — test matrices, conformance
+chasing, bench harnesses — into the easy part.
+
 ## Author
 
 cel-wasm is created and maintained by **Augustine Mathew**
