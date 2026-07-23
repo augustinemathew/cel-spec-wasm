@@ -731,6 +731,14 @@ cc_binary(
         # the point.  wasmtime config also gets the matching flag in
         # api/engine.cc.
         "-mtail-call",
+        # Fixed-width SIMD (standardized 128-bit proposal).  Defines
+        # `__wasm_simd128__`, which gates the vector fast paths in
+        # kernels (e.g. cel_string_ops.c's 16-byte anchor scan); each
+        # such kernel keeps a scalar SWAR fallback compiled when the
+        # macro is absent, so dropping this flag yields a working
+        # SIMD-free runtime.  wasmtime enables simd by default; no
+        # engine-side flag needed.
+        "-msimd128",
         # Per-target warnings beyond toolchain's `-Wall`.
         "-Wextra",
         "-Wno-unused-parameter",
