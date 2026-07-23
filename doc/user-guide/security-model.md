@@ -12,6 +12,9 @@ value**. It *cannot* read your memory, make a syscall, touch the disk or
 network, read the clock, or loop forever. There are exactly **three trust
 decisions** you make, and **one** known sharp edge. The rest is detail.
 
+![Trust boundaries](../design/diagrams/trust-boundary-light.svg#only-light)
+![Trust boundaries](../design/diagrams/trust-boundary-dark.svg#only-dark)
+
 *Updated 2026-06-11; every claim is checked against the code cited next
 to it.*
 

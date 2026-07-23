@@ -26,7 +26,7 @@ than cel-cpp. Of the upstream conformance corpus, **every attempted
 row passes (0 fails)**; 481 rows are intentionally skipped — 227 need
 `dyn`, 144 are check-disabled, and 110 sit on not-yet-shipped scope
 (55 of those on unimplemented extension rows). Live per-fixture
-breakdown: [`conformance/README.md`](../../conformance/README.md).
+breakdown: [`conformance/README.md`](https://github.com/augustinemathew/cel-wasm/blob/master/conformance/README.md).
 
 ### Does it support `dyn`?
 
@@ -58,8 +58,8 @@ workload-dependent; the crossover is roughly 3–14 operations.
 - **The floor:** a trivial expression evaluates in ~50 ns (boundary
   crossing + arena reset), which single-op expressions can't amortize.
 
-Current published tables: [`benchmark/README.md`](../../benchmark/README.md)
-and [`benchmark/eval/results/`](../../benchmark/eval/results/).
+Current published tables: [`benchmark/README.md`](https://github.com/augustinemathew/cel-wasm/blob/master/benchmark/README.md)
+and [`benchmark/eval/results/`](https://github.com/augustinemathew/cel-wasm/tree/master/benchmark/eval/results).
 Reproduce with `benchmark/eval/run.sh` (three-way: dynamic / static /
 cel-cpp).
 
@@ -120,7 +120,7 @@ distinct non-value outcomes:
    never for policy-visible conditions.
 
 All three are runnable in
-[`examples/08_function_errors_and_unknowns.cc`](../../examples/08_function_errors_and_unknowns.cc).
+[`examples/08_function_errors_and_unknowns.cc`](https://github.com/augustinemathew/cel-wasm/blob/master/examples/08_function_errors_and_unknowns.cc).
 One caveat (verified 2026-06-09): the `ErrorPayload`'s **error code**
 survives the wasm round-trip, but the free-text `message` currently
 does not — the decoded error carries a synthesized
@@ -153,7 +153,7 @@ at compile time, and oversized literals are rejected at compile with a
 graceful `ResourceExhausted`. What remains is listed, not hidden: no
 bindings beyond C++, allocator caps and CPU-time limits for component
 functions still to come, and no release-versioning policy yet. See
-"Limitations" in the [README](../../README.md), the
+"Limitations" in the [README](https://github.com/augustinemathew/cel-wasm/blob/master/README.md), the
 [security model](security-model.md) for the threat-relevant items, and
 `e2e/known_bugs_test.cc` +
 `doc/implementation-plan/cleanup-backlog.md` where every known gap is

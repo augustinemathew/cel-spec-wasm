@@ -356,7 +356,7 @@ backend of the functions it calls:
 
 | Function backend | Needed at run time (eval) | `.celfn` IDL needed at run time? |
 |---|---|---|
-| **`@native`** (CEL-defined) ⛔ | n/a — the backend is unimplemented ([details](custom-functions.md#7-cel-defined-functions-native)); a program that calls one does not evaluate | **No** |
+| **`@native`** (CEL-defined) ⛔ | n/a — the backend is unimplemented ([details](custom-functions.md#3-cel-defined-functions-native)); a program that calls one does not evaluate | **No** |
 | **`@component`** ⛔ | the component's **bytes**, plus the `FunctionLibrary` so the engine knows which decls to bind (`Engine::AddComponent` / a planned `--component path.wasm`) | **Partially** — `AddComponent` takes the library so it can bind every `@component` decl to a matching export; you supply both the *bytes* and the parsed IDL |
 | **`@host`** | a **C++ impl** registered via `Engine::AddFunction` | **No, but** — the IDL only declares the *signature*; the *behavior* is C++ the generic CLI can't supply, so a wasm with host imports isn't runnable by stock `cel` at all |
 
@@ -389,7 +389,7 @@ variables too (§3.3).
 | **Host fns** — proto / list / map args, aggregate / new-string returns | ✅ (m21) |
 | Typed `AddTypedFunction` + `HostCallContext` adapter | ✅ (m21); raw 4-arg `HostCallback` removed |
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
-| **CEL-defined fns** (`@native`) — body lowering + eval | ⛔ not implemented ([details](custom-functions.md#7-cel-defined-functions-native)); a `@native`-using program does not evaluate |
+| **CEL-defined fns** (`@native`) — body lowering + eval | ⛔ not implemented ([details](custom-functions.md#3-cel-defined-functions-native)); a `@native`-using program does not evaluate |
 | **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent`; proto args/returns via the manual-tagged `demo_component_proto` fixture; component-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
 | **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |

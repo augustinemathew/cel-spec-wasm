@@ -25,6 +25,7 @@ exclude_docs: |
   implementation-plan/
   design/notes/
   extensions/
+  /README.md
 
 theme:
   name: material
@@ -98,8 +99,10 @@ nav:
   - Architecture:
       - Overview: design/00-architecture.md
       - Compiler: design/01-compiler.md
+      - Lowering: design/09-lowering.md
       - Evaluator: design/02-evaluator.md
       - ABI & memory: design/03-abi-and-memory.md
+      - ABI wire format: design/08-abi-wire-format.md
       - Runtime: design/04-runtime.md
       - Custom functions: design/05-custom-functions.md
       - Testing strategy: design/06-testing-strategy.md

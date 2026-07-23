@@ -1,42 +1,16 @@
 # Evaluator design — Plan, then Eval
 
-Status: current — authored 2026-06-10, rewritten for clarity 2026-06-11.
-This doc is `eval/`: how a compiled `Program` becomes a live `Instance`,
-and how an `Activation` becomes a `Value`. Byte-level wire facts (the
-CelValue layout, the kind table) belong to
-[`03-abi-and-memory.md`](03-abi-and-memory.md); system context is
-[`00-architecture.md`](00-architecture.md).
+How a compiled `Program` becomes a live `Instance`, and how an `Activation` becomes a `Value` (`eval/`). Byte-level wire facts are [`03-abi-and-memory.md`](03-abi-and-memory.md); system context is [`00-architecture.md`](00-architecture.md).
 
 ## 1. The shape of the thing
 
-A `Program` is just bytes — wasm plus an embedded `cel.abi` descriptor.
-The evaluator turns those bytes into answers in **two phases with very
-different costs**:
+A `Program` is bytes — wasm plus an embedded `cel.abi` descriptor. The evaluator turns those bytes into answers in two phases with very different costs:
 
-- **Plan** (once per Program): hand the bytes to wasmtime, which JITs
-  them to native machine code; instantiate the runtime, wire up the host
-  functions, set up memory. Expensive. Returns an `Instance`.
-- **Eval** (cheap, repeated): take an `Activation` (the bindings), write
-  those values into the instance's memory, call the module's `$eval`
-  function, decode the `Value` it points at.
+- **Plan** (once per Program): wasmtime JITs the bytes to native code; instantiate the runtime, wire host functions, set up memory. Expensive. Returns an `Instance`.
+- **Eval** (cheap, repeated): write the `Activation`'s values into the instance's memory, call `$eval`, decode the result.
 
-That split *is* the design — you pay the JIT and link cost once and
-amortize it across as many `Eval`s as you like:
-
-```
-  Compiler ──Compile(source)──►  Program            pure bytes (wasm + cel.abi);
-                                  │                  no wasmtime dependency
-                                  │
-   ═══════════════════════════════╪══════════════  Plan: ONCE, expensive
-                                  ▼                  (Cranelift JIT + link)
-  Engine ────Plan(program)────►  Instance           JIT'd native code, runtime
-                                  │                  wired, host fns bound,
-                                  │                  memory ready
-   ═══════════════════════════════╪══════════════  Eval: MANY, cheap
-                                  ▼
-  Activation ───Eval(act)─────►  Value               write vars → call $eval →
-                                                     decode result
-```
+![Plan once, Eval per request](diagrams/plan-eval-light.svg#only-light)
+![Plan once, Eval per request](diagrams/plan-eval-dark.svg#only-dark)
 
 | Role | What it is | Lifetime |
 |---|---|---|
@@ -45,8 +19,7 @@ amortize it across as many `Eval`s as you like:
 | **`Plan`** | the link step (`Engine::Plan(program) → Instance`) | called many times, concurrent-safe |
 | **`Instance`** | one live evaluator: store, linker, instances, memory, `$eval`, decoded ABI, host env | thread-owned; outlives the Engine |
 
-The whole arc is about a dozen lines of embedder code — the two phases
-are literally two call sites (`Plan` once, `Eval` in the loop):
+The whole arc is two call sites — `Plan` once, `Eval` in the loop:
 
 ```cpp
 // ── once: compile, then Plan ────────────────────────────────────────
@@ -66,24 +39,11 @@ act.Bind("age", celwasm::Value::Int(25))
 bool allowed = instance->Eval(act)->AsBool().value();    // => true
 ```
 
-(Condensed from `examples/02_variables.cc`; error handling elided. The
-`Instance` is reused across `Eval`s — its arena resets at the top of
-each call.)
+(Condensed from `examples/02_variables.cc`; error handling elided. The `Instance` is reused across `Eval`s — its arena resets at the top of each call.)
 
-**Ownership and threading, in three facts:** the Engine is built once and
-**shared** (it holds the parsed runtime module behind a `shared_ptr`, so
-Plan is ~34× cheaper than re-parsing per call); an `Instance` keeps a
-reference to that shared state, so it **outlives** the Engine handle that
-made it; and the threading contract is — registration is
-single-threaded (configure, *then* share), `Plan` is concurrent-safe
-(fresh store/linker/memory per call), each `Instance` is owned by one
-thread.
+Ownership and threading in three facts: the Engine is built once and shared (it holds the parsed runtime module behind a `shared_ptr`, making Plan ~34× cheaper than re-parsing per call); an `Instance` keeps a reference to that shared state, so it outlives the Engine handle that made it; registration is single-threaded (configure, *then* share), `Plan` is concurrent-safe, each `Instance` is owned by one thread.
 
 ## 2. Plan — turn bytes into a callable thing
-
-`Engine::Plan` reads the ABI and builds the host environment, JITs the
-module, decides whether the runtime is bundled or separate, then
-instantiates and grabs `$eval`:
 
 ```
   Plan(program):
@@ -110,31 +70,16 @@ instantiates and grabs `$eval`:
                                                             ►  Instance
 ```
 
-The two **gates** in step 1 exist for one reason — *fail loudly once, at
-Plan, instead of cryptically at every Eval*:
+The two step-1 gates fail loudly once, at Plan, instead of cryptically at every Eval:
 
-- **ABI-version check** — the Program's runtime-ABI version must match the
-  engine's; a mismatch is a `FailedPrecondition` naming both versions,
-  far better than wasmtime's opaque type-mismatch trap at the first call.
-- **Slot-extents gate** — reject any Program whose ABI declares a variable
-  slot reaching past the 8 KiB reserved window. The compiler never emits
-  one (it validates the same bound before serializing — `01-compiler.md`
-  §6.4), so a Program that claims one is corrupt, and honoring it would
-  let the marshal (§6) write over the runtime's own memory.
+- **ABI-version check** — a Program/engine runtime-ABI mismatch is a `FailedPrecondition` naming both versions, not wasmtime's opaque type-mismatch trap at the first call.
+- **Slot-extents gate** — reject any Program whose ABI declares a variable slot past the 8 KiB reserved window. The compiler never emits one (`01-compiler.md` §6.4); a Program claiming one is corrupt, and honoring it would let the marshal (§6) overwrite the runtime's memory.
 
-The most important subtlety is step 3: **the link mode is decided by what
-the module imports, not by the ABI label.** If the module imports
-anything from the `"cel"` namespace it's dynamic; otherwise it's static.
-The label is *only* a tripwire — if it disagrees with the imports, Plan
-rejects the Program as mislabeled. (Why static is the default is
-`00-architecture.md` §3.)
+Step 3 is the key subtlety: **link mode is decided by what the module imports, not by the ABI label.** Imports from the `"cel"` namespace → dynamic; none → static. The label is only a tripwire — disagreement with the imports rejects the Program as mislabeled.
 
 ## 3. Registration — teaching the Engine about host code
 
-Before Plan, the embedder registers any custom functions. This happens
-on the Engine and is **not thread-safe** — configure first, share second.
-The recommended surface is `BindFunction`: you describe the function in
-the same `.celfn` IDL the compiler reads, and hand over a typed lambda.
+Before Plan, the embedder registers custom functions on the Engine. Not thread-safe: configure first, share second. The recommended surface is `BindFunction` — describe the function in the same `.celfn` IDL the compiler reads, hand over a typed lambda:
 
 ```cpp
 // The compiler sees the decl; the engine binds the impl — from ONE string,
@@ -148,26 +93,13 @@ engine->BindFunction(kDecl,             // engine side: implement it
     });
 ```
 
-The lambda's parameter types are checked positionally against the
-declared CEL types at registration, and it registers under the
-*synthesized* overload-id — so the engine-side binding and the
-compiler-side import name are derived from one source and cannot drift.
-(From `examples/04_host_functions.cc`.)
+The lambda's parameter types are checked positionally against the declared CEL types at registration, and it registers under the *synthesized* overload-id — one source, no drift. (From `examples/04_host_functions.cc`.)
 
-The other surfaces, briefly: `AddTypedFunction(id, lambda)` is the same
-typed adapter without a decl; `AddFunction(id, num_args, callback)` is the
-raw layer underneath (§4, L1); `AddModule(alias, bytes)` binds a foreign
-wasm module under an alias; `AddComponent(bytes, lib)` registers a
-Component-Model component (§9). All validate what they can at
-registration and defer store-dependent checks to Plan — except component
-arity, which is checked at **call time** (a wrong-shaped export traps when
-first called, not when planned).
+The other surfaces: `AddTypedFunction(id, lambda)` is the typed adapter without a decl; `AddFunction(id, num_args, callback)` is the raw layer underneath (§4, L1); `AddModule(alias, bytes)` binds a foreign wasm module; `AddComponent(bytes, lib)` registers a Component-Model component (§9). All validate what they can at registration and defer store-dependent checks to Plan — except component arity, checked at **call time** (a wrong-shaped export traps when first called, not when planned).
 
 ## 4. The host-call stack — L0, L1, L2
 
-When the expression calls one of your `@host` functions, three layers sit
-between the raw wasm call and your typed lambda, each raising the
-abstraction one notch:
+When the expression calls an `@host` function, three layers sit between the raw wasm call and the typed lambda:
 
 ```
   wasm:   call $cel_fn.discount_pct_string(out_slot, arg_slot)
@@ -190,9 +122,7 @@ abstraction one notch:
   your C++:   [](absl::string_view tier) -> absl::StatusOr<int64_t> { … }
 ```
 
-You normally live at **L2** (the typed lambda above). When you need raw
-slot access — variadic shapes, lazy list/map views, returning an
-unknown — drop to **L1** and write the callback by hand:
+You normally live at **L2**. For raw slot access — variadic shapes, lazy list/map views, returning an unknown — drop to **L1**:
 
 ```cpp
 engine->AddFunction("double_int", /*num_args=*/2,
@@ -203,36 +133,17 @@ engine->AddFunction("double_int", /*num_args=*/2,
     });
 ```
 
-`num_args` counts the out-slot, so it's params + 1. L1's accessors are
-kind- and bounds-checked (`ArgInt` on a string slot is an
-`InvalidArgument`; an out-of-range index is `OutOfRange`), and its return
-setters route through the *same* encoder the built-in trampolines use, so
-your output is byte-identical to a built-in's. **L0 never even calls you
-if an argument is an error or unknown** — it absorbs that and returns,
-matching CEL's strict-function dispatch (§8).
+`num_args` counts the out-slot: params + 1. L1's accessors are kind- and bounds-checked (`ArgInt` on a string slot → `InvalidArgument`; out-of-range index → `OutOfRange`); its return setters route through the same encoder the built-in trampolines use, so output is byte-identical to a built-in's. **L0 never calls you if an argument is an error or unknown** — it absorbs and returns, matching CEL's strict-function dispatch (§8).
 
 ## 5. The cel_host surface — built-in operations
 
-The built-ins the compiler emits calls to — field access, map/list ops,
-proto construction, well-known-type handling — live behind `cel_host.*`
-imports, in three layers so the *semantics* are testable without any
-wasm:
+The built-ins the compiler emits calls to — field access, map/list ops, proto construction, well-known-type handling — live behind `cel_host.*` imports, in three layers so the semantics are testable without any wasm:
 
-- **Layer 1 — backings.** Pure value semantics, no wasm types: a
-  non-owning view over a proto `Message*`, an owning mutable proto (the
-  only thing field-writes accept), vector-backed maps/lists, reflection
-  views over a single proto field.
-- **Layer 2 — trampoline bodies.** The operation logic, written against
-  three abstractions: a `MemoryView` (read/write CelValue slots), an
-  `ExternrefTable` (three independent handle namespaces — message, map,
-  list — reset between Evals), an `ArenaAllocator` (bump-allocates
-  string/bytes payloads).
-- **Layer 3 — wasmtime glue.** Production implementations of those three,
-  plus one `extern "C"` trampoline per import.
+- **Layer 1 — backings.** Pure value semantics, no wasm types: a non-owning view over a proto `Message*`, an owning mutable proto (the only thing field-writes accept), vector-backed maps/lists, reflection views over a single proto field.
+- **Layer 2 — trampoline bodies.** The operation logic, written against three abstractions: a `MemoryView` (read/write CelValue slots), an `ExternrefTable` (three independent handle namespaces — message, map, list — reset between Evals), an `ArenaAllocator` (bump-allocates string/bytes payloads).
+- **Layer 3 — wasmtime glue.** Production implementations of those three, plus one `extern "C"` trampoline per import.
 
-Registration is **bijection-checked**: the trampoline table and the ABI
-catalogue must list exactly the same 20 `cel_host` imports, asserted at
-startup, so they can't drift.
+Registration is **bijection-checked**: the trampoline table and the ABI catalogue must list exactly the same 20 `cel_host` imports, asserted at startup.
 
 One call, `cel_get_field(out, msg, field_ref, attr)`, end to end:
 
@@ -248,20 +159,11 @@ One call, `cel_get_field(out, msg, field_ref, attr)`, end to end:
                      strings arena-copied)
 ```
 
-The dividing line throughout — and across every trampoline — is the one
-rule from §8: a non-OK **Status** is infrastructure failure (→ trap); a
-langdef-level **error** is a `CEL_ERROR` *value* written to the out slot.
-A few patterns worth knowing: aggregate ops absorb 3VL first then guard
-operand kinds with type-mismatch *values* (not traps); comprehension
-snapshots materialize a host aggregate into the arena, degrading to empty
-iteration on non-host input; and single trampolines collapse whole
-overload families (one serves all ten with-timezone timestamp accessors
-via a kind argument).
+The dividing line across every trampoline is §8's rule: a non-OK **Status** is infrastructure failure (→ trap); a langdef-level **error** is a `CEL_ERROR` *value* written to the out slot. Notable patterns: aggregate ops absorb 3VL first, then guard operand kinds with type-mismatch *values*; comprehension snapshots materialize a host aggregate into the arena, degrading to empty iteration on non-host input; single trampolines collapse whole overload families (one serves all ten with-timezone timestamp accessors via a kind argument).
 
 ## 6. Marshal — getting variables into memory
 
-`Eval(activation)` writes every ABI-declared variable into its
-pre-assigned workspace slot before calling `$eval`:
+`Eval(activation)` writes every ABI-declared variable into its pre-assigned workspace slot before calling `$eval`:
 
 ```
   Activation{ age: 25, country: "US" }
@@ -285,20 +187,11 @@ pre-assigned workspace slot before calling `$eval`:
    decode → Value
 ```
 
-A missing binding is a `FailedPrecondition`; a declared-type vs bound-kind
-mismatch is an `InvalidArgument` — with three deliberate coercions the
-checker allows (`Value::Null()` into any scalar slot; a WKT wrapper
-message peeled to its scalar; a Timestamp/Duration peeled to
-seconds+nanos).
+A missing binding is `FailedPrecondition`; a declared-type vs bound-kind mismatch is `InvalidArgument` — with three deliberate coercions the checker allows (`Value::Null()` into any scalar slot; a WKT wrapper peeled to its scalar; a Timestamp/Duration peeled to seconds+nanos).
 
-The one easy-to-miss subtlety, drawn above: **string/bytes payloads do
-not go in the arena.** They go in a separate per-Instance buffer, because
-`$eval`'s prelude calls `arena_reset` — which would wipe an arena-resident
-payload before the expression body ever read it. A pre-pass sums the bytes
-so the buffer grows *once*, before any encoder caches a memory pointer.
+The easy-to-miss subtlety: **string/bytes payloads do not go in the arena.** They go in a separate per-Instance buffer, because `$eval`'s prelude calls `arena_reset` — which would wipe an arena-resident payload before the expression read it. A pre-pass sums the bytes so the buffer grows *once*, before any encoder caches a memory pointer.
 
-**`PartialEval(activation, unknowns)`** is the same marshal with
-unknown-attribute patterns active:
+**`PartialEval(activation, unknowns)`** is the same marshal with unknown-attribute patterns active:
 
 ```cpp
 auto pattern  = celwasm::AttributePattern::Parse("purchase_total");
@@ -307,19 +200,11 @@ auto result   = instance->PartialEval(activation, unknowns);
 if (result->IsUnknown()) { /* purchase_total wasn't known this call */ }
 ```
 
-A variable whose attribute matches a pattern gets a `CEL_UNKNOWN` —
-**whether or not it's bound** (the pattern wins over a present value) —
-and the unknown descriptor is minted in that same outside-the-arena buffer
-for the same reason. Patterns are cleared on every exit path, so a later
-plain `Eval` can never see stale partial-eval state.
+A variable matching a pattern gets `CEL_UNKNOWN` — **whether or not it's bound** (the pattern wins) — with the unknown descriptor minted in the same outside-the-arena buffer. Patterns are cleared on every exit path, so a later plain `Eval` never sees stale partial-eval state.
 
 ## 7. Eval and decode — the cheap path
 
-Zero-arg `Eval()` calls `$eval`, which returns one i32: the offset of the
-result CelValue. The decoder reads it into a host-owned `Value`.
-Aggregates are **deep-copied** out, because their backings are per-Eval —
-the handle table and arena reset on the next call, so a decoded `Value`
-must own its state to outlive that.
+Zero-arg `Eval()` calls `$eval`, which returns one i32: the offset of the result CelValue. The decoder reads it into a host-owned `Value`. Aggregates are **deep-copied** out — their backings are per-Eval (the handle table and arena reset on the next call), so a decoded `Value` must own its state.
 
 ```cpp
 absl::StatusOr<celwasm::Value> r = instance->Eval(act);
@@ -329,21 +214,13 @@ else if (r->IsUnknown()){ /* partial-eval unknown */ }
 else                    { bool b = r->AsBool().value();  /* a real value */ }
 ```
 
-That four-way branch *is* the contract every embedder writes, and the gap
-between line 2 and line 3 — a non-OK `Status` vs an OK `Value` that
-`IsError()` — is the whole subject of §8.
+That four-way branch is the contract every embedder writes. The gap between a non-OK `Status` and an OK `Value` that `IsError()` is the subject of §8.
 
-(On the `Value` model itself: equality is `StructurallyEquals` — scalars
-by value, strings/bytes by bytes, aggregates by backing-pointer identity
-— and is **deliberately not spec equality**. `Value::Kind` matches the
-wire numbering only for the first nine kinds and diverges above on
-purpose, so conversion is always an explicit switch, never a cast.)
+On the `Value` model: equality is `StructurallyEquals` — scalars by value, strings/bytes by bytes, aggregates by backing-pointer identity — deliberately not spec equality. `Value::Kind` matches the wire numbering only for the first nine kinds and diverges above on purpose; conversion is always an explicit switch, never a cast.
 
 ## 8. Errors and unknowns — three paths, not two
 
-This is the part that trips people up, so here it is as a decision tree.
-An expression that "goes wrong" reaches the embedder one of **three**
-ways, and they are not interchangeable:
+An expression that "goes wrong" reaches the embedder one of **three** ways:
 
 ```
   something goes wrong during Eval
@@ -362,19 +239,9 @@ ways, and they are not interchangeable:
           → WasmTrapToStatus  → Eval returns absl::Internal "Eval trapped"
 ```
 
-The rule, stated once: **a spec-level error is a value; a non-OK `Status`
-means a trap.** Every Layer-2 trampoline returns non-OK Status *only* for
-infrastructure failure; every langdef error is a `CEL_ERROR` CelValue.
-`StatusToTrap` / `TrapFromStatus` are the only places the two cross.
+The rule, stated once: **a spec-level error is a value; a non-OK `Status` means a trap.** Every Layer-2 trampoline returns non-OK Status only for infrastructure failure; every langdef error is a `CEL_ERROR` CelValue. `StatusToTrap` / `TrapFromStatus` are the only crossings.
 
-**Why `1/0` is a value, not a trap — the design decision worth
-understanding.** wasm's `i32.div_s` *hardware-traps* on a zero divisor.
-If cel-wasm let that happen, `1/0` would abort the entire Eval — and that
-would be wrong, because in CEL a division error is a *value* that
-propagates and can be absorbed. `false && (1/0 == 1)` must evaluate to
-`false`; `[1/0].exists(x, x == 2)` must propagate the error, not crash.
-So the kernel **guards every trap-prone operation** and writes an error
-value instead:
+**Why `1/0` is a value, not a trap.** wasm's `i32.div_s` hardware-traps on a zero divisor. Letting that happen would abort the whole Eval — wrong, because in CEL a division error is a *value* that propagates and can be absorbed: `false && (1/0 == 1)` must evaluate to `false`. So the kernel guards every trap-prone operation:
 
 ```c
 // runtime/cel_arith.c — the kernel deliberately avoids the wasm trap.
@@ -387,68 +254,25 @@ void cel_int_div_at_vv(uint32_t out, uint32_t a, uint32_t b) {
   // (INT64_MIN / -1 overflow is guarded the same way.)
 ```
 
-The same applies to modulo-by-zero, integer overflow, and out-of-range
-conversions: all are guarded into `CEL_ERROR` values. The runtime doesn't
-even link compiler-rt, precisely so a stray division can't pull in a
-trapping helper. So the embedder almost never sees a trap from arithmetic
-— they see `result->IsError()` with a code.
+Modulo-by-zero, integer overflow, and out-of-range conversions are guarded the same way. The runtime doesn't even link compiler-rt, so a stray division can't pull in a trapping helper. The embedder almost never sees a trap from arithmetic — they see `result->IsError()` with a code.
 
 Two specifics on the value path:
 
-- **Error *messages* are dropped at the host→wasm boundary.** The wire
-  carries only the error *code*; the message and source location are
-  discarded, and read-back synthesizes a generic message from the code.
-  Known limitation (cleanup-backlog #31), not a deep invariant — the wire
-  *could* carry the message; it just doesn't yet. This is also why a host
-  callback's `InvalidArgument("boom")` reaches the embedder as a generic
-  `Internal "Eval trapped"` — the trap path loses the code (§10).
-- **3VL precedence is "error dominates unknown," regardless of operand
-  order** — oracle-confirmed against cel-cpp, which scans arguments for an
-  error before merging unknowns. Both the kernel and the trampolines
-  implement this.
+- **Error *messages* are dropped at the host→wasm boundary.** The wire carries only the error *code*; message and source location are discarded, and read-back synthesizes a generic message from the code. Known limitation (cleanup-backlog #31), not a deep invariant. It is also why a host callback's `InvalidArgument("boom")` reaches the embedder as a generic `Internal "Eval trapped"` — the trap path loses the code (§10).
+- **3VL precedence for strict ops is "error dominates unknown," regardless of operand order** — oracle-confirmed against cel-cpp. Both the kernel and the trampolines implement it.
 
 ## 9. Components — sandboxed custom functions
 
-The component path makes a Component-Model component's exports callable as
-CEL functions, with the component running in its **own** linear memory
-(the strong-isolation story is the security model's; the mechanics are
-here). At Plan, each component is instantiated into the per-Plan store and
-each foreign decl is bound as a `cel_fn.<overload_id>` trampoline — the
-wasm import shape is identical to an `@host` decl; only the callback body
-differs.
+The component path makes a Component-Model component's exports callable as CEL functions, with the component in its **own** linear memory. At Plan, each component is instantiated into the per-Plan store and each foreign decl is bound as a `cel_fn.<overload_id>` trampoline — the wasm import shape is identical to an `@host` decl; only the callback body differs.
 
-The trampoline 3VL-absorbs (same contract as §4), lifts each argument
-CelValue into a component value per the decl's type witness, calls, and
-lowers the single result back. The type mapping is the interesting part:
-strings are length-based (NUL-safe), bytes cross as `list<u8>`,
-durations/timestamps as a `record{seconds, nanos}`, maps as a
-`list<tuple<K,V>>`, and **protos cross as serialized bytes** (never a
-handle), re-materialized from the descriptor pool on the way back.
-`optional<T>` is rejected both directions. Unsatisfied wasi-preview2
-imports are **trap-stubbed** so a runaway libc++ call traps naming the
-missing interface, with one deliberate exception: `wasi:random/random`
-returns deterministic bytes, because the libc++ runtime reads it during
-static init and there's no per-store WASI context to wire instead.
+The trampoline 3VL-absorbs (same contract as §4), lifts each argument CelValue into a component value per the decl's type witness, calls, and lowers the single result back. Type mapping: strings are length-based (NUL-safe), bytes cross as `list<u8>`, durations/timestamps as `record{seconds, nanos}`, maps as `list<tuple<K,V>>`, and **protos cross as serialized bytes** (never a handle), re-materialized from the descriptor pool on the way back. `optional<T>` is rejected both directions. Unsatisfied wasi-preview2 imports are **trap-stubbed** so a runaway libc++ call traps naming the missing interface — except `wasi:random/random`, which returns deterministic bytes (the libc++ runtime reads it during static init and there is no per-store WASI context to wire instead).
 
 ## 10. Known gaps and future work
 
-- **Host-callback status codes are lost.** A callback returning, say,
-  `InvalidArgument("boom")` surfaces as a generic `Internal "Eval
-  trapped"` — the code and message don't survive the trap path
-  (cleanup-backlog #31, same root as the error-message loss in §8). These
-  should be fixed as one contract.
-- **No Plan-time component signature check** — a wrong-arity component
-  export fails at call time, not Plan; whether to add a Plan-time
-  `FuncType` comparison (and fix the stale header claiming one) is open.
-- **Per-Plan expr re-parse** — the expression module is re-parsed every
-  Plan; a cache seam exists but is unexploited.
-- **Cross-origin list concat** poisons host-involved pairs with a
-  type-mismatch; the planned fix is to materialize into the arena instead.
-- Smaller follow-ons: dynamic-schema descriptor pools, field-descriptor
-  caching, the kType component lower stub.
+- **Host-callback status codes are lost.** A callback returning `InvalidArgument("boom")` surfaces as a generic `Internal "Eval trapped"` (cleanup-backlog #31, same root as the §8 error-message loss). Fix as one contract.
+- **No Plan-time component signature check** — a wrong-arity component export fails at call time, not Plan.
+- **Per-Plan expr re-parse** — the expression module is re-parsed every Plan; a cache seam exists but is unexploited.
+- **Cross-origin list concat** poisons host-involved pairs with a type-mismatch; the planned fix is to materialize into the arena.
+- Smaller follow-ons: dynamic-schema descriptor pools, field-descriptor caching, the kType component lower stub.
 
-The unverified questions catalogued during the notes pass (the exact
-component-arity trap site, zero-arg `Eval()` handle-table growth, the
-host-callback status-code contract) live in the
-[`design/notes/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/design/notes)
-working material rather than inline, so they don't clutter the design.
+Unverified questions (the exact component-arity trap site, zero-arg `Eval()` handle-table growth, the host-callback status-code contract) live in [`design/notes/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/design/notes).
