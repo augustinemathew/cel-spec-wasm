@@ -148,9 +148,9 @@ fixed linear-memory slots instead of re-dispatching an expression tree.
 ### Measured, both sides
 
 cel-wasm is not unconditionally faster than an interpreter. The result
-is workload-dependent, so both sides are shown. All numbers: 2026-06-27
+is workload-dependent, so both sides are shown. All numbers: 2026-07-22
 run, identical inputs on both engines, static-link mode, `-c opt`, Apple
-Silicon ([full tables](benchmark/eval/results/2026-06-27-Mac.md)).
+Silicon ([full tables](benchmark/eval/results/2026-07-22-Mac.md)).
 
 The crossover sits at roughly 3–14 operations, depending on operator
 family ([regression table](benchmark/README.md)). Below it, the fixed
@@ -186,13 +186,14 @@ Repetition to amortize, and work moved to compile time:
 
 | Workload | cel-cpp | cel-wasm | speedup |
 | --- | :---: | :---: | :---: |
-| 1000-term int arithmetic chain over variables | 32.0 µs | 1.8 µs | 18× |
-| 1000-term string-concat chain | 128 µs | 41 µs | 3.1× |
-| constant list folded at compile time (`size([…1000])`) | 8.9 µs | 40 ns | 224× |
-| constant-map lookup, 256 entries, baked hash index (`m[k]`) | 11.5 µs | 98 ns | 118× |
-| constant-map membership, 256 entries (`k in m`) | 20.2 µs | 102 ns | 198× |
-| comprehension `[1…20].map(x, x * 2)` inside `size()` | 5.4 µs | 162 ns | 34× |
-| complex regex `.matches()` | 9.1 µs | 154 ns | 59× † |
+| 1000-term int arithmetic chain over variables | 32.5 µs | 1.8 µs | 18× |
+| 1000-term string-concat chain | 163 µs | 41 µs | 4.0× |
+| constant list folded at compile time (`size([…1000])`) | 11.1 µs | 40 ns | 281× |
+| membership in a 1000-element constant int list (`k in […]`, worst hit) | 15.3 µs | 813 ns | 19× |
+| constant-map lookup, 256 entries, baked hash index (`m[k]`) | 11.2 µs | 91 ns | 124× |
+| constant-map membership, 256 entries (`k in m`) | 17.2 µs | 101 ns | 171× |
+| comprehension `[1…20].map(x, x * 2)` inside `size()` | 5.3 µs | 159 ns | 33× |
+| complex regex `.matches()` | 12.4 µs | 154 ns | 81× † |
 
 † Configuration, not codegen: cel-wasm caches the compiled RE2 pattern
 per Instance; `cel-cpp`'s default runtime recompiles it per eval.
@@ -201,9 +202,9 @@ per Instance; `cel-cpp`'s default runtime recompiles it per eval.
 
 | Workload | cel-cpp | cel-wasm | gap | cause |
 | --- | :---: | :---: | :---: | --- |
-| single proto map accessor (`m.str_to_i32["b"]`) | 104 ns | 175 ns | 1.7× slower | each read crosses one host trampoline; amortized once the expression does more than one accessor. |
-| early-exit `in` over a 1000-string activation-bound list | 76 ns | 1.1 µs | 14× slower | a bound aggregate is copied into the sandbox every Eval; cel-cpp reads the host list by reference. |
-| `contains()` on a 10 KB string | 243 ns | 663 ns | 2.7× slower | was 5.7× with a scalar scan; the wasm kernel now uses a 16-byte SIMD128 anchor scan (re-measured 2026-07-22), and most of the residual gap is the fixed eval floor. |
+| single proto map accessor (`m.str_to_i32["b"]`) | 133 ns | 175 ns | 1.3× slower | each read crosses one host trampoline; amortized once the expression does more than one accessor. |
+| early-exit `in` over a 1000-string activation-bound list | 79 ns | 1.1 µs | 14× slower | a bound aggregate is copied into the sandbox every Eval; cel-cpp reads the host list by reference. |
+| `contains()` on a 10 KB string | 312 ns | 487 ns | 1.6× slower | was 5.7× with a scalar scan; the wasm kernel now uses a 16-byte SIMD128 anchor scan, and the residual gap is mostly the fixed eval floor. |
 
 Methodology and per-cell numbers:
 [`benchmark/eval/results/`](benchmark/eval/results/) ·

@@ -140,7 +140,7 @@ enumeration live from the corpus (with cell counts); the standing set:
 ## Results
 
 <!-- BEGIN AUTO-GENERATED RESULTS (benchmark/eval/report.py) -->
-_Last run: 2026-06-27 on Mac (full tables: `benchmark/eval/results/`)._
+_Last run: 2026-07-22 on Mac (full tables: `benchmark/eval/results/`)._
 
 ### Per-operator headline — T(N) = setup + N·per_op
 
@@ -148,21 +148,21 @@ Linear regression over each length-sweep family; slope is the steady-state cost 
 
 | surface | operator family | points | cel-cpp slope | cel-cpp setup | celwasm-static slope | celwasm-static setup | celwasm-static crossover vs cel-cpp |
 |---|---|---|---|---|---|---|---|
-| arithmetic | doubleAdd | 5 | 30.8 | 19 | 1.5 | 114 | N ≈ 3 |
-| arithmetic | intAdd | 5 | 32.0 | -4 | 1.7 | 111 | N ≈ 4 |
-| arithmetic | intMul | 5 | 31.0 | -44 | 2.7 | 117 | N ≈ 6 |
-| arithmetic | intSub | 5 | 31.8 | -65 | 1.7 | 116 | N ≈ 6 |
-| comprehensions | all | 4 | 65.3 | 165 | 4.5 | 44 | always wins |
-| index | mapIntN | 3 | 45.1 | -64 | -0.0 | 99 | N ≈ 4 |
-| index | mapStrN | 3 | 50.3 | -223 | 0.0 | 93 | N ≈ 6 |
-| lists | bound | 5 | 3.5 | -2,835 | 2.6 | -922 | N ≈ 2,169 |
-| long_strings | containsLong_N | 4 | 0.0 | 66 | 0.1 | 51 | never wins |
-| maps | inIntN | 3 | 82.1 | -1,067 | 0.0 | 100 | N ≈ 14 |
-| maps | inStrN | 3 | 72.1 | -890 | 0.0 | 104 | N ≈ 14 |
-| proto | reads | 3 | 64.6 | 13 | 21.0 | 46 | N ≈ 1 |
-| proto | select_depth | 5 | 34.8 | 36 | 39.5 | 32 | never wins |
-| size | list | 3 | 8.8 | 136 | -0.0 | 40 | always wins |
-| strings | concatChain | 3 | 131.4 | -3,601 | 41.6 | -859 | N ≈ 31 |
+| arithmetic | doubleAdd | 5 | 31.2 | 80 | 1.5 | 118 | N ≈ 1 |
+| arithmetic | intAdd | 5 | 32.5 | -77 | 1.7 | 112 | N ≈ 6 |
+| arithmetic | intMul | 5 | 30.9 | 216 | 2.7 | 112 | always wins |
+| arithmetic | intSub | 5 | 31.3 | -47 | 1.7 | 112 | N ≈ 5 |
+| comprehensions | all | 4 | 65.4 | 127 | 4.3 | 40 | always wins |
+| index | mapIntN | 3 | 43.9 | -14 | 0.0 | 89 | N ≈ 2 |
+| index | mapStrN | 3 | 49.6 | -79 | 0.0 | 95 | N ≈ 3 |
+| lists | bound | 5 | 3.5 | -2,917 | 2.6 | -1,653 | N ≈ 1,409 |
+| long_strings | containsLong_N | 4 | 0.0 | 83 | 0.0 | 46 | never wins |
+| maps | inIntN | 3 | 69.6 | -852 | 0.0 | 99 | N ≈ 14 |
+| maps | inStrN | 3 | 49.2 | -19 | 0.0 | 105 | N ≈ 3 |
+| proto | reads | 3 | 80.1 | 62 | 21.0 | 44 | always wins |
+| proto | select_depth | 5 | 43.5 | 48 | 38.8 | 31 | always wins |
+| size | list | 3 | 11.0 | 200 | -0.0 | 40 | always wins |
+| strings | concatChain | 3 | 167.5 | -4,507 | 41.9 | -855 | N ≈ 29 |
 
 
 <!-- END AUTO-GENERATED RESULTS -->
