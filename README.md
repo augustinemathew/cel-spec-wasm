@@ -16,9 +16,9 @@ granted imports.
 Status: **beta**
 
 The pipeline, sandbox, and conformance results are reproducible.
-Remaining hardening work is listed under
-[Limitations](#limitations). Parts of the documentation and the fuzz
-suite are stale and being updated.
+Remaining hardening work is listed under [Limitations](#limitations).
+
+📖 **[Documentation site →](https://augustinemathew.github.io/cel-wasm/)**
 
 ## CEL in 60 seconds
 
@@ -203,7 +203,7 @@ per Instance; `cel-cpp`'s default runtime recompiles it per eval.
 | --- | :---: | :---: | :---: | --- |
 | single proto map accessor (`m.str_to_i32["b"]`) | 104 ns | 175 ns | 1.7× slower | each read crosses one host trampoline; amortized once the expression does more than one accessor. |
 | early-exit `in` over a 1000-string activation-bound list | 76 ns | 1.1 µs | 14× slower | a bound aggregate is copied into the sandbox every Eval; cel-cpp reads the host list by reference. |
-| `contains()` on a 10 KB string | 243 ns | 1.4 µs | 5.7× slower | cel-cpp uses the host libc's vectorized substring search; the wasm kernel is a scalar loop. |
+| `contains()` on a 10 KB string | 243 ns | 663 ns | 2.7× slower | was 5.7× with a scalar scan; the wasm kernel now uses a 16-byte SIMD128 anchor scan (re-measured 2026-07-22), and most of the residual gap is the fixed eval floor. |
 
 Methodology and per-cell numbers:
 [`benchmark/eval/results/`](benchmark/eval/results/) ·

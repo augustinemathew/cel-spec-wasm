@@ -8,9 +8,10 @@ Three reasons, one trade:
 
 - **Speed at repetition.** The expression is compiled to wasm ahead of
   time and JIT'd to native code at `Plan` time — no AST walk, no
-  interpreter dispatch per Eval. Corpus-wide it's parity with cel-cpp
-  (geomean 0.95×); on anything with length or control flow it's 9–25×
-  faster (see "How fast is it really?" below).
+  interpreter dispatch per Eval. The crossover vs cel-cpp is roughly
+  3–14 operations depending on operator family; above it, wins run
+  from 3× (string chains) to 200×+ (constant aggregates materialized
+  at compile time). See "How fast is it really?" below.
 - **One artifact everywhere.** A `Program` is pure bytes (wasm +
   `cel.abi`). Compile once, ship it, evaluate it in a process — or, in
   the future, a language — that never links the compiler. Semantic
@@ -40,25 +41,25 @@ replacement.
 
 ### How fast is it really?
 
-Measured over a 232-cell corpus against cel-cpp's tree-walking
-evaluator (`-c opt`, Apple Silicon, static-linked mode): **corpus-wide
-geomean 0.95× — parity — with a sharply two-sided distribution.**
+Measured over the eval corpus against cel-cpp's evaluator (`-c opt`,
+Apple Silicon, static-linked mode). The distribution is two-sided and
+workload-dependent; the crossover is roughly 3–14 operations.
 
-- **Wins:** 9× on a 100-element `.all()`, 25× on a 20-element
-  `.map()`, 2.2× on a 100-term string-concat chain. (The 1000-term
-  arithmetic-chain numbers predate the slot-reuse codegen rework; we
-  don't quote a speedup there until it's re-measured.) The crossover
-  is roughly 10 operations — anything with repetition amortizes the
-  compiled code.
-- **Losses:** 44× on a 100-entry **map literal** (constant aggregates
-  are rebuilt every Eval today; cel-cpp folds them at plan time), 8×
-  on 1000-char string equality (no wasm SIMD memcmp yet), and 1.2–1.9×
-  on single-op expressions — the per-Eval floor is 62 ns (one wasm
-  boundary crossing + arena reset), which tiny expressions can't
-  amortize.
+- **Wins:** constant aggregates materialize into the Program at
+  compile time — `size([…1000])` 224×, constant-map lookup with the
+  baked hash index 118–198× at 256 entries; 1000-term arithmetic
+  chains 18×; complex regex 59× (pattern cached per Instance).
+- **Losses:** single proto accessors ~1.7× slower (one host trampoline
+  per read, amortized by any larger expression); large
+  activation-bound aggregates pay a per-Eval marshal (an early-exit
+  `in` over a 1000-string bound list is ~14× slower); `contains()` on
+  a 10 KB haystack is ~2.7× slower even after the SIMD128 scan
+  (the fixed eval floor dominates what remains).
+- **The floor:** a trivial expression evaluates in ~50 ns (boundary
+  crossing + arena reset), which single-op expressions can't amortize.
 
-Full methodology and every loss row's cause:
-[`m28-bench-results.md`](../implementation-plan/rewrite/m28-bench-results.md).
+Current published tables: [`benchmark/README.md`](../../benchmark/README.md)
+and [`benchmark/eval/results/`](../../benchmark/eval/results/).
 Reproduce with `benchmark/eval/run.sh` (three-way: dynamic / static /
 cel-cpp).
 
@@ -66,10 +67,10 @@ cel-cpp).
 
 Depends on `CompilerOptions::link_mode` (`compiler/compiler.h`):
 
-- **`kStatic` (the default):** ~1.1 MB measured (1,162,962 bytes for
-  `1 + 2`) — the runtime kernel is merged into the Program, so it's
-  fully self-contained and fastest to evaluate.
-- **`kDynamic`:** ~10 KB — just the compiled expression; the runtime
+- **`kStatic` (the default):** ~2.4 MB measured — the runtime kernel
+  is merged and optimized into the Program, so it's fully
+  self-contained and fastest to evaluate.
+- **`kDynamic`:** ~6.5 KB — just the compiled expression; the runtime
   helpers are imported and supplied by the Engine at `Plan` time. Use
   it when you cache many distinct Programs and memory footprint
   matters.
@@ -79,14 +80,18 @@ on link mode.
 
 ### How long do Compile / Plan / Eval take?
 
-- **Compile** — the slow phase: a few hundred µs for small expressions
-  at `optimize_level = 0`, rising ~2–3× at level 2 (the recommended
-  production setting — see the per-level table in
-  `compiler/compiler.h`). Pay it once per expression.
-- **Plan** — ~240–300 µs: Cranelift JITs the Program's wasm to native
-  code. Pay it once per Program per process; amortized across evals.
-- **Eval** — the floor is ~62 ns (boundary crossing + arena reset +
-  result decode); real expressions add their actual work on top.
+Depends on link mode (measured with the public API, Apple Silicon,
+`-c opt`; reproduce with `bazel run -c opt
+//benchmark/compiler:stage_bench`):
+
+- **Compile** — ~60 ms static (the runtime kernel is merged and
+  optimized into each Program — real parallel work), ~0.5 ms dynamic.
+  Pay it once per expression.
+- **Plan** — ~65 ms static / ~0.5 ms dynamic: Cranelift JITs the
+  Program to native code. Once per Program per process.
+- **Eval** — the floor is ~50 ns static (~290 ns dynamic); real
+  expressions add their actual work on top. `Engine` construction is
+  a further ~70 ms, once per process.
 
 ### Is it thread-safe?
 
@@ -141,13 +146,16 @@ dynamic schemas: `--proto <file>` (a `.proto` source file) or
 
 ### Is it production-ready?
 
-Not yet — and the gaps are listed, not hidden. The specific items:
-constant list/map literals rebuilt every Eval (the 44× loss row),
-oversized literal aggregates that can trap the runtime instead of
-erroring gracefully, no fuzzing yet, and no bindings beyond C++. See
-"Production readiness" in the [README](../../README.md), the
-[security model](security-model.md) for the exact threat-relevant
-items, and `e2e/known_bugs_test.cc` +
+Beta. The pipeline, sandbox, and conformance results are real and
+reproducible: differential fuzzing against the cel-cpp oracle runs
+nightly in CI, constant list/map literals materialize into the Program
+at compile time, and oversized literals are rejected at compile with a
+graceful `ResourceExhausted`. What remains is listed, not hidden: no
+bindings beyond C++, allocator caps and CPU-time limits for component
+functions still to come, and no release-versioning policy yet. See
+"Limitations" in the [README](../../README.md), the
+[security model](security-model.md) for the threat-relevant items, and
+`e2e/known_bugs_test.cc` +
 `doc/implementation-plan/cleanup-backlog.md` where every known gap is
 pinned by a test or a tracked entry.
 
