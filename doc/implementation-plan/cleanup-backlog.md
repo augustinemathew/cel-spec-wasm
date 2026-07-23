@@ -21,7 +21,54 @@ struck through or removed.
 
 ## Open
 
-- [ ] **#47** — bracket-shape parser stack overflow: `ParseAndCheck`
+- [ ] **#49** — native test/bench arena (64 KiB,
+      `CELWASM_ARENA_CAPACITY_BYTES`) segfaults silently on oversized
+      operands instead of failing loudly: `cel_make_string` of a
+      64 KiB payload in `benchmark/kernel:kernel_bench` SIGSEGVed with
+      no message (found 2026-07-22 sizing new contains() benches; the
+      wasm build fails gracefully on the same shape).  Fix direction:
+      make `arena_alloc` overrun in the native build ABSL_CHECK-fail
+      naming the capacity, or grow the native arena.
+      Surfaced: 2026-07-22 SWAR/SIMD contains() session.
+      Files: `runtime/cel_memory.c`, `runtime/cel_arena.c`,
+      `benchmark/kernel/kernel_bench.cc`.
+      Why P2: native lib is test/bench-only; production (wasm) path
+      errors gracefully.
+
+- [ ] **#50** — policy decision: the PBT divergence miner
+      (`//e2e/fuzz:cel_oracle_property_test`) gates CI via
+      `run_full_suite.sh`'s manual-target query, but its own header
+      says it "WILL fail when it finds an oracle divergence" — a
+      discovery tool gating a green-baseline pipeline.  Either accept
+      (a find = a real bug = red CI is correct) and say so in the
+      test header, or exclude it from the CI sweep and run it in the
+      nightly fuzz workflow where red means "new find to triage".
+      Surfaced: 2026-07-22 CI-green session (it was the last red
+      target — env-only, fixed by linkstatic).
+      Files: `scripts/run_full_suite.sh`, `e2e/fuzz/BUILD.bazel`,
+      `.github/workflows/{ci,fuzz}.yml`.
+      Why P2: green today; only bites on the next genuine divergence
+      find.
+
+- [ ] **#48** — loose assertions on limit/error tests surfaced by the
+      2026-07-08 review (T-2, T-3): (a) `compiler_test.cc::
+      DeepBracketInputFromSmallStackRejectsGracefully` asserts only
+      `StatusIs(kResourceExhausted)` — the "Compilation limits" rule
+      wants code + message substring; add `HasSubstr` on the depth /
+      limit phrase (cf. `parse_and_check_test.cc:619-622`).  (b)
+      `limits_test.cc::BuildPathVariableKeyMapRuntimeDuplicateKeyErrors`
+      (:324-330) promises `CEL_ERR_DUPLICATE_KEY` in its comment but
+      asserts only `v->IsError()`; same for the index-miss arm of
+      `RodataWindowLargeConstMapEvaluatesCorrectly` (:272-279) —
+      assert the code via `Value::ErrorInfo()` so a wrong-error
+      regression can't pass.
+      Surfaced: 2026-07-08 review
+      (rewrite/reviews/2026-07-08-worktree-a1-c-api.md).
+      Files: `compiler/compiler_test.cc`, `e2e/limits_test.cc`.
+      Why P2: assertions exist and pass; this tightens them against
+      wrong-status / wrong-error-code regressions, no behavior gap.
+
+- [x] **#47** — bracket-shape parser stack overflow: `ParseAndCheck`
       on deeply bracket-nested input (`[[[…]]]`, near the 2048
       `kMaxExpressionNestingDepth` limit) can SIGSEGV a default
       8 MiB thread inside cel-cpp's ANTLR parser BEFORE the
@@ -55,6 +102,50 @@ struck through or removed.
       threads, but requires ~2k-deep brackets (parser limit already
       normalizes the >2080 case); macOS default main-thread stack
       (8 MiB) is the same order — re-verify locally during the fix.
+      **Resolved 2026-06-27** — option (b), at the right boundary.
+      Re-triage found the live exposure is NOT the 8 MiB main thread
+      (which survives ~2k brackets) but a SMALL-stack CALLER: an
+      embedder calling `Compile` from a server worker thread (macOS
+      secondary pthreads default to 512 KiB; tuned pools run
+      256 KiB–1 MiB).  Verified the crash reproduces deterministically
+      via the CLI under `ulimit -s` ≤ 4096 at depth 2000 — *under* the
+      2048 gate, so the gate never fires.  Moving only the parse to a
+      big stack was insufficient: a depth-2000 nest is admitted, so a
+      valid 2000-deep `cel::Ast` escapes and is then walked by codegen
+      AND recursively destroyed on the caller's small stack.  The fix
+      runs the WHOLE public `Compiler::Compile` pipeline — parse,
+      codegen, and the deep `cel::Ast`'s destruction — on a dedicated
+      64 MiB-stack thread (`RunOnLargeStack` in `compiler/compiler.cc`),
+      so only the flat `Program` (wasm bytes) crosses back to the
+      caller; the outcome is now independent of the caller's stack.
+      Falls back to inline on thread-create failure (degenerate
+      thread-exhaustion state).  `RunOnLargeStack` is platform-gated
+      (`#ifdef __wasm__`): on wasm there are no host threads AND a stack
+      overflow is a clean host-catchable trap (not a host SIGSEGV), so it
+      runs inline and `compiler/` keeps no hard pthread dependency — the
+      "compiler.wasm stays reachable" layering rule holds.  (When that
+      target is wired, size the wasm link-time stack so the parser reaches
+      `max_recursion_depth` and the depth gate, not a trap, is the reject
+      path; the wasm branch is untested-by-CI until then.)  The internal
+      `celwasm::Compile` entry
+      (used by the `cel` CLI, conformance, benchmarks — all first-party,
+      main-thread) still returns the deep `CompiledArtifact`; those
+      callers run on the 8 MiB main thread and are unaffected.  Files:
+      `compiler/compiler.{h,cc}`.  Regression pins: `compiler_test.cc`
+      `CompilerStackSafetyTest.{DeepBracketInputFromSmallStackRejectsGracefully,
+      NormalCompileFromSmallStackSucceeds}` (compile a depth-5000 nest
+      from a 256 KiB-stack thread → graceful `ResourceExhausted`, no
+      SIGSEGV; both link modes).  Pin gap (2026-07-08 review, T-1):
+      the ADMITTED-deep path (~depth 2000, under the gate — the very
+      shape the re-triage above identified) has no small-stack pin
+      yet; until it lands, the pins prove graceful rejection of
+      over-limit input, not no-SIGSEGV on admitted input.  Tracked as
+      a `[ ]` row in testing-checklist.md §"Expression-depth gate".  cel-cpp parity: upstream shares the
+      ANTLR core and very likely the same crash on a small stack; not
+      filed upstream here.  Follow-up (not this fix): #45(b) codegen
+      flattening would drop the depth gate, but the deep-`cel::Ast`
+      destructor hazard is intrinsic to holding a deep checked AST, so
+      the large-stack boundary stays regardless.
 
 - [x] **#46** — FIXED 2026-06-10.  Kernel silent-degrade-on-OOM /
       poisoned-source family in `runtime/cel_runtime.c` +

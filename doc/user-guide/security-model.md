@@ -144,11 +144,12 @@ load-bearing. Fix: size the parse stack to the limit.
   codegen or the JIT. Clears realistic policies with wide margin
   (cleanup-backlog #45).
 - **Very large literal aggregates don't compile** (a capability limit).
-  A multi-thousand-element literal list/map is rejected at compile with
-  `ResourceExhausted` (boundary N=327 OK / 328 rejected,
-  `KnownBugs.LiteralIntListInScanRejectedAtCompileAt10K`). Put large
-  constant data in an activation-bound variable — it compiles *and* runs
-  faster.
+  An oversized literal list/map is rejected at compile with a loud
+  `ResourceExhausted`, never silently miscompiled. The current rodata
+  window admits roughly 10,900 int list elements / 4,600 int map
+  entries; every boundary is pinned just-inside / just-past in
+  `e2e/limits_test.cc`. Put larger constant data in an
+  activation-bound variable.
 - **The arena grows on demand, bounded by memory.** A chained,
   malloc-backed bump allocator (`runtime/cel_arena.c`); exhaustion is a
   graceful `ResourceExhausted` / `FAILED_PRECONDITION`, never a crash.
@@ -158,12 +159,14 @@ load-bearing. Fix: size the parse stack to the limit.
 
 **🟡 Maturity, not safety:**
 
-- **Fuzzing is early.** Property-based testing (FuzzTest) ships — the
-  compiler pipeline and grammar have generator suites that become
-  coverage-guided fuzzers under `--config=fuzztest`. But the ABI decoder
-  and runtime kernel have no dedicated targets yet, and the conformance
-  corpus (1973 passing rows) is broad but not adversarial — so treat fuzz
-  coverage as in-progress, not a guarantee.
+- **Fuzzing is differential, and runs nightly — but is not exhaustive.**
+  A property-based suite (`e2e/fuzz/`) generates type-checked CEL,
+  evaluates it through both this pipeline and the real cel-cpp oracle,
+  and fails on any divergence; CI runs the sweep nightly
+  (`.github/workflows/fuzz.yml`). The ABI decoder and runtime kernels
+  still lack dedicated byte-level fuzz targets, and the conformance
+  corpus (2035 passing rows) is broad but not adversarial — treat fuzz
+  coverage as strong on semantics, in-progress on wire surfaces.
 - **The 100k-codepoint parser cap is a coarse fence, not the boundary.**
   The real safety gates are the static-region and depth checks above; the
   codepoint cap just bounds source *length*. Size your own input cap to
