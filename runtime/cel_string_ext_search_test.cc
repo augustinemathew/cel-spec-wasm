@@ -412,5 +412,87 @@ TEST_F(StringExtFixture, ReplaceNKindMismatchOnN) {
   ExpectError(out, CEL_ERR_TYPE_MISMATCH);
 }
 
+
+// ── anchor-scan boundary matrix ──────────────────────────────────────
+//
+// IndexOf/LastIndexOf anchor on the needle's first byte
+// (`cel_anchor_memchr_`) and bulk-advance code-point counts across
+// pure-ASCII blocks; these cases pin the edges that byte-at-a-time
+// walks never stressed.
+
+// The skipped span before the match is > one 16-byte block of pure
+// ASCII — exercises the bulk code-point advance plus the sub-block
+// remainder, and the returned index must still be the code-point
+// count.
+TEST_F(StringExtFixture, IndexOfAfterLongAsciiRun) {
+  const std::string hay = std::string(40, 'x') + "NDL";
+  uint32_t out = MakeOut();
+  cel_string_index_of_at_vv(out, MakeStr(hay.c_str()), MakeStr("NDL"));
+  ExpectInt(out, 40);
+}
+
+// Multi-byte code points before the match: the code-point index (3)
+// diverges from the byte offset (6); the scalar decode leg of the
+// advance must count sequences, not bytes.
+TEST_F(StringExtFixture, IndexOfAfterMultibyteRun) {
+  uint32_t out = MakeOut();
+  cel_string_index_of_at_vv(out, MakeStr("\xC2\xA9\xC2\xA9\xC2\xA9NDL"),
+                            MakeStr("NDL"));
+  ExpectInt(out, 3);
+}
+
+// The needle's first byte occurs ONLY as the continuation byte of a
+// multi-byte sequence (0xA9 inside U+00A9 = C2 A9).  A byte-blind
+// search would "find" it; the decode walk never visits non-boundary
+// offsets, so the result must be -1.
+TEST_F(StringExtFixture, IndexOfAnchorInsideMultibyteSequenceIsNotAMatch) {
+  uint32_t out = MakeOut();
+  cel_string_index_of_at_vv(out, MakeStr("\xC2\xA9Z"), MakeStr("\xA9Z"));
+  ExpectInt(out, -1);
+}
+
+// Malformed input parity: a stray continuation byte (0x80 with no
+// lead) advances the decode walk by ONE byte and counts as ONE code
+// point — the accelerated walk must agree with the plain one.
+TEST_F(StringExtFixture, IndexOfStrayContinuationCountsAsOneCodePoint) {
+  uint32_t out = MakeOut();
+  cel_string_index_of_at_vv(out, MakeStr("\x80NDL"), MakeStr("NDL"));
+  ExpectInt(out, 1);
+}
+
+// Anchor-dense haystack: every byte matches the needle's first byte,
+// so every position is a candidate; only the true match position
+// comes back.
+TEST_F(StringExtFixture, IndexOfDenseFalseAnchors) {
+  uint32_t out = MakeOut();
+  cel_string_index_of_at_vv(out, MakeStr("aaaaaaaaaaaaaaaaaaab"),
+                            MakeStr("ab"));
+  ExpectInt(out, 18);
+}
+
+// LastIndexOf across multi-byte spans: three matches; the last one
+// sits past a 2-byte code point, so its code-point index (9) is not
+// its byte offset (10).
+TEST_F(StringExtFixture, LastIndexOfAfterMultibyte) {
+  uint32_t out = MakeOut();
+  cel_string_last_index_of_at_vv(out, MakeStr("NDLxxNDL\xC2\xA9NDL"),
+                                 MakeStr("NDL"));
+  ExpectInt(out, 9);
+}
+
+// Bounded LastIndexOf: matches exist at code points 0, 5, and 9; a
+// pos limit of 5 must return the match AT 5 (inclusive), and a limit
+// of 4 must fall back to the match at 0.
+TEST_F(StringExtFixture, LastIndexOfBoundedPosInclusive) {
+  uint32_t out = MakeOut();
+  cel_string_last_index_of_at_vvv(out, MakeStr("NDLxxNDL\xC2\xA9NDL"),
+                                  MakeStr("NDL"), MakeInt(5));
+  ExpectInt(out, 5);
+  out = MakeOut();
+  cel_string_last_index_of_at_vvv(out, MakeStr("NDLxxNDL\xC2\xA9NDL"),
+                                  MakeStr("NDL"), MakeInt(4));
+  ExpectInt(out, 0);
+}
+
 }  // namespace
 }  // namespace celwasm

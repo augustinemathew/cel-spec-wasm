@@ -30,6 +30,8 @@ on:
     paths-ignore:
       - "**.md"
       - "doc/img/**"
+      # Published benchmark tables (md + csv) can't affect tests.
+      - "benchmark/eval/results/**"
   pull_request:
   workflow_dispatch:
     inputs:
