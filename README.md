@@ -70,20 +70,22 @@ Embedding from C++:
 #include "compiler/compiler.h"
 #include "eval/engine.h"
 
-auto builder = celwasm::Compiler::NewBuilder();
-builder.DeclareVariable("age", celwasm::CelType::Int())
-    .DeclareVariable("country", celwasm::CelType::String());
+using namespace celwasm;
+
+auto builder = Compiler::NewBuilder();
+builder.DeclareVariable("age", CelType::Int())
+    .DeclareVariable("country", CelType::String());
 auto compiler = std::move(builder).Build().value();
 
 auto program = compiler.Compile("age >= 18 && country in ['US', 'CA']").value();
 
-auto engine   = celwasm::Engine::NewBuilder().Build().value();  // once per process
-auto instance = engine.Plan(program).value();                   // JIT, once per program
+auto engine   = Engine::NewBuilder().Build().value();  // once per process
+auto instance = engine.Plan(program).value();          // JIT, once per program
 
-celwasm::Activation act;
-act.Bind("age", celwasm::Value::Int(25))
-   .Bind("country", celwasm::Value::String("US"));
-bool allowed = instance.Eval(act)->AsBool().value();            // => true
+Activation act;
+act.Bind("age", Value::Int(25))
+   .Bind("country", Value::String("US"));
+bool allowed = instance.Eval(act)->AsBool().value();   // => true
 ```
 
 This is [`examples/02_variables.cc`](examples/02_variables.cc),
