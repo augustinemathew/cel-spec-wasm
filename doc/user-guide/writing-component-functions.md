@@ -5,9 +5,10 @@ component** instantiated alongside the CEL expression. The component runs in
 its own linear memory; values cross the boundary through the canonical ABI.
 
 The `cel_wasm_component` Bazel macro takes a `.celfn` IDL and your
-implementation source, runs the whole pipeline (`cel generate` →
-`wit-bindgen c` → `wasm32-wasip2` `cc_binary`), and produces a single `.wasm`
-component you load via `Engine::AddComponent`.
+implementation source, runs the whole pipeline (codegen, interface glue,
+and the wasm cross-compile), and produces a single `.wasm` component you
+load via `Engine::AddComponent`. You write two files; everything between
+them and the final `.wasm` is an implementation detail.
 
 > **Status:** the C++ pipeline ships end-to-end for the scalar / int / bool
 > round trip — what the
@@ -22,18 +23,24 @@ component you load via `Engine::AddComponent`.
 ## 1. The pipeline at a glance
 
 ```
-fns.idl       ┐
-user_fns.cc   ├─► cel_wasm_component  ─►  demo_component.wasm
-acme/user.proto ┘   (cel generate +              (CM component
-                     wit-bindgen +                that exports
-                     wasi-sdk cc_binary)         cel:customfn/fns@0.1.0)
+fns.idl        ┐
+user_fns.cc    ├─►  cel_wasm_component  ─►  demo_component.wasm
+acme/user.proto┘    (one macro call)        (load with AddComponent)
 ```
 
-The macro emits four intermediate files into the package's gen tree —
-`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h` — then compiles your
-`user_fns.cc` against them under `wasm32-wasip2`. The output is a
-preamble-`0x1000d` Component-Model component; `wasm-tools component wit` on it
-shows `export cel:customfn/fns@0.1.0`.
+Your inputs are the IDL and your implementation; the output is one
+`.wasm`. The only generated file you touch is `user_fns.h` — it gives
+your implementation its function signatures.
+
+??? note "Under the hood (implementation detail)"
+    The macro chains `cel generate` → `wit-bindgen c` → a
+    `wasm32-wasip2` `cc_binary`, emitting `fns.wit`, `codec.h`,
+    `generated_stub.cc`, and `user_fns.h` into the package's gen tree.
+    The output is a WASI Component-Model component
+    (preamble `0x1000d`); `wasm-tools component wit` on it shows
+    `export cel:customfn/fns@0.1.0`. None of this surfaces in the API —
+    the engine resolves your `@component` declarations against the
+    component's exports by itself.
 
 ---
 
@@ -50,9 +57,10 @@ int    @component.add(int a, int b);
 string @component.greet(string name, int age);
 ```
 
-The `Module` directive becomes the WIT package name
-(`cel:<module>/fns@0.1.0` by default; override with `package = ...` on the
-macro). Each `@component.<fn>` decl becomes a typed export in that interface.
+The `Module` directive names the component; each `@component.<fn>` decl
+becomes a typed export. (Internally the module name seeds an interface
+identifier — override with `package = ...` on the macro if you ever need
+to, but nothing in normal use reads it.)
 
 ### 2.2 The implementation — `user_fns.cc`
 
@@ -95,13 +103,10 @@ cel_wasm_component(
 )
 ```
 
-`bazel build :demo_component` produces `bazel-bin/.../demo_component.wasm` — a
-real Component-Model component (~54 KB for the example above). Inspect with:
-
-```bash
-bazel run //third_party/wasm_tools:wasm-tools -- \
-    component wit bazel-bin/.../demo_component.wasm
-```
+`bazel build :demo_component` produces `bazel-bin/.../demo_component.wasm`
+(~54 KB for the example above) — the one artifact you ship. Curious what's
+inside? `bazel run //third_party/wasm_tools:wasm-tools -- component wit
+<path>` prints its typed interface, but you never need to.
 
 ### 2.4 Loading it from C++
 
@@ -292,7 +297,7 @@ size cost. Empirically confirmed; see
 Every CEL type the foreign-component decl surface admits, with the canonical
 C++ container the codec lifts to / lowers from:
 
-| CEL type | WIT type | C++ container |
+| CEL type | wire type (internal) | C++ container |
 | --- | --- | --- |
 | `bool` | `bool` | `bool` |
 | `int` | `s64` | `int64_t` |

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="320" viewBox="0 0 940 320" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <!-- What Compile() emits under each link mode. Facts: design/00 §3.
+       Hand-authored; same house style/palette as pipeline-*.svg. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#8c959f"/>
+    </marker>
+  </defs>
+
+  <!-- static band -->
+  <rect x="12" y="30" width="440" height="236" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="24" y="20" font-size="13" font-weight="600" fill="#57606a">STATIC LINK &#183; default &#183; one self-contained artifact</text>
+
+  <rect x="60" y="48" width="344" height="172" rx="8" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="232" y="68" text-anchor="middle" font-size="13" font-weight="600" fill="#0969da">program.wasm &#8212; MB-scale</text>
+  <g font-size="12">
+    <rect x="76" y="78" width="312" height="30" rx="4" fill="#ffffff" stroke="#54aeff"/>
+    <text x="232" y="97" text-anchor="middle" fill="#0969da"><tspan font-weight="600">$eval</tspan> &#8212; your expression, as code</text>
+    <rect x="76" y="112" width="312" height="30" rx="4" fill="#ffffff" stroke="#54aeff"/>
+    <text x="232" y="131" text-anchor="middle" fill="#0969da"><tspan font-weight="600">runtime kernel</tspan> &#8212; merged, optimized together</text>
+    <rect x="76" y="146" width="312" height="30" rx="4" fill="#ffffff" stroke="#54aeff"/>
+    <text x="232" y="165" text-anchor="middle" fill="#0969da"><tspan font-weight="600">.rodata</tspan> &#8212; constants baked in</text>
+    <rect x="76" y="180" width="312" height="30" rx="4" fill="#ffffff" stroke="#54aeff"/>
+    <text x="232" y="199" text-anchor="middle" fill="#0969da"><tspan font-weight="600">cel.abi</tspan> &#8212; self-description (custom section)</text>
+  </g>
+  <text x="232" y="242" text-anchor="middle" font-size="11.5" fill="#57606a">nothing to link at run time &#183; fastest eval (~50 ns floor)</text>
+  <text x="232" y="258" text-anchor="middle" font-size="11.5" fill="#57606a">slower compile &#183; bigger artifact</text>
+
+  <!-- dynamic band -->
+  <rect x="476" y="30" width="452" height="236" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="488" y="20" font-size="13" font-weight="600" fill="#57606a">DYNAMIC LINK &#183; thin artifact + shared runtime</text>
+
+  <rect x="500" y="70" width="180" height="128" rx="8" fill="#dafbe1" stroke="#4ac26b"/>
+  <text x="590" y="92" text-anchor="middle" font-size="13" font-weight="600" fill="#1a7f37">program.wasm</text>
+  <text x="590" y="108" text-anchor="middle" font-size="12" fill="#1a7f37">KB-scale</text>
+  <g font-size="11.5" fill="#1a7f37">
+    <text x="590" y="132" text-anchor="middle">$eval &#183; .rodata &#183; cel.abi</text>
+    <text x="590" y="150" text-anchor="middle">imports cel.memory</text>
+    <text x="590" y="166" text-anchor="middle">+ the cel.* helpers</text>
+  </g>
+
+  <rect x="728" y="70" width="176" height="128" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+  <text x="816" y="112" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2328">cel_runtime.wasm</text>
+  <text x="816" y="130" text-anchor="middle" font-size="11.5" fill="#57606a">shared kernel,</text>
+  <text x="816" y="146" text-anchor="middle" font-size="11.5" fill="#57606a">one per process</text>
+
+  <line x1="680" y1="134" x2="726" y2="134" stroke="#8c959f" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="703" y="122" text-anchor="middle" font-size="10.5" fill="#57606a">linked at Plan</text>
+
+  <text x="702" y="242" text-anchor="middle" font-size="11.5" fill="#57606a">~100&#215; faster compile &#183; tiny Programs, easy to ship in bulk</text>
+  <text x="702" y="258" text-anchor="middle" font-size="11.5" fill="#57606a">cross-module calls &#8594; higher eval floor (~290 ns)</text>
+
+  <!-- shared caption -->
+  <text x="470" y="296" text-anchor="middle" font-size="12" fill="#57606a">same codegen either way &#8212; byte-identical conformance results &#183; chosen per Program at Compile() (CompilerOptions::link_mode)</text>
+  <text x="470" y="313" text-anchor="middle" font-size="12" fill="#57606a">rule of thumb: static for compile-once / eval-many serving &#183; dynamic for compile-heavy or many-program fleets</text>
+</svg>

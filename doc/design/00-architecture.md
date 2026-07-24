@@ -63,6 +63,9 @@ The lifecycle is strictly forward: Compiler never sees an Engine, Engine never s
 
 ## 3. Link modes
 
+![Compilation artifacts under each link mode](../img/artifacts-light.svg#only-light)
+![Compilation artifacts under each link mode](../img/artifacts-dark.svg#only-dark)
+
 `CompilerOptions::link_mode` (`compiler/compiler.h`) selects how a Program relates to the runtime kernel:
 
 - **`kStatic` (default).** Self-contained: the compiler adopts the wrapper-stripped runtime module as its base (`BinaryenModuleRead` over embedded stripped-runtime bytes, `compile.cc::AdoptStrippedRuntime`), installs the expression's rodata segment, and lowers `$eval` into the adopted module. The Program defines its own memory, has **zero** `"cel"`-namespace function imports (pinned by `compile_test.cc`), and retains only host-boundary imports (`cel_host.*`, `cel_env.*`, `cel_fn.*`). Size ~800 KB–1.1 MB.

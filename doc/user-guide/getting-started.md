@@ -113,7 +113,29 @@ deps = [
 [`examples/07_error_handling.cc`](https://github.com/augustinemathew/cel-wasm/blob/master/examples/07_error_handling.cc)
 for the error-handling layers.)
 
-## 5. Tuning a compile — `CompilerOptions`
+## 5. Static vs dynamic linking — the one choice that matters
+
+Every compiled expression calls into a runtime kernel (string ops,
+list/map kernels, arithmetic, the arena). `link_mode` decides where
+that kernel lives:
+
+- **`kStatic` (default)** merges the kernel into each Program at
+  compile time. Self-contained ~2.4 MB artifact, ~60 ms compile,
+  fastest eval (~50 ns floor). Pick this when you compile once and
+  evaluate many times — the common serving shape.
+- **`kDynamic`** keeps the Program tiny (~6.5 KB) and links it to one
+  shared `cel_runtime.wasm` per process at `Plan`. ~0.5 ms compile,
+  ~290 ns eval floor. Pick this when you compile constantly or cache
+  thousands of Programs.
+
+![Compilation artifacts under each link mode](../img/artifacts-light.svg#only-light)
+![Compilation artifacts under each link mode](../img/artifacts-dark.svg#only-dark)
+
+You never handle the difference at eval time — `Engine::Plan` detects
+the mode from the Program's imports and wires either shape. Both modes
+produce byte-identical results on the conformance corpus.
+
+## 6. Tuning a compile — `CompilerOptions`
 
 Declarations live on the `Builder`; `CompilerOptions` tunes how one
 expression is lowered:
@@ -131,7 +153,7 @@ opts.optimize_level = 2;
 auto program = compiler.Compile("a * b + 1", opts).value();
 ```
 
-## 6. Where to go next
+## 7. Where to go next
 
 | You want to… | Go to |
 | --- | --- |
