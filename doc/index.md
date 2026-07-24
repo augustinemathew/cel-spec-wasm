@@ -79,7 +79,10 @@ bazel-bin/tools/cel/cel eval 'age >= 18 && country in ["US","CA"]' \
 
 **Beta.** The pipeline, sandbox, benchmarks, and conformance numbers are real
 and reproducible. **0 conformance failures** — every attempted row of the
-upstream CEL corpus passes, in both link modes. The remaining hardening gaps
+upstream CEL corpus passes, in both link modes. Development is heavily
+AI-assisted — designed and pair-programmed with Claude (Anthropic),
+with every change gated by conformance, differential fuzzing against
+cel-cpp, and the benchmark harness. The remaining hardening gaps
 are listed honestly in the
 [security model](user-guide/security-model.md) and the repo's *Production
 readiness* section.

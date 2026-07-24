@@ -198,9 +198,9 @@ supplies the component bytes at runtime:
 // Compile time: the decl makes `allow(...)` type-check.
 b.AddFunction("bool @component.allow(string subject, string action);");
 
-// Run time: supply the component's bytes + the library so the engine
-// can two-level-resolve each `@component` decl against the component's
-// WIT interface exports (e.g. `cel:customfn/fns@0.1.0#allow-string-string`).
+// Run time: supply the component's bytes + the library; the engine
+// binds each `@component` decl to the matching typed export inside
+// the component.
 engine->AddComponent(rules_component_bytes, lib);
 ```
 
@@ -213,9 +213,9 @@ Bazel macro call — see
 Three generated pieces bridge a component call: caller slot glue in the expr
 module (the same 24-byte CelValue slot contract `@host` uses), a
 language-agnostic host trampoline (hand-written C++ dispatching on CEL type,
-not source language), and the per-language component shim `celfnc` produces
-from the generated WIT — your function signature looks natural, the wire
-contract stays fixed.
+not source language), and the per-language component shim the build macro
+generates — your function signature looks natural, the wire contract
+stays fixed.
 
 The trampoline does a **recursive lift/lower** per the WASI Component Model
 canonical ABI: lower the CEL args into the component's memory (allocating via

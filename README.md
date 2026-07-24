@@ -173,12 +173,30 @@ reaches its first result in under a second. Each `Instance` owns its
 Program's linear memory (two 64 KiB pages by default). `Engine` is
 shared; bind one `Instance` per worker thread.
 
-The link modes are one trade in two directions. Static (default) merges
-the runtime kernel into each Program: ~60 ms compile, self-contained
-artifact, fastest eval. Dynamic shares the runtime at `Plan` time:
-~0.5 ms compile, kilobyte artifacts, ~6× the per-eval floor. Rule of
-thumb: static for compile-once / eval-many serving; dynamic for
-compile-heavy services or many-program fleets.
+"Link" here refers to the runtime kernel — the ~40 translation units of
+C (string ops, list/map kernels, arithmetic, the arena) that every
+compiled expression calls into. A Program needs that kernel at eval
+time, and the link mode decides where it lives:
+
+- **Static (default):** the kernel is merged into each Program at
+  compile time and the pair is optimized as one module. The artifact is
+  self-contained (~2.4 MB) and nothing is resolved at run time — which
+  is what buys the ~50 ns eval floor.
+- **Dynamic:** the Program stays tiny (~6.5 KB — just your expression,
+  its constants, and its `cel.abi` self-description) and *imports* the
+  kernel from one shared `cel_runtime.wasm` per process, wired up at
+  `Plan`. Compiles ~100× faster; the cross-module calls cost ~6× on the
+  per-eval floor.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/img/artifacts-dark.svg">
+  <img alt="Static link: one self-contained MB-scale program.wasm containing $eval, the merged runtime kernel, baked .rodata constants, and the cel.abi self-description. Dynamic link: a KB-scale program.wasm importing cel.memory and the cel.* helpers from one shared cel_runtime.wasm per process, linked at Plan." src="doc/img/artifacts-light.svg">
+</picture>
+
+Both modes share one codegen path and produce byte-identical
+conformance results. Rule of thumb: static for compile-once /
+eval-many serving; dynamic for compile-heavy services or many-program
+fleets.
 
 ### Where it wins
 
@@ -398,6 +416,11 @@ cel-wasm is created and maintained by **Augustine Mathew**
 [LinkedIn](https://www.linkedin.com/in/augustine-m/)). It is an
 independent project, not affiliated with or endorsed by any employer.
 See [NOTICE](NOTICE) and [AUTHORS](AUTHORS).
+
+Development is **heavily AI-assisted**: the compiler is designed and
+pair-programmed with Claude (Anthropic), with every change gated by the
+project's conformance suite, differential fuzzing against cel-cpp, and
+the benchmark harness.
 
 **Provenance note:** this repository began as a fork of
 [google/cel-spec](https://github.com/google/cel-spec) — the CEL language
