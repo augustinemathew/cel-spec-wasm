@@ -162,7 +162,7 @@ Program CompileOrDie(
   for (const auto& [name, ty] : vars) {
     b.DeclareVariable(std::string(name), ty);
   }
-  b.AddLibrary(lib);
+  b.DeclareFunctions(lib);
   auto c_or = std::move(b).Build();
   ABSL_CHECK_OK(c_or);
   CompilerOptions opts;

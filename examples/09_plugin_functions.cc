@@ -85,7 +85,7 @@ celwasm::Instance BuildInstance(const char* argv0,
   auto builder = celwasm::Compiler::NewBuilder();
   builder.DeclareVariable("a", celwasm::CelType::Int())
       .DeclareVariable("b", celwasm::CelType::Int())
-      .AddLibrary(lib);
+      .DeclareFunctions(lib);
   auto compiler = std::move(builder).Build();
   ABSL_QCHECK_OK(compiler.status());
   auto program = compiler->Compile("add(a, b) * 2");

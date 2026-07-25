@@ -230,20 +230,20 @@ TEST(CompilerCompileDeclaredVariableTest, UndeclaredVariableFailsAtChecker) {
   EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-// ─── M13 Slice C.2 — Compiler::Builder::AddLibrary / AddFunction ───
+// ─── M13 Slice C.2 — Compiler::Builder::DeclareFunctions / AddFunction ───
 
-TEST(CompilerBuilderAddLibraryTest, EmptyLibraryBuildsOk) {
+TEST(CompilerBuilderDeclareFunctionsTest, EmptyLibraryBuildsOk) {
   auto lib_or = celwasm::FunctionLibrary::Builder().Build();
   ASSERT_THAT(lib_or, IsOk());
   auto b = Compiler::NewBuilder();
-  b.AddLibrary(*std::move(lib_or));
+  b.DeclareFunctions(*std::move(lib_or));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   EXPECT_EQ(c->function_libraries().size(), 1u);
   EXPECT_EQ(c->function_libraries()[0].decls().size(), 0u);
 }
 
-TEST(CompilerBuilderAddLibraryTest, LibraryWithHostFnPropagatesToCompiler) {
+TEST(CompilerBuilderDeclareFunctionsTest, LibraryWithHostFnPropagatesToCompiler) {
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kBool;
   celwasm::CelfnType arg;
@@ -255,7 +255,7 @@ TEST(CompilerBuilderAddLibraryTest, LibraryWithHostFnPropagatesToCompiler) {
                     .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto b = Compiler::NewBuilder();
-  b.AddLibrary(*std::move(lib_or));
+  b.DeclareFunctions(*std::move(lib_or));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   ASSERT_EQ(c->function_libraries().size(), 1u);
@@ -292,7 +292,7 @@ TEST(CompilerBuilderAddFunctionTest, FirstParseErrorWins) {
   EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(CompilerBuilderAddLibraryTest, CrossLibraryDuplicateOverloadIdRejected) {
+TEST(CompilerBuilderDeclareFunctionsTest, CrossLibraryDuplicateOverloadIdRejected) {
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kString;
   celwasm::CelfnType arg;
@@ -303,8 +303,8 @@ TEST(CompilerBuilderAddLibraryTest, CrossLibraryDuplicateOverloadIdRejected) {
                 .Build();
   };
   auto b = Compiler::NewBuilder();
-  b.AddLibrary(make_lib());
-  b.AddLibrary(make_lib());
+  b.DeclareFunctions(make_lib());
+  b.DeclareFunctions(make_lib());
   auto build_or = std::move(b).Build();
   EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(build_or.status().message()),
@@ -342,7 +342,7 @@ TEST(CompilerBuilderAddFunctionTest, CompileReceiverHostFnResolvesAndLowers) {
 // to the compiler / checker / overload table at the call site (the
 // emitted wasm import is `(import "cel_fn" "<helper>" …)`, identical
 // to a kHost decl).  These tests pin that contract.
-TEST(CompilerBuilderAddLibraryTest, PluginDeclRoutesViaCelFn) {
+TEST(CompilerBuilderDeclareFunctionsTest, PluginDeclRoutesViaCelFn) {
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kBool;
   celwasm::CelfnType arg;
@@ -355,7 +355,7 @@ TEST(CompilerBuilderAddLibraryTest, PluginDeclRoutesViaCelFn) {
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("u", CelType::String());
-  b.AddLibrary(*std::move(lib_or));
+  b.DeclareFunctions(*std::move(lib_or));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   auto prog_or = c->Compile("allow(u)");
@@ -375,7 +375,7 @@ TEST(CompilerBuilderAddLibraryTest, PluginDeclRoutesViaCelFn) {
       << "helper name not present in emitted imports";
 }
 
-TEST(CompilerBuilderAddLibraryTest,
+TEST(CompilerBuilderDeclareFunctionsTest,
      PluginDeclAdmitsProtoAndRoutesViaCelFn) {
   // m24 §8 admits proto(...) on kPlugin (cross as bytes).
   celwasm::CelfnType ret;
@@ -391,7 +391,7 @@ TEST(CompilerBuilderAddLibraryTest,
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
-  b.AddLibrary(*std::move(lib_or));
+  b.DeclareFunctions(*std::move(lib_or));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   auto prog_or = c->Compile("is_premium(c)");
@@ -404,7 +404,7 @@ TEST(CompilerBuilderAddLibraryTest,
             std::string::npos);
 }
 
-TEST(CompilerBuilderAddLibraryTest,
+TEST(CompilerBuilderDeclareFunctionsTest,
      PluginAndHostCoexistAndShareCelFnNamespace) {
   // Two decls with distinct overload-ids, one kHost + one kPlugin,
   // both routing via cel_fn — must coexist in one library.
@@ -430,7 +430,7 @@ TEST(CompilerBuilderAddLibraryTest,
   EXPECT_EQ(lib_or->decls()[1].module_name, "cel_fn");
 }
 
-TEST(CompilerBuilderAddLibraryTest,
+TEST(CompilerBuilderDeclareFunctionsTest,
      PluginDuplicateOverloadIdRejected) {
   // Same overload-id collision detection as @host — registering the
   // same helper twice (one @host + one kPlugin) must fail.
@@ -449,7 +449,7 @@ TEST(CompilerBuilderAddLibraryTest,
               testing::HasSubstr("duplicate"));
 }
 
-TEST(CompilerBuilderAddLibraryTest, MultipleLibrariesWithDistinctOverloadsOk) {
+TEST(CompilerBuilderDeclareFunctionsTest, MultipleLibrariesWithDistinctOverloadsOk) {
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kString;
   celwasm::CelfnType arg;
@@ -461,8 +461,8 @@ TEST(CompilerBuilderAddLibraryTest, MultipleLibrariesWithDistinctOverloadsOk) {
                    .AddHost("lower", ret, {celwasm::CelfnParam{true, arg, "s"}})
                    .Build();
   auto b = Compiler::NewBuilder();
-  b.AddLibrary(std::move(lib1));
-  b.AddLibrary(std::move(lib2));
+  b.DeclareFunctions(std::move(lib1));
+  b.DeclareFunctions(std::move(lib2));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   EXPECT_EQ(c->function_libraries().size(), 2u);

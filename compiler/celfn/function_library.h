@@ -2,9 +2,10 @@
 #define CELWASM_COMPILER_CELFN_FUNCTION_LIBRARY_H_
 
 // `FunctionLibrary` — the embedder-facing collection of custom CEL
-// function declarations.  Plug into `Compiler::Builder::AddLibrary(lib)`
-// to make the declared functions visible to cel-cpp's type checker
-// and to the codegen layer's `OverloadTable`.
+// function declarations.  Plug into
+// `Compiler::Builder::DeclareFunctions(lib)` to make the declared
+// functions visible to cel-cpp's type checker and to the codegen
+// layer's `OverloadTable`.
 //
 // **Construction**.  The only public path is `FunctionLibrary::Builder`.
 // Three reasons to use it:

@@ -347,7 +347,7 @@ ok, `1` compile/eval failure, `2` usage; diagnostics on stderr, the
 > compiles/evaluates standalone expressions only — there is no way to
 > point it at a custom-function library. The planned `--celfn <file>`
 > flag has the CLI read the file and feed `ParseCelfnSource` →
-> `AddLibrary` (file reading is the CLI's job, not the library's);
+> `DeclareFunctions` (file reading is the CLI's job, not the library's);
 > until then, use the [C++ API](custom-functions.md) for custom functions.
 
 ### 9.1 Does evaluation need the `.celfn` IDL? (the compile/run split)

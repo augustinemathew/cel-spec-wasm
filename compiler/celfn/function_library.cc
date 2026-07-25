@@ -79,7 +79,7 @@ namespace {
 // m24 §14 "Permanently out of scope, not deferred").  Catching the
 // violation at Build() turns the failure from a runtime
 // kInvalidArgument deep inside Lift into a compile-time refusal at
-// `Compiler::AddLibrary` time, with the offending decl named.  CEL
+// `Compiler::Builder::DeclareFunctions` time, with the offending decl named.  CEL
 // `null` (kNull) is a distinct kind and stays supported — see the
 // kNull arm in eval/internal/cel_plugin.cc.
 bool MentionsOptional(const CelfnType& t) {

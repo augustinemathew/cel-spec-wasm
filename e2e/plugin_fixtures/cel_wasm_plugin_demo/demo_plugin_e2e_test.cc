@@ -158,7 +158,7 @@ TEST(CelWasmPluginDemo, AddRoundTrips) {
   auto builder = Compiler::NewBuilder();
   builder.DeclareVariable("a", CelType::Int())
       .DeclareVariable("b", CelType::Int())
-      .AddLibrary(lib);
+      .DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("add(a, b)", e2e::DefaultOpts());
@@ -195,7 +195,7 @@ TEST(CelWasmPluginDemo, GreetRoundTripsString) {
   auto builder = Compiler::NewBuilder();
   builder.DeclareVariable("name", CelType::String())
       .DeclareVariable("age", CelType::Int())
-      .AddLibrary(lib);
+      .DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("greet(name, age)", e2e::DefaultOpts());

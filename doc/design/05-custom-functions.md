@@ -141,7 +141,7 @@ The long-claimed 254/255 cap test does not exist.
 
 ### 3.4 Library → compile flow
 
-`Compiler::Builder::AddLibrary` / `AddFunction(celfn_source)` accumulate
+`Compiler::Builder::DeclareFunctions` (renamed from `AddLibrary`, m35 B0) / `AddFunction(celfn_source)` accumulate
 libraries (compiler.cc:114-133); `Compile()` forwards them to *both* the
 checker (`CheckOptions.function_libraries`, §2 station 1) and codegen
 (`CompileOptions.function_libraries`, stations 2-3) (compiler.cc:191-192).

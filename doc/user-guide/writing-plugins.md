@@ -162,7 +162,7 @@ ABSL_CHECK_OK(engine->AddPlugin(bytes, lib));
 auto b = celwasm::Compiler::NewBuilder();
 b.DeclareVariable("a", celwasm::CelType::Int())
     .DeclareVariable("b", celwasm::CelType::Int())
-    .AddLibrary(lib);
+    .DeclareFunctions(lib);
 auto compiler = std::move(b).Build();
 ABSL_CHECK_OK(compiler);
 

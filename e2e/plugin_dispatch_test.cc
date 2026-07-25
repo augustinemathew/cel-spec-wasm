@@ -126,7 +126,7 @@ TEST(PluginDispatch, IntAddRoundTripsBoundaryValues) {
   auto builder = Compiler::NewBuilder();
   builder.DeclareVariable("a", CelType::Int())
       .DeclareVariable("b", CelType::Int())
-      .AddLibrary(lib);
+      .DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("add(a, b)", e2e::DefaultOpts());
@@ -175,7 +175,7 @@ TEST(PluginDispatch, BoolPassthroughRoundTrips) {
       IsOk());
 
   auto builder = Compiler::NewBuilder();
-  builder.DeclareVariable("x", CelType::Bool()).AddLibrary(lib);
+  builder.DeclareVariable("x", CelType::Bool()).DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("ident(x)", e2e::DefaultOpts());
@@ -252,7 +252,7 @@ TEST(PluginDispatch, LargeStringTransportsAtMiBScale) {
               IsOk());
 
   auto builder = Compiler::NewBuilder();
-  builder.DeclareVariable("s", CelType::String()).AddLibrary(lib);
+  builder.DeclareVariable("s", CelType::String()).DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("len(s)", e2e::DefaultOpts());
@@ -338,7 +338,7 @@ TEST(PluginDispatch, LargeListIntTransportsAt100kElements) {
               IsOk());
 
   auto builder = Compiler::NewBuilder();
-  builder.DeclareVariable("xs", CelType::List(CelType::Int())).AddLibrary(lib);
+  builder.DeclareVariable("xs", CelType::List(CelType::Int())).DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("sum(xs)", e2e::DefaultOpts());
@@ -413,7 +413,7 @@ TEST(PluginDispatch, StringEchoReturnsStringResult) {
               IsOk());
 
   auto builder = Compiler::NewBuilder();
-  builder.DeclareVariable("s", CelType::String()).AddLibrary(lib);
+  builder.DeclareVariable("s", CelType::String()).DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("echo(s)", e2e::DefaultOpts());
@@ -453,7 +453,7 @@ TEST(PluginDispatch, MissingExportFailsAtPlanNotAddPlugin) {
          "the export lookup is deferred to Plan";
 
   auto builder = Compiler::NewBuilder();
-  builder.DeclareVariable("x", CelType::Int()).AddLibrary(lib);
+  builder.DeclareVariable("x", CelType::Int()).DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("frob(x)", e2e::DefaultOpts());
@@ -489,7 +489,7 @@ TEST(PluginDispatch, TrappingPluginFnFailsEvalCleanly) {
               IsOk());
 
   auto builder = Compiler::NewBuilder();
-  builder.DeclareVariable("x", CelType::Int()).AddLibrary(lib);
+  builder.DeclareVariable("x", CelType::Int()).DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("boom(x)", e2e::DefaultOpts());

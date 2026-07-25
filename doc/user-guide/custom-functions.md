@@ -29,12 +29,12 @@ Register declarations on the `Compiler` so call sites type-check:
 ```cpp
 auto b = celwasm::Compiler::NewBuilder();
 b.AddFunction("int @host.length(string s);");       // one decl from a string
-b.AddLibrary(*celwasm::ParseCelfnSource(celfn_text));   // a whole .celfn file/library (StatusOr — check in real code)
+b.DeclareFunctions(*celwasm::ParseCelfnSource(celfn_text));   // a whole .celfn file/library (StatusOr — check in real code)
 auto compiler = std::move(b).Build();
 ```
 
 `AddFunction(celfn_source)` parses one (or more) decl from a string;
-`AddLibrary(FunctionLibrary)` registers a parsed `.celfn` library (from
+`DeclareFunctions(FunctionLibrary)` registers a parsed `.celfn` library (from
 `celwasm::ParseCelfnSource(text)` or `FunctionLibrary::Builder`). A call to an
 unregistered function fails at compile time with
 `"undeclared reference to '<fn>'"`.
@@ -69,7 +69,7 @@ auto lib = celwasm::ParseCelfnSource(text);                // StatusOr<FunctionL
 
 auto b = celwasm::Compiler::NewBuilder();
 b.DeclareVariable("u", celwasm::CelType::Message("acme.User"));
-b.AddLibrary(*lib);
+b.DeclareFunctions(*lib);
 auto compiler = std::move(b).Build();
 
 // Now expressions reuse the library:
@@ -342,7 +342,7 @@ auto lib = *celwasm::ParseCelfnSource(
 
 auto b = celwasm::Compiler::NewBuilder();
 b.DeclareVariable("subject", celwasm::CelType::String());
-b.AddLibrary(lib);
+b.DeclareFunctions(lib);
 auto compiler = std::move(b).Build();
 auto program  = compiler->Compile(R"(allow(subject, "read"))");
 

@@ -111,7 +111,7 @@ Compiler::Builder& Compiler::Builder::DeclareVariable(const std::string& name,
   return *this;
 }
 
-Compiler::Builder& Compiler::Builder::AddLibrary(
+Compiler::Builder& Compiler::Builder::DeclareFunctions(
     celwasm::FunctionLibrary library) {
   function_libraries_.push_back(std::move(library));
   return *this;
@@ -149,11 +149,11 @@ absl::StatusOr<Compiler> Compiler::Builder::Build() && {
     }
   }
 
-  // M13 Slice C.2 — duplicate overload-id detection ACROSS libraries.
-  // Within a single library, `FunctionLibrary::Builder::Build` already
-  // rejected duplicates; the cross-library check here catches the case
-  // where two separate `AddLibrary` calls each declare the same
-  // overload-id.
+  // Duplicate overload-id detection ACROSS libraries.  Within a
+  // single library, `FunctionLibrary::Builder::Build` already
+  // rejected duplicates; the cross-library check here catches the
+  // case where two separate `DeclareFunctions` calls each declare
+  // the same overload-id.
   absl::flat_hash_set<std::string> seen_overload_ids;
   for (const auto& lib : function_libraries_) {
     for (const auto& d : lib.decls()) {

@@ -189,7 +189,8 @@ class Compiler {
   }
 
   // Introspection — custom function libraries plugged into this
-  // Compiler via `Builder::AddLibrary` / `Builder::AddFunction`.
+  // Compiler via `Builder::DeclareFunctions` / `Builder::AddFunction`
+  // / `Builder::Use`.
   // Each library's `decls()` enumerates the available custom fns.
   absl::Span<const celwasm::FunctionLibrary> function_libraries() const {
     return function_libraries_;
@@ -240,18 +241,19 @@ class Compiler::Builder {
   // mutates `*this` in place and returns an lvalue reference.
   Builder& DeclareVariable(const std::string& name, const CelType& type);
 
-  // M13 Slice C.2 — register a `FunctionLibrary` of custom CEL
-  // function declarations.  All decls in the library become
-  // visible to every expression this Compiler compiles.  The
-  // library is taken by value and stored on the Compiler.  Mixing
-  // multiple `AddLibrary` calls (e.g. one from a `.celfn` file +
-  // one constructed programmatically via Builder) is supported;
-  // decls accumulate across calls.  Collisions (same overload-id
-  // declared twice) are caught at `Build()` time.
-  Builder& AddLibrary(celwasm::FunctionLibrary library);
+  // Declare a `FunctionLibrary` of custom CEL function
+  // declarations (rhymes with `DeclareVariable` — the axis is
+  // declaration-vs-implementation).  All decls in the library
+  // become visible to every expression this Compiler compiles.
+  // The library is taken by value and stored on the Compiler.
+  // Mixing multiple `DeclareFunctions` calls (e.g. one from a
+  // `.celfn` file + one constructed programmatically via Builder)
+  // is supported; decls accumulate across calls.  Collisions (same
+  // overload-id declared twice) are caught at `Build()` time.
+  Builder& DeclareFunctions(celwasm::FunctionLibrary library);
 
-  // M13 Slice C.2 — register a single custom-fn declaration from a
-  // source string.  Convenience over `AddLibrary(ParseCelfnSource(s))`.
+  // Register a single custom-fn declaration from a source string.
+  // Convenience over `DeclareFunctions(ParseCelfnSource(s))`.
   // Accepts any valid `.celfn` source — typically a one-liner like
   //   `string @host.upper(this string s);`
   // but multi-decl strings work too.  Returns `*this` even on
@@ -279,8 +281,8 @@ class Compiler::Builder {
   std::vector<celwasm::FunctionLibrary> function_libraries_;
   // Deferred parse error from `AddFunction(string)` — surfaced
   // at `Build()` if non-OK.  Subsequent `AddFunction` /
-  // `AddLibrary` calls overwrite this only if the prior status
-  // was OK, so the FIRST failure wins.
+  // `DeclareFunctions` calls overwrite this only if the prior
+  // status was OK, so the FIRST failure wins.
   absl::Status deferred_status_;
 };
 
