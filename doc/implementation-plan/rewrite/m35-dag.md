@@ -61,8 +61,10 @@ graph TD
     exception: file-disjoint from R (new `abi/` files +
     `abi_decode*`/`compile_test` edits R doesn't touch), so it runs
     in Wave 1.
-  - **Commit per slice**, repo commit conventions; inner-loop lint
-    (`scripts/lint.sh`) per slice, `--branch` once at the gate.
+  - **Commit per slice**, repo commit conventions.  **No per-slice
+    lint**: lint (PCH build + clang-tidy) serializes behind bazel
+    and contends with agent builds — `scripts/lint.sh --branch`
+    runs exactly once, at the final gate (G).
   - No broad process kills; agents scope any cleanup to their own
     PIDs (shared machine).
 
@@ -72,7 +74,7 @@ graph TD
 |---|---|---|---|
 | 0 | P0 plan fold-in (rename + R/S slices + this DAG) | orchestrator | done |
 | 1 | R1–R4 code rename | agent-R | pending |
-| 1 | A1 wasm_binary + sha256 + migration | agent-A1 | pending |
+| 1 | A1 wasm_binary + sha256 + migration | agent-A1 | done (eb2f0f7, 692e474, 5736b7a, bc1b485) |
 | 1→2 | R5 doc terminology sweep (after R names verified) | agent-R5 | pending |
 | 2 | A0 + A2 + A3 (tool + macro chain) | agent-A | pending |
 | 2 | A4 probe + Plugin::Load (//abi:plugin) | agent-A4 | pending |

@@ -440,7 +440,7 @@ wasmtime, no proto) so it sits below both `compiler/` and `eval/`
 // wasm binary framing.  A magic constant or LEB decoder anywhere
 // else is a review finding (feature-pipeline-checklist §2.7).
 
-enum class WasmLayer { kCoreModule, kComponent };
+enum class WasmLayer : std::uint8_t { kCoreModule, kComponent };
 
 // Preamble classification: \0asm + version word 0x00000001 (core
 // module) vs version/layer word 0x0001000d (CM component).
@@ -457,7 +457,10 @@ void AppendLeb128U32(std::vector<uint8_t>& out, uint32_t value);
 // id 0x00 at component level); never recurses into nested
 // core-module (id 1) / component (id 4) payloads.  OK -> zero-copy
 // span into the input; NotFound; InvalidArgument (bad preamble /
-// framing overrun / duplicate name).
+// framing overrun / duplicate of the REQUESTED name — wasm legally
+// allows duplicate custom-section names in general, so only an
+// ambiguous match for `name` is an error; as-built delta 2026-07-25,
+// makes a double-`cel.abi` module a decode error, strictly stricter).
 absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
     absl::Span<const uint8_t> wasm_bytes, absl::string_view name);
 
