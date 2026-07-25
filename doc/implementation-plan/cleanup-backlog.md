@@ -35,6 +35,23 @@ struck through or removed.
       Why P2: native lib is test/bench-only; production (wasm) path
       errors gracefully.
 
+- [ ] **#51** — pre-existing wasm32-wasip2 cross-compile break:
+      `//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin_proto`
+      (manual) fails to build — `@abseil-cpp` `synchronization/
+      mutex.cc` doesn't compile for wasm32-wasip2 (`std::this_thread`
+      missing).  Byte-identical action inputs pre/post m35 (verified
+      during slice A3), so likely an absl-bump regression, not an
+      m35 effect.  Consequences while open: the proto-arg one-noun
+      e2e (`OneNounFlowProtoArg`) and the proto-FQN plan-mismatch
+      e2e are GTEST_SKIP'd naming this entry.  Fix: either pin/patch
+      absl's wasip2 build (`ABSL_INTERNAL_HAVE_*` config for wasip2)
+      or restructure the proto demo fixture to avoid pulling
+      absl/synchronization into the plugin sandbox.
+      Surfaced: 2026-07-25 m35 slice A3 (review m35-dag.md
+      carry-forwards).
+      Why P1: it holds two skipped e2e pins hostage; the scalar
+      plugin path is fully covered.
+
 - [ ] **#50** — policy decision: the PBT divergence miner
       (`//e2e/fuzz:cel_oracle_property_test`) gates CI via
       `run_full_suite.sh`'s manual-target query, but its own header
