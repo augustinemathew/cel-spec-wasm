@@ -43,8 +43,13 @@ link_mode_e2e_cc_test(
     name = "demo_plugin_e2e_test",
     size = "small",
     srcs = ["demo_plugin_e2e_test.cc"],
-    data = [":demo_plugin"],
+    data = [
+        "fns.idl",  # exact-bytes pin for the embedded cel.fns payload
+        ":demo_plugin",
+    ],
     deps = [
+        "//abi:plugin",
+        "//abi:wasm_binary",
         "//compiler:compiler",
         "//e2e:link_mode_e2e_helpers",
         "//compiler/celfn:function_library",

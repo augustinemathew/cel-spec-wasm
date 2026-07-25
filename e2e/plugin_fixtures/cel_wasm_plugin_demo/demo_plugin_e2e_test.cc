@@ -17,6 +17,11 @@
 //     `std::string`).
 //   - `add(int, int) -> int`: scalar pass-through.  Pins the codec's
 //     scalar arm (no codec lift/lower; native s64 passing).
+//   - the macro output is self-describing: `demo_plugin.wasm` carries
+//     the verbatim `fns.idl` bytes in its `cel.fns` custom section
+//     (embedded by the macro's `cel embed-decls` step), and
+//     `Plugin::Load` round-trips it — decls, derived WIT interface,
+//     and declaration text all come from the artifact itself.
 //
 // Out of scope (other slices):
 //   - Proto args/returns — covered by `demo_plugin_proto`, which is
@@ -36,8 +41,11 @@
 #include <utility>
 #include <vector>
 
+#include "abi/plugin.h"
+#include "abi/wasm_binary.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "compiler/celfn/function_library.h"
 #include "compiler/compiler.h"
@@ -66,19 +74,22 @@ CelfnType Prim(CelfnType::Kind k) {
 // Load `demo_plugin.wasm` from the runfiles tree.  The bazel
 // `data = [":demo_plugin"]` on the cc_test makes the file
 // available; runfiles resolves the path on both macOS and Linux.
-std::vector<uint8_t> LoadDemoPluginBytes() {
+std::vector<uint8_t> LoadRunfileBytes(absl::string_view basename) {
   std::string error;
   auto runfiles = absl::WrapUnique(Runfiles::CreateForTest(&error));
   ABSL_CHECK(runfiles != nullptr) << "runfiles init failed: " << error;
-  const std::string path = runfiles->Rlocation(
-      "_main/e2e/plugin_fixtures/cel_wasm_plugin_demo/"
-      "demo_plugin.wasm");
-  ABSL_CHECK(!path.empty()) << "demo_plugin.wasm not in runfiles";
+  const std::string path = runfiles->Rlocation(absl::StrCat(
+      "_main/e2e/plugin_fixtures/cel_wasm_plugin_demo/", basename));
+  ABSL_CHECK(!path.empty()) << basename << " not in runfiles";
 
   std::ifstream f(path, std::ios::binary);
   ABSL_CHECK(f.is_open()) << "failed to open " << path;
   return {(std::istreambuf_iterator<char>(f)),
           std::istreambuf_iterator<char>()};
+}
+
+std::vector<uint8_t> LoadDemoPluginBytes() {
+  return LoadRunfileBytes("demo_plugin.wasm");
 }
 
 // Build a FunctionLibrary that mirrors fns.idl's two decls.  The
@@ -105,6 +116,37 @@ FunctionLibrary BuildDemoLibrary() {
           .Build();
   ABSL_CHECK_OK(lib_or) << lib_or.status();
   return *std::move(lib_or);
+}
+
+// The macro-built artifact is self-describing: it CARRIES the
+// `cel.fns` section (verbatim fns.idl bytes, embedded by the macro's
+// `cel embed-decls` step) and `Plugin::Load` round-trips it.
+TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
+  const std::vector<uint8_t> bytes = LoadDemoPluginBytes();
+  const std::vector<uint8_t> idl = LoadRunfileBytes("fns.idl");
+  const absl::string_view idl_text(
+      reinterpret_cast<const char*>(idl.data()), idl.size());
+
+  // The section is present and its payload is the exact fns.idl bytes.
+  auto section = FindCustomSection(bytes, "cel.fns");
+  ASSERT_THAT(section, IsOk()) << section.status();
+  EXPECT_EQ(absl::string_view(reinterpret_cast<const char*>(section->data()),
+                              section->size()),
+            idl_text);
+
+  // Plugin::Load round-trips it: decls match the idl, and the WIT
+  // interface derives from the idl's `Module customfn;` directive.
+  auto plugin = Plugin::Load(bytes);
+  ASSERT_THAT(plugin, IsOk()) << plugin.status();
+  EXPECT_EQ(plugin->celfn_source(), idl_text);
+  EXPECT_EQ(plugin->wit_interface(), "cel:customfn/fns@0.1.0");
+  ASSERT_EQ(plugin->decls().size(), 3);
+  EXPECT_EQ(plugin->decls()[0].fn_name, "greet");
+  EXPECT_EQ(plugin->decls()[0].overload_id, "greet_string_int");
+  EXPECT_EQ(plugin->decls()[1].fn_name, "add");
+  EXPECT_EQ(plugin->decls()[1].overload_id, "add_int_int");
+  EXPECT_EQ(plugin->decls()[2].fn_name, "len");
+  EXPECT_EQ(plugin->decls()[2].overload_id, "len_string");
 }
 
 TEST(CelWasmPluginDemo, AddRoundTrips) {

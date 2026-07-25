@@ -19,7 +19,12 @@ Pipeline (each step a Bazel action):
      (//third_party/wasi_sdk:wasm32_wasip2) so the wasi-preview2
      cc_toolchain — Component-Model native — produces a `.wasm`
      that is already a CM component (preamble `0x1000d`, NOT a
-     core module).  Output: `<name>.wasm`.
+     core module).
+  4. `cel embed-decls --plugin=<core> --idl=<idl> --out=<name>.wasm` →
+     the final self-describing artifact: the step-3 component with the
+     verbatim `.idl` declaration text embedded as the top-level
+     `cel.fns` custom section, ready for `Plugin::Load`
+     (doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §4).
 
 No separate `wasm-tools component new` wrap step is needed when
 targeting wasm32-wasip2: the toolchain emits the component
@@ -55,7 +60,7 @@ _AUTOMATIC_WASM_DEPS = []
 
 # ── Step 1: cel generate ──────────────────────────────────────────────
 
-def _cel_generate(name, idl, package, extra_includes, tags):
+def _cel_generate(name, idl, extra_includes, tags):
     """Emits the four files into the package-private gen tree."""
     gen_dir = name + "_gen"
     outs = [
@@ -67,7 +72,6 @@ def _cel_generate(name, idl, package, extra_includes, tags):
     inc_flags = (
         ("--include=" + ",".join(extra_includes)) if extra_includes else ""
     )
-    pkg_flag = ("--package=" + package) if package else ""
     native.genrule(
         name = name + "_gen_files",
         srcs = [idl],
@@ -77,7 +81,7 @@ def _cel_generate(name, idl, package, extra_includes, tags):
             "--idl=$(execpath {idl}) ".format(idl = idl) +
             "--language=cpp " +
             "--out_dir=$(RULEDIR)/{gen} ".format(gen = gen_dir) +
-            inc_flags + " " + pkg_flag
+            inc_flags
         ),
         tools = ["//tools/cel:cel"],
         tags = tags,
@@ -143,21 +147,29 @@ def _core_wasm(name, srcs, headers, gen_dir, wit_dir, component_type_obj,
     )
     return ":" + core_name
 
-# ── Step 4: wasm-tools component new ──────────────────────────────────
+# ── Step 4: cel embed-decls ───────────────────────────────────────────
 
-def _rename_to_dot_wasm(name, core_label, tags):
-    """Aliases the wasm32-wasip2 cc_binary output as `<name>.wasm`.
+def _embed_decls(name, core_label, idl, tags):
+    """Embeds the `.idl` declaration text into the component.
 
-    The wasi-preview2 cc_toolchain emits a Component-Model component
-    directly (no wasm-tools wrap step).  This genrule just renames
-    the output so consumers can `data = [":<name>"]` and the file
-    lands as `<name>.wasm` in runfiles.
+    Appends the verbatim idl bytes as the top-level `cel.fns` custom
+    section (via `cel embed-decls`), producing the final
+    self-describing `<name>.wasm` — the artifact carries its own
+    declarations, and `Plugin::Load` parses them back out.  The
+    output keeps the `<name>.wasm` filename so consumers can
+    `data = [":<name>"]` and the file lands unchanged in runfiles.
     """
     native.genrule(
         name = name,
-        srcs = [core_label],
+        srcs = [core_label, idl],
         outs = [name + ".wasm"],
-        cmd = "cp $(execpath {core}) $@".format(core = core_label),
+        cmd = (
+            "$(execpath //tools/cel:cel) embed-decls " +
+            "--plugin=$(execpath {core}) ".format(core = core_label) +
+            "--idl=$(execpath {idl}) ".format(idl = idl) +
+            "--out=$@"
+        ),
+        tools = ["//tools/cel:cel"],
         tags = tags,
         visibility = ["//visibility:public"],
     )
@@ -170,7 +182,6 @@ def cel_wasm_plugin(
         user_fns,
         deps = [],
         extra_includes = [],
-        package = None,
         copts = None,
         tags = None):
     """Compile a celfn .idl + author user_fns.cc into a CM wasm component.
@@ -178,7 +189,8 @@ def cel_wasm_plugin(
     Args:
       name: target name.  Output is `<name>.wasm` plus internal
             intermediate targets (gen / wit / core).
-      idl: label of the `.idl` celfn source (input to `cel generate`).
+      idl: label of the `.idl` celfn source (input to `cel generate`
+            and, verbatim, to the embedded `cel.fns` section).
       user_fns: list of labels — the author's `user_fns.cc` (and any
                 extra `.cc/.h` they want compiled with it).  These
                 implement the declarations in the generated `user_fns.h`.
@@ -190,22 +202,26 @@ def cel_wasm_plugin(
             `cel generate --extra_includes=<inc>` (one flag per entry).
             Typical use: `["acme/user.pb.h"]` for proto-typed fns so
             the generated `user_fns.h` finds the proto header.
-      package: WIT package name (default: `cel:<module>` where
-               `<module>` comes from the IDL's `Module foo;` directive,
-               with fallback `cel:customfn`).  Mirrors the default in
-               `tools/cel/run_generate.cc`.
       copts: extra copts for the wasi-sdk cc_binary step (default: []).
       tags: bazel tags to apply to the final wasm plugin target.
 
+    The WIT package name is not configurable: it is always
+    `cel:<module>/fns@0.1.0`, derived from the IDL's `Module foo;`
+    directive (fallback module `customfn`) — see
+    doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §4.
+
     Produces:
-      `<name>.wasm` — a Component-Model component the embedder loads
-      via `Engine::AddPlugin(plugin_bytes, lib)`.
+      `<name>.wasm` — a self-describing Component-Model component
+      carrying its declarations in an embedded `cel.fns` custom
+      section.  The embedder loads it via `Plugin::Load(bytes)`
+      (`Engine::AddPlugin(plugin_bytes, lib)` remains the
+      explicit-decls escape hatch).
     """
     copts = copts if copts != None else []
     tags = tags if tags != None else []
 
     # Step 1: cel generate.
-    gen_outs, gen_dir = _cel_generate(name, idl, package, extra_includes, tags)
+    gen_outs, gen_dir = _cel_generate(name, idl, extra_includes, tags)
     fns_wit = [o for o in gen_outs if o.endswith("fns.wit")][0]
     codec_h = [o for o in gen_outs if o.endswith("codec.h")][0]
     user_fns_h = [o for o in gen_outs if o.endswith("user_fns.h")][0]
@@ -243,5 +259,6 @@ def cel_wasm_plugin(
         tags = tags,
     )
 
-    # Step 4: alias the cc_binary output as `<name>.wasm`.
-    _rename_to_dot_wasm(name = name, core_label = core_label, tags = tags)
+    # Step 4: embed the .idl declaration text as the `cel.fns`
+    # custom section, producing the final `<name>.wasm`.
+    _embed_decls(name = name, core_label = core_label, idl = idl, tags = tags)

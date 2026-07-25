@@ -97,9 +97,6 @@ ABSL_FLAG(std::string, language, "cpp",
 ABSL_FLAG(std::string, out_dir, "",
           "`cel generate` only: directory to write generated files into "
           "(fns.wit, codec.h, generated_stub.cc, user_fns.h).");
-ABSL_FLAG(std::string, package, "",
-          "`cel generate` only: optional WIT package name override.  "
-          "Default: `<module>:fns` derived from the IDL `Module` directive.");
 ABSL_FLAG(std::vector<std::string>, include, {},
           "`cel generate` only: comma-separated #include paths to inject "
           "at the top of the generated user_fns.h + generated_stub.cc.  "
@@ -528,7 +525,6 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  --idl PATH               required: .idl input\n"
      << "  --out_dir PATH           required: output dir\n"
      << "  --language LANG          cpp (default); go (planned)\n"
-     << "  --package PKG            WIT package name override\n"
      << "embed-decls flags:\n"
      << "  --plugin PATH            required: input CM component .wasm\n"
      << "  --idl PATH               required: .idl declaration text\n"
@@ -540,7 +536,6 @@ int RunGenerateSubcommand() {
   opts.idl_path = absl::GetFlag(FLAGS_idl);
   opts.language = absl::GetFlag(FLAGS_language);
   opts.out_dir = absl::GetFlag(FLAGS_out_dir);
-  opts.package_name = absl::GetFlag(FLAGS_package);
   opts.extra_includes = absl::GetFlag(FLAGS_include);
   return RunGenerate(opts);
 }

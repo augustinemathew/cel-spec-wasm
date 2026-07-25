@@ -2,7 +2,8 @@
 //
 // Matrix (m35-plugin-ergonomics.md §3.1): happy path on BOTH a
 // hand-framed component (preamble + BuildCustomSection) and the real
-// macro-built demo plugin (AppendCustomSection over its bytes); empty
+// macro-built demo plugin (consumed as built — the macro's
+// `cel embed-decls` step embeds the section); empty
 // bytes; core-module bytes (message flags the core-module case);
 // non-wasm bytes; missing / duplicate `cel.fns`; truncated framing;
 // non-UTF-8 payload (invalid lead byte + overlong encoding); `.celfn`
@@ -70,8 +71,8 @@ std::vector<uint8_t> MakePluginBytes(absl::string_view idl) {
   return bytes;
 }
 
-// The real `cel_wasm_plugin`-macro-built component (no `cel.fns`
-// section embedded yet — slice A0 adds that to the macro).
+// The real `cel_wasm_plugin`-macro-built component, `cel.fns`
+// section included (embedded by the macro's `cel embed-decls` step).
 std::vector<uint8_t> LoadDemoPluginBytes() {
   std::string error;
   auto runfiles = absl::WrapUnique(Runfiles::CreateForTest(&error));
@@ -104,27 +105,23 @@ TEST(PluginLoadTest, HandFramedComponentLoads) {
 }
 
 TEST(PluginLoadTest, RealMacroBuiltComponentLoads) {
-  // The demo idl's decl text (fns.idl), embedded over the real
-  // macro-built bytes via AppendCustomSection — the exact shape
-  // `cel embed-decls` produces.
-  constexpr absl::string_view kDemoIdl =
-      "Module customfn;\n"
-      "\n"
-      "string @plugin.greet(string name, int age);\n"
-      "int    @plugin.add(int a, int b);\n"
-      "int    @plugin.len(string s);\n";
-  auto bytes =
-      AppendCustomSection(LoadDemoPluginBytes(), "cel.fns", AsBytes(kDemoIdl));
-  ASSERT_TRUE(bytes.ok()) << bytes.status();
-
-  auto plugin = Plugin::Load(*bytes);
+  // The macro output is consumed exactly as built: its `cel.fns`
+  // section (the verbatim fns.idl bytes, comments included) was
+  // embedded by the macro's `cel embed-decls` step — nothing is
+  // appended here.  The exact-payload-bytes pin lives in the demo
+  // e2e (demo_plugin_e2e_test.cc), which has the idl in runfiles.
+  auto plugin = Plugin::Load(LoadDemoPluginBytes());
   ASSERT_TRUE(plugin.ok()) << plugin.status();
   EXPECT_EQ(plugin->wit_interface(), "cel:customfn/fns@0.1.0");
   ASSERT_EQ(plugin->decls().size(), 3);
   EXPECT_EQ(plugin->decls()[0].overload_id, "greet_string_int");
   EXPECT_EQ(plugin->decls()[1].overload_id, "add_int_int");
   EXPECT_EQ(plugin->decls()[2].overload_id, "len_string");
-  EXPECT_EQ(plugin->celfn_source(), kDemoIdl);
+  EXPECT_THAT(plugin->celfn_source(),
+              AllOf(HasSubstr("Module customfn;"),
+                    HasSubstr("@plugin.greet(string name, int age)"),
+                    HasSubstr("@plugin.add(int a, int b)"),
+                    HasSubstr("@plugin.len(string s)")));
 }
 
 // --- Accessor round-trips ------------------------------------------

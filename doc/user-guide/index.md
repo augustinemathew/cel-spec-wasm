@@ -308,9 +308,12 @@ cel generate --idl fns.idl --out_dir gen/            # emit plugin-fn bindings
 
 `generate` takes no positional `<expr>` — its input is `--idl`; flags:
 `--out_dir` (required), `--language` (`cpp` today; `go` planned),
-`--package` (WIT package-name override), `--include` (extra `#include`s
-for the generated sources). Normally you don't run it by hand — the
-`cel_wasm_plugin` Bazel macro drives it.
+`--include` (extra `#include`s for the generated sources). The WIT
+package name is always derived from the IDL's `Module` directive
+(`cel:<module>`, fallback `cel:customfn`) — there is no override.
+Normally you don't run it by hand — the `cel_wasm_plugin` Bazel macro
+drives it (and finishes by running `cel embed-decls`, which stamps the
+verbatim `.idl` text into the plugin as its `cel.fns` custom section).
 
 Note the split: `eval` is the *whole* pipeline (it compiles the
 expression in-process, then runs it — `cel.cc:RunEval`), while `compile`
