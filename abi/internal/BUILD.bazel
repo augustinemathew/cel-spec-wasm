@@ -1,0 +1,28 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//:internal"])
+
+# First-party SHA-256 (FIPS 180-4).  The repo has no crypto dep and
+# deliberately does not add one for the single digest the plugin
+# surface needs (content-hashing plugin binaries).
+cc_library(
+    name = "sha256",
+    srcs = ["sha256.cc"],
+    hdrs = ["sha256.h"],
+    deps = [
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "sha256_test",
+    size = "small",
+    srcs = ["sha256_test.cc"],
+    deps = [
+        ":sha256",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
