@@ -144,7 +144,6 @@ expression is lowered:
 | --- | --- | --- |
 | `link_mode` | `kStatic` | `kStatic`: runtime merged in — self-contained ~2.4 MB Program, fastest eval, ~60 ms compile. `kDynamic`: ~6.5 KB Program importing a shared runtime — ~0.5 ms compile, better for many cached expressions. `Engine::Plan` handles both transparently. |
 | `optimize_level` | `0` | Binaryen `-O0..3` on the emitted wasm. Use `2` in production (compile cost ~2-3×, eval up to 2× faster on long bodies); `0` when compile latency dominates. |
-| `mem_size_bytes` | 128 KiB | Initial linear memory of the emitted module — **`kDynamic` only**, no effect under the default `kStatic`. Not a knob for enlarging the eval arena: the arena lives in the runtime's heap and is sized at run time. |
 | `container` | `""` | CEL namespace container for name resolution, as in cel-go. |
 
 ```cpp

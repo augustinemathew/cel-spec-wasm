@@ -174,7 +174,6 @@ absl::StatusOr<Compiler> Compiler::Builder::Build() && {
 absl::StatusOr<Program> Compiler::Compile(absl::string_view source,
                                           const CompilerOptions& opts) const {
   celwasm::CompileOptions inner;
-  inner.mem_size_bytes = opts.mem_size_bytes;
   inner.check.container = opts.container;
   inner.optimize_level = opts.optimize_level;
   // m28 plumbing.  Public `LinkMode` value forwards 1:1 to the internal

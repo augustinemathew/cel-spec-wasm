@@ -296,10 +296,7 @@ wasm-dis /tmp/expr.wasm | less
 ```
 
 `--O 0..3` is Binaryen's optimizer level (default `0`, recommended
-`2` for hot-path use). `--mem_size_bytes` raises the linear-memory
-budget — bump it when an expression needs a larger arena (heavy
-string concat, big lists). With no `--output`, wasm bytes go to
-stdout.
+`2` for hot-path use). With no `--output`, wasm bytes go to stdout.
 
 ## Just type-check
 
@@ -376,7 +373,7 @@ section is preceded by a `--- <name> ---` header.
 | `ERROR: undefined field 'X' not found in struct 'Y'`                     | field absent from the bound message                       |
 | `ERROR: found no matching overload for '_+_' applied to '(int, uint)'`   | no implicit numeric coercion in CEL                       |
 | `ERROR: undeclared reference to 'X' (in container '')`                   | missing `--container PKG` for a short name                |
-| `ERROR: linear memory size N below ...`                                  | bump `--mem_size_bytes` for large arenas                  |
+| `ERROR: expression's static footprint ... exceeds ...`                   | too many constants/slots — simplify the expression        |
 
 ## Where to look next
 

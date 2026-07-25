@@ -40,21 +40,6 @@ struct CompileOptions {
   // container + source description.
   CheckOptions check;
 
-  // Initial linear-memory size in bytes, rounded up to the next wasm
-  // page.  Default is two pages (128 KiB): the runtime `.wasm` is
-  // cross-compiled with `min: 2` on its imported memory, so a
-  // single-page expr module can't pair with it.
-  //
-  // Reaches the emitted module only through `InstallExprModuleImports`,
-  // which runs on the **kDynamic** arm alone — under kStatic the
-  // adopted runtime owns its memory and this value is inert.  It also
-  // flows to `LoweringOptions.mem_size_bytes`, which is itself
-  // vestigial (`arena_reset` takes no arguments; the arena is
-  // dlmalloc-sized at run time).  So this does not size the eval arena
-  // in either mode.
-  uint32_t mem_size_bytes =
-      MemoryLayout::kInitialMemoryPages * MemoryLayout::kWasmPageSize;
-
   // Internal wasm name the function is registered under inside the module.
   // `Binaryen` uses this to resolve `BinaryenCall` targets and in exports.
   std::string eval_internal_name = "$eval";
@@ -131,7 +116,7 @@ ABSL_MUST_USE_RESULT absl::StatusOr<CompiledArtifact> Compile(
 // same memory need disjoint rodata ranges (see
 // `LayoutOptions::rodata_base_override`).
 ABSL_MUST_USE_RESULT absl::Status InstallExprModuleImports(
-    WasmModule& mod, const StaticLayout& layout, uint32_t mem_size_bytes);
+    WasmModule& mod, const StaticLayout& layout);
 
 // Installs one wasm function import per `OverloadTable` row whose
 // runtime export is shipped today (built-ins) plus the custom-fn

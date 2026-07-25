@@ -123,12 +123,12 @@ Four page numbers appear; consistent, related by ≤, different jobs:
 | number | where | meaning |
 |---|---|---|
 | 2 pages (128 KiB) | `CELWASM_INITIAL_MEMORY_PAGES` (`cel_layout.h:29`); A13 check (`engine.cc::EnforceRuntimeMemoryInvariants`) | host-side **floor**: observed pages must be `>=` 2; not the actual size |
-| 2 pages default | dynamic-mode `cel.memory` import min = `PagesForBytes(mem_size_bytes)` (`compile.cc`), from `CompilerOptions::mem_size_bytes` default 128 KiB | import minimum the expr module declares; must be ≤ the provided memory's size |
+| `MemoryLayout::kInitialMemoryPages` (5) | dynamic-mode `cel.memory` import min (`compile.cc`) | import minimum the expr module declares; equals the runtime's exported size, held in lockstep by `static_assert` |
 | 3–4 pages | wasm-ld auto-sizing of `cel_runtime.wasm` | actual initial size; varies by build mode and linked libraries |
 | 1024 pages (64 MiB) | `MemoryLayout::kMaxMemoryBytes`; the export's max; `kSharedMaxPages` on the import | hard growth ceiling, shared by export and import declarations |
 
 !!! note "Open question (V8)"
-    A dynamic-mode `mem_size_bytes` above 256 KiB stamps an import minimum larger than the runtime's exported memory and plausibly fails instantiation at Plan; under default static mode the knob is a verified no-op. Probe pending; the knob may be deleted.
+    Resolved 2026-07-25: probed and deleted. The import minimum is now the shared constant, so it cannot drift from the runtime's exported memory.
 
 ### 4.4 The static-region gates
 

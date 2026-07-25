@@ -66,20 +66,6 @@ struct VariableDeclaration {
 // `eval_export_name`, `validate`, `serialize`) that public callers
 // can't and shouldn't tune.
 struct CompilerOptions {
-  // Initial linear-memory size in bytes for the emitted module,
-  // rounded up to the next wasm page (64 KiB) at module-emit time.
-  // Default is two pages (128 KiB) — matches cel_runtime.wasm's
-  // `--import-memory` min=2.
-  //
-  // **Applies to `LinkMode::kDynamic` only.**  Under the default
-  // `kStatic`, the adopted runtime owns its memory and this field has
-  // no effect: it is not a way to enlarge the eval arena in either
-  // mode.  The arena lives in the wasi-libc dlmalloc heap and grows at
-  // run time (see `rewrite/wasi/DESIGN.md` §4), so an expression that
-  // exhausts it fails with a resource error rather than being fixable
-  // from here.
-  uint32_t mem_size_bytes = 128u * 1024u;
-
   // Package container used for name resolution (CEL-Go `container` /
   // CEL-Java `container`).  Forwarded verbatim to
   // `CheckOptions::container`.  Empty (the default) means "no

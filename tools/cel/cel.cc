@@ -77,12 +77,6 @@ ABSL_FLAG(int, O, 0,
           "Binaryen optimize level for the emitted expr module (0..3).  "
           "0 = no-op (default); 2 = balanced; recommended on a hot path.");
 
-ABSL_FLAG(std::uint32_t, mem_size_bytes, 128u * 1024u,
-          "Initial linear-memory size in bytes for the emitted module, "
-          "rounded up to the next 64KiB wasm page.  Applies to dynamic "
-          "link mode only — it has no effect on the default static "
-          "output, and is not a way to enlarge the eval arena.");
-
 ABSL_FLAG(std::string, output, "",
           "`cel compile` only: path to write the emitted wasm bytes.  "
           "If empty, bytes go to stdout.");
@@ -250,7 +244,6 @@ absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
   celwasm::CompileOptions opts;
   opts.check.description = std::string(source_desc);
   opts.check.container = absl::GetFlag(FLAGS_container);
-  opts.mem_size_bytes = absl::GetFlag(FLAGS_mem_size_bytes);
   opts.optimize_level = absl::GetFlag(FLAGS_O);
   const std::string proto_path = absl::GetFlag(FLAGS_proto);
   const std::string fds_path = absl::GetFlag(FLAGS_descriptor_set);
@@ -543,8 +536,6 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  --container PKG          name-resolution container\n"
      << "  --format FMT             (eval, repeatable) textproto|json|cel\n"
      << "  --O LEVEL                Binaryen optimize level (0..3)\n"
-     << "  --mem_size_bytes N       linear-memory size in bytes\n"
-     << "                           (rounded up to a 64KiB wasm page)\n"
      << "  --output PATH            (compile) wasm output path\n"
      << "generate flags:\n"
      << "  --idl PATH               required: .idl input\n"

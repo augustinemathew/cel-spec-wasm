@@ -148,7 +148,6 @@ A `Compiler` is built through `Compiler::Builder` (consumes itself on `Build()`)
 
 | Knob | What it actually does |
 |---|---|
-| `mem_size_bytes` (default 128 KiB) | Dynamic mode: the initial page count of the imported memory. **Static mode: no effect** (the adopted runtime owns its memory; the arena is dlmalloc-sized at runtime). |
 | `container` | Forwarded to cel-cpp's name-resolution container. Checker-only; no codegen effect. |
 | `optimize_level` (default 0) | Gates Binaryen optimization. Level 0 is a byte-identical no-op. Negative levels behave as 0; only `> 3` is rejected. Binaryen's optimizer is process-global state — serialize concurrent Compiles when `> 0`. |
 | `link_mode` (default static) | Picks the bootstrap ([09 §2](09-lowering.md#2-finalization-and-link-modes)). |

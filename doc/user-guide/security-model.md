@@ -50,9 +50,9 @@ wasmtime store. Picture the boundary:
 The guarantees, precisely:
 
 - **Bounded linear memory.** The expression and the runtime kernel share
-  one wasm linear memory, sized by `CompilerOptions::mem_size_bytes`
-  (default 128 KiB). Every load/store is bounds-checked by wasmtime — the
-  expression physically cannot read or write your process memory.
+  one wasm linear memory, capped at 64 MiB by the runtime's link flags.
+  Every load/store is bounds-checked by wasmtime — the expression
+  physically cannot read or write your process memory.
 - **No I/O, no syscalls.** The runtime links wasi-libc, so it *imports* a
   few WASI calls — but the engine wires them to a deliberately empty WASI
   context: no filesystem preopens, no environment, no stdio
@@ -184,7 +184,7 @@ For expression source you don't fully control, in priority order:
    ② bound vars > big literals  ── compiles, and runs faster
    ③ COMPILE IN A SEPARATE      ── contains the #47 parser crash + any
       WORKER  ◄── load-bearing      future compiler bug on hostile source
-   ④ set mem_size_bytes         ── cap what one Instance can consume
+   ④ bound evaluation cost      ── NOT yet available; see the note below
    ⑤ audit @host functions      ── the Program can call them with
                                    arbitrary args; validate inside the
                                    lambda — or use @component instead
@@ -201,8 +201,15 @@ For expression source you don't fully control, in priority order:
    future compiler bug on hostile input). The `Program` is pure bytes —
    compile in the worker, ship the bytes back, `Plan`/`Eval` in your
    serving process.
-4. **Set `mem_size_bytes` deliberately.** The default 128 KiB is a floor;
-   pin it to what your expressions need rather than raising it reflexively.
+4. **Budget evaluation cost yourself — the engine does not.** There is
+   currently **no per-evaluation time or fuel limit**: `Eval` takes no
+   deadline, and wasmtime is configured without fuel metering or epoch
+   interruption. CEL's totality guarantees an expression terminates, but
+   not that it terminates *soon* — a nested comprehension over
+   host-backed collections is polynomial in the input size. If you accept
+   expressions you do not fully trust, cap the work upstream (bound the
+   size of the collections you bind, and run evaluation somewhere you can
+   abandon) until an evaluation deadline ships.
 5. **Audit your `@host` functions as attack surface.** Anything you
    register is callable by the Program with arbitrary arguments — validate
    inputs inside the lambda, and prefer `@component` for any body you

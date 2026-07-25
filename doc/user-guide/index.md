@@ -127,7 +127,6 @@ auto compiler = std::move(b).Build();
 
 ```cpp
 celwasm::CompilerOptions opts;
-opts.mem_size_bytes = 128 * 1024;   // linear-memory size (default: 2 wasm pages)
 opts.container      = "acme";       // optional namespace for short-form idents
 opts.optimize_level = 2;            // wasm-opt -O level: 0 (default) … 3
 
@@ -360,7 +359,7 @@ artifact the CLI itself can't consume back.
 Flags: `--var name:Type[=value]` (typed binding — the literal parser is
 type-directed), `--proto <file>` / `--descriptor_set <file>` (schema for
 message-typed vars), `--container`, `--O <0..3>` (optimize level),
-`--mem_size_bytes`, `--output` (compile target; stdout if omitted),
+`--output` (compile target; stdout if omitted),
 `--format textproto|json|cel` (`eval` result rendering).
 
 Message-typed variables take a textproto or JSON payload, inline or from
