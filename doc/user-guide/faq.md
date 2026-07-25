@@ -16,7 +16,7 @@ Three reasons, one trade:
   `cel.abi`). Compile once, ship it, evaluate it in a process — or, in
   the future, a language — that never links the compiler. Semantic
   drift between host implementations is structurally impossible.
-- **Sandboxed custom functions.** `@component` functions run in their
+- **Sandboxed custom functions.** `@plugin` functions run in their
   own wasm linear memory with no syscalls and no access to your
   process. Stock CEL only gives you trusted in-process callbacks.
   See the [security model](security-model.md).
@@ -101,7 +101,7 @@ The contract, verbatim from `eval/engine.h` / `eval/instance.h`:
 |---|---|
 | `Program` | pure bytes, immutable — share and serialize freely |
 | `Engine::Plan` | **safe to call concurrently** from many threads |
-| `Engine::AddFunction` / `BindFunction` / `AddModule` / `AddComponent` | **not** thread-safe — configure once at startup, then `Plan` from many threads |
+| `Engine::AddFunction` / `BindFunction` / `AddModule` / `AddPlugin` | **not** thread-safe — configure once at startup, then `Plan` from many threads |
 | `Instance` | thread-owned, single-threaded — bind one per worker; it outlives the Engine handle (shared_ptr) |
 
 ### Can my custom function return an error or unknown?
@@ -151,7 +151,7 @@ reproducible: differential fuzzing against the cel-cpp oracle runs
 nightly in CI, constant list/map literals materialize into the Program
 at compile time, and oversized literals are rejected at compile with a
 graceful `ResourceExhausted`. What remains is listed, not hidden: no
-bindings beyond C++, allocator caps and CPU-time limits for component
+bindings beyond C++, allocator caps and CPU-time limits for plugin
 functions still to come, and no release-versioning policy yet. See
 "Limitations" in the [README](https://github.com/augustinemathew/cel-wasm/blob/master/README.md), the
 [security model](security-model.md) for the threat-relevant items, and

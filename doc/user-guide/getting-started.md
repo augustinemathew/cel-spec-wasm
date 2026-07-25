@@ -160,7 +160,7 @@ auto program = compiler.Compile("a * b + 1", opts).value();
 | See every core feature as a ~60-line runnable program | [`examples/`](https://github.com/augustinemathew/cel-wasm/tree/master/examples) |
 | Ship the compiled `.wasm` and evaluate it elsewhere | [`examples/03_compile_once_run_anywhere.cc`](https://github.com/augustinemathew/cel-wasm/blob/master/examples/03_compile_once_run_anywhere.cc) |
 | Add your own functions to CEL (trusted C++) | [Writing host functions](writing-host-functions.md) |
-| Add **sandboxed** functions (untrusted plugins) | [Writing component functions](writing-component-functions.md) |
+| Add **sandboxed** functions (untrusted plugins) | [Writing plugins](writing-plugins.md) |
 | Understand the whole embedder API | [User guide](index.md) |
 | Quick answers (dyn? thread-safety? sizes? speed?) | [FAQ](faq.md) |
 | The security story, precisely stated | [Security model](security-model.md) |

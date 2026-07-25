@@ -62,7 +62,7 @@ The guarantees, precisely:
   lower to counted loops; recursive `@native` bodies are rejected at
   compile. An expression cannot spin forever.
 - **Failures unwind, they don't corrupt.** A guest trap or a panic in a
-  component surfaces as a non-OK `absl::Status` or a CEL error value — the
+  plugin surfaces as a non-OK `absl::Status` or a CEL error value — the
   host stays intact. (One residual exception, at *compile* time, in §3.)
 
 ## 2. The trust model — three decisions
@@ -74,16 +74,16 @@ of them needs real thought:
 |---|---|---|
 | **CEL expression source** | 🟡 **Semi-trusted** | Sandboxed once compiled — but *compilation* runs in your process, and one input shape can still crash the compiler (§3). Compile untrusted source in a separate worker (§4). |
 | **`@host` functions** | 🔴 **Fully trusted** | Your C++ lambdas, your address space, your privileges. The sandbox does nothing for you here. |
-| **`@component` functions** | 🟢 **Untrusted OK** | Own memory, trap-stubbed imports, failures become CEL errors. The path for third-party / customer code. |
+| **`@plugin` functions** | 🟢 **Untrusted OK** | Own memory, trap-stubbed imports, failures become CEL errors. The path for third-party / customer code. |
 | **`Program` bytes** | 🔴 **Trusted compiler only** | Treat like a shared library; see below. |
 
 The decision that matters most is **how you let an expression call back
-into your code** — and that's exactly the `@host` vs `@component` split:
+into your code** — and that's exactly the `@host` vs `@plugin` split:
 
 ```
-   @host  function                     @component  function
-   ════════════════                    ══════════════════════
-   your C++ lambda                     a WebAssembly component
+   @host  function                     @plugin  function
+   ════════════════                    ═══════════════════
+   your C++ lambda                     a WebAssembly plugin
    ┌──────────────────────┐            ┌──────────────────────┐
    │ runs in YOUR memory  │            │ runs in its OWN linear│
    │ with YOUR privileges │            │ memory — can't see    │
@@ -100,8 +100,8 @@ into your code** — and that's exactly the `@host` vs `@component` split:
 ```
 
 So the rule of thumb: **a function body you wrote → `@host`; a function
-body you didn't → `@component`.** A component is supplied as bytes at
-runtime (`Engine::AddComponent`), so swapping one means handing the engine
+body you didn't → `@plugin`.** A plugin is supplied as bytes at
+runtime (`Engine::AddPlugin`), so swapping one means handing the engine
 new bytes — no re-link, no redeploy. Its only capability is one
 deterministic `wasi:random` stub (for libc++'s hash seed); touching
 `wasi:filesystem` / `clocks` / `io` / `cli` traps with a named error.
@@ -187,7 +187,7 @@ For expression source you don't fully control, in priority order:
    ④ set mem_size_bytes         ── cap what one Instance can consume
    ⑤ audit @host functions      ── the Program can call them with
                                    arbitrary args; validate inside the
-                                   lambda — or use @component instead
+                                   lambda — or use @plugin instead
 ```
 
 1. **Cap expression source length** well below the 100k default — real
@@ -205,5 +205,5 @@ For expression source you don't fully control, in priority order:
    pin it to what your expressions need rather than raising it reflexively.
 5. **Audit your `@host` functions as attack surface.** Anything you
    register is callable by the Program with arbitrary arguments — validate
-   inputs inside the lambda, and prefer `@component` for any body you
+   inputs inside the lambda, and prefer `@plugin` for any body you
    didn't write yourself.

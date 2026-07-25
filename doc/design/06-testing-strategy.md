@@ -302,12 +302,12 @@ Verified stale-skip inventory:
   gap; the bindings work throughout `e2e/m5_test.cc` and
   `e2e/activation_boundary_test.cc`.
 - `e2e/foreign_fn_type_matrix_test.cc` — ~40 skips cite `kBlockerB0`
-  ("AddComponent returns Unimplemented"); AddComponent is fully implemented
-  and exercised by `e2e/foreign_component_dispatch_test.cc`.
+  ("AddPlugin returns Unimplemented"); AddPlugin is fully implemented
+  and exercised by `e2e/plugin_dispatch_test.cc`.
 - `compiler/codegen/expr_lower_test.cc:600` — cites a long-shipped lowering
   dependency.
-- `eval/engine_test.cc:933` — cites a missing component fixture; fixtures
-  exist under `e2e/foreign_component_fixtures/`.
+- `eval/engine_test.cc:899` — cites a missing plugin fixture; fixtures
+  exist under `e2e/plugin_fixtures/`.
 
 > **Open question (V22):** the stale-skip sweep — delete each skip, run its
 > target, classify pass / fail-with-new-reason. The periodic review pass

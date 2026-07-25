@@ -3,7 +3,7 @@
 This is the embedder's guide to the CEL-to-WebAssembly AOT compiler: how
 to compile a CEL expression to a wasm module, evaluate it, bind
 variables, and extend the language with custom functions (host-backed
-C++, or sandboxed Component-Model components).
+C++, or sandboxed WebAssembly plugins).
 
 Every code snippet uses the real public API (`compiler/compiler.h`,
 `compiler/program.h`, `eval/engine.h`, `eval/instance.h`,
@@ -20,7 +20,7 @@ about what evaluates today vs. what is planned.
 > live on their own pages:
 > - [Custom functions — the three backends](custom-functions.md)
 > - [Writing host functions](writing-host-functions.md)
-> - [Writing component functions](writing-component-functions.md)
+> - [Writing plugins](writing-plugins.md)
 
 ---
 
@@ -176,7 +176,7 @@ across the process. **`Engine::Plan` is safe to call concurrently from
 many threads** — each call mints an independent store/linker/memory,
 sharing only the (thread-safe) engine + parsed runtime module.
 
-> **Not** thread-safe: `Engine::AddFunction` / `AddComponent` (custom-fn
+> **Not** thread-safe: `Engine::AddFunction` / `AddPlugin` (custom-fn
 > registration — see [custom functions](custom-functions.md)). Configure those once at startup, *then*
 > `Plan` from many threads.
 
@@ -261,7 +261,7 @@ bool err    = v.IsError();
 |---|---|---|
 | `Compiler` | value, copyable | immutable after Build; share freely |
 | `Program` | value, copyable | immutable; share/serialize freely |
-| `Engine` | one per process | `Plan` concurrent-safe; `AddFunction`/`AddComponent` single-thread setup |
+| `Engine` | one per process | `Plan` concurrent-safe; `AddFunction`/`AddPlugin` single-thread setup |
 | `Instance` | one per worker thread | thread-owned; outlives the Engine handle (shared_ptr) |
 | `Activation` | per-eval, reusable | not shared across threads |
 
@@ -271,14 +271,14 @@ bool err    = v.IsError();
 
 CEL is extended with your own functions through a small `.celfn` IDL
 with three backends: `@host` (trusted C++ in your process),
-`@component` (sandboxed WebAssembly, hot-swappable), and `@native`
+`@plugin` (sandboxed WebAssembly, hot-swappable), and `@native`
 (reserved, unimplemented). The full overview — declarations,
 libraries, registration, and the backend comparison — is on its own
 page:
 
 - **[Custom functions — the three backends](custom-functions.md)**
 - [Writing host functions](writing-host-functions.md) — worked examples
-- [Writing component functions](writing-component-functions.md) — build a sandboxed plugin
+- [Writing plugins](writing-plugins.md) — build a sandboxed plugin
 
 ---
 
@@ -295,7 +295,7 @@ CLI (`tools/cel/`, built via
 | `cel check <expr>` | parse + type-check; print `OK` or the error | compile only |
 | `cel compile <expr>` | compile to wasm bytes (`--output PATH`, else stdout) | compile only |
 | `cel eval <expr>` | **compile *and* evaluate** in one shot; print the result | compile + run |
-| `cel generate` | emit component-function bindings (`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl` file — the front half of the `cel_wasm_component` macro ([component functions](writing-component-functions.md)) | codegen only |
+| `cel generate` | emit plugin-function bindings (`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl` file — the front half of the `cel_wasm_plugin` macro ([plugin functions](writing-plugins.md)) | codegen only |
 
 ```bash
 cel eval    "1 + 2 + 3"                              # → 6   (compile + evaluate)
@@ -303,14 +303,14 @@ cel eval    "a * b" --var "a:int=6" --var "b:int=7"  # → 42
 cel eval    'd > duration("1s")' --var 'd:duration="2s"'
 cel check   "u.name" --proto user.proto --var "u:acme.User"   # parse + type-check → OK
 cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm  # emit wasm bytes
-cel generate --idl fns.idl --out_dir gen/            # emit component-fn bindings
+cel generate --idl fns.idl --out_dir gen/            # emit plugin-fn bindings
 ```
 
 `generate` takes no positional `<expr>` — its input is `--idl`; flags:
 `--out_dir` (required), `--language` (`cpp` today; `go` planned),
 `--package` (WIT package-name override), `--include` (extra `#include`s
 for the generated sources). Normally you don't run it by hand — the
-`cel_wasm_component` Bazel macro drives it.
+`cel_wasm_plugin` Bazel macro drives it.
 
 Note the split: `eval` is the *whole* pipeline (it compiles the
 expression in-process, then runs it — `cel.cc:RunEval`), while `compile`
@@ -357,14 +357,14 @@ backend of the functions it calls:
 | Function backend | Needed at run time (eval) | `.celfn` IDL needed at run time? |
 |---|---|---|
 | **`@native`** (CEL-defined) ⛔ | n/a — the backend is unimplemented ([details](custom-functions.md#3-cel-defined-functions-native)); a program that calls one does not evaluate | **No** |
-| **`@component`** ⛔ | the component's **bytes**, plus the `FunctionLibrary` so the engine knows which decls to bind (`Engine::AddComponent` / a planned `--component path.wasm`) | **Partially** — `AddComponent` takes the library so it can bind every `@component` decl to a matching export; you supply both the *bytes* and the parsed IDL |
+| **`@plugin`** ⛔ | the plugin's **bytes**, plus the `FunctionLibrary` so the engine knows which decls to bind (`Engine::AddPlugin` / a planned `--component path.wasm`) | **Partially** — `AddPlugin` takes the library so it can bind every `@plugin` decl to a matching export; you supply both the *bytes* and the parsed IDL |
 | **`@host`** | a **C++ impl** registered via `Engine::AddFunction` | **No, but** — the IDL only declares the *signature*; the *behavior* is C++ the generic CLI can't supply, so a wasm with host imports isn't runnable by stock `cel` at all |
 
 So the answer is clean: a pure-CEL expression compiles to a
 self-contained `.wasm` that `Engine::Plan` evaluates with **no IDL and
 no extra modules**;
-a `@component`-using expression additionally needs the component bytes
-**and the library** (so the engine knows which `@component` decls to bind
+a `@plugin`-using expression additionally needs the plugin bytes
+**and the library** (so the engine knows which `@plugin` decls to bind
 to which exports). The variable schema needed to bind `--var` travels in
 the program's `cel.abi` section, so the run side is self-describing for
 variables too (§3.3).
@@ -390,12 +390,12 @@ variables too (§3.3).
 | Typed `AddTypedFunction` + `HostCallContext` adapter | ✅ (m21); raw 4-arg `HostCallback` removed |
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
 | **CEL-defined fns** (`@native`) — body lowering + eval | ⛔ not implemented ([details](custom-functions.md#3-cel-defined-functions-native)); a `@native`-using program does not evaluate |
-| **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent`; proto args/returns via the manual-tagged `demo_component_proto` fixture; component-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
-| **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
+| **Plugin fns** (`@plugin`, C++ via the `cel_wasm_plugin` Bazel macro) | ✅ scalar / int / bool round-trips; plugin built end-to-end and dispatched via `Engine::AddPlugin`; proto args/returns via the manual-tagged `demo_plugin_proto` fixture; plugin-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
+| **Plugin fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
 | `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ⛔ no subcommand today; `eval` recompiles each time (§9) |
 | `.celfn` IDL accepted as a whole-file string (`ParseCelfnSource`); caller does the file read | ✅ |
-| `.celfn` grammar v2 (`@native`, prefix-module) + doc-comment capture; the `Module foo;` directive remains current (it names `@native` wasm modules and seeds the WIT package name for `@component` builds) | ✅ shipped (`m13-custom-fns.md` §3.0) |
+| `.celfn` grammar v2 (`@native`, prefix-module) + doc-comment capture; the `Module foo;` directive remains current (it names `@native` wasm modules and seeds the WIT package name for `@plugin` builds) | ✅ shipped (`m13-custom-fns.md` §3.0) |
 | Doc-comment → `cel.abi` (cross-process introspection) / `--celfn` CLI flag | 🟡 description on `CelfnDecl` only; ABI carriage + CLI flag pending |
 
 ---
@@ -410,6 +410,6 @@ variables too (§3.3).
   `doc/implementation-plan/rewrite/m13-custom-fns.md` (§0.5 current
   state, §14 testing strategy).
 - **Memory model:** `doc/implementation-plan/rewrite/memory-layout-design.md`.
-- **Modules + FFI (`@component` backend):**
+- **Modules + FFI (`@plugin` backend):**
   `doc/implementation-plan/rewrite/modules-and-ffi.md`.
 - **CLI:** `tools/cel/` (compile/eval from the command line).

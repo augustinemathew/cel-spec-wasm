@@ -1,19 +1,19 @@
-# Writing component functions (`@component`)
+# Writing plugins (`@plugin`)
 
-Component functions live in a **separate WebAssembly Component-Model
-component** instantiated alongside the CEL expression. The component runs in
+Plugin functions live in a **separate sandboxed WebAssembly plugin**
+instantiated alongside the CEL expression. The plugin runs in
 its own linear memory; values cross the boundary through the canonical ABI.
 
-The `cel_wasm_component` Bazel macro takes a `.celfn` IDL and your
+The `cel_wasm_plugin` Bazel macro takes a `.celfn` IDL and your
 implementation source, runs the whole pipeline (codegen, interface glue,
-and the wasm cross-compile), and produces a single `.wasm` component you
-load via `Engine::AddComponent`. You write two files; everything between
+and the wasm cross-compile), and produces a single `.wasm` plugin you
+load via `Engine::AddPlugin`. You write two files; everything between
 them and the final `.wasm` is an implementation detail.
 
 > **Status:** the C++ pipeline ships end-to-end for the scalar / int / bool
 > round trip — what the
-> [`demo_component`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/foreign_component_fixtures/cel_wasm_component_demo)
-> fixture exercises in CI. String returns from the component side currently
+> [`demo_plugin`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/plugin_fixtures/cel_wasm_plugin_demo)
+> fixture exercises in CI. String returns from the plugin side currently
 > route through a libc++ code path we'd like to skip rather than fully
 > support — see [Performance follow-ups](#8-performance-follow-ups-open-invitation).
 > The Go path (TinyGo) is designed; the `--language=go` arm is planned.
@@ -24,8 +24,8 @@ them and the final `.wasm` is an implementation detail.
 
 ```
 fns.idl        ┐
-user_fns.cc    ├─►  cel_wasm_component  ─►  demo_component.wasm
-acme/user.proto┘    (one macro call)        (load with AddComponent)
+user_fns.cc    ├─►  cel_wasm_plugin  ─►  demo_plugin.wasm
+acme/user.proto┘    (one macro call)     (load with AddPlugin)
 ```
 
 Your inputs are the IDL and your implementation; the output is one
@@ -36,11 +36,11 @@ your implementation its function signatures.
     The macro chains `cel generate` → `wit-bindgen c` → a
     `wasm32-wasip2` `cc_binary`, emitting `fns.wit`, `codec.h`,
     `generated_stub.cc`, and `user_fns.h` into the package's gen tree.
-    The output is a WASI Component-Model component
+    The output is a plugin packaged as a WASI Component-Model component
     (preamble `0x1000d`); `wasm-tools component wit` on it shows
     `export cel:customfn/fns@0.1.0`. None of this surfaces in the API —
-    the engine resolves your `@component` declarations against the
-    component's exports by itself.
+    the engine resolves your `@plugin` declarations against the
+    plugin's exports by itself.
 
 ---
 
@@ -53,11 +53,11 @@ Three input files plus one Bazel macro call.
 ```celfn
 Module customfn;
 
-int    @component.add(int a, int b);
-string @component.greet(string name, int age);
+int    @plugin.add(int a, int b);
+string @plugin.greet(string name, int age);
 ```
 
-The `Module` directive names the component; each `@component.<fn>` decl
+The `Module` directive names the plugin; each `@plugin.<fn>` decl
 becomes a typed export. (Internally the module name seeds an interface
 identifier — override with `package = ...` on the macro if you ever need
 to, but nothing in normal use reads it.)
@@ -94,16 +94,16 @@ function name is the CamelCase of the IDL fn name (`add` → `Add`,
 ### 2.3 The Bazel target — `BUILD.bazel`
 
 ```python
-load("//bazel:cel_wasm_component.bzl", "cel_wasm_component")
+load("//bazel:cel_wasm_plugin.bzl", "cel_wasm_plugin")
 
-cel_wasm_component(
-    name = "demo_component",
+cel_wasm_plugin(
+    name = "demo_plugin",
     idl = "fns.idl",
     user_fns = ["user_fns.cc"],
 )
 ```
 
-`bazel build :demo_component` produces `bazel-bin/.../demo_component.wasm`
+`bazel build :demo_plugin` produces `bazel-bin/.../demo_plugin.wasm`
 (~54 KB for the example above) — the one artifact you ship. Curious what's
 inside? `bazel run //third_party/wasm_tools:wasm-tools -- component wit
 <path>` prints its typed interface, but you never need to.
@@ -111,7 +111,7 @@ inside? `bazel run //third_party/wasm_tools:wasm-tools -- component wit
 ### 2.4 Loading it from C++
 
 This mirrors the working fixture test
-(`e2e/foreign_component_fixtures/cel_wasm_component_demo/demo_component_e2e_test.cc`):
+(`e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin_e2e_test.cc`):
 
 ```cpp
 #include <fstream>
@@ -134,7 +134,7 @@ celwasm::CelfnType Prim(celwasm::CelfnType::Kind k) {
 
 // Load the .wasm bytes (via bazel runfiles in a test, or wherever you
 // ship them):
-std::ifstream f("path/to/demo_component.wasm", std::ios::binary);
+std::ifstream f("path/to/demo_plugin.wasm", std::ios::binary);
 std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                            std::istreambuf_iterator<char>());
 
@@ -144,7 +144,7 @@ std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
 auto lib_or =
     celwasm::FunctionLibrary::Builder()
         .SetWitInterface("cel:customfn/fns@0.1.0")
-        .AddForeignComponent(
+        .AddPlugin(
             "add", Prim(celwasm::CelfnType::Kind::kInt),
             {celwasm::CelfnParam{false, Prim(celwasm::CelfnType::Kind::kInt), "a"},
              celwasm::CelfnParam{false, Prim(celwasm::CelfnType::Kind::kInt), "b"}})
@@ -154,7 +154,7 @@ const celwasm::FunctionLibrary lib = *std::move(lib_or);
 
 auto engine = celwasm::Engine::NewBuilder().Build();
 ABSL_CHECK_OK(engine);
-ABSL_CHECK_OK(engine->AddComponent(bytes, lib));
+ABSL_CHECK_OK(engine->AddPlugin(bytes, lib));
 
 // Compile and evaluate as usual — `add(...)` is now a callable export.
 // Note `Compiler::Builder::Build()` is rvalue-qualified: chain setters
@@ -180,23 +180,23 @@ ABSL_CHECK_OK(v);
 ```
 
 Working e2e fixture:
-[`e2e/foreign_component_fixtures/cel_wasm_component_demo/`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/foreign_component_fixtures/cel_wasm_component_demo).
+[`e2e/plugin_fixtures/cel_wasm_plugin_demo/`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/plugin_fixtures/cel_wasm_plugin_demo).
 
 ---
 
 ## 3. Proto messages
 
-The IDL admits `proto(<fully.qualified.name>)` for any Component-Model-backed
+The IDL admits `proto(<fully.qualified.name>)` for any plugin-backed
 function. Proto values **cross the boundary as serialized bytes** (m24 §8):
-the host serializes, the component deserializes, and vice versa for returns.
+the host serializes, the plugin deserializes, and vice versa for returns.
 User code on both sides sees the natural language-native message type.
 
 ```celfn
 // In fns.idl
 Module customfn;
 
-bool             @component.is_admin(proto(acme.User) u);
-proto(acme.User) @component.capitalize(proto(acme.User) u);
+bool             @plugin.is_admin(proto(acme.User) u);
+proto(acme.User) @plugin.capitalize(proto(acme.User) u);
 ```
 
 ```cpp
@@ -219,8 +219,8 @@ acme::User Capitalize(const acme::User& u) {
 ```python
 # In BUILD.bazel — feed the proto cc_library as a wasm-cross dep so the
 # wasi-sdk cc_binary can compile your `.pb.h`/`.pb.cc`.
-cel_wasm_component(
-    name = "demo_component_proto",
+cel_wasm_plugin(
+    name = "demo_plugin_proto",
     idl = "fns_proto.idl",
     user_fns = ["user_fns_proto.cc"],
     deps = ["//acme:user_cc_proto"],
@@ -258,8 +258,8 @@ func main() {}  // required for a reactor module
 The planned macro extension would emit Go bindings instead of C++:
 
 ```python
-cel_wasm_component(
-    name = "demo_component",
+cel_wasm_plugin(
+    name = "demo_plugin",
     idl = "fns.idl",
     language = "go",                  # planned
     user_fns = ["user_fns.go"],
@@ -274,8 +274,8 @@ fns.idl  ─► cel generate --language=go  ─► fns.wit + customfn_bindings.g
                 ↓
             tinygo build -target=wasip2 -buildmode=c-shared -o core.wasm
                 ↓
-            (the wasip2 TinyGo target emits a CM component directly,
-             same as the C++ path)
+            (the wasip2 TinyGo target emits a Component-Model binary
+             directly, same as the C++ path)
 ```
 
 **Why it's not available yet:** only `--language=cpp` is wired through
@@ -294,7 +294,7 @@ size cost. Empirically confirmed; see
 
 ## 5. Type matrix
 
-Every CEL type the foreign-component decl surface admits, with the canonical
+Every CEL type the plugin decl surface admits, with the canonical
 C++ container the codec lifts to / lowers from:
 
 | CEL type | wire type (internal) | C++ container |
@@ -314,25 +314,25 @@ C++ container the codec lifts to / lowers from:
 
 Aggregates compose recursively — `list<map<string, list<int>>>` is valid. The
 codec emits per-type `lift` / `lower` overloads on demand; only types actually
-used in the IDL are pulled into the component, so a string-only IDL doesn't
+used in the IDL are pulled into the plugin, so a string-only IDL doesn't
 link the map machinery.
 
-`optional<T>` and `type` are **permanently rejected** at the component
+`optional<T>` and `type` are **permanently rejected** at the plugin
 boundary (m24 §14) — they don't compose with the canonical ABI.
 
 ---
 
 ## 6. Backend distinction
 
-Three function-IDL backends; only one routes through the Component Model:
+Three function-IDL backends; only one routes through a sandboxed plugin:
 
 | Prefix | Where the body lives | Registration |
 | --- | --- | --- |
 | `@host.fn` | embedder C++ | `Engine::AddFunction` (or `AddTypedFunction`) |
-| `@component.fn` | a wasm component | `Engine::AddComponent(bytes, lib)` |
+| `@plugin.fn` | a sandboxed wasm plugin | `Engine::AddPlugin(bytes, lib)` |
 | `@native.fn = expr` | CEL expression body | — (codegen path unshipped; see [Custom functions §3](custom-functions.md#3-cel-defined-functions-native)) |
 
-This page covers `@component.` exclusively. For host functions see
+This page covers `@plugin.` exclusively. For host functions see
 [Writing host functions](writing-host-functions.md).
 
 ---
@@ -340,11 +340,11 @@ This page covers `@component.` exclusively. For host functions see
 ## 7. Performance + size
 
 Per-call overhead, M-series Mac, `-c opt` (re-measured 2026-07-22; reproduce
-with `bazel run -c opt //benchmark/component:foreign_component_bench`):
+with `bazel run -c opt //benchmark/plugin:plugin_bench`):
 
 | Path | Time / call |
 | --- | ---: |
-| `int+int → int` via component (this macro) | ~450 ns |
+| `int+int → int` via plugin (this macro) | ~450 ns |
 | `int+int → int` via host C++ callback | ~110 ns |
 | 256 KiB string `len()` via host C++ callback | 3.6 µs @ 68 GiB/s |
 
@@ -362,15 +362,15 @@ direct alternative: same process / memory, no isolation.
 
 Optimisations in the design queue, all targeting the per-call boundary cost:
 
-- **AOT-cache the component instance.** Every `Engine` rebuilds the wasmtime
-  component instance from bytes at `AddComponent`. Caching the cwasm machine
+- **AOT-cache the plugin instance.** Every `Engine` rebuilds the wasmtime
+  instance from bytes at `AddPlugin`. Caching the cwasm machine
   code (`wasmtime::Module::serialize`) on disk would amortise the
   ~240-300 µs Plan cost across processes — the same lever already documented
   for the expression module (`engine.h:24`).
-- **Component-side allocator pool.** `cabi_realloc` is called once per
+- **Plugin-side allocator pool.** `cabi_realloc` is called once per
   argument lift; a small per-call slab would cut that to one bump-pointer
   touch.
-- **Skip the canonical-ABI hop for compute-only components.** With a `pure`
+- **Skip the canonical-ABI hop for compute-only plugins.** With a `pure`
   annotation in the IDL, the engine could cache lifted args across repeated
   Evals with the same activation — common in batch-eval loops.
 - **A non-libc++ build mode.** The wasm32-wasip2 toolchain pulls all of
@@ -378,17 +378,17 @@ Optimisations in the design queue, all targeting the per-call boundary cost:
   header-only replacement would strip the import surface.
 
 If you have a workload where any of these would matter, the
-[bench harness](https://github.com/augustinemathew/cel-wasm/blob/master/benchmark/component/foreign_component_bench.cc) is the
+[bench harness](https://github.com/augustinemathew/cel-wasm/blob/master/benchmark/plugin/plugin_bench.cc) is the
 right place to add a row and measure.
 
 ## 9. Where to look next
 
 - **Working demo**:
-  [`e2e/foreign_component_fixtures/cel_wasm_component_demo/`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/foreign_component_fixtures/cel_wasm_component_demo)
+  [`e2e/plugin_fixtures/cel_wasm_plugin_demo/`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/plugin_fixtures/cel_wasm_plugin_demo)
   — `fns.idl` + `user_fns.cc` + `BUILD.bazel`, end-to-end `cc_test` that
-  round-trips `add(a, b)` through `Engine::AddComponent`.
+  round-trips `add(a, b)` through `Engine::AddPlugin`.
 - **Macro source**:
-  [`bazel/cel_wasm_component.bzl`](https://github.com/augustinemathew/cel-wasm/blob/master/bazel/cel_wasm_component.bzl).
+  [`bazel/cel_wasm_plugin.bzl`](https://github.com/augustinemathew/cel-wasm/blob/master/bazel/cel_wasm_plugin.bzl).
 - **Design doc**:
   [`doc/implementation-plan/rewrite/m26-celfnc-and-component-build.md`](https://github.com/augustinemathew/cel-wasm/blob/master/doc/implementation-plan/rewrite/m26-celfnc-and-component-build.md).
 - **Type matrix detail / canonical ABI**:

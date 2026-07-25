@@ -61,7 +61,7 @@ Ownership and threading in three facts: the Engine is built once and shared (it 
       │   tripwire — the imports decide)         └─ no  → STATIC: runtime is
       ▼                                                   already in the module
    4. bind embedder extensions: custom modules, cel_fn.* host callbacks,
-      │                          components                        (§3, §4, §9)
+      │                          plugins                           (§3, §4, §9)
       ▼
    5. instantiate the expr module;  pull out  $eval
       ▼
@@ -95,7 +95,7 @@ engine->BindFunction(kDecl,             // engine side: implement it
 
 The lambda's parameter types are checked positionally against the declared CEL types at registration, and it registers under the *synthesized* overload-id — one source, no drift. (From `examples/04_host_functions.cc`.)
 
-The other surfaces: `AddTypedFunction(id, lambda)` is the typed adapter without a decl; `AddFunction(id, num_args, callback)` is the raw layer underneath (§4, L1); `AddModule(alias, bytes)` binds a foreign wasm module; `AddComponent(bytes, lib)` registers a Component-Model component (§9). All validate what they can at registration and defer store-dependent checks to Plan — except component arity, checked at **call time** (a wrong-shaped export traps when first called, not when planned).
+The other surfaces: `AddTypedFunction(id, lambda)` is the typed adapter without a decl; `AddFunction(id, num_args, callback)` is the raw layer underneath (§4, L1); `AddModule(alias, bytes)` binds a foreign wasm module; `AddPlugin(bytes, lib)` registers a sandboxed plugin (§9). All validate what they can at registration and defer store-dependent checks to Plan — except plugin arity, checked at **call time** (a wrong-shaped export traps when first called, not when planned).
 
 ## 4. The host-call stack — L0, L1, L2
 
@@ -261,18 +261,18 @@ Two specifics on the value path:
 - **Error *messages* are dropped at the host→wasm boundary.** The wire carries only the error *code*; message and source location are discarded, and read-back synthesizes a generic message from the code. Known limitation (cleanup-backlog #31), not a deep invariant. It is also why a host callback's `InvalidArgument("boom")` reaches the embedder as a generic `Internal "Eval trapped"` — the trap path loses the code (§10).
 - **3VL precedence for strict ops is "error dominates unknown," regardless of operand order** — oracle-confirmed against cel-cpp. Both the kernel and the trampolines implement it.
 
-## 9. Components — sandboxed custom functions
+## 9. Plugins — sandboxed custom functions
 
-The component path makes a Component-Model component's exports callable as CEL functions, with the component in its **own** linear memory. At Plan, each component is instantiated into the per-Plan store and each foreign decl is bound as a `cel_fn.<overload_id>` trampoline — the wasm import shape is identical to an `@host` decl; only the callback body differs.
+The plugin path makes a plugin's exports callable as CEL functions, with the plugin in its **own** linear memory (a plugin is packaged as a Component-Model component). At Plan, each plugin is instantiated into the per-Plan store and each plugin decl is bound as a `cel_fn.<overload_id>` trampoline — the wasm import shape is identical to an `@host` decl; only the callback body differs.
 
-The trampoline 3VL-absorbs (same contract as §4), lifts each argument CelValue into a component value per the decl's type witness, calls, and lowers the single result back. Type mapping: strings are length-based (NUL-safe), bytes cross as `list<u8>`, durations/timestamps as `record{seconds, nanos}`, maps as `list<tuple<K,V>>`, and **protos cross as serialized bytes** (never a handle), re-materialized from the descriptor pool on the way back. `optional<T>` is rejected both directions. Unsatisfied wasi-preview2 imports are **trap-stubbed** so a runaway libc++ call traps naming the missing interface — except `wasi:random/random`, which returns deterministic bytes (the libc++ runtime reads it during static init and there is no per-store WASI context to wire instead).
+The trampoline 3VL-absorbs (same contract as §4), lifts each argument CelValue into a plugin-side value per the decl's type witness, calls, and lowers the single result back. Type mapping: strings are length-based (NUL-safe), bytes cross as `list<u8>`, durations/timestamps as `record{seconds, nanos}`, maps as `list<tuple<K,V>>`, and **protos cross as serialized bytes** (never a handle), re-materialized from the descriptor pool on the way back. `optional<T>` is rejected both directions. Unsatisfied wasi-preview2 imports are **trap-stubbed** so a runaway libc++ call traps naming the missing interface — except `wasi:random/random`, which returns deterministic bytes (the libc++ runtime reads it during static init and there is no per-store WASI context to wire instead).
 
 ## 10. Known gaps and future work
 
 - **Host-callback status codes are lost.** A callback returning `InvalidArgument("boom")` surfaces as a generic `Internal "Eval trapped"` (cleanup-backlog #31, same root as the §8 error-message loss). Fix as one contract.
-- **No Plan-time component signature check** — a wrong-arity component export fails at call time, not Plan.
+- **No Plan-time plugin signature check** — a wrong-arity plugin export fails at call time, not Plan.
 - **Per-Plan expr re-parse** — the expression module is re-parsed every Plan; a cache seam exists but is unexploited.
 - **Cross-origin list concat** poisons host-involved pairs with a type-mismatch; the planned fix is to materialize into the arena.
-- Smaller follow-ons: dynamic-schema descriptor pools, field-descriptor caching, the kType component lower stub.
+- Smaller follow-ons: dynamic-schema descriptor pools, field-descriptor caching, the kType plugin lower stub.
 
-Unverified questions (the exact component-arity trap site, zero-arg `Eval()` handle-table growth, the host-callback status-code contract) live in [`design/notes/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/design/notes).
+Unverified questions (the exact plugin-arity trap site, zero-arg `Eval()` handle-table growth, the host-callback status-code contract) live in [`design/notes/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/design/notes).

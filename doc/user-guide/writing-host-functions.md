@@ -2,8 +2,8 @@
 
 > Part of the [CEL → WebAssembly user guide](index.md). This is the deep-dive
 > page for **host functions** — CEL functions whose body is your C++, called
-> back at eval time. For CEL-defined (`@native`) and Component-Model
-> (`@component`) functions, see [Custom functions §3 / §4](custom-functions.md).
+> back at eval time. For CEL-defined (`@native`) and sandboxed plugin
+> (`@plugin`) functions, see [Custom functions §3 / §4](custom-functions.md).
 
 A host function is declared with the `@host.` prefix, type-checked at compile
 time, and backed by a C++ callback registered on the `Engine`. Three
@@ -510,4 +510,4 @@ the WASM pipeline *cannot* express:
 - `doc/implementation-plan/rewrite/m13-custom-fns.md` — the `.celfn` IDL
   grammar and the custom-function backends.
 - [Custom functions §3 / §4](custom-functions.md) — CEL-defined (`@native`)
-  and Component-Model (`@component`) functions.
+  and sandboxed plugin (`@plugin`) functions.

@@ -8,7 +8,7 @@ modules-and-fnis}.md.
 
 A `.celfn` declaration is parsed in `compiler/celfn/`, stamped by the cel-cpp
 checker, lowered by codegen as a wasm import, bound by the evaluator at Plan,
-and — for the component backend — scaffolded by `cel generate` and built by a
+and — for the plugin backend — scaffolded by `cel generate` and built by a
 Bazel macro. Evaluator-side dispatch internals live in 02-evaluator.md §3–§4
 and §9; cited, not repeated.
 
@@ -22,7 +22,7 @@ One struct describes every custom function: `CelfnDecl`
 | Backend | Prefix | Body | Bound by |
 |---|---|---|---|
 | `kHost` | `@host.` | none — C++ callable | `BindFunction` / `AddTypedFunction` / `AddFunction` (`eval/engine.h:137-235`); §4 |
-| `kForeignComponent` | `@component.` | none — sandboxed component | `Engine::AddComponent(bytes, lib)` (engine.cc:1519); §5 |
+| `kPlugin` | `@plugin.` | none — sandboxed plugin | `Engine::AddPlugin(bytes, lib)` (engine.cc:1594); §5 |
 | `kCelDefined` | `@native.` | CEL expression after `=` (`Celfn.g4:66-68`) | **declaration-only today** — no body compiler exists; §6 |
 
 Backend choice changes exactly two things: the wasm import-module string
@@ -30,12 +30,12 @@ codegen emits, and who binds that import at Plan. Everything else — the 24-byt
 CelValue slot ABI, the `(out_slot, arg_slots...)` calling convention, checker
 registration, the OverloadTable row — is identical.
 
-The load-bearing dispatch invariant: **kHost and kForeignComponent share one
+The load-bearing dispatch invariant: **kHost and kPlugin share one
 import namespace.** `DispatchesViaCelFn` (`compiler/internal/compile.cc:527`)
 maps both to import module `"cel_fn"` (function_library.cc:224,242; pinned by
-function_library_test.cc:37,58,184). A component function *is* a host function
+function_library_test.cc:37,58,184). A plugin function *is* a host function
 at the call site — only the Engine knows whether the `cel_fn.<overload_id>`
-linker func it binds at Plan wraps an embedder lambda or a component-export
+linker func it binds at Plan wraps an embedder lambda or a plugin-export
 trampoline (02-evaluator.md §9). kCelDefined alone routes to
 `ImportModule::kUserModule`, import-module string = the library's `Module foo;`
 directive (compile.cc `BuildOverloadTable`; `overload_table.h:124`).
@@ -61,7 +61,7 @@ equal:
 | 2 | OverloadTable key — `RegisterCustom(..., helper_name = overload_id, num_args)` | compile.cc `BuildOverloadTable` |
 | 3 | Wasm import field name — `(import "cel_fn"\|"<module>" "<overload_id>" (param i32 × num_args))`, all-void returns, out_slot first | `InstallOverloadImportsExport`, compile.cc:286-353 |
 | 4 | Engine callback key — bound as the `cel_fn.<overload_id>` linker func at Plan; `BindFunction` re-derives the id from the same `.celfn` string, so binding cannot diverge from import name | 02-evaluator.md §3 |
-| 5 | Component export name, kebab'd — the Component-Model grammar rejects snake_case; the Engine resolves exports by `OverloadIdToKebab` (underscores → hyphens, uppercase → lowercase), the WIT emitter matches via `SnakeToKebab` | engine.cc:1067; `compiler/celfn/celfnc_emit/wit_emitter.cc:151` |
+| 5 | Plugin export name, kebab'd — the Component-Model grammar rejects snake_case; the Engine resolves exports by `OverloadIdToKebab` (underscores → hyphens, uppercase → lowercase), the WIT emitter matches via `SnakeToKebab` | engine.cc:1131; `compiler/celfn/celfnc_emit/wit_emitter.cc:151` |
 
 The snake↔kebab translation lives in exactly those two places and must stay in
 lockstep; both flatten proto-fqn CamelCase segments (pinned:
@@ -71,7 +71,7 @@ original.
 
 Uniqueness: cross-library at `Compiler::Builder::Build` (compiler.cc:155-166);
 per-library at `FunctionLibrary::Builder::Build` (§3); engine-side,
-`AddFunction`/`AddComponent` conflict-check ids against everything previously
+`AddFunction`/`AddPlugin` conflict-check ids against everything previously
 registered (02-evaluator.md §3).
 
 ## 3. The IDL & the Builder validation funnel
@@ -80,7 +80,7 @@ registered (02-evaluator.md §3).
 
 `compiler/celfn/Celfn.g4` (single file). Productions: `moduleDirective`
 (`Module foo;`), `hostFnDecl` (`type '@' 'host' '.' Id '(' params? ')' ';'`),
-`componentFnDecl` (same with `component`), `nativeFnDecl` (adds `'='
+`pluginFnDecl` (same with `plugin`), `nativeFnDecl` (adds `'='
 celExprBody`), and `bareHostDecl` — a **diagnostic-only** production matching
 `host.foo(...)` without `@`, converted to a curated InvalidArgument ("reserved
 alias; use `@host.`") by the visitor (function_library.cc:535-539;
@@ -116,7 +116,7 @@ generator hit identical gates, with the offending decl named.
    list/map/optional carriers; an illegal key kind *anywhere* ⇒ InvalidArgument
    naming decl + param (cc:123-144, 270-285). All backends (pinned for kHost:
    function_library_test.cc:563-576).
-5. kForeignComponent only: `MentionsOptional` / `MentionsType` structurally
+5. kPlugin only: `MentionsOptional` / `MentionsType` structurally
    reject `optional<T>` and `type` anywhere in the signature (cc:85-113,
    287-318). See §7.
 
@@ -179,15 +179,16 @@ subsystem's contract: the callback is keyed by overload-id, receives
 `(out_slot, args...)` CelValue slots, and never sees Error/Unknown args
 (absorbed at L0).
 
-## 5. `@component` end-to-end
+## 5. `@plugin` end-to-end
 
-The component backend runs an embedder-authored function inside a sandboxed
-Component-Model component; eval-side marshaling is 02-evaluator.md §9.
+The plugin backend runs an embedder-authored function inside a sandboxed
+plugin — packaged as a Component-Model component; eval-side marshaling is
+02-evaluator.md §9.
 
 ### 5.1 The celfnc emitters & `cel generate`
 
 Four pure text emitters under `compiler/celfn/celfnc_emit/` (string in/out, no
-I/O), keyed off kForeignComponent decls only:
+I/O), keyed off kPlugin decls only:
 
 | Emitter | Emits |
 |---|---|
@@ -208,10 +209,10 @@ map only as an *arg* — matching the missing map-lower (§5.4).
 
 ### 5.2 The build macro
 
-`bazel/cel_wasm_component.bzl`: genrule(`cel generate`) →
+`bazel/cel_wasm_plugin.bzl`: genrule(`cel generate`) →
 genrule(`wit-bindgen c --world customfn`) → wasi-sdk `cc_binary` under the
 **wasm32-wasip2** platform transition → rename to `<name>.wasm`. wasip2 emits a
-Component-Model component *directly* (preamble 0x1000d) — no `wasm-tools
+Component-Model binary *directly* (preamble 0x1000d) — no `wasm-tools
 component new` step. The wasip2 and wasi-threads toolchains coexist, selected
 by target platform constraint. (The macro's docblock still mentions absl time
 types; the emitters use `::google::protobuf::Duration/Timestamp` — the code
@@ -228,7 +229,7 @@ overload-id verbatim behind the `exports_<pkg>_fns_` prefix
 > **Open question (V27):** the stub's export symbol preserves overload-id case
 > (`..._is_adult_message_acme_User`); wit-bindgen derives its expected impl
 > symbol from the lowercased kebab WIT name. Whether the manual-tagged
-> `demo_component_proto` fixture actually links is unprobed — build it; if it
+> `demo_plugin_proto` fixture actually links is unprobed — build it; if it
 > links, document why; if not, this is a real bug hidden by the manual tag.
 
 Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
@@ -237,15 +238,15 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
 
 ### 5.4 Known traps
 
-- **String-return trap.** A string-returning component fn traps at call time
+- **String-return trap.** A string-returning plugin fn traps at call time
   ("cannot leave component instance", inside libc++ post-RNG-init under
-  wasm32-wasip2) — reasoned skip in `e2e/.../demo_component_e2e_test.cc:135-147`.
+  wasm32-wasip2) — reasoned skip in `e2e/.../demo_plugin_e2e_test.cc:135-147`.
   The supported envelope today is **scalar returns**
-  (`examples/09_component_functions.cc` is scalar-only on purpose,
+  (`examples/09_plugin_functions.cc` is scalar-only on purpose,
   examples/README.md:24-26).
 - **Map-lower emitter gap.** `EmitCodecH` emits a literal
   `// TODO(m26): lower($1*, const $0&) not yet emitted`
-  (cpp_codec_emitter.cc:371) — a map-*returning* `@component.` decl generates a
+  (cpp_codec_emitter.cc:371) — a map-*returning* `@plugin.` decl generates a
   stub calling a nonexistent `codec::lower`. The fixture declaring exactly such
   decls (`fixtures/full_matrix.idl`) is referenced by no BUILD target, so no
   gate catches it.
@@ -262,7 +263,7 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
 > `full_matrix.idl` into the §5.1 compile gate (§8).
 
 > **Open question (V33):** promote `function_library` to the public surface
-> (`AddComponent` already takes it as a public-API parameter) or re-scope
+> (`AddPlugin` already takes it as a public-API parameter) or re-scope
 > example 09. Widening visibility is a reviewable event.
 
 ## 6. `@native` (kCelDefined): the fork
@@ -313,13 +314,13 @@ between 1 and 2. A reachable not-done path fails loudly at the edge.
 
 ## 7. Type-surface policy
 
-- **`optional<T>` and `type` are permanently rejected on the foreign-component
+- **`optional<T>` and `type` are permanently rejected on the plugin
   surface** — owner direction, not a temporary gap. Enforced at `Build()` (§3.2
   gate 5, incl. depth-4 nesting: function_library_test.cc:261-357), with
   FailedPrecondition tripwires in every emitter (§5.1) and rejection in both
-  marshaling directions (`eval/internal/cel_component.cc`).
+  marshaling directions (`eval/internal/cel_plugin.cc`).
 - **CEL `null` is a distinct kind, supported on all backends** (kNull ≠
-  kOptional; pinned function_library_test.cc:359-380). Component wire form:
+  kOptional; pinned function_library_test.cc:359-380). Plugin wire form:
   `option<u8>`.
 - **Map keys are bool|int|uint|string, every backend, any nesting depth** (§3.2
   gate 4) — matching the kernel's map-key contract.
@@ -328,7 +329,7 @@ between 1 and 2. A reachable not-done path fails loudly at the edge.
   the `ABSL_CHECK` stub in `CelfnTypeToCelType` (parse_and_check.cc:770) —
   embedder input must never crash the process. The fix rides V9 (§3.3).
 - **Protos cross every boundary as serialized bytes** — `list<u8>` over the
-  component boundary, `SerializePartialToString` / ParseFromArray at the codec
+  plugin boundary, `SerializePartialToString` / ParseFromArray at the codec
   layer — with the fqn kept host-side; neither the WIT nor the generator ever
   needs descriptors.
 

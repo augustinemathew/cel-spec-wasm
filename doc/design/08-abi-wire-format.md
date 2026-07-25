@@ -110,13 +110,13 @@ The precedence between UNKNOWN and ERROR operands is **per-op-class**, not globa
 | host-call trampoline `AbsorbUnknownOrErrorArg` (strict: custom fns) | error dominates (scans all args with an explicit `!have_error` guard on the unknown arm) | `eval/engine.cc` |
 | runtime kernel `cel_and` / `cel_or` (logic ops) | absorbing bool > UNKNOWN (merged) > ERROR, left-bias within each class | `runtime/cel_3vl.c`; `cel_3vl_test.cc` 4×4 matrices; e2e in `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest` |
 
-## 4. The component boundary (WIT vocabulary)
+## 4. The plugin boundary (WIT vocabulary)
 
-Foreign Component-Model functions speak a parallel, typed contract — not the CelValue slot ABI. Two layers:
+Plugin functions speak a parallel, typed contract — not the CelValue slot ABI. Two layers:
 
 **The shared dynamic vocabulary** — `abi/wit/cel.wit` (`package cel:value@0.2.0`): the complete CEL value model as a WIT `resource value`. WIT forbids recursive variants, so aggregates nest through handles; proto messages cross as `record message {type-name, wire: list<u8>}` (serialized bytes, never a handle); map keys are restricted via `variant map-key {bool, int, uint, string}`. A `custom-fn` interface (`invoke(name, args) -> result<value, eval-error>`) and two worlds complete it. Reserved for the dynamic/variadic path; no first-party caller dispatches through it.
 
-**The common concretely-typed path** — per-function typed WIT plus the canonical-ABI lift/lower bridge in `eval/internal/cel_component.{h,cc}`; the authoritative per-CEL-type mapping table is `cel_component.h:12-34`. Highlights: bytes ↔ `list<u8>`; duration/timestamp ↔ a `{seconds, nanos}` record; `map<K,V>` ↔ `list<tuple<K,V>>`; `proto(fqn)` ↔ `SerializePartialToString` bytes re-materialised via the descriptor pool; `optional<T>` permanently rejected both directions; kType lifts as a type-name string (its Lower arm is an Unimplemented stub — unreachable: kType is rejected at library Build). 3VL absorption is the **caller's** job: lift/lower never see Error/Unknown (`02-evaluator.md` §9). Naming seam: the wasm import stays snake_case (`cel_fn.<overload_id>`); the Component-Model identifier grammar rejects snake_case, so the engine kebab-cases consumer-side (`OverloadIdToKebab`).
+**The common concretely-typed path** — per-function typed WIT plus the canonical-ABI lift/lower bridge in `eval/internal/cel_plugin.{h,cc}`; the authoritative per-CEL-type mapping table is `cel_plugin.h:12-34`. Highlights: bytes ↔ `list<u8>`; duration/timestamp ↔ a `{seconds, nanos}` record; `map<K,V>` ↔ `list<tuple<K,V>>`; `proto(fqn)` ↔ `SerializePartialToString` bytes re-materialised via the descriptor pool; `optional<T>` permanently rejected both directions; kType lifts as a type-name string (its Lower arm is an Unimplemented stub — unreachable: kType is rejected at library Build). 3VL absorption is the **caller's** job: lift/lower never see Error/Unknown (`02-evaluator.md` §9). Naming seam: the wasm import stays snake_case (`cel_fn.<overload_id>`); the Component-Model identifier grammar rejects snake_case, so the engine kebab-cases consumer-side (`OverloadIdToKebab`).
 
 ## 5. Change discipline
 
