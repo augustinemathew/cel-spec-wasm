@@ -78,12 +78,22 @@ graph TD
 | 1→2 | R5 doc terminology sweep (after R names verified) | agent-R5 | done (e823a76; writing-plugins.md live, CLEANUP_PLAN/PROPOSALS updated as live registers) |
 | 2 | A0 + A2 + A3 (tool + macro chain) | agent-A | done (d3265dd embed-decls tool; 2bdab21 macro embed step + package-override removal; gates: //tools + //abi:plugin_test + //e2e 70/70 incl. manual-tagged plugin/host/matrix targets, bazel build //... 303 targets; demo wit_interface cel:customfn/fns@0.1.0; demo_plugin_proto blocked by pre-existing absl-sync wasm32-wasip2 cross-compile break, unrelated) |
 | 2 | A4 probe + Plugin::Load (//abi:plugin) | agent-A4 | done (1c4e0fb probe: static export lookup EXISTS in pin — B1 goes static; 25b5bf4 Plugin::Load) |
-| 2 | V1 + V2 (wire + emission) | agent-V | in flight |
-| 3 | B0 + B2 (compile-side surface) | agent-Bc | pending |
-| 3 | B1 (Engine::Use) | agent-Be | pending |
-| 3 | V3 + V4 (check + selective instantiation) | agent-V34 | pending |
+| 2 | V1 + V2 (wire + emission) | agent-V | done (ec658ab, d2cfb3c, f53692f; O2-import-drop pin green both link modes; conformance 2035/2035 both legs; delta: FN_KIND_NULL=14 added) |
+| 3 | B0 + B1 + B2 (one agent — B and V3 share eval/engine.cc, so serialized) | agent-B | in flight |
+| 3 | V3 + V4 (check + selective instantiation; after B — §5.3 messages cite Engine::Use) | agent-V34 | pending |
 | 4 | B3 examples + demo e2e | agent-B3 | pending |
 | 4 | N benchmarks | agent-N | pending |
 | 5 | S1–S5 doc site (parallel per page group) | agents-S | pending |
 | 6 | B4 closeout (testing-checklist, plan-doc status) | orchestrator | pending |
 | 6 | G gates: lint --branch, bazel test $PROJ, manual-tagged suite, conformance monotonic, push | orchestrator | pending |
+
+Carry-forward notes for closeout (B4):
+  - Pre-existing breakage found during A3 (NOT m35's): manual target
+    `//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin_proto`
+    fails to cross-compile — `@abseil-cpp` `synchronization/mutex.cc`
+    under wasm32-wasip2 (`std::this_thread` missing); byte-identical
+    action inputs pre/post m35, likely an absl-bump regression.
+    File a cleanup-backlog entry at closeout.
+  - Multi-agent shared-checkout discipline that worked: commit via
+    `GIT_INDEX_FILE` temp index, always; three plain-index commits
+    each swept a sibling's staged state (all caught + repaired).

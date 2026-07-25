@@ -569,6 +569,10 @@ message FnType {
     FN_KIND_MAP = 11;    // params = [key, value]
     FN_KIND_TYPE = 12;
     FN_KIND_OPTIONAL = 13;  // params = [elem]
+    FN_KIND_NULL = 14;  // as-built delta 2026-07-25: the celfn
+                        // grammar admits `null` (CelfnType kNull);
+                        // the 1:1-mirror intent wins over the
+                        // original enum listing here
   }
   Kind kind = 1;
   string proto_fqn = 2;
