@@ -294,6 +294,26 @@ struck through or removed.
       Why P2: all paths fail loudly (CHECK / Unimplemented), so
       nothing miscompiles; the gap is API honesty, not correctness.
 
+      2026-07-25 partial closure (m35 B2): the
+      `CelfnTypeToCelType` angle is settled — the type-mapping
+      contract is now "Compiler::Builder::Build() rejects" —
+      `Build()` walks every registered decl and surfaces a clean
+      InvalidArgument naming the decl and the type
+      (`ValidateDeclTypesMappable` in `compiler/compiler.cc`,
+      pinned by `compiler_test.cc
+      CompilerBuilderUnmappableTypeTest.*`: `type` return,
+      `optional<int>` param, nested `list<optional<string>>`,
+      positive twin).  The `ABSL_CHECK` in
+      `CelfnTypeToCelType` stays as the behind-the-gate tripwire.
+      Note the kPlugin decl surface already rejected `type` /
+      `optional<T>` at `FunctionLibrary::Builder::Build`
+      (m24 §14), so the reachable shape was programmatic
+      kHost/kCelDefined decls.  Engine-side registration needs no
+      mapping, so `Engine::Use` of such decls stays legal
+      (m35-plugin-ergonomics.md §3.1).  STILL OPEN: the
+      `BindLazy` / `OverrideFunction` API-honesty half and
+      `cel_component` Lower's type-of-types Unimplemented.
+
 - [ ] **#43** — true-e2e coverage gap for `cel_component.cc`'s
       malformed-`wasmtime_component_val_t` NULL guards (closes
       out gap left when #37 shipped).  Today's coverage:
@@ -369,6 +389,24 @@ struck through or removed.
       `DecodeSecondsNanosRecord` with duration so is covered
       transitively.  `StringEmptyWithNullDataOk` pins the
       benign-shape positive path.
+
+      2026-07-25 reconciliation (m35 B1/B2, per
+      m35-plugin-ergonomics.md §12 slice B2): the *public
+      negative-path seam* this entry kept circling — no public-API
+      shape through which plugin-boundary failures could be driven
+      and asserted — now exists as `Engine::Use` → `Plan`.
+      `Engine::Use` performs a registration-time STATIC export
+      check against the parsed component (missing WIT interface /
+      missing per-decl kebab export → FailedPrecondition naming
+      it, pinned by `eval/engine_test.cc EngineUseTest.*` with
+      hand-framed component fixtures), and the one-noun
+      Load→Use→Compile→Use→Plan→Eval flow is pinned e2e in
+      `e2e/plugin_fixtures/cel_wasm_plugin_demo/
+      demo_plugin_e2e_test.cc`.  The narrow residue — injecting a
+      malformed `wasmtime_component_val_t` between
+      `wasmtime_component_func_call` and `LowerComponentToCel` —
+      remains exactly as descoped above (unlock paths (a)-(c)
+      unchanged); the unit tests continue to pin the NULL guards.
 
       Surfaced: 2026-06-06 coverage-gap closeout for commit
       598c7f2b.

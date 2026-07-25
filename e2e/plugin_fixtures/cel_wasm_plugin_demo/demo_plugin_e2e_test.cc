@@ -149,6 +149,59 @@ TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
   EXPECT_EQ(plugin->decls()[2].overload_id, "len_string");
 }
 
+// ─── m35 — the one-noun flow ─────────────────────────────────────
+//
+// The quickstart contract (m35-plugin-ergonomics.md §2): one noun
+// carries bytes, declarations, and hash from artifact to both
+// pipeline halves.  Plugin::Load(macro-built bytes) →
+// Compiler::Builder::Use(plugin) → Compile → Engine::Use(plugin)
+// (static export check, no instantiation) → Plan → Eval.  No
+// hand-maintained FunctionLibrary mirror anywhere.
+TEST(CelWasmPluginDemo, OneNounFlowLoadUseCompileUsePlanEval) {
+  auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
+  ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
+  const Plugin& plugin = *plugin_or;
+
+  // Compile side — declarations flow from the artifact.
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareVariable("a", CelType::Int())
+      .DeclareVariable("b", CelType::Int())
+      .Use(plugin);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("add(a, b)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  // Eval side — same noun; registration statically verifies the
+  // component exports every declared fn before any Plan.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  ASSERT_THAT(engine_or->Use(plugin), IsOk());
+
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
+  Activation act;
+  act.Bind("a", Value::Int(40));
+  act.Bind("b", Value::Int(2));
+  auto v_or = inst_or->Eval(act);
+  ASSERT_THAT(v_or, IsOk()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 42);
+}
+
+TEST(CelWasmPluginDemo, OneNounFlowProtoArg) {
+  GTEST_SKIP()
+      << "blocked on the demo_plugin_proto fixture's pre-existing, "
+         "unrelated wasm32-wasip2 cross-compile break (absl "
+         "synchronization does not build under the wasip2 sysroot), so "
+         "this test cannot depend on demo_plugin_proto bytes.  Un-skip "
+         "by porting this body onto demo_plugin_proto once that build "
+         "is fixed.";
+  // Intended: Plugin::Load(demo_plugin_proto bytes) →
+  // Compiler::Builder::Use → Compile("is_adult(u)") → Engine::Use →
+  // Plan → Eval with a bound acme.User message, asserting the
+  // proto-as-bytes marshalling path through the one-noun surface.
+}
+
 TEST(CelWasmPluginDemo, AddRoundTrips) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
