@@ -5,6 +5,7 @@
 //   cel check   <expr> [--var name:Type] [--proto ... | --descriptor_set ...]
 //   cel compile <expr> --output <out.wasm> [--O 0..3] ...
 //   cel generate --idl <fns.idl> --out_dir <dir> [--language cpp] ...
+//   cel embed-decls --plugin <in.wasm> --idl <fns.idl> --out <out.wasm>
 //
 // See tools/cel/var_parser.h for the `--var` literal
 // grammar and tools/cel/value_format.h for `--format`.
@@ -42,6 +43,7 @@
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
+#include "tools/cel/run_embed_decls.h"
 #include "tools/cel/run_generate.h"
 #include "tools/cel/value_format.h"
 #include "tools/cel/var_parser.h"
@@ -102,6 +104,14 @@ ABSL_FLAG(std::vector<std::string>, include, {},
           "`cel generate` only: comma-separated #include paths to inject "
           "at the top of the generated user_fns.h + generated_stub.cc.  "
           "Typical use: `--include=acme/user.pb.h` for proto-typed fns.");
+
+// `cel embed-decls` flags (`--idl` is shared with `cel generate`).
+ABSL_FLAG(std::string, plugin, "",
+          "`cel embed-decls` only: path to the input Component-Model "
+          ".wasm plugin binary.");
+ABSL_FLAG(std::string, out, "",
+          "`cel embed-decls` only: path to write the output .wasm (the "
+          "input plugin with the cel.fns declaration section embedded).");
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 
 namespace celwasm::tools::cel {
@@ -500,6 +510,9 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  compile  compile <expr> to wasm bytes (--output PATH)\n"
      << "  generate emit custom-function bindings (fns.wit, codec.h,\n"
      << "           generated_stub.cc, user_fns.h) from a .idl file\n"
+     << "  embed-decls\n"
+     << "           embed .idl declaration text into a Component-Model\n"
+     << "           plugin as the cel.fns custom section\n"
      << "common flags:\n"
      << "  --var name:Type=value    (repeatable) declare + bind\n"
      << "  --var name:Type          (repeatable) declare only\n"
@@ -515,7 +528,11 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  --idl PATH               required: .idl input\n"
      << "  --out_dir PATH           required: output dir\n"
      << "  --language LANG          cpp (default); go (planned)\n"
-     << "  --package PKG            WIT package name override\n";
+     << "  --package PKG            WIT package name override\n"
+     << "embed-decls flags:\n"
+     << "  --plugin PATH            required: input CM component .wasm\n"
+     << "  --idl PATH               required: .idl declaration text\n"
+     << "  --out PATH               required: output .wasm path\n";
 }
 
 int RunGenerateSubcommand() {
@@ -526,6 +543,14 @@ int RunGenerateSubcommand() {
   opts.package_name = absl::GetFlag(FLAGS_package);
   opts.extra_includes = absl::GetFlag(FLAGS_include);
   return RunGenerate(opts);
+}
+
+int RunEmbedDeclsSubcommand() {
+  EmbedDeclsOptions opts;
+  opts.plugin_path = absl::GetFlag(FLAGS_plugin);
+  opts.idl_path = absl::GetFlag(FLAGS_idl);
+  opts.out_path = absl::GetFlag(FLAGS_out);
+  return RunEmbedDecls(opts);
 }
 
 }  // namespace
@@ -542,7 +567,8 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
     return 0;
   }
   if (subcommand != "eval" && subcommand != "check" &&
-      subcommand != "compile" && subcommand != "generate") {
+      subcommand != "compile" && subcommand != "generate" &&
+      subcommand != "embed-decls") {
     std::cerr << "ERROR: unknown subcommand `" << subcommand << "`\n";
     celwasm::tools::cel::PrintUsage(std::cerr, argv[0]);
     return 2;
@@ -565,16 +591,20 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   std::vector<char*> positional =
       absl::ParseCommandLine(static_cast<int>(rest.size()), rest.data());
 
-  // `generate` takes no positional <expr>; the input is --idl.
-  if (subcommand == "generate") {
+  // `generate` / `embed-decls` take no positional <expr>; their
+  // inputs arrive via flags (--idl / --plugin / --out).
+  if (subcommand == "generate" || subcommand == "embed-decls") {
     if (positional.size() != 1) {
-      std::cerr << "ERROR: `generate` takes no positional argument; "
-                   "use --idl PATH instead.  Got "
+      std::cerr << "ERROR: `" << subcommand
+                << "` takes no positional argument; use its flags "
+                   "instead.  Got "
                 << (positional.size() - 1) << " unexpected.\n";
       celwasm::tools::cel::PrintUsage(std::cerr, argv[0]);
       return 2;
     }
-    return celwasm::tools::cel::RunGenerateSubcommand();
+    return subcommand == "generate"
+               ? celwasm::tools::cel::RunGenerateSubcommand()
+               : celwasm::tools::cel::RunEmbedDeclsSubcommand();
   }
 
   if (positional.size() != 2) {
@@ -589,6 +619,6 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
   if (subcommand == "check") return celwasm::tools::cel::RunCheck(expr);
   if (subcommand == "compile") return celwasm::tools::cel::RunCompile(expr);
   // Unreachable: the upfront subcommand check above rejects anything
-  // not in {eval, check, compile, generate}.
+  // not in {eval, check, compile, generate, embed-decls}.
   ABSL_CHECK(false) << "subcommand `" << subcommand << "` slipped the gate";
 }
