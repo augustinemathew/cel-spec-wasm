@@ -282,12 +282,12 @@ cc_library(
     hdrs = ["internal/abi_decode.h"],
     deps = [
         "//abi:cel_abi_cc_proto",
+        "//abi:wasm_binary",
         "//compiler/ir:annotations",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -301,6 +301,7 @@ cc_test(
         "//testdata:e2e_fixture_cc_proto",
         "//compiler/internal:compile",
         "//abi:cel_abi_cc_proto",
+        "//abi:wasm_binary",
         "//compiler/ir:annotations",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",

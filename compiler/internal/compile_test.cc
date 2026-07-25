@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "abi/cel_abi.pb.h"
+#include "abi/wasm_binary.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
@@ -269,59 +270,21 @@ TEST(CompileStaticTest, ExportsEval) {
 
 namespace {
 
-// Reads a LEB128-encoded u32 at `pos`, advancing it past the
-// encoding.  Returns false on truncated / overlong input.
-bool ReadLebU32(const std::vector<uint8_t>& bytes, size_t& pos, uint32_t& out) {
-  out = 0;
-  for (int shift = 0; shift < 35; shift += 7) {
-    if (pos >= bytes.size()) return false;
-    const uint8_t byte = bytes[pos++];
-    out |= static_cast<uint32_t>(byte & 0x7f) << shift;
-    if ((byte & 0x80) == 0) return true;
-  }
-  return false;
-}
-
-// Returns true iff the custom-section body starting at `pos` (with
-// the section ending at `section_end`) is named "cel.abi"; advances
-// `pos` past the name field either way.
-bool IsCelAbiSection(const std::vector<uint8_t>& bytes, size_t& pos,
-                     size_t section_end) {
-  uint32_t name_len = 0;
-  if (!ReadLebU32(bytes, pos, name_len)) return false;
-  if (pos + name_len > section_end) return false;
-  const absl::string_view name(reinterpret_cast<const char*>(&bytes[pos]),
-                               name_len);
-  pos += name_len;
-  return name == "cel.abi";
-}
-
-// Minimal wasm-section walk: find the custom section named "cel.abi"
-// in `wasm_bytes` and proto-parse its payload as CelAbi.  Local to
-// the test on purpose — the production decoder lives on the eval
-// side (eval/internal/abi_decode), which the compiler tree must not
-// depend on.
+// Find the custom section named "cel.abi" in `wasm_bytes` (via the
+// shared //abi:wasm_binary walker) and proto-parse its payload as
+// CelAbi.  The production decoder (eval/internal/abi_decode) lives
+// on the eval side, which the compiler tree must not depend on.
 absl::StatusOr<celwasm::abi::CelAbi> ParseCelAbiSection(
     const std::vector<uint8_t>& wasm_bytes) {
-  size_t pos = 8;  // skip the 4-byte magic + 4-byte version header
-  while (pos < wasm_bytes.size()) {
-    const uint8_t section_id = wasm_bytes[pos++];
-    uint32_t section_size = 0;
-    if (!ReadLebU32(wasm_bytes, pos, section_size)) break;
-    const size_t section_end = pos + section_size;
-    if (section_end > wasm_bytes.size()) break;
-    if (section_id == 0 && IsCelAbiSection(wasm_bytes, pos, section_end)) {
-      celwasm::abi::CelAbi abi;
-      if (!abi.ParseFromArray(&wasm_bytes[pos],
-                              static_cast<int>(section_end - pos))) {
-        return absl::InvalidArgumentError(
-            "cel.abi payload failed CelAbi::ParseFromArray");
-      }
-      return abi;
-    }
-    pos = section_end;
+  auto payload_or = FindCustomSection(wasm_bytes, "cel.abi");
+  if (!payload_or.ok()) return payload_or.status();
+  celwasm::abi::CelAbi abi;
+  if (!abi.ParseFromArray(payload_or->data(),
+                          static_cast<int>(payload_or->size()))) {
+    return absl::InvalidArgumentError(
+        "cel.abi payload failed CelAbi::ParseFromArray");
   }
-  return absl::NotFoundError("no cel.abi custom section");
+  return abi;
 }
 
 }  // namespace

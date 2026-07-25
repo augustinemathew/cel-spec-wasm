@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "abi/wasm_binary.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "binaryen-c.h"
@@ -27,17 +28,8 @@ TEST(WasmModuleTest, EmptyModuleValidatesAndSerializesPreamble) {
 
   auto bytes_or = m.Serialize();
   ASSERT_THAT(bytes_or, IsOk());
-  const auto& bytes = *bytes_or;
-  ASSERT_GE(bytes.size(), 8u);
-  // `\0asm` magic + version 1.
-  EXPECT_EQ(bytes[0], 0x00);
-  EXPECT_EQ(bytes[1], 0x61);
-  EXPECT_EQ(bytes[2], 0x73);
-  EXPECT_EQ(bytes[3], 0x6D);
-  EXPECT_EQ(bytes[4], 0x01);
-  EXPECT_EQ(bytes[5], 0x00);
-  EXPECT_EQ(bytes[6], 0x00);
-  EXPECT_EQ(bytes[7], 0x00);
+  // `\0asm` magic + core-module version word.
+  EXPECT_TRUE(IsCoreModule(*bytes_or));
 }
 
 TEST(WasmModuleTest, MoveConstructTransfersOwnership) {

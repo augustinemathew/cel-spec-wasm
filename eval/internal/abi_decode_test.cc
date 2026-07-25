@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "abi/cel_abi.pb.h"
+#include "abi/wasm_binary.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
@@ -41,31 +42,15 @@ using ::absl_testing::StatusIs;
       return 0;
     }();
 
-// Build the raw wasm byte stream for a single custom section.
+// Build the raw wasm byte stream for a single custom section on a
+// core-module preamble, via the shared //abi:wasm_binary framer.
 // The decoder parses wasm bytes; driving real codegen from every
 // test would slow the suite and couple decoder correctness to
 // codegen bugs, so we hand-build the byte streams here.
-void AppendLeb128U32(std::vector<uint8_t>& out, uint32_t value) {
-  while (true) {
-    uint8_t b = value & 0x7f;
-    value >>= 7;
-    if (value == 0) {
-      out.push_back(b);
-      return;
-    }
-    out.push_back(b | 0x80u);
-  }
-}
-
 std::vector<uint8_t> MakeWasmWithCustomSection(absl::string_view name,
                                                absl::Span<const uint8_t> body) {
   std::vector<uint8_t> out = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
-  std::vector<uint8_t> section;
-  AppendLeb128U32(section, static_cast<uint32_t>(name.size()));
-  section.insert(section.end(), name.begin(), name.end());
-  section.insert(section.end(), body.begin(), body.end());
-  out.push_back(0);  // custom-section id
-  AppendLeb128U32(out, static_cast<uint32_t>(section.size()));
+  const std::vector<uint8_t> section = BuildCustomSection(name, body);
   out.insert(out.end(), section.begin(), section.end());
   return out;
 }
