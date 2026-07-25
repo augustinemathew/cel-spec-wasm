@@ -15,7 +15,7 @@ decisions** you make, and **one** known sharp edge. The rest is detail.
 ![Trust boundaries](../design/diagrams/trust-boundary-light.svg#only-light)
 ![Trust boundaries](../design/diagrams/trust-boundary-dark.svg#only-dark)
 
-*Updated 2026-06-11; every claim is checked against the code cited next
+*Updated 2026-07-25; every claim is checked against the code cited next
 to it.*
 
 ## 1. The boundary — what the expression can and can't do
@@ -101,10 +101,53 @@ into your code** — and that's exactly the `@host` vs `@plugin` split:
 
 So the rule of thumb: **a function body you wrote → `@host`; a function
 body you didn't → `@plugin`.** A plugin is supplied as bytes at
-runtime (`Engine::AddPlugin`), so swapping one means handing the engine
-new bytes — no re-link, no redeploy. Its only capability is one
-deterministic `wasi:random` stub (for libc++'s hash seed); touching
-`wasi:filesystem` / `clocks` / `io` / `cli` traps with a named error.
+runtime (`Plugin::Load` + `Engine::Use`), so swapping one means handing
+a fresh engine new bytes — no re-link, no redeploy. Its only capability
+is one deterministic `wasi:random` stub (for libc++'s hash seed);
+touching `wasi:filesystem` / `clocks` / `io` / `cli` traps with a named
+error.
+
+**The plugin path is verified in stages, each failing before the next.**
+A plugin is a *self-describing* artifact — its declarations travel
+inside the `.wasm` (the `cel.fns` section), so there is no hand-written
+declaration mirror that can drift from the deployed bytes:
+
+1. **`Plugin::Load(bytes)`** rejects a malformed artifact up front:
+   not a Component-Model binary, missing/unparseable declarations, a
+   non-`@plugin.` decl (`abi/plugin.cc`, pinned by `abi/plugin_test.cc`).
+2. **`Engine::Use(plugin)`** statically checks — against the *parsed*
+   component, with nothing instantiated — that the plugin actually
+   exports its declared interface and every declared function
+   (`eval/engine.cc::CheckPluginExportsStatically`). A bad upload is
+   rejected at registration, not at traffic time.
+3. **`Engine::Plan(program)`** verifies every custom function the
+   program calls (recorded with its full signature in the program's
+   `cel.abi`) exists in the registry with an **exactly matching**
+   signature — protos compared by fully-qualified name. A plugin
+   update that changed a signature under a compiled program is a
+   `FailedPrecondition` at Plan, never a call-time trap or a silently
+   wrong value.
+4. **Selective instantiation shrinks the blast radius.** Plan
+   instantiates only the plugins the program actually calls, each into
+   its own store with its own linear memory. A broken or hostile
+   registered plugin that a program doesn't use never even
+   instantiates into that program's sandbox — and two Instances never
+   share plugin state (see the sharing model in
+   [Writing plugins §4](writing-plugins.md#4-the-sharing-model-where-plugin-state-lives)).
+
+What is deliberately **not** checked, stated honestly: program↔plugin
+**hash** agreement (`Plugin::hash()` — SHA-256 over bytes ‖
+declarations — is exposed for embedder bookkeeping and named in
+Plan-time diagnostics, but nothing enforces that the plugin a program
+was compiled against is byte-identical to the one registered), and the
+**WIT-level `FuncType`** of exports (the wasmtime C API's component
+type introspection is too thin; for macro-built plugins this is
+unreachable — WIT and declarations derive from the same `.idl` — but a
+hand-built plugin whose export *shape* disagrees with its declarations
+can still trap at call time). The legacy
+`Engine::AddPlugin(bytes, lib)` escape hatch skips stages 1–2
+entirely — its export resolution is Plan-time only — which is why the
+self-describing path is the default.
 
 **Why `Program` bytes need a compiler you trust.** `Engine::Plan`
 validates *structure, not provenance* — it checks the wasm is valid, the
