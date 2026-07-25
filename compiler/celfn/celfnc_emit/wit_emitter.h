@@ -1,10 +1,10 @@
 // celfnc_emit/wit_emitter — translate a parsed celfn IDL
-// (CelfnDecl set with kForeignComponent backend) into the text of a
+// (CelfnDecl set with kPlugin backend) into the text of a
 // `fns.wit` Component-Model interface file consumable by
 // `wit-bindgen c --world customfn`.
 //
 // Scope:
-//   - Every CEL type the foreign-component decl surface admits, per
+//   - Every CEL type the plugin decl surface admits, per
 //     m24 §6 — bool / int / uint / double / null / string / bytes /
 //     duration / timestamp / list<T> / map<K,V> / proto(fqn).
 //   - Arbitrary nesting via concrete expansion (m24 §6).
@@ -16,7 +16,7 @@
 // Identifier rules:
 //   - Function names in WIT are kebab-case; the celfn IDL synthesises
 //     snake_case overload-ids (`add_int_int`).  We translate at emit
-//     time, the same translation `Engine::AddComponent` does at the
+//     time, the same translation `Engine::AddPlugin` does at the
 //     component-export-lookup site (snake_case ↔ kebab-case is the
 //     stable translation for the entire pipeline).
 //   - Record types (`duration`, `timestamp`) declare INSIDE the
@@ -45,8 +45,8 @@
 namespace celwasm::celfnc_emit {
 
 // Render a `fns.wit` file as a string.  Inputs:
-//   - `lib`: every kForeignComponent decl in the library is emitted as
-//     a typed function inside `interface fns`.  Non-foreign-component
+//   - `lib`: every kPlugin decl in the library is emitted as
+//     a typed function inside `interface fns`.  Non-plugin
 //     decls are ignored (they have no WIT surface — they dispatch
 //     differently).
 //   - `package_name`: the WIT package identifier (e.g. "cel:customfn").
@@ -54,7 +54,7 @@ namespace celwasm::celfnc_emit {
 //     suppresses the `@version` suffix.
 //
 // Returns the rendered text.  Errors:
-//   - `FailedPrecondition` if a kForeignComponent decl somehow carries
+//   - `FailedPrecondition` if a kPlugin decl somehow carries
 //     `optional<T>` or `type` (the Builder gates should have rejected
 //     it; this is the regression tripwire).
 //   - `Internal` on any closed-set switch falling through (e.g. a new

@@ -1,0 +1,14 @@
+// celfn IDL fixture for the cel_wasm_plugin macro demo.
+//
+// Two non-proto fns covering the common case (scalar in/out +
+// string round-trip).  All decls are kPlugin
+// (`@plugin.<fn>`) — m26 §7.5.1.
+
+Module customfn;
+
+string @plugin.greet(string name, int age);
+int    @plugin.add(int a, int b);
+// Used by bench/plugin_bench — the canonical string-payload
+// dispatch cost.  Returns the input string's length so the bench
+// measures the canonical-ABI copy throughput, not the user fn body.
+int    @plugin.len(string s);

@@ -152,28 +152,28 @@ class Engine {
                                                 uint8_t num_args,
                                                 HostCallback impl);
 
-  // Register a Component-Model component as the backend for every
-  // `kForeignComponent` decl in `lib`.  Per m24 §3.5: instantiate the
-  // component with the wasmtime component API, validate each declared
+  // Register a plugin (a Component-Model wasm binary) as the backend
+  // for every `kPlugin` decl in `lib`.  Per m24 §3.5: instantiate the
+  // plugin with the wasmtime component API, validate each declared
   // fn is exported with the matching `FuncType`, and bind a host
   // callback (via the existing `AddFunction` path) whose body marshals
-  // args via the per-fn typed WIT codec → the component's typed export
+  // args via the per-fn typed WIT codec → the plugin's typed export
   // → marshals the result.
   //
   // Conflict checks (same shape as `AddFunction`):
-  //   - Any `overload_id` from `lib`'s kForeignComponent decls already
+  //   - Any `overload_id` from `lib`'s kPlugin decls already
   //     registered → AlreadyExists.
-  //   - `component_bytes` fail to parse as a Component-Model component
+  //   - `plugin_bytes` fail to parse as a Component-Model component
   //     → InvalidArgument.
-  //   - A declared fn is not exported by the component, or its
+  //   - A declared fn is not exported by the plugin, or its
   //     exported `FuncType` does not match the decl's signature →
   //     FailedPrecondition.
   //
   // **NOT thread-safe** — same contract as `AddFunction` / `AddModule`.
   //
-  // See `examples/09_component_functions.cc` for an end-to-end embed.
-  ABSL_MUST_USE_RESULT absl::Status AddComponent(
-      absl::Span<const uint8_t> component_bytes, const FunctionLibrary& lib);
+  // See `examples/09_plugin_functions.cc` for an end-to-end embed.
+  ABSL_MUST_USE_RESULT absl::Status AddPlugin(
+      absl::Span<const uint8_t> plugin_bytes, const FunctionLibrary& lib);
 
   // Typed sugar over `AddFunction` (host-call adapter Layer 2,
   // eval/typed_function.h): adapts a plain typed lambda into a

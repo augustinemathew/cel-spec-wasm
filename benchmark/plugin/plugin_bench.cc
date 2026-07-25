@@ -1,4 +1,4 @@
-// Foreign-component vs native host-fn dispatch cost — m24 D.3,
+// Plugin vs native host-fn dispatch cost — m24 D.3,
 // m26 D.3 rewrite.
 //
 // Two shapes, two backends, four BMs:
@@ -13,18 +13,18 @@
 // Two backends per shape:
 //
 //   - Foreign-component (m24 path) — the wasm32-wasip2 Component-Model
-//     component the cel_wasm_component macro produces at
-//     //e2e/foreign_component_fixtures/cel_wasm_component_demo:demo_component,
+//     plugin the cel_wasm_plugin macro produces at
+//     //e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin,
 //     loaded via the bazel runfiles library and registered through
-//     `Engine::AddComponent`.  Dispatched per call through
+//     `Engine::AddPlugin`.  Dispatched per call through
 //     wasmtime_component_func_call.
 //   - Native AddTypedFunction (the host-callback baseline) — same CEL
 //     decl, same `cel_fn.<helper>` import, but the body is a C++ lambda
 //     called directly, no canonical-ABI hop.
 //
 // Both backends route through `kCelFn` import dispatch (m24 §2 contract:
-// component-ness is invisible to the compiler).  The delta between the
-// two BMs *is* the component-call overhead; it isolates exactly what
+// plugin-ness is invisible to the compiler).  The delta between the
+// two BMs *is* the plugin-call overhead; it isolates exactly what
 // the m24 backend costs over m13's host path.
 //
 // Production config per CLAUDE.md "Benchmark configuration":
@@ -32,9 +32,9 @@
 // `cel_runtime.wasm`; bench itself under `bazel run -c opt`.
 //
 // `manual`-tagged — invoke explicitly:
-//   bazel run -c opt //benchmark/component:foreign_component_bench
-//   bazel run -c opt //benchmark/component:foreign_component_bench -- \
-//       --benchmark_filter=BM_Eval_ForeignComponent \
+//   bazel run -c opt //benchmark/plugin:plugin_bench
+//   bazel run -c opt //benchmark/plugin:plugin_bench -- \
+//       --benchmark_filter=BM_Eval_Plugin \
 //       --benchmark_repetitions=5 --benchmark_report_aggregates_only=true
 
 #include <cstddef>
@@ -77,17 +77,17 @@ std::string& Argv0() {
   return *v;
 }
 
-// Load the macro-built demo component's bytes once.  Returned by value
+// Load the macro-built demo plugin's bytes once.  Returned by value
 // to keep the BM-local `lib` + `bytes` lifetimes independent.
-const std::vector<uint8_t>& DemoComponentBytes() {
+const std::vector<uint8_t>& DemoPluginBytes() {
   static const std::vector<uint8_t>* const bytes = []() {
     std::string error;
     auto runfiles = absl::WrapUnique(Runfiles::Create(Argv0(), &error));
     ABSL_CHECK(runfiles != nullptr) << "runfiles init failed: " << error;
     const std::string path = runfiles->Rlocation(
-        "_main/e2e/foreign_component_fixtures/cel_wasm_component_demo/"
-        "demo_component.wasm");
-    ABSL_CHECK(!path.empty()) << "demo_component.wasm not in runfiles";
+        "_main/e2e/plugin_fixtures/cel_wasm_plugin_demo/"
+        "demo_plugin.wasm");
+    ABSL_CHECK(!path.empty()) << "demo_plugin.wasm not in runfiles";
     std::ifstream f(path, std::ios::binary);
     ABSL_CHECK(f.is_open()) << "open " << path;
     return new std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
@@ -102,17 +102,17 @@ CelfnType Prim(CelfnType::Kind k) {
   return t;
 }
 
-// Component-side libraries — the demo's fns.idl declares add + len + greet
+// Plugin-side libraries — the demo's fns.idl declares add + len + greet
 // inside `cel:customfn/fns@0.1.0`.  The bench builds the smallest library
 // it needs for each shape; the engine's two-level lookup uses the WIT
-// interface name to find each decl's export within the demo component.
+// interface name to find each decl's export within the demo plugin.
 
 constexpr absl::string_view kDemoWitInterface = "cel:customfn/fns@0.1.0";
 
 FunctionLibrary BuildAddLib() {
   auto lib_or = FunctionLibrary::Builder()
                     .SetWitInterface(kDemoWitInterface)
-                    .AddForeignComponent(
+                    .AddPlugin(
                         "add", Prim(CelfnType::Kind::kInt),
                         {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
                          CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
@@ -125,7 +125,7 @@ FunctionLibrary BuildLenLib() {
   auto lib_or =
       FunctionLibrary::Builder()
           .SetWitInterface(kDemoWitInterface)
-          .AddForeignComponent(
+          .AddPlugin(
               "len", Prim(CelfnType::Kind::kInt),
               {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
           .Build();
@@ -172,7 +172,7 @@ Program CompileOrDie(
   return *std::move(p_or);
 }
 
-// Each BM owns its own Engine on the heap: AddComponent is per-Plan
+// Each BM owns its own Engine on the heap: AddPlugin is per-Plan
 // and Engine state interferes if shared.  Setup happens once before
 // the timing loop starts so the per-iteration cost is just Eval().
 std::unique_ptr<Engine> NewEngine() {
@@ -191,12 +191,12 @@ Instance PlanOrDie(Engine& engine, const Program& prog) {
 // Shape A — `add(int, int) -> int`.  Minimum-overhead dispatch.
 // ══════════════════════════════════════════════════════════════════════
 
-void BM_Eval_ForeignComponent_AddIntInt(benchmark::State& state) {
+void BM_Eval_Plugin_AddIntInt(benchmark::State& state) {
   auto lib = BuildAddLib();
   Program prog = CompileOrDie("add(a, b)", lib,
                               {{"a", CelType::Int()}, {"b", CelType::Int()}});
   auto engine = NewEngine();
-  ABSL_CHECK_OK(engine->AddComponent(DemoComponentBytes(), lib));
+  ABSL_CHECK_OK(engine->AddPlugin(DemoPluginBytes(), lib));
   Instance inst = PlanOrDie(*engine, prog);
   Activation act;
   act.Bind("a", Value::Int(7));
@@ -207,7 +207,7 @@ void BM_Eval_ForeignComponent_AddIntInt(benchmark::State& state) {
     benchmark::DoNotOptimize(v_or->AsInt());
   }
 }
-BENCHMARK(BM_Eval_ForeignComponent_AddIntInt);
+BENCHMARK(BM_Eval_Plugin_AddIntInt);
 
 void BM_Eval_HostFn_AddIntInt(benchmark::State& state) {
   auto lib = BuildAddLibAsHost();
@@ -238,14 +238,14 @@ BENCHMARK(BM_Eval_HostFn_AddIntInt);
 
 constexpr size_t kBenchStringBytes = 256 * 1024;
 
-// BM_Eval_ForeignComponent_LenString_256KiB stays disabled.  Even after
+// BM_Eval_Plugin_LenString_256KiB stays disabled.  Even after
 // engine.cc started stubbing wasi:random/random.get-random-bytes with
 // a deterministic host fn (m26 #44 partial mitigation; lets the
 // AddIntInt scalar shape pass cleanly), passing a 256 KiB string
 // through the canonical-ABI copy still trips
 // `wasm trap: cannot leave component instance` somewhere inside
 // libc++'s post-RNG-init machinery.  See the matching SKIP reason on
-// CelWasmComponentDemo.GreetRoundTripsString.  Un-skip when wasmtime
+// CelWasmPluginDemo.GreetRoundTripsString.  Un-skip when wasmtime
 // exposes a real wasi-preview2 store context — or rebuild the demo
 // against wasm32-wasi + the preview1 adapter so the existing
 // `wasi.hh` WasiConfig satisfies libc++.

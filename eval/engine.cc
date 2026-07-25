@@ -19,7 +19,7 @@
 #include "eval/host/cel_log.h"
 #include "eval/host_call_context.h"
 #include "eval/internal/abi_decode.h"
-#include "eval/internal/cel_component.h"
+#include "eval/internal/cel_plugin.h"
 #include "eval/internal/cel_host_wasmtime.h"
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/module_imports.h"
@@ -822,27 +822,27 @@ absl::Status RegisterHostCallbacks(celwasm::WasmtimeEngineState* state,
   return absl::OkStatus();
 }
 
-// ── m24 Component-backed kForeignComponent decls ─────────────────────
+// ── m24 plugin-backed kPlugin decls ────────────────────────
 //
-// A `kForeignComponent` decl is dispatched as a `cel_fn.<helper>` host
+// A `kPlugin` decl is dispatched as a `cel_fn.<helper>` host
 // callback (m24 §2-§3) — the wasm import shape is identical to a
 // `kHost` decl, only the callback body differs.  At Plan time we walk
-// every component the embedder registered via `Engine::AddComponent`,
+// every plugin the embedder registered via `Engine::AddPlugin`,
 // instantiate it into the per-Plan store, and bind each declared fn
 // directly on the linker with a trampoline that marshals
-//   arg CelValues → wasmtime_component_val_t via cel_component::Lift
+//   arg CelValues → wasmtime_component_val_t via cel_plugin::Lift
 //   → wasmtime_component_func_call
-//   → result wasmtime_component_val_t → CelValue via cel_component::Lower
+//   → result wasmtime_component_val_t → CelValue via cel_plugin::Lower
 //
-// `ComponentFnEnv` holds the per-Plan state captured by the
+// `PluginFnEnv` holds the per-Plan state captured by the
 // trampoline.  Pinned via `std::shared_ptr<void>` on
-// InstanceImpl::component_fn_envs.
+// InstanceImpl::plugin_fn_envs.
 
-struct ComponentFnEnv {
-  // Per-Plan handle into the just-instantiated component instance.
+struct PluginFnEnv {
+  // Per-Plan handle into the just-instantiated plugin instance.
   wasmtime_component_func_t func{};
   // Type witnesses for marshaling.  Copied at Plan time from
-  // RegisteredComponent::library — the engine state lives via a
+  // RegisteredPlugin::library — the engine state lives via a
   // shared_ptr on Instance, so the library is reachable, but copying
   // the per-decl types here keeps the trampoline's data-dependence
   // graph independent of the library map's iterator-stability rules.
@@ -863,8 +863,8 @@ struct ComponentFnEnv {
 // kSentinelKind=BOOL slots the init-loop leaves behind, but calling
 // it on the lifted ones is the only way to release their
 // allocations.
-absl::Status LiftComponentArgs(
-    const celwasm::ComponentFnEnv& env, celwasm::HostCallContext& call_ctx,
+absl::Status LiftPluginArgs(
+    const celwasm::PluginFnEnv& env, celwasm::HostCallContext& call_ctx,
     celwasm::CelComponentContext& cc,
     std::vector<wasmtime_component_val_t>& arg_vals) {
   arg_vals.resize(env.param_types.size());
@@ -887,11 +887,11 @@ absl::Status LiftComponentArgs(
   return absl::OkStatus();
 }
 
-// Invoke the component fn and lower its single result (per m24 §3 /
+// Invoke the plugin fn and lower its single result (per m24 §3 /
 // §6 — a decl declares one CelfnType return) back into the
 // out_slot.  Releases `arg_vals` regardless of outcome.
-absl::Status CallComponentAndLowerResult(
-    celwasm::ComponentFnEnv* env, wasmtime_context_t* ctx,
+absl::Status CallPluginAndLowerResult(
+    celwasm::PluginFnEnv* env, wasmtime_context_t* ctx,
     celwasm::CelComponentContext& cc,
     std::vector<wasmtime_component_val_t>& arg_vals,
     celwasm::HostCallContext& call_ctx) {
@@ -904,7 +904,7 @@ absl::Status CallComponentAndLowerResult(
     wasmtime_component_val_delete(&w);
   }
   if (err != nullptr) {
-    return WasmtimeErrorToStatus("component func call", err);
+    return WasmtimeErrorToStatus("plugin func call", err);
   }
   celwasm::Value result_value;
   auto lower_status = celwasm::LowerComponentToCel(env->return_type, result_val,
@@ -916,16 +916,16 @@ absl::Status CallComponentAndLowerResult(
   return call_ctx.ReturnValue(result_value);
 }
 
-wasm_trap_t* ComponentCallbackTrampoline(
+wasm_trap_t* PluginCallbackTrampoline(
     void* env_ptr, wasmtime_caller_t* caller, const wasmtime_val_t* args,
     size_t nargs, wasmtime_val_t* /*results*/, size_t /*nresults*/) {
-  auto* env = static_cast<celwasm::ComponentFnEnv*>(env_ptr);
+  auto* env = static_cast<celwasm::PluginFnEnv*>(env_ptr);
   if (env == nullptr || env->host_env == nullptr) {
-    return TrapFromStatus("component callback env was null");
+    return TrapFromStatus("plugin callback env was null");
   }
   if (nargs < 1) {
     return TrapFromStatus(
-        "component callback needs at least one arg (out_slot)");
+        "plugin callback needs at least one arg (out_slot)");
   }
   celwasm::CelHostCallbackEnv* he = env->host_env;
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
@@ -949,7 +949,7 @@ wasm_trap_t* ComponentCallbackTrampoline(
 
   if (arg_slots.size() != env->param_types.size()) {
     return TrapFromStatus(
-        absl::StrCat("component callback: arity mismatch (decl says ",
+        absl::StrCat("plugin callback: arity mismatch (decl says ",
                      env->param_types.size(), " params, got ", arg_slots.size(),
                      " arg slots)"));
   }
@@ -959,10 +959,10 @@ wasm_trap_t* ComponentCallbackTrampoline(
   cc.pool = env->pool;
 
   std::vector<wasmtime_component_val_t> arg_vals;
-  if (auto s = LiftComponentArgs(*env, call_ctx, cc, arg_vals); !s.ok()) {
+  if (auto s = LiftPluginArgs(*env, call_ctx, cc, arg_vals); !s.ok()) {
     return TrapFromStatus(s.message());
   }
-  if (auto s = CallComponentAndLowerResult(env, ctx, cc, arg_vals, call_ctx);
+  if (auto s = CallPluginAndLowerResult(env, ctx, cc, arg_vals, call_ctx);
       !s.ok()) {
     return TrapFromStatus(s.message());
   }
@@ -1012,7 +1012,7 @@ wasmtime_error_t* RandomGetBytesStub(
 
 // Wire two things on the linker:
 //   1. `wasi:random/random@0.2.0::get-random-bytes` → RandomGetBytesStub.
-//   2. Everything else the component imports but we don't satisfy →
+//   2. Everything else the plugin imports but we don't satisfy →
 //      `wasmtime_component_linker_define_unknown_imports_as_traps` so
 //      a runaway libc++ call to e.g. `wasi:clocks/wall-clock.now`
 //      surfaces with a wasmtime trap naming the missing interface
@@ -1027,7 +1027,7 @@ absl::Status InstallWasiRandomStubAndTrapStubs(
   // precedence over the trap-stub installed first.
   wasmtime_component_linker_allow_shadowing(clinker, true);
 
-  // First: trap-stub everything the component imports.  Each such
+  // First: trap-stub everything the plugin imports.  Each such
   // import becomes a `wasm trap: <name> has not been defined` when
   // actually called.  This includes the wasi:random get-random-bytes
   // we'll shadow next.
@@ -1066,9 +1066,9 @@ absl::Status InstallWasiRandomStubAndTrapStubs(
   return absl::OkStatus();
 }
 
-// Instantiate one registered component into the per-Plan store.
+// Instantiate one registered plugin into the per-Plan store.
 //
-// Components produced by the `cel_wasm_component` Starlark macro
+// Plugins produced by the `cel_wasm_plugin` Starlark macro
 // (m26 §6) target `wasm32-wasip2`, so their core wasm pulls
 // libc / libc++ that import `wasi:io / cli / clocks / filesystem
 // / random` even when the author's user_fns.cc never explicitly
@@ -1091,11 +1091,11 @@ absl::Status InstallWasiRandomStubAndTrapStubs(
 // if a fn actually reaches them the trap names the missing
 // interface, surfacing the m26 #44 gap with a clear message.
 //
-// Pure-WAT components from `foreign_component_dispatch_test`
+// Pure-WAT plugins from `plugin_dispatch_test`
 // carry no such imports; the wiring is a no-op for them.
-absl::Status InstantiateOneComponent(celwasm::WasmtimeEngineState* state,
+absl::Status InstantiateOnePlugin(celwasm::WasmtimeEngineState* state,
                                      wasmtime_context_t* ctx,
-                                     const celwasm::RegisteredComponent& reg,
+                                     const celwasm::RegisteredPlugin& reg,
                                      wasmtime_component_instance_t* cinst) {
   wasmtime_component_linker_t* clinker =
       wasmtime_component_linker_new(state->engine);
@@ -1111,7 +1111,7 @@ absl::Status InstantiateOneComponent(celwasm::WasmtimeEngineState* state,
       wasmtime_component_linker_instantiate(clinker, ctx, reg.component, cinst);
   wasmtime_component_linker_delete(clinker);
   if (cerr != nullptr) {
-    return WasmtimeErrorToStatus("instantiate(component)", cerr);
+    return WasmtimeErrorToStatus("instantiate(plugin)", cerr);
   }
   return absl::OkStatus();
 }
@@ -1119,7 +1119,7 @@ absl::Status InstantiateOneComponent(celwasm::WasmtimeEngineState* state,
 // The codegen wasm import shape uses `overload_id` in
 // snake_case (`add_int_int`).  Component-Model exports are
 // RESTRICTED to kebab-case identifiers — the underscore form
-// is rejected at component parse time with
+// is rejected at plugin parse time with
 // "not a valid extern name".  Convert here so the embedder
 // can write WIT in its native kebab form and the engine
 // resolves it against the snake-case overload id from
@@ -1140,10 +1140,10 @@ std::string OverloadIdToKebab(absl::string_view overload_id) {
   return export_name;
 }
 
-// Bind one kForeignComponent decl: resolve its (kebab-case) export
-// off the instantiated component, build the per-Plan ComponentFnEnv,
+// Bind one kPlugin decl: resolve its (kebab-case) export
+// off the instantiated plugin, build the per-Plan PluginFnEnv,
 // and define the `cel_fn.<overload_id>` trampoline on the linker.
-absl::Status BindOneComponentDecl(celwasm::InstanceImpl* impl,
+absl::Status BindOnePluginDecl(celwasm::InstanceImpl* impl,
                                   wasmtime_context_t* ctx,
                                   const wasmtime_component_instance_t& cinst,
                                   wasmtime_component_export_index_t* iface_idx,
@@ -1154,18 +1154,18 @@ absl::Status BindOneComponentDecl(celwasm::InstanceImpl* impl,
           &cinst, ctx, iface_idx, export_name.data(), export_name.size());
   if (exp_idx == nullptr) {
     return absl::FailedPreconditionError(
-        absl::StrCat("component does not export `", export_name,
+        absl::StrCat("plugin does not export `", export_name,
                      "` (CEL "
                      "overload-id `",
                      decl.overload_id, "` in kebab form)"));
   }
-  auto env = std::make_shared<celwasm::ComponentFnEnv>();
+  auto env = std::make_shared<celwasm::PluginFnEnv>();
   const bool got =
       wasmtime_component_instance_get_func(&cinst, ctx, exp_idx, &env->func);
   wasmtime_component_export_index_delete(exp_idx);
   if (!got) {
     return absl::FailedPreconditionError(absl::StrCat(
-        "component export `", decl.overload_id, "` is not a function"));
+        "plugin export `", decl.overload_id, "` is not a function"));
   }
   env->param_types.reserve(decl.params.size());
   for (const auto& p : decl.params) {
@@ -1175,12 +1175,12 @@ absl::Status BindOneComponentDecl(celwasm::InstanceImpl* impl,
   env->pool = google::protobuf::DescriptorPool::generated_pool();
   env->host_env = &impl->host_env;
   void* env_ptr = env.get();
-  impl->component_fn_envs.push_back(env);
+  impl->plugin_fn_envs.push_back(env);
 
   wasm_functype_t* ftype = MakeI32sToVoidFuncType(decl.num_args);
   wasmtime_error_t* err = wasmtime_linker_define_func(
       impl->linker, "cel_fn", 6, decl.overload_id.data(),
-      decl.overload_id.size(), ftype, ComponentCallbackTrampoline,
+      decl.overload_id.size(), ftype, PluginCallbackTrampoline,
       /*data=*/env_ptr, /*finalizer=*/nullptr);
   wasm_functype_delete(ftype);
   if (err != nullptr) {
@@ -1190,17 +1190,17 @@ absl::Status BindOneComponentDecl(celwasm::InstanceImpl* impl,
   return absl::OkStatus();
 }
 
-// Bind every kForeignComponent decl in `reg.library` against the
+// Bind every kPlugin decl in `reg.library` against the
 // just-instantiated `cinst`.  When the embedder set
 // lib.wit_interface() (the standard path for
-// `cel_wasm_component`-built components, whose exports nest under
+// `cel_wasm_plugin`-built plugins, whose exports nest under
 // `cel:<module>/fns@<ver>`), look up that interface instance once
 // and use it as the parent index for every decl.  When unset, all
-// decl lookups go against the component's top level (the pure-WAT
-// `foreign_component_dispatch_test` path).
-absl::Status BindComponentLibraryDecls(
+// decl lookups go against the plugin's top level (the pure-WAT
+// `plugin_dispatch_test` path).
+absl::Status BindPluginLibraryDecls(
     celwasm::InstanceImpl* impl, wasmtime_context_t* ctx,
-    const celwasm::RegisteredComponent& reg,
+    const celwasm::RegisteredPlugin& reg,
     const wasmtime_component_instance_t& cinst) {
   wasmtime_component_export_index_t* iface_idx = nullptr;
   if (!reg.library.wit_interface().empty()) {
@@ -1210,15 +1210,15 @@ absl::Status BindComponentLibraryDecls(
         iface.size());
     if (iface_idx == nullptr) {
       return absl::FailedPreconditionError(
-          absl::StrCat("component does not export interface `", iface, "`"));
+          absl::StrCat("plugin does not export interface `", iface, "`"));
     }
   }
   absl::Status status = absl::OkStatus();
   for (const auto& decl : reg.library.decls()) {
-    if (decl.backend != celwasm::CelfnDecl::Backend::kForeignComponent) {
+    if (decl.backend != celwasm::CelfnDecl::Backend::kPlugin) {
       continue;
     }
-    status = BindOneComponentDecl(impl, ctx, cinst, iface_idx, decl);
+    status = BindOnePluginDecl(impl, ctx, cinst, iface_idx, decl);
     if (!status.ok()) break;
   }
   if (iface_idx != nullptr) {
@@ -1227,18 +1227,18 @@ absl::Status BindComponentLibraryDecls(
   return status;
 }
 
-absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
+absl::Status InstantiateAndBindPlugins(celwasm::WasmtimeEngineState* state,
                                           celwasm::InstanceImpl* impl) {
-  if (state->component_libraries.empty()) {
+  if (state->plugin_registry.empty()) {
     return absl::OkStatus();
   }
   wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
-  for (auto& reg : state->component_libraries) {
+  for (auto& reg : state->plugin_registry) {
     wasmtime_component_instance_t cinst{};
-    if (auto s = InstantiateOneComponent(state, ctx, reg, &cinst); !s.ok()) {
+    if (auto s = InstantiateOnePlugin(state, ctx, reg, &cinst); !s.ok()) {
       return s;
     }
-    if (auto s = BindComponentLibraryDecls(impl, ctx, reg, cinst); !s.ok()) {
+    if (auto s = BindPluginLibraryDecls(impl, ctx, reg, cinst); !s.ok()) {
       return s;
     }
   }
@@ -1251,11 +1251,11 @@ absl::Status InstantiateAndBindComponents(celwasm::WasmtimeEngineState* state,
 // "upper_...")` imports get resolved against whatever's on the
 // linker at instantiate time.
 //   1. M13 Slice C.1: foreign custom modules + host callbacks.
-//   2. m24 §3.5: Component-Model components — each instantiated into
+//   2. m24 §3.5: Component-Model plugins — each instantiated into
 //      the per-Plan store, its declared fns bound as
 //      `cel_fn.<overload_id>` host-callback trampolines.  Runs AFTER
 //      RegisterHostCallbacks so a duplicate overload-id would
-//      already have been caught at AddComponent / AddFunction
+//      already have been caught at AddPlugin / AddFunction
 //      registration.
 absl::Status BindRegisteredExtensions(celwasm::WasmtimeEngineState* state,
                                       celwasm::InstanceImpl* impl) {
@@ -1265,7 +1265,7 @@ absl::Status BindRegisteredExtensions(celwasm::WasmtimeEngineState* state,
   if (auto s = RegisterHostCallbacks(state, impl); !s.ok()) {
     return s;
   }
-  return InstantiateAndBindComponents(state, impl);
+  return InstantiateAndBindPlugins(state, impl);
 }
 
 // Compile the Program's wasm into a wasmtime_module_t before any
@@ -1339,8 +1339,8 @@ absl::string_view BackendName(celwasm::CelfnDecl::Backend backend) {
       return "@host";
     case celwasm::CelfnDecl::Backend::kCelDefined:
       return "@native";
-    case celwasm::CelfnDecl::Backend::kForeignComponent:
-      return "@component";
+    case celwasm::CelfnDecl::Backend::kPlugin:
+      return "@plugin";
   }
   ABSL_CHECK(false) << "BackendName: unhandled CelfnDecl::Backend = "
                     << static_cast<int>(backend);
@@ -1573,16 +1573,16 @@ absl::Status Engine::BindParsedFunction(absl::string_view celfn_decl,
   return AddFunction(decl.overload_id, fn.num_args, std::move(fn.callback));
 }
 
-// ——— Engine::AddComponent (m24 §3.5 — forward-declared, not yet wired) ———
+// ——— Engine::AddPlugin (m24 §3.5 — forward-declared, not yet wired) ———
 //
 // The full implementation per m24 §3.5 is:
 //
-//   1. Instantiate the component with the wasmtime component API.
-//   2. For each `kForeignComponent` decl in `lib`, validate the
-//      component exports a typed fn with a matching FuncType.
+//   1. Instantiate the plugin with the wasmtime component API.
+//   2. For each `kPlugin` decl in `lib`, validate the
+//      plugin exports a typed fn with a matching FuncType.
 //   3. Register a host callback (via `AddFunction`) whose body marshals
 //      args through the per-fn typed WIT codec (m24 §4–§7) into the
-//      component's typed export, then marshals the result back.
+//      plugin's typed export, then marshals the result back.
 //
 // The Component-Model surface of the vendored wasmtime C API is the
 // open prerequisite (m24 §13 — "verify the vendored build exposes it;
@@ -1591,54 +1591,54 @@ absl::Status Engine::BindParsedFunction(absl::string_view celfn_decl,
 // (e2e/foreign_fn_type_matrix_test.cc) is written against; tests SKIP
 // until this returns ok.
 
-absl::Status Engine::AddComponent(absl::Span<const uint8_t> component_bytes,
+absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
                                   const FunctionLibrary& lib) {
-  if (component_bytes.empty()) {
+  if (plugin_bytes.empty()) {
     return absl::InvalidArgumentError(
-        "Engine::AddComponent: component_bytes must be non-empty");
+        "Engine::AddPlugin: plugin_bytes must be non-empty");
   }
   // Conflict-check the overload-ids in `lib` against every callback
-  // already registered (host_callbacks + prior components).  Catching
+  // already registered (host_callbacks + prior plugins).  Catching
   // it here turns the failure into a clean AlreadyExists at
   // registration time, before the per-Plan linker_define_func would
   // surface a less-helpful "duplicate import" error.
   for (const auto& decl : lib.decls()) {
-    if (decl.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (decl.backend != CelfnDecl::Backend::kPlugin) continue;
     if (wasmtime_->host_callbacks.find(decl.overload_id) !=
         wasmtime_->host_callbacks.end()) {
       return absl::AlreadyExistsError(absl::StrCat(
-          "Engine::AddComponent: overload-id `", decl.overload_id,
+          "Engine::AddPlugin: overload-id `", decl.overload_id,
           "` is already bound by an earlier `AddFunction` registration"));
     }
-    for (const auto& prior : wasmtime_->component_libraries) {
+    for (const auto& prior : wasmtime_->plugin_registry) {
       for (const auto& prior_decl : prior.library.decls()) {
-        if (prior_decl.backend != CelfnDecl::Backend::kForeignComponent) {
+        if (prior_decl.backend != CelfnDecl::Backend::kPlugin) {
           continue;
         }
         if (prior_decl.overload_id == decl.overload_id) {
           return absl::AlreadyExistsError(absl::StrCat(
-              "Engine::AddComponent: overload-id `", decl.overload_id,
-              "` is already bound by a previously-registered component"));
+              "Engine::AddPlugin: overload-id `", decl.overload_id,
+              "` is already bound by a previously-registered plugin"));
         }
       }
     }
   }
-  // Parse the component bytes.  Surfaces malformed-component errors
+  // Parse the plugin bytes.  Surfaces malformed-plugin errors
   // here rather than at first Plan.  The parsed
   // `wasmtime_component_t*` is shared across Plans (each Plan
   // instantiates it into its own per-Plan store), mirroring how
   // RegisteredCustomModule's parsed `wasmtime_module_t*` is reused.
   wasmtime_component_t* component = nullptr;
   wasmtime_error_t* err =
-      wasmtime_component_new(wasmtime_->engine, component_bytes.data(),
-                             component_bytes.size(), &component);
+      wasmtime_component_new(wasmtime_->engine, plugin_bytes.data(),
+                             plugin_bytes.size(), &component);
   if (err != nullptr) {
-    return WasmtimeErrorToStatus("Engine::AddComponent: parse component", err);
+    return WasmtimeErrorToStatus("Engine::AddPlugin: parse plugin", err);
   }
-  celwasm::RegisteredComponent entry;
+  celwasm::RegisteredPlugin entry;
   entry.component = component;
   entry.library = lib;
-  wasmtime_->component_libraries.push_back(std::move(entry));
+  wasmtime_->plugin_registry.push_back(std::move(entry));
   return absl::OkStatus();
 }
 

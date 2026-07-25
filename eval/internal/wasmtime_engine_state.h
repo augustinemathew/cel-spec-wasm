@@ -37,7 +37,7 @@
 // Forward-declare the component-model handle so this header does
 // NOT require -DWASMTIME_FEATURE_COMPONENT_MODEL.  The component
 // surface compiles only in TUs that opt in (engine.cc,
-// cel_component.cc).  Upstream's typedef in wasmtime/component/component.h
+// cel_plugin.cc).  Upstream's typedef in wasmtime/component/component.h
 // is `typedef struct wasmtime_component_t wasmtime_component_t;`
 // (struct tag and typedef name match — a common wasmtime idiom);
 // the forward decl below must mirror that to avoid
@@ -74,13 +74,13 @@ struct RegisteredHostCallback {
   celwasm::HostCallback callback;
 };
 
-// A Component-Model component registered via `Engine::AddComponent`
-// — the parsed `wasmtime_component_t` plus the FunctionLibrary that
+// A plugin registered via `Engine::AddPlugin` — the parsed
+// `wasmtime_component_t` plus the FunctionLibrary that
 // names which exports back which CEL decls.  The component is shared
 // across Plans (each Plan instantiates it into its own per-Plan store).
 // The library lives by value here so the decl signatures stay
 // reachable from the per-Plan instantiation step in engine.cc.
-struct RegisteredComponent {
+struct RegisteredPlugin {
   wasmtime_component_t* component = nullptr;
   celwasm::FunctionLibrary library;
 };
@@ -95,13 +95,13 @@ struct WasmtimeEngineState {
   std::map<std::string, RegisteredCustomModule> custom_modules;
   std::map<std::string, RegisteredHostCallback> host_callbacks;
 
-  // Component-Model components registered via `Engine::AddComponent`.
+  // Plugins registered via `Engine::AddPlugin`.
   // Order-preserving vector (vs map) — there is no natural keying name
-  // for a component the way `alias` keys a `RegisteredCustomModule`;
-  // distinct components are distinguished by the overload-ids the
+  // for a plugin the way `alias` keys a `RegisteredCustomModule`;
+  // distinct plugins are distinguished by the overload-ids the
   // library declares.  Conflict detection still rejects duplicate
-  // overload-ids (against host_callbacks + other components).
-  std::vector<RegisteredComponent> component_libraries;
+  // overload-ids (against host_callbacks + other plugins).
+  std::vector<RegisteredPlugin> plugin_registry;
 
   WasmtimeEngineState() = default;
   ~WasmtimeEngineState();

@@ -95,7 +95,7 @@ TEST(OverloadTableTest, DuplicateCustomIsAlreadyExists) {
 }
 
 TEST(OverloadTableTest, ForeignModuleCustomCarriesItsAlias) {
-  // A CEL-defined / foreign-component backend (source kUser) imports
+  // A CEL-defined / plugin backend (source kUser) imports
   // under a per-module alias rather than the host-callback "cel_fn".
   const std::vector<OverloadDef> customs = {
       {"allow_string_string", "allow_string_string", ImportModuleSource::kUser,

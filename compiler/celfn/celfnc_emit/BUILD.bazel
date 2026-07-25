@@ -1,6 +1,6 @@
 # `cel generate` emitter libraries — see m26 §7.
 #
-# These libraries take a parsed FunctionLibrary (kForeignComponent
+# These libraries take a parsed FunctionLibrary (kPlugin
 # decls) and emit one of the four output files
 # (fns.wit / codec.h / generated_stub.cc / user_fns.h) per language
 # target (C++ for now; Go arrives with H.4).  They are pure
@@ -135,7 +135,7 @@ cc_binary(
 # by codec_compile_check.  When the codec emitter regresses, the
 # header is malformed and the compile-check cc_library below fails
 # to build — surfacing the regression at bazel build time, not at
-# the next downstream consumer (real cel_wasm_component invocations
+# the next downstream consumer (real cel_wasm_plugin invocations
 # from end users).
 genrule(
     name = "generated_codec_h",

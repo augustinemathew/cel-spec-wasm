@@ -855,9 +855,9 @@ link_mode_e2e_cc_test(
 # docblock for the tier mapping and the legitimate type exclusions
 # (type, optional, WKT wrappers as separate types, WKT struct types).
 link_mode_e2e_cc_test(
-    name = "foreign_component_dispatch_test",
+    name = "plugin_dispatch_test",
     size = "large",
-    srcs = ["foreign_component_dispatch_test.cc"],
+    srcs = ["plugin_dispatch_test.cc"],
     tags = ["manual"],
     deps = [
         ":link_mode_e2e_helpers",

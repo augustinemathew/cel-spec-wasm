@@ -57,7 +57,7 @@ FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
                       std::vector<CelfnParam> params) {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddForeignComponent(fn_name, std::move(ret), std::move(params))
+          .AddPlugin(fn_name, std::move(ret), std::move(params))
           .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
@@ -258,10 +258,10 @@ TEST(EmitStubCc, ProtoReturnUsesLowerProtoTemplate) {
 TEST(EmitStubCc, MultipleDeclsEmitMultipleExports) {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddForeignComponent(
+          .AddPlugin(
               "f1", Prim(CelfnType::Kind::kInt),
               {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
-          .AddForeignComponent(
+          .AddPlugin(
               "f2", Prim(CelfnType::Kind::kBool),
               {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
           .Build();

@@ -332,7 +332,7 @@ absl::StatusOr<std::string> EmitStubCc(
   absl::SubstituteAndAppend(&out, kFilePreambleTpl, extras);
 
   for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (d.backend != CelfnDecl::Backend::kPlugin) continue;
     auto body = EmitOneExport(d, cpp_namespace, exports_prefix);
     if (!body.ok()) return body.status();
     absl::StrAppend(&out, *body);

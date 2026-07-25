@@ -14,7 +14,7 @@
 // (b) the rendered text is what `wit-bindgen c --world customfn`
 // would accept (the latter implicitly via the emitter's own
 // stability contract — the integration check vs wit-bindgen runs
-// in the cel_wasm_component macro's e2e test).
+// in the cel_wasm_plugin macro's e2e test).
 
 #include "compiler/celfn/celfnc_emit/wit_emitter.h"
 
@@ -69,7 +69,7 @@ CelfnType ProtoOf(std::string fqn) {
 FunctionLibrary OneFn(absl::string_view fn_name, CelfnType return_type,
                       std::vector<CelfnParam> params) {
   auto lib_or = FunctionLibrary::Builder()
-                    .AddForeignComponent(fn_name, std::move(return_type),
+                    .AddPlugin(fn_name, std::move(return_type),
                                          std::move(params))
                     .Build();
   ABSL_CHECK_OK(lib_or);
@@ -101,15 +101,15 @@ TEST(EmitWit, NoVersionEmitsPackageHeaderWithoutVersionSuffix) {
   EXPECT_THAT(*text_or, ::testing::Not(HasSubstr("@")));
 }
 
-TEST(EmitWit, NonForeignComponentDeclsAreIgnored) {
-  // A kHost decl alongside a kForeignComponent: only the latter
+TEST(EmitWit, NonPluginDeclsAreIgnored) {
+  // A kHost decl alongside a kPlugin: only the latter
   // appears in WIT (kHost is dispatched via the cel_fn callback
   // path with no WIT surface).
   auto lib_or =
       FunctionLibrary::Builder()
           .AddHost("h", Prim(CelfnType::Kind::kBool),
                    {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
-          .AddForeignComponent(
+          .AddPlugin(
               "fc", Prim(CelfnType::Kind::kBool),
               {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
           .Build();
@@ -234,10 +234,10 @@ TEST(EmitWit, RecordEmittedOnlyOnceEvenWithMultipleDurationDecls) {
   // even when many fns reference it.  Same for timestamp.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddForeignComponent(
+          .AddPlugin(
               "f", Prim(CelfnType::Kind::kDuration),
               {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "x"}})
-          .AddForeignComponent(
+          .AddPlugin(
               "g", Prim(CelfnType::Kind::kBool),
               {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "y"}})
           .Build();
@@ -371,7 +371,7 @@ TEST(EmitWit, ByteForByteDeterministicAcrossInvocations) {
 // ── Regression tripwire ─────────────────────────────────────────
 //
 // `optional<T>` and `type` are rejected at Build() time (m24 §A.4),
-// so a kForeignComponent decl carrying either of those shapes should
+// so a kPlugin decl carrying either of those shapes should
 // never reach EmitWit.  This test pins the tripwire: bypass Builder
 // and construct a CelfnDecl directly, then assert EmitWit refuses
 // rather than emitting an invalid WIT.

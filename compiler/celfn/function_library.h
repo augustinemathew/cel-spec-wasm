@@ -39,7 +39,7 @@ namespace celwasm {
 
 // CEL type as it appears in a custom-fn signature.  Mirrors §3.6 of
 // m13-custom-fns.md, extended by §6 of m24-foreign-fn-component-backend.md
-// (the foreign-component author surface adds `type` and `optional<T>` to
+// (the plugin author surface adds `type` and `optional<T>` to
 // the declarable matrix; existing host backend does not yet
 // admit either — see m24 §6 for the type-to-WIT-to-C++ mapping).
 struct CelfnType {
@@ -58,11 +58,11 @@ struct CelfnType {
     kProto,
     kType,      // CEL `type` (the type-of-types).  m24 §6: WIT `string`,
                 // C++ `std::string` (the type name).  Only reachable
-                // through `kForeignComponent` decls today.
+                // through `kPlugin` decls today.
     kOptional,  // CEL `optional<T>`.  m24 §6: WIT `option<wit T>`, C++
                 // `std::optional<C++ T>`.  Element type in
                 // `optional_element[0]`.  Only reachable through
-                // `kForeignComponent` decls; the @host adapter has no
+                // `kPlugin` decls; the @host adapter has no
                 // canonical spelling.
   };
 
@@ -97,21 +97,20 @@ struct CelfnDecl {
   enum class Backend : uint8_t {
     kHost,              // `@host.` prefix
     kCelDefined,        // `@native.` prefix, has body
-    kForeignComponent,  // `@component.` prefix — m24 §3 component-backed
-                        // foreign fn — dispatched as a host callback
-                        // (module_name = "cel_fn"), but marshaled
-                        // through a per-fn typed WIT export of a
-                        // Component-Model component registered via
-                        // `Engine::AddComponent(bytes, lib)`.  Admits
-                        // protos (as serialized bytes, m24 §8); admits
-                        // `type` and `optional<T>` per m24 §6.
+    kPlugin,      // `@plugin.` prefix — m24 §3 plugin-backed fn —
+                // dispatched as a host callback (module_name =
+                // "cel_fn"), but marshaled through a per-fn typed
+                // WIT export of the Component-Model plugin
+                // registered via `Engine::AddPlugin(bytes, lib)`.
+                // Admits protos (as serialized bytes, m24 §8);
+                // admits `type` and `optional<T>` per m24 §6.
   };
 
   Backend backend = Backend::kHost;
   // Plain function name as written ("allow" / "is_number" / …).
   std::string fn_name;
   // Wasm import-module name.
-  //   kHost / kForeignComponent: always "cel_fn"
+  //   kHost / kPlugin: always "cel_fn"
   //   kCelDefined:               the file's `Module foo;` directive name
   std::string module_name;
   // Synthesised: `<fn_name>_<argkind>_<argkind>…`.
@@ -143,10 +142,10 @@ class FunctionLibrary {
     return decls_;
   }
   // Optional WIT interface name (e.g. `cel:customfn/fns@0.1.0`).
-  // When non-empty, `Engine::AddComponent` looks up each decl's
+  // When non-empty, `Engine::AddPlugin` looks up each decl's
   // export inside this interface instance rather than at the
-  // component's top level.  Pure-WAT components from
-  // `foreign_component_dispatch_test` leave it empty and the engine
+  // plugin's top level.  Pure-WAT plugins from
+  // `plugin_dispatch_test` leave it empty and the engine
   // does the top-level lookup (m24 §3.5 v1 path).
   const std::string& wit_interface() const {
     return wit_interface_;
@@ -160,9 +159,9 @@ class FunctionLibrary {
     // library has no Module directive.
     Builder& SetModuleName(absl::string_view module_name);
 
-    // WIT interface name the kForeignComponent decls live under in
-    // the embedded component.  Format: `<pkg-ns>:<pkg-name>/<iface>
-    // @<version>` (the `cel_wasm_component` macro produces components
+    // WIT interface name the kPlugin decls live under in
+    // the embedded plugin.  Format: `<pkg-ns>:<pkg-name>/<iface>
+    // @<version>` (the `cel_wasm_plugin` macro produces plugins
     // exporting `cel:<module>/fns@0.1.0` by default; the embedder
     // calls this with the matching string).  When empty, the engine
     // does a top-level export lookup (v1 inline-WAT path).
@@ -173,16 +172,17 @@ class FunctionLibrary {
     Builder& AddHost(absl::string_view fn_name, CelfnType return_type,
                      std::vector<CelfnParam> params);
 
-    // Add a Component-Model-backed foreign declaration.  Dispatch is via
+    // Add a plugin-backed declaration (a sandboxed Component-Model
+    // wasm export).  Dispatch is via
     // the `cel_fn` host-callback path (same as kHost — see m24 §2);
     // marshaling is per-fn typed WIT + a generated codec (m24 §4–§7).
-    // The embedder supplies the component bytes at Plan time via
-    // `Engine::AddComponent(component_bytes, lib)`.
+    // The embedder supplies the plugin bytes at Plan time via
+    // `Engine::AddPlugin(plugin_bytes, lib)`.
     //
     // Admits `proto(...)` arguments and returns — they cross as
     // serialized bytes (m24 §8).  Admits `type` and `optional<T>` per
     // m24 §6.
-    Builder& AddForeignComponent(absl::string_view fn_name,
+    Builder& AddPlugin(absl::string_view fn_name,
                                  CelfnType return_type,
                                  std::vector<CelfnParam> params);
 
@@ -199,7 +199,7 @@ class FunctionLibrary {
     //   - `Module` set iff any kCelDefined decl present.
     //   - No two decls share an overload-id.
     //   - `this` modifier only on the first param.
-    //   - kForeignComponent decls reject `optional<T>` / `type`
+    //   - kPlugin decls reject `optional<T>` / `type`
     //     return + parameter shapes (m24 §6).
     //
     // Returns InvalidArgument on validation failure with the

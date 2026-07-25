@@ -65,7 +65,7 @@ FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
                       std::vector<CelfnParam> params) {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddForeignComponent(fn_name, std::move(ret), std::move(params))
+          .AddPlugin(fn_name, std::move(ret), std::move(params))
           .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
@@ -256,10 +256,10 @@ TEST(EmitCodecH, ProtoEmitsParseAndSerialize) {
 TEST(EmitCodecH, SharedTypeAcrossDeclsEmittedOnce) {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddForeignComponent(
+          .AddPlugin(
               "f1", Prim(CelfnType::Kind::kInt),
               {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}})
-          .AddForeignComponent(
+          .AddPlugin(
               "f2", ListOf(Prim(CelfnType::Kind::kInt)),
               {CelfnParam{false, Prim(CelfnType::Kind::kString), "k"}})
           .Build();

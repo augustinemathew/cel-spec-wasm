@@ -2,25 +2,25 @@ load("@rules_cc//cc:defs.bzl", "cc_binary")
 
 package(default_visibility = ["//visibility:public"])
 
-# Foreign-component dispatch cost vs native host-fn dispatch cost.
+# Plugin dispatch cost vs native host-fn dispatch cost.
 # Two shapes: scalar add (per-call overhead) and 256 KiB string len
 # (per-call + canonical-ABI copy throughput).  Each shape runs through
-# both backends so the delta isolates the component-call overhead.
+# both backends so the delta isolates the plugin-call overhead.
 #
-# The component fixture is the macro-produced
-# //e2e/foreign_component_fixtures/cel_wasm_component_demo:demo_component
+# The plugin fixture is the macro-produced
+# //e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin
 # (a real wasm32-wasip2 Component-Model component, built via the
-# cel_wasm_component Starlark macro from fns.idl + user_fns.cc).
+# cel_wasm_plugin Starlark macro from fns.idl + user_fns.cc).
 # Loaded at bench-setup time via the bazel runfiles library.
 #
 # `manual`-tagged; run explicitly, always -c opt:
-#   bazel run -c opt //benchmark/component:foreign_component_bench
+#   bazel run -c opt //benchmark/plugin:plugin_bench
 cc_binary(
-    name = "foreign_component_bench",
-    srcs = ["foreign_component_bench.cc"],
+    name = "plugin_bench",
+    srcs = ["plugin_bench.cc"],
     copts = ["-std=c++17"],
     data = [
-        "//e2e/foreign_component_fixtures/cel_wasm_component_demo:demo_component",
+        "//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin",
     ],
     tags = ["manual"],
     deps = [

@@ -1,12 +1,12 @@
 // Author-side impls for the proto-bearing demo fixture
-// (`demo_component_proto`).  See the matching fns_proto.idl.
+// (`demo_plugin_proto`).  See the matching fns_proto.idl.
 
 #include "user_fns.h"
 
 #include <cctype>
 #include <string>
 
-#include "e2e/foreign_component_fixtures/cel_wasm_component_demo/user.pb.h"
+#include "e2e/plugin_fixtures/cel_wasm_plugin_demo/user.pb.h"
 
 namespace customfn {
 

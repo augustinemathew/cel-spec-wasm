@@ -1,5 +1,5 @@
 // Per-CEL-type marshaling tests for the Component-Model bridge
-// (`eval/internal/cel_component.h`).  Drives the §6 type matrix +
+// (`eval/internal/cel_plugin.h`).  Drives the §6 type matrix +
 // §10 boundary matrix from m24-foreign-fn-component-backend.md.
 //
 // CLAUDE.md "tests-first" discipline: the full boundary matrix is
@@ -16,7 +16,7 @@
 //   - Every kind has at least one cross-kind rejection test
 //     (CelfnType says X, Value carries Y).
 
-#include "eval/internal/cel_component.h"
+#include "eval/internal/cel_plugin.h"
 
 #include <cmath>
 #include <cstdint>
@@ -1024,7 +1024,7 @@ TEST(LiftCelToComponent, TypeFromIntValueIsKindMismatch) {
 // ── cross-kind defence-in-depth ────────────────────────────────────
 
 TEST(LowerComponentToCel, IntKindMismatchNamesBothSides) {
-  // Defence in depth: even if FuncType validation at AddComponent
+  // Defence in depth: even if FuncType validation at AddPlugin
   // missed a mismatch, Lower must refuse rather than miscompile.
   wasmtime_component_val_t in{};
   in.kind = WASMTIME_COMPONENT_F64;

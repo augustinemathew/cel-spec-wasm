@@ -65,7 +65,7 @@ register_toolchains(
     "//third_party/wasi_sdk:wasm32_wasi_toolchain_linux_arm64",
     "//third_party/wasi_sdk:wasm32_wasi_toolchain_linux_x86_64",
     # The wasm32-wasip2 (non-threads) variant — used by the
-    # `cel_wasm_component` Starlark macro to produce CM-native
+    # `cel_wasm_plugin` Starlark macro to produce CM-native
     # components (m26 §6).
     "//third_party/wasi_sdk:wasm32_wasi_toolchain_p2_darwin_arm64",
     "//third_party/wasi_sdk:wasm32_wasi_toolchain_p2_darwin_x86_64",
@@ -167,7 +167,7 @@ http_archive(
     urls = ["https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-linux.tar.gz"],
 )
 
-# wit-bindgen — the wit-bindgen CLI used by the `cel_wasm_component`
+# wit-bindgen — the wit-bindgen CLI used by the `cel_wasm_plugin`
 # Starlark macro (m26 §6) to emit C bindings from the per-module
 # `fns.wit` file.  One archive per build host
 # (darwin/linux × arm64/x86_64); `//third_party/wit_bindgen:wit-bindgen`
@@ -203,7 +203,7 @@ http_archive(
     urls = ["https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.57.1/wit-bindgen-0.57.1-x86_64-linux.tar.gz"],
 )
 
-# wasm-tools — the wasm-tools CLI used by `cel_wasm_component` to wrap
+# wasm-tools — the wasm-tools CLI used by `cel_wasm_plugin` to wrap
 # a wasm32-wasi core module into a Component-Model component
 # (`wasm-tools component new`).  Same per-host fetch pattern as
 # wit-bindgen.
@@ -242,7 +242,7 @@ http_archive(
 # into a Component-Model component (which speaks wasi-preview2 only).
 # Shipped as a single ~51 KiB `.wasm` per wasmtime release; one
 # adapter binary works across all build hosts.  Consumed by the
-# `cel_wasm_component` Starlark macro at //bazel:cel_wasm_component.bzl.
+# `cel_wasm_plugin` Starlark macro at //bazel:cel_wasm_plugin.bzl.
 http_file = use_repo_rule(
     "@bazel_tools//tools/build_defs/repo:http.bzl",
     "http_file",

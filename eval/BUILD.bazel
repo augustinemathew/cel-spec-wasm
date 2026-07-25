@@ -227,15 +227,16 @@ cc_test(
     ],
 )
 
-# Typed Component-Model marshaling bridge — host CelValue ↔ wasmtime
-# canonical-ABI val.  See eval/internal/cel_component.h for the type
+# Typed Component-Model marshaling bridge for plugin calls — host
+# CelValue ↔ wasmtime canonical-ABI val.  See
+# eval/internal/cel_plugin.h for the type
 # matrix.  The vendored wasmtime build gates all component-API
 # typedefs behind WASMTIME_FEATURE_COMPONENT_MODEL; the macro must be
 # force-defined on every consumer TU.
 cc_library(
-    name = "cel_component",
-    srcs = ["internal/cel_component.cc"],
-    hdrs = ["internal/cel_component.h"],
+    name = "cel_plugin",
+    srcs = ["internal/cel_plugin.cc"],
+    hdrs = ["internal/cel_plugin.h"],
     copts = ["-DWASMTIME_FEATURE_COMPONENT_MODEL"],
     defines = ["WASMTIME_FEATURE_COMPONENT_MODEL"],
     deps = [
@@ -253,12 +254,12 @@ cc_library(
 )
 
 cc_test(
-    name = "cel_component_test",
+    name = "cel_plugin_test",
     size = "small",
-    srcs = ["internal/cel_component_test.cc"],
+    srcs = ["internal/cel_plugin_test.cc"],
     copts = ["-DWASMTIME_FEATURE_COMPONENT_MODEL"],
     deps = [
-        ":cel_component",
+        ":cel_plugin",
         ":cel_host",  # Value::List / HostList symbol bodies
         ":cel_host_hdrs",
         ":value",
@@ -859,7 +860,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":abi_decode",
-        ":cel_component",
+        ":cel_plugin",
         ":cel_host_wasmtime",
         ":host_call_context",
         ":host_callback",

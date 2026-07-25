@@ -518,7 +518,7 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
 //   - `wasm_import_function_name` = same as `overload_id` (one wasm import
 //     per decl; the IDL guarantees uniqueness).
 //   - `wasm_import_module_type`   = `kCelFn` (the host-callback module) for
-//     `kHost` and `kForeignComponent` (a Component-Model backend is a host
+//     `kHost` and `kPlugin` (a Component-Model backend is a host
 //     fn at the call site — m24 §2-§3); `kUser` for `kCelDefined`.
 //   - `wasm_import_module_name`   = the decl's per-module alias for
 //     `kCelDefined` (`kUser`); empty otherwise.
@@ -526,7 +526,7 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
 //     args, as recorded on `CelfnDecl::num_args`).
 bool DispatchesViaCelFn(CelfnDecl::Backend backend) {
   return backend == CelfnDecl::Backend::kHost ||
-         backend == CelfnDecl::Backend::kForeignComponent;
+         backend == CelfnDecl::Backend::kPlugin;
 }
 
 absl::StatusOr<OverloadTable> BuildOverloadTable(

@@ -3,7 +3,7 @@
 // export declaration by routing through codec.h into the author's
 // `user::FnName(...)` impl.
 //
-// Mechanical: one function body per kForeignComponent decl.  Body
+// Mechanical: one function body per kPlugin decl.  Body
 // shape per export, by return-type category:
 //
 //   - Scalar return (bool / int / uint / double):
@@ -49,7 +49,7 @@ std::string SnakeToCamel(absl::string_view snake);
 
 // Render `generated_stub.cc` text.
 //
-//   - `lib`: only kForeignComponent decls drive emission.  Other
+//   - `lib`: only kPlugin decls drive emission.  Other
 //     backends have no WIT export surface (m24 §A).
 //   - `cpp_namespace`: the `<module>` namespace
 //     (`namespace <cpp_namespace> { ... }`).  Empty → global.

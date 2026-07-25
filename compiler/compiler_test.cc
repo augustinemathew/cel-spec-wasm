@@ -337,18 +337,18 @@ TEST(CompilerBuilderAddFunctionTest, CompileReceiverHostFnResolvesAndLowers) {
   EXPECT_EQ(bytes[3], 0x6d);
 }
 
-// kForeignComponent decls are dispatched via the host-callback path
+// kPlugin decls are dispatched via the host-callback path
 // (cel_fn) per m24 §2-§3 — a Component-Model-backed fn is invisible
 // to the compiler / checker / overload table at the call site (the
 // emitted wasm import is `(import "cel_fn" "<helper>" …)`, identical
 // to a kHost decl).  These tests pin that contract.
-TEST(CompilerBuilderAddLibraryTest, ForeignComponentDeclRoutesViaCelFn) {
+TEST(CompilerBuilderAddLibraryTest, PluginDeclRoutesViaCelFn) {
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kBool;
   celwasm::CelfnType arg;
   arg.kind = celwasm::CelfnType::Kind::kString;
   auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddForeignComponent(
+                    .AddPlugin(
                         "allow", ret,
                         {celwasm::CelfnParam{/*is_receiver=*/false, arg, "u"}})
                     .Build();
@@ -369,22 +369,22 @@ TEST(CompilerBuilderAddLibraryTest, ForeignComponentDeclRoutesViaCelFn) {
   const std::string blob(reinterpret_cast<const char*>(bytes.data()),
                          bytes.size());
   EXPECT_NE(blob.find("cel_fn"), std::string::npos)
-      << "kForeignComponent decl did not produce a `cel_fn` import — "
+      << "kPlugin decl did not produce a `cel_fn` import — "
          "routing regressed";
   EXPECT_NE(blob.find("allow_string"), std::string::npos)
       << "helper name not present in emitted imports";
 }
 
 TEST(CompilerBuilderAddLibraryTest,
-     ForeignComponentDeclAdmitsProtoAndRoutesViaCelFn) {
-  // m24 §8 admits proto(...) on kForeignComponent (cross as bytes).
+     PluginDeclAdmitsProtoAndRoutesViaCelFn) {
+  // m24 §8 admits proto(...) on kPlugin (cross as bytes).
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kBool;
   celwasm::CelfnType arg;
   arg.kind = celwasm::CelfnType::Kind::kProto;
   arg.proto_fqn = "celwasm.testdata.Customer";
   auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddForeignComponent(
+                    .AddPlugin(
                         "is_premium", ret,
                         {celwasm::CelfnParam{/*is_receiver=*/false, arg, "c"}})
                     .Build();
@@ -405,8 +405,8 @@ TEST(CompilerBuilderAddLibraryTest,
 }
 
 TEST(CompilerBuilderAddLibraryTest,
-     ForeignComponentAndHostCoexistAndShareCelFnNamespace) {
-  // Two decls with distinct overload-ids, one kHost + one kForeignComponent,
+     PluginAndHostCoexistAndShareCelFnNamespace) {
+  // Two decls with distinct overload-ids, one kHost + one kPlugin,
   // both routing via cel_fn — must coexist in one library.
   celwasm::CelfnType b_t;
   b_t.kind = celwasm::CelfnType::Kind::kBool;
@@ -414,7 +414,7 @@ TEST(CompilerBuilderAddLibraryTest,
   s_t.kind = celwasm::CelfnType::Kind::kString;
   auto lib_or = celwasm::FunctionLibrary::Builder()
                     .AddHost("upper", s_t, {celwasm::CelfnParam{true, s_t, "s"}})
-                    .AddForeignComponent(
+                    .AddPlugin(
                         "allow", b_t,
                         {celwasm::CelfnParam{false, s_t, "u"}})
                     .Build();
@@ -423,24 +423,24 @@ TEST(CompilerBuilderAddLibraryTest,
   EXPECT_EQ(lib_or->decls()[0].backend,
             celwasm::CelfnDecl::Backend::kHost);
   EXPECT_EQ(lib_or->decls()[1].backend,
-            celwasm::CelfnDecl::Backend::kForeignComponent);
+            celwasm::CelfnDecl::Backend::kPlugin);
   // Both decls should claim module_name=="cel_fn" (the call-site
-  // import-module is the same for kHost and kForeignComponent).
+  // import-module is the same for kHost and kPlugin).
   EXPECT_EQ(lib_or->decls()[0].module_name, "cel_fn");
   EXPECT_EQ(lib_or->decls()[1].module_name, "cel_fn");
 }
 
 TEST(CompilerBuilderAddLibraryTest,
-     ForeignComponentDuplicateOverloadIdRejected) {
+     PluginDuplicateOverloadIdRejected) {
   // Same overload-id collision detection as @host — registering the
-  // same helper twice (one @host + one kForeignComponent) must fail.
+  // same helper twice (one @host + one kPlugin) must fail.
   celwasm::CelfnType b_t;
   b_t.kind = celwasm::CelfnType::Kind::kBool;
   celwasm::CelfnType s_t;
   s_t.kind = celwasm::CelfnType::Kind::kString;
   auto lib_or = celwasm::FunctionLibrary::Builder()
                     .AddHost("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
-                    .AddForeignComponent(
+                    .AddPlugin(
                         "clash", b_t,
                         {celwasm::CelfnParam{false, s_t, "x"}})
                     .Build();

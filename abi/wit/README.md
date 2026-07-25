@@ -1,6 +1,6 @@
 # `abi/wit/` — WIT vocabulary for the cross-component CEL boundary
 
-ABI contract surface for the **foreign-component custom-function**
+ABI contract surface for the **plugin custom-function**
 boundary (m24 Regime B). Parallel to `abi/cel_abi.proto` (the host /
 guest wire contract): `cel.wit` is the cross-component-boundary type
 vocabulary the Component-Model-backed foreign-function path uses.

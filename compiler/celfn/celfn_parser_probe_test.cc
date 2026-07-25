@@ -109,15 +109,15 @@ TEST(CelfnParserProbe, ParsesHostDecl) {
   EXPECT_EQ(host->Identifier()->getText(), "upper");
 }
 
-TEST(CelfnParserProbe, ParsesComponentDecl) {
-  auto r = ParseCelfn("bool @component.allow(this string user, string r);");
+TEST(CelfnParserProbe, ParsesPluginDecl) {
+  auto r = ParseCelfn("bool @plugin.allow(this string user, string r);");
   EXPECT_TRUE(r.errors.empty())
       << "errors: " << (r.errors.empty() ? "" : r.errors[0]);
   ASSERT_EQ(r.file->fileItem().size(), 1u);
-  auto* comp = r.file->fileItem(0)->componentFnDecl();
+  auto* comp = r.file->fileItem(0)->pluginFnDecl();
   ASSERT_NE(comp, nullptr);
-  // `bool @component.allow(this string user, string r);`
-  // Grammar shape: type '@' 'component' '.' Identifier '(' params ')' ';'
+  // `bool @plugin.allow(this string user, string r);`
+  // Grammar shape: type '@' 'plugin' '.' Identifier '(' params ')' ';'
   // One Identifier: "allow" (fn name).  No alias.
   EXPECT_EQ(comp->Identifier()->getText(), "allow");
 }
@@ -147,8 +147,8 @@ bool @native.is_number(this string s) = s.matches("^[0-9]+$");
 // Host-backed.
 string @host.upper(this string s);
 
-// Component-backed.
-bool @component.allow(this string user, string r);
+// Plugin-backed.
+bool @plugin.allow(this string user, string r);
 )";
   auto r = ParseCelfn(source);
   EXPECT_TRUE(r.errors.empty())
@@ -158,7 +158,7 @@ bool @component.allow(this string user, string r);
   ASSERT_EQ(r.file->fileItem().size(), 3u);
   EXPECT_NE(r.file->fileItem(0)->nativeFnDecl(), nullptr);
   EXPECT_NE(r.file->fileItem(1)->hostFnDecl(), nullptr);
-  EXPECT_NE(r.file->fileItem(2)->componentFnDecl(), nullptr);
+  EXPECT_NE(r.file->fileItem(2)->pluginFnDecl(), nullptr);
 }
 
 TEST(CelfnParserProbe, ParsesProtoTypeArgument) {
@@ -187,7 +187,7 @@ TEST(CelfnParserProbe, ParsesAggregateTypes) {
 
 TEST(CelfnParserProbe, RejectsBareDecl) {
   // `bool plain_name(int x);` — no backend prefix: not `@host.`, not
-  // `@native.`, not `@component.`.  Every declaration must name its
+  // `@native.`, not `@plugin.`.  Every declaration must name its
   // backend, so a bare `<type> <name>(...)` matches no production and
   // fails to parse.
   auto r = ParseCelfn("bool plain_name(int x);");

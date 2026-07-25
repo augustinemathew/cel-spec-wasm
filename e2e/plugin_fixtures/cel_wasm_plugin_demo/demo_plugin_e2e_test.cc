@@ -1,13 +1,13 @@
-// End-to-end test for the `cel_wasm_component` Starlark macro
-// (//bazel:cel_wasm_component.bzl, m26 §6).
+// End-to-end test for the `cel_wasm_plugin` Starlark macro
+// (//bazel:cel_wasm_plugin.bzl, m26 §6).
 //
-// Loads the `demo_component.wasm` byte stream the macro produces
+// Loads the `demo_plugin.wasm` byte stream the macro produces
 // from `fns.idl` + `user_fns.cc` via bazel runfiles, registers it
-// with `Engine::AddComponent(component_bytes, lib)`, and exercises
+// with `Engine::AddPlugin(plugin_bytes, lib)`, and exercises
 // both declared fns through the Compile → Plan → Eval pipeline.
 // This is the *integration* gate the macro previously lacked: the
 // codec/stub/skeleton emitters are unit-tested elsewhere; this file
-// proves the bytes the macro emits are a functional component, not
+// proves the bytes the macro emits are a functional plugin, not
 // just a well-formed one.
 //
 // Coverage:
@@ -19,7 +19,7 @@
 //     scalar arm (no codec lift/lower; native s64 passing).
 //
 // Out of scope (other slices):
-//   - Proto args/returns — covered by `demo_component_proto`, which is
+//   - Proto args/returns — covered by `demo_plugin_proto`, which is
 //     a manual-tagged target because libprotobuf-cpp under wasm32-wasip2
 //     is a multi-minute cold-cache build.
 //
@@ -27,7 +27,7 @@
 // (`_dynamic` / `_static` — see
 // doc/implementation-plan/rewrite/m28-configurable-linking.md §5.5);
 // link mode is routed through `e2e::DefaultOpts()` because each test
-// owns its Engine (AddComponent registrations are per-Engine state).
+// owns its Engine (AddPlugin registrations are per-Engine state).
 
 #include <cstdint>
 #include <fstream>
@@ -63,17 +63,17 @@ CelfnType Prim(CelfnType::Kind k) {
   return t;
 }
 
-// Load `demo_component.wasm` from the runfiles tree.  The bazel
-// `data = [":demo_component"]` on the cc_test makes the file
+// Load `demo_plugin.wasm` from the runfiles tree.  The bazel
+// `data = [":demo_plugin"]` on the cc_test makes the file
 // available; runfiles resolves the path on both macOS and Linux.
-std::vector<uint8_t> LoadDemoComponentBytes() {
+std::vector<uint8_t> LoadDemoPluginBytes() {
   std::string error;
   auto runfiles = absl::WrapUnique(Runfiles::CreateForTest(&error));
   ABSL_CHECK(runfiles != nullptr) << "runfiles init failed: " << error;
   const std::string path = runfiles->Rlocation(
-      "_main/e2e/foreign_component_fixtures/cel_wasm_component_demo/"
-      "demo_component.wasm");
-  ABSL_CHECK(!path.empty()) << "demo_component.wasm not in runfiles";
+      "_main/e2e/plugin_fixtures/cel_wasm_plugin_demo/"
+      "demo_plugin.wasm");
+  ABSL_CHECK(!path.empty()) << "demo_plugin.wasm not in runfiles";
 
   std::ifstream f(path, std::ios::binary);
   ABSL_CHECK(f.is_open()) << "failed to open " << path;
@@ -83,7 +83,7 @@ std::vector<uint8_t> LoadDemoComponentBytes() {
 
 // Build a FunctionLibrary that mirrors fns.idl's two decls.  The
 // embedder declares the same shape the .idl declared; otherwise
-// AddComponent would refuse the export ↔ decl mismatch (m24 §3.5
+// AddPlugin would refuse the export ↔ decl mismatch (m24 §3.5
 // validation gate).
 FunctionLibrary BuildDemoLibrary() {
   auto lib_or =
@@ -92,13 +92,13 @@ FunctionLibrary BuildDemoLibrary() {
           // the IDL's `Module customfn;` directive; the wit-bindgen
           // emitter wraps the fns in interface `fns` at version `0.1.0`.
           // The embedder mirrors the matching WIT interface name so
-          // Engine::AddComponent does the two-level export lookup.
+          // Engine::AddPlugin does the two-level export lookup.
           .SetWitInterface("cel:customfn/fns@0.1.0")
-          .AddForeignComponent(
+          .AddPlugin(
               "greet", Prim(CelfnType::Kind::kString),
               {CelfnParam{false, Prim(CelfnType::Kind::kString), "name"},
                CelfnParam{false, Prim(CelfnType::Kind::kInt), "age"}})
-          .AddForeignComponent(
+          .AddPlugin(
               "add", Prim(CelfnType::Kind::kInt),
               {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
                CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
@@ -107,11 +107,11 @@ FunctionLibrary BuildDemoLibrary() {
   return *std::move(lib_or);
 }
 
-TEST(CelWasmComponentDemo, AddRoundTrips) {
+TEST(CelWasmPluginDemo, AddRoundTrips) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   const auto lib = BuildDemoLibrary();
-  ASSERT_THAT(engine_or->AddComponent(LoadDemoComponentBytes(), lib), IsOk());
+  ASSERT_THAT(engine_or->AddPlugin(LoadDemoPluginBytes(), lib), IsOk());
 
   auto builder = Compiler::NewBuilder();
   builder.DeclareVariable("a", CelType::Int())
@@ -132,7 +132,7 @@ TEST(CelWasmComponentDemo, AddRoundTrips) {
   EXPECT_EQ(*v_or->AsInt(), 42);
 }
 
-TEST(CelWasmComponentDemo, GreetRoundTripsString) {
+TEST(CelWasmPluginDemo, GreetRoundTripsString) {
   GTEST_SKIP()
       << "engine.cc now stubs `wasi:random/random.get-random-bytes` with a "
          "deterministic-bytes host fn (m26 #44 partial mitigation), so the "
@@ -148,7 +148,7 @@ TEST(CelWasmComponentDemo, GreetRoundTripsString) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   const auto lib = BuildDemoLibrary();
-  ASSERT_THAT(engine_or->AddComponent(LoadDemoComponentBytes(), lib), IsOk());
+  ASSERT_THAT(engine_or->AddPlugin(LoadDemoPluginBytes(), lib), IsOk());
 
   auto builder = Compiler::NewBuilder();
   builder.DeclareVariable("name", CelType::String())

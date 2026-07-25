@@ -3,9 +3,9 @@
 //
 // This is the eval-side counterpart to the per-fn typed WIT codec from
 // `doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md`
-// §6-§7.  A `kForeignComponent` decl declares its CEL-typed signature
-// via `FunctionLibrary::Builder::AddForeignComponent`; at Plan time
-// `Engine::AddComponent` binds a host callback whose body calls these
+// §6-§7.  A `kPlugin` decl declares its CEL-typed signature
+// via `FunctionLibrary::Builder::AddPlugin`; at Plan time
+// `Engine::AddPlugin` binds a host callback whose body calls these
 // two free functions to bridge each argument and the result across the
 // component boundary.
 //
@@ -50,8 +50,8 @@
 //     mismatch (e.g. `type.kind == kInt` but `value.kind() != kInt`),
 //     or on a `wasmtime_component_val_t::kind` that disagrees with the
 //     declared `CelfnType` (an upstream wasmtime invariant violation
-//     — should never happen if `Engine::AddComponent` validated the
-//     FuncType at AddComponent time, but checked here as defence in
+//     — should never happen if `Engine::AddPlugin` validated the
+//     FuncType at AddPlugin time, but checked here as defence in
 //     depth).
 //   - Returns `OutOfRangeError` on a value that doesn't fit the WIT
 //     scalar (e.g. a `kUint` Value above `UINT64_MAX`, which is
@@ -66,8 +66,8 @@
 // time Lift sees a Value, the value is guaranteed to be a concrete CEL
 // value (not Error / Unknown).
 
-#ifndef CELWASM_EVAL_INTERNAL_CEL_COMPONENT_H_
-#define CELWASM_EVAL_INTERNAL_CEL_COMPONENT_H_
+#ifndef CELWASM_EVAL_INTERNAL_CEL_PLUGIN_H_
+#define CELWASM_EVAL_INTERNAL_CEL_PLUGIN_H_
 
 #include "absl/base/attributes.h"
 #include "absl/base/nullability.h"
@@ -122,4 +122,4 @@ ABSL_MUST_USE_RESULT absl::Status LowerComponentToCel(
 
 }  // namespace celwasm
 
-#endif  // CELWASM_EVAL_INTERNAL_CEL_COMPONENT_H_
+#endif  // CELWASM_EVAL_INTERNAL_CEL_PLUGIN_H_

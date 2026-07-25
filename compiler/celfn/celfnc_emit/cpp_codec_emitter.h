@@ -43,7 +43,7 @@ namespace celwasm::celfnc_emit {
 
 // Emit the text of a `codec.h` file driven by `lib`.
 //
-//   - `lib`: only kForeignComponent decls drive the emitter; other
+//   - `lib`: only kPlugin decls drive the emitter; other
 //     backends have no WIT surface (m24 §A).
 //   - `cpp_namespace`: the C++ namespace the codec functions live
 //     in.  Per m26 §2.1, this is the IDL's `<module>` identifier

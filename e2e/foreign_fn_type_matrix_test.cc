@@ -1,6 +1,6 @@
-// e2e: exhaustive type-matrix coverage for the m24 foreign-component
-// custom-fn boundary — the `kForeignComponent` backend dispatched via
-// `Engine::AddComponent(component_bytes, lib)`.
+// e2e: exhaustive type-matrix coverage for the m24 plugin
+// custom-fn boundary — the `kPlugin` backend dispatched via
+// `Engine::AddPlugin(plugin_bytes, lib)`.
 //
 // Sibling to `e2e/host_fn_type_matrix_test.cc` (the in-process host-fn
 // matrix), structurally identical: one section per CEL type from §6 of
@@ -12,9 +12,9 @@
 //
 // ── Status (re-verified 2026-06-10) ────────────────────────────────────
 //
-// The original B0 blocker ("Engine::AddComponent returns Unimplemented")
+// The original B0 blocker ("Engine::AddPlugin returns Unimplemented")
 // is RESOLVED — m24 shipped 2026-06-04 (`eval/engine.cc:1519`), and the
-// dispatch wiring is proven in `e2e/foreign_component_dispatch_test.cc`.
+// dispatch wiring is proven in `e2e/plugin_dispatch_test.cc`.
 // Every formerly-B0 test below now runs against a REAL Component-Model
 // component: inline component WAT assembled at test runtime via
 // `wasmtime_wat2wasm` (no wit-bindgen, no out-of-band build).
@@ -25,22 +25,22 @@
 //   - optional<T> embedder bindings (kBlockerB2): `shared/type.h` has
 //     neither `CelType::Optional(T)` nor `Value::Optional(T)`
 //     (verified 2026-06-10), AND m24 §14 permanently rejects
-//     `optional<T>` as a foreign-component declarable shape
-//     (`function_library.cc:291` CheckForeignComponentDeclShape) —
+//     `optional<T>` as a plugin declarable shape
+//     (`function_library.cc:291` CheckPluginDeclShape) —
 //     pinned positive by OptionalArgRejectedAtLibraryBuild below.
 //   - `type` / `option(...)` celfn keywords: the grammar's `type` rule
 //     (`compiler/celfn/Celfn.g4`, "Types" section) has no alternative
 //     for either, and m24 §14 closes both permanently for foreign
 //     components — so the keyword work will never land for this
-//     backend.  Note the `@component.` decl prefix DID land
-//     (`Celfn.g4` componentFnDecl) and is now exercised by every
-//     RunWithComponent test plus CelfnSourceAdmitsForeignComponentDecl.
+//     backend.  Note the `@plugin.` decl prefix DID land
+//     (`Celfn.g4` pluginFnDecl) and is now exercised by every
+//     RunWithPlugin test plus CelfnSourceAdmitsPluginDecl.
 //   - eval-error returns from a component: the m24 wire has no error
-//     result variant — `CallComponentAndLowerResult`
+//     result variant — `CallPluginAndLowerResult`
 //     (`eval/engine.cc:835`) lowers exactly one plain value, so a
 //     component cannot surface a CEL error through its return channel.
-//   - TinyGo forcing fixture: AddComponent itself shipped; the TinyGo
-//     build target under `e2e/foreign_component_fixtures/tinygo/` does
+//   - TinyGo forcing fixture: AddPlugin itself shipped; the TinyGo
+//     build target under `e2e/plugin_fixtures/tinygo/` does
 //     not exist.
 //
 // ── How this file maps to the §6 type table (m24) ──────────────────────
@@ -66,7 +66,7 @@
 //
 // Each section authors the component inline as Component-Model WAT and
 // assembles it with `wasmtime_wat2wasm` (same recipe as
-// `foreign_component_dispatch_test.cc`).  Gotchas inherited from that
+// `plugin_dispatch_test.cc`).  Gotchas inherited from that
 // file: component export names must be kebab-case — the engine
 // converts the snake_case CEL overload-id at the
 // `wasmtime_component_instance_get_export_index` site
@@ -122,24 +122,24 @@ constexpr absl::string_view kBlockerB2 =
     "that neither CelType::Optional(T) nor Value::Optional(T) exists "
     "(shared/type.h has no Optional factory), so the embedder cannot bind "
     "an optional<T> arg through Activation. Additionally m24 §14 "
-    "PERMANENTLY rejects optional<T> as a foreign-component declarable "
-    "shape (function_library.cc:291 CheckForeignComponentDeclShape — "
+    "PERMANENTLY rejects optional<T> as a plugin declarable "
+    "shape (function_library.cc:291 CheckPluginDeclShape — "
     "pinned by OptionalArgRejectedAtLibraryBuild), so even with embedder "
     "Optional support these cells would need a scope reversal first.";
 
 constexpr absl::string_view kNoErrorResultVariant =
     "the m24 wire has no eval-error result variant — "
-    "CallComponentAndLowerResult (eval/engine.cc:835) lowers exactly one "
+    "CallPluginAndLowerResult (eval/engine.cc:835) lowers exactly one "
     "plain value per the decl's return CelfnType; a component has no "
     "channel to surface a CEL error Value (verified 2026-06-10 against "
-    "eval/internal/cel_component.cc LowerComponentToCel, which has no "
+    "eval/internal/cel_plugin.cc LowerComponentToCel, which has no "
     "result/error arm). Un-skip if a result<T, cel-error> wire variant "
     "ever ships.";
 
 // ─────────────────────────────────────────────────────────────────────
 // Component assembly — inline component-model WAT → bytes, via
 // wasmtime_wat2wasm at test runtime (same helper as
-// foreign_component_dispatch_test.cc).
+// plugin_dispatch_test.cc).
 // ─────────────────────────────────────────────────────────────────────
 
 std::vector<uint8_t> WatToWasm(absl::string_view wat) {
@@ -331,7 +331,7 @@ std::string LenOfListArgWat(absl::string_view export_name,
 }
 
 // seconds/nanos record echo (duration + timestamp share the wire shape
-// per eval/internal/cel_component.cc EmitSecondsNanosRecord).  Param
+// per eval/internal/cel_plugin.cc EmitSecondsNanosRecord).  Param
 // flattens to (i64, i32); the result record flattens to two core
 // values, so it crosses via retptr: seconds at retptr+0, nanos at
 // retptr+8 (record layout: s64 @0, s32 @8, align 8).
@@ -426,25 +426,25 @@ struct DeclVar {
   CelType type;
 };
 
-// Build a FunctionLibrary with one foreign-component fn.
+// Build a FunctionLibrary with one plugin fn.
 absl::StatusOr<FunctionLibrary> ForeignLibOne(absl::string_view fn_name,
                                               CelfnType return_type,
                                               std::vector<CelfnParam> params) {
   return FunctionLibrary::Builder()
-      .AddForeignComponent(fn_name, std::move(return_type), std::move(params))
+      .AddPlugin(fn_name, std::move(return_type), std::move(params))
       .Build();
 }
 
 // Common pipeline: declare the fn to the checker via celfn SOURCE (so
-// the `@component.` IDL path is exercised on every test), compile,
+// the `@plugin.` IDL path is exercised on every test), compile,
 // register the component, Plan, Eval.  The programmatic `lib` and the
 // parsed decl synthesize the same overload-id (both go through
 // SynthesiseOverloadId), which is what ties the compiled call site to
 // the component export.
-absl::StatusOr<Value> RunWithComponent(
+absl::StatusOr<Value> RunWithPlugin(
     absl::string_view fn_decl_celfn, absl::string_view expr,
     const std::vector<DeclVar>& vars, const FunctionLibrary& lib,
-    absl::Span<const uint8_t> component_bytes, const Activation& act) {
+    absl::Span<const uint8_t> plugin_bytes, const Activation& act) {
   auto b = Compiler::NewBuilder();
   for (const auto& v : vars) {
     b.DeclareVariable(v.name, v.type);
@@ -456,7 +456,7 @@ absl::StatusOr<Value> RunWithComponent(
   if (!program.ok()) return program.status();
   auto engine = Engine::NewBuilder().Build();
   if (!engine.ok()) return engine.status();
-  if (auto st = engine->AddComponent(component_bytes, lib); !st.ok()) {
+  if (auto st = engine->AddPlugin(plugin_bytes, lib); !st.ok()) {
     return st;
   }
   auto instance = engine->Plan(*program);
@@ -468,26 +468,26 @@ absl::StatusOr<Value> RunWithComponent(
 // SCALAR — bool
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(ForeignComponentTypeMatrix, BoolArgComponentSeesBoundValue) {
+TEST(PluginTypeMatrix, BoolArgPluginSeesBoundValue) {
   auto lib = ForeignLibOne("echo_bool", Prim(CelfnType::Kind::kBool),
                            {{false, Prim(CelfnType::Kind::kBool), "b"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("b", Value::Bool(true));
-  auto v = RunWithComponent(
-      "bool @component.echo_bool(bool b);", "echo_bool(b)",
+  auto v = RunWithPlugin(
+      "bool @plugin.echo_bool(bool b);", "echo_bool(b)",
       {{"b", CelType::Bool()}}, *lib,
       WatToWasm(EchoScalarWat("echo-bool-bool", "bool", "i32")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(*v->AsBool());
 }
 
-TEST(ForeignComponentTypeMatrix, BoolReturnComponentEmitsValue) {
+TEST(PluginTypeMatrix, BoolReturnPluginEmitsValue) {
   auto lib = ForeignLibOne("always_false", Prim(CelfnType::Kind::kBool), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent(
-      "bool @component.always_false();", "always_false()", {}, *lib,
+  auto v = RunWithPlugin(
+      "bool @plugin.always_false();", "always_false()", {}, *lib,
       WatToWasm(ConstScalarWat("always-false", "bool", "i32", "i32.const 0")),
       act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -510,8 +510,8 @@ TEST_P(IntBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Int(GetParam().in));
-  auto v = RunWithComponent(
-      "int @component.echo_int(int x);", "echo_int(x)", {{"x", CelType::Int()}},
+  auto v = RunWithPlugin(
+      "int @plugin.echo_int(int x);", "echo_int(x)", {{"x", CelType::Int()}},
       *lib, WatToWasm(EchoScalarWat("echo-int-int", "s64", "i64")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), GetParam().in);
@@ -527,12 +527,12 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.label;
     });
 
-TEST(ForeignComponentTypeMatrix, IntReturnComponentEmitsInt64Min) {
+TEST(PluginTypeMatrix, IntReturnPluginEmitsInt64Min) {
   auto lib = ForeignLibOne("int_min", Prim(CelfnType::Kind::kInt), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent(
-      "int @component.int_min();", "int_min()", {}, *lib,
+  auto v = RunWithPlugin(
+      "int @plugin.int_min();", "int_min()", {}, *lib,
       WatToWasm(ConstScalarWat("int-min", "s64", "i64",
                                "i64.const -9223372036854775808")),
       act);
@@ -556,8 +556,8 @@ TEST_P(UintBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Uint(GetParam().in));
-  auto v = RunWithComponent(
-      "uint @component.echo_uint(uint x);", "echo_uint(x)",
+  auto v = RunWithPlugin(
+      "uint @plugin.echo_uint(uint x);", "echo_uint(x)",
       {{"x", CelType::Uint()}}, *lib,
       WatToWasm(EchoScalarWat("echo-uint-uint", "u64", "i64")), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -573,13 +573,13 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.label;
     });
 
-TEST(ForeignComponentTypeMatrix, UintReturnComponentEmitsUintMax) {
+TEST(PluginTypeMatrix, UintReturnPluginEmitsUintMax) {
   auto lib = ForeignLibOne("uint_max", Prim(CelfnType::Kind::kUint), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   // i64.const -1 is the all-ones bit pattern == UINT64_MAX under u64.
-  auto v = RunWithComponent(
-      "uint @component.uint_max();", "uint_max()", {}, *lib,
+  auto v = RunWithPlugin(
+      "uint @plugin.uint_max();", "uint_max()", {}, *lib,
       WatToWasm(ConstScalarWat("uint-max", "u64", "i64", "i64.const -1")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsUint(), std::numeric_limits<uint64_t>::max());
@@ -601,8 +601,8 @@ TEST_P(DoubleBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Double(GetParam().in));
-  auto v = RunWithComponent(
-      "double @component.echo_double(double x);", "echo_double(x)",
+  auto v = RunWithPlugin(
+      "double @plugin.echo_double(double x);", "echo_double(x)",
       {{"x", CelType::Double()}}, *lib,
       WatToWasm(EchoScalarWat("echo-double-double", "f64", "f64")), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -628,12 +628,12 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.label;
     });
 
-TEST(ForeignComponentTypeMatrix, DoubleReturnComponentEmitsNan) {
+TEST(PluginTypeMatrix, DoubleReturnPluginEmitsNan) {
   auto lib = ForeignLibOne("nanval", Prim(CelfnType::Kind::kDouble), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent(
-      "double @component.nanval();", "nanval()", {}, *lib,
+  auto v = RunWithPlugin(
+      "double @plugin.nanval();", "nanval()", {}, *lib,
       WatToWasm(ConstScalarWat("nanval", "f64", "f64", "f64.const nan")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   const double got = *v->AsDouble();
@@ -656,8 +656,8 @@ TEST_P(StringBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("s", Value::String(GetParam().in));
-  auto v = RunWithComponent(
-      "string @component.echo_string(string s);", "echo_string(s)",
+  auto v = RunWithPlugin(
+      "string @plugin.echo_string(string s);", "echo_string(s)",
       {{"s", CelType::String()}}, *lib,
       WatToWasm(EchoPtrLenWat("echo-string-string", "string")), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -675,12 +675,12 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.label;
     });
 
-TEST(ForeignComponentTypeMatrix, StringReturnComponentEmitsEmpty) {
+TEST(PluginTypeMatrix, StringReturnPluginEmitsEmpty) {
   auto lib = ForeignLibOne("empty_str", Prim(CelfnType::Kind::kString), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent(
-      "string @component.empty_str();", "empty_str()", {}, *lib,
+  auto v = RunWithPlugin(
+      "string @plugin.empty_str();", "empty_str()", {}, *lib,
       WatToWasm(EmptyPtrLenWat("empty-str", "string")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->AsString()->empty());
@@ -702,8 +702,8 @@ TEST_P(BytesBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("b", Value::Bytes(GetParam().in));
-  auto v = RunWithComponent(
-      "bytes @component.echo_bytes(bytes b);", "echo_bytes(b)",
+  auto v = RunWithPlugin(
+      "bytes @plugin.echo_bytes(bytes b);", "echo_bytes(b)",
       {{"b", CelType::Bytes()}}, *lib,
       WatToWasm(EchoPtrLenWat("echo-bytes-bytes", "(list u8)")), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -720,12 +720,12 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.label;
     });
 
-TEST(ForeignComponentTypeMatrix, BytesReturnComponentEmitsEmpty) {
+TEST(PluginTypeMatrix, BytesReturnPluginEmitsEmpty) {
   auto lib = ForeignLibOne("empty_bytes", Prim(CelfnType::Kind::kBytes), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent(
-      "bytes @component.empty_bytes();", "empty_bytes()", {}, *lib,
+  auto v = RunWithPlugin(
+      "bytes @plugin.empty_bytes();", "empty_bytes()", {}, *lib,
       WatToWasm(EmptyPtrLenWat("empty-bytes", "(list u8)")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->AsBytes()->empty());
@@ -736,7 +736,7 @@ TEST(ForeignComponentTypeMatrix, BytesReturnComponentEmitsEmpty) {
 // ═════════════════════════════════════════════════════════════════════
 //
 // Lift emits kind=OPTION / option=nullptr (none) for CEL null
-// (cel_component.cc kNull arm); a `none` option type-checks against
+// (cel_plugin.cc kNull arm); a `none` option type-checks against
 // any option<T>, so the WAT declares `option<bool>`.  option<bool>
 // flattens to (i32 disc, i32 payload) as a param; as a RESULT it
 // flattens to two core values and therefore crosses via retptr
@@ -753,12 +753,12 @@ constexpr absl::string_view kIsNullComponentWat = R"WAT(
     (canon lift (core func $i "f"))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, NullArgComponentObservesAbsence) {
+TEST(PluginTypeMatrix, NullArgPluginObservesAbsence) {
   auto lib = ForeignLibOne("is_null", Prim(CelfnType::Kind::kBool),
                            {{false, Prim(CelfnType::Kind::kNull), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("bool @component.is_null(null x);", "is_null(null)",
+  auto v = RunWithPlugin("bool @plugin.is_null(null x);", "is_null(null)",
                             {}, *lib, WatToWasm(kIsNullComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(*v->AsBool());
@@ -779,11 +779,11 @@ constexpr absl::string_view kMakeNullComponentWat = R"WAT(
     (canon lift (core func $i "f") (memory $mem))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, NullReturnComponentEmitsNull) {
+TEST(PluginTypeMatrix, NullReturnPluginEmitsNull) {
   auto lib = ForeignLibOne("make_null", Prim(CelfnType::Kind::kNull), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("null @component.make_null();", "make_null()", {},
+  auto v = RunWithPlugin("null @plugin.make_null();", "make_null()", {},
                             *lib, WatToWasm(kMakeNullComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->IsNull());
@@ -805,7 +805,7 @@ TEST_P(DurationBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("d", Value::Duration(GetParam().in));
-  auto v = RunWithComponent("Duration @component.echo_dur(Duration d);",
+  auto v = RunWithPlugin("Duration @plugin.echo_dur(Duration d);",
                             "echo_dur(d)", {{"d", CelType::Duration()}}, *lib,
                             WatToWasm(EchoSecondsNanosWat("echo-dur-duration")),
                             act);
@@ -836,7 +836,7 @@ TEST_P(TimestampBoundary, ArgRoundTripsBoundaryValue) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("t", Value::Timestamp(GetParam().in));
-  auto v = RunWithComponent("Timestamp @component.echo_ts(Timestamp t);",
+  auto v = RunWithPlugin("Timestamp @plugin.echo_ts(Timestamp t);",
                             "echo_ts(t)", {{"t", CelType::Timestamp()}}, *lib,
                             WatToWasm(EchoSecondsNanosWat("echo-ts-timestamp")),
                             act);
@@ -853,27 +853,27 @@ INSTANTIATE_TEST_SUITE_P(
                                   absl::FromUnixSeconds(-62135596800)}));
 
 // ═════════════════════════════════════════════════════════════════════
-// META — `type` (PERMANENTLY out of scope for foreign components,
+// META — `type` (PERMANENTLY out of scope for plugins,
 // m24 §14).  These are Build()-time rejection pins, not skips: the
-// decl surface refuses kType anywhere in a foreign-component shape
-// (function_library.cc CheckForeignComponentDeclShape), so the
+// decl surface refuses kType anywhere in a plugin shape
+// (function_library.cc CheckPluginDeclShape), so the
 // negative IS the contract.  The kType Lift arm stays implemented in
-// cel_component.cc for the kHost path; the Lower (return) arm is
+// cel_plugin.cc for the kHost path; the Lower (return) arm is
 // Unimplemented (cleanup-backlog #44) — both unreachable through this
 // backend because the decl never builds.
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(ForeignComponentTypeMatrix, TypeArgRejectedAtLibraryBuild) {
+TEST(PluginTypeMatrix, TypeArgRejectedAtLibraryBuild) {
   auto lib = ForeignLibOne("type_name", Prim(CelfnType::Kind::kString),
                            {{false, TypeOfTypes(), "t"}});
   ASSERT_FALSE(lib.ok());
   EXPECT_EQ(lib.status().code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(std::string(lib.status().message()),
-              HasSubstr("`type` is not supported as a foreign-component "
+              HasSubstr("`type` is not supported as a plugin "
                         "argument or return shape"));
 }
 
-TEST(ForeignComponentTypeMatrix, TypeReturnRejectedAtLibraryBuild) {
+TEST(PluginTypeMatrix, TypeReturnRejectedAtLibraryBuild) {
   auto lib = ForeignLibOne("ret_type", TypeOfTypes(), {});
   ASSERT_FALSE(lib.ok());
   EXPECT_EQ(lib.status().code(), absl::StatusCode::kInvalidArgument);
@@ -882,45 +882,45 @@ TEST(ForeignComponentTypeMatrix, TypeReturnRejectedAtLibraryBuild) {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// OPTIONAL<T> — PERMANENTLY out of scope as a foreign-component decl
+// OPTIONAL<T> — PERMANENTLY out of scope as a plugin decl
 // shape (m24 §14); embedder-side optional<T> bindings additionally
 // blocked on B2.
 // ═════════════════════════════════════════════════════════════════════
 
 // The Build()-time rejection pin — the positive statement of the
 // m24 §14 contract, runs today.
-TEST(ForeignComponentTypeMatrix, OptionalArgRejectedAtLibraryBuild) {
+TEST(PluginTypeMatrix, OptionalArgRejectedAtLibraryBuild) {
   auto lib =
       ForeignLibOne("opt_arg", Prim(CelfnType::Kind::kInt),
                     {{false, OptionalOf(Prim(CelfnType::Kind::kInt)), "x"}});
   ASSERT_FALSE(lib.ok());
   EXPECT_EQ(lib.status().code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(std::string(lib.status().message()),
-              HasSubstr("optional<T> is not supported as a foreign-component "
+              HasSubstr("optional<T> is not supported as a plugin "
                         "argument or return shape"));
 }
 
-TEST(ForeignComponentTypeMatrix, OptionalIntArgPresent) {
+TEST(PluginTypeMatrix, OptionalIntArgPresent) {
   GTEST_SKIP() << kBlockerB2;
 }
 
-TEST(ForeignComponentTypeMatrix, OptionalIntArgAbsent) {
+TEST(PluginTypeMatrix, OptionalIntArgAbsent) {
   GTEST_SKIP() << kBlockerB2;
 }
 
-TEST(ForeignComponentTypeMatrix, OptionalStringReturn) {
+TEST(PluginTypeMatrix, OptionalStringReturn) {
   GTEST_SKIP() << kBlockerB2;
 }
 
-TEST(ForeignComponentTypeMatrix, OptionalListIntNested) {
+TEST(PluginTypeMatrix, OptionalListIntNested) {
   GTEST_SKIP() << kBlockerB2;
 }
 
-TEST(ForeignComponentTypeMatrix, OptionalDeclarableViaCelfnSource) {
+TEST(PluginTypeMatrix, OptionalDeclarableViaCelfnSource) {
   GTEST_SKIP() << "the celfn grammar (compiler/celfn/Celfn.g4 `type` rule) "
                   "has no `option(...)` alternative — verified 2026-06-10 — "
                   "and m24 §14 PERMANENTLY rejects optional<T> as a "
-                  "foreign-component shape (pinned by "
+                  "plugin shape (pinned by "
                   "OptionalArgRejectedAtLibraryBuild), so the grammar "
                   "keyword will not land for this backend.";
 }
@@ -949,11 +949,11 @@ TEST_P(ListByElemKind, ArgSizeIsObservable) {
   Activation act;
   act.Bind("xs", Value::List(c.elems));
   const std::string decl =
-      absl::StrCat("int @component.list_size(list<", c.elem_celfn, "> xs);");
+      absl::StrCat("int @plugin.list_size(list<", c.elem_celfn, "> xs);");
   const std::string export_name = Kebab(lib->decls()[0].overload_id);
   const std::string wat =
       LenOfListArgWat(export_name, absl::StrCat("(list ", c.elem_wit, ")"));
-  auto v = RunWithComponent(decl, "list_size(xs)",
+  auto v = RunWithPlugin(decl, "list_size(xs)",
                             {{"xs", CelType::List(c.cel_elem)}}, *lib,
                             WatToWasm(wat), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -1019,7 +1019,7 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.label;
     });
 
-TEST(ForeignComponentTypeMatrix, ListNestedListIntOuterSize) {
+TEST(PluginTypeMatrix, ListNestedListIntOuterSize) {
   auto lib = ForeignLibOne(
       "outer_size", Prim(CelfnType::Kind::kInt),
       {{false, ListOf(ListOf(Prim(CelfnType::Kind::kInt))), "xs"}});
@@ -1027,8 +1027,8 @@ TEST(ForeignComponentTypeMatrix, ListNestedListIntOuterSize) {
   Activation act;
   act.Bind("xs", Value::List({Value::List({Value::Int(1), Value::Int(2)}),
                               Value::List({})}));
-  auto v = RunWithComponent(
-      "int @component.outer_size(list<list<int>> xs);", "outer_size(xs)",
+  auto v = RunWithPlugin(
+      "int @plugin.outer_size(list<list<int>> xs);", "outer_size(xs)",
       {{"xs", CelType::List(CelType::List(CelType::Int()))}}, *lib,
       WatToWasm(
           LenOfListArgWat("outer-size-list-list-int", "(list (list s64))")),
@@ -1067,13 +1067,13 @@ constexpr absl::string_view kThreeIntsComponentWat = R"WAT(
     (canon lift (core func $i "f") (memory $mem))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, ListReturnComponentEmitsThreeInts) {
+TEST(PluginTypeMatrix, ListReturnPluginEmitsThreeInts) {
   auto lib =
       ForeignLibOne("three_ints", ListOf(Prim(CelfnType::Kind::kInt)), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   auto v =
-      RunWithComponent("list<int> @component.three_ints();", "three_ints()", {},
+      RunWithPlugin("list<int> @plugin.three_ints();", "three_ints()", {},
                        *lib, WatToWasm(kThreeIntsComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kList);
@@ -1113,11 +1113,11 @@ TEST_P(MapByKeyKind, ArgSizeIsObservable) {
   Activation act;
   act.Bind("m", Value::Map(c.entries));
   const std::string decl =
-      absl::StrCat("int @component.map_size(map<", c.key_celfn, ", int> m);");
+      absl::StrCat("int @plugin.map_size(map<", c.key_celfn, ", int> m);");
   const std::string export_name = Kebab(lib->decls()[0].overload_id);
   const std::string wat = LenOfListArgWat(
       export_name, absl::StrCat("(list (tuple ", c.key_wit, " s64))"));
-  auto v = RunWithComponent(decl, "map_size(m)",
+  auto v = RunWithPlugin(decl, "map_size(m)",
                             {{"m", CelType::Map(c.cel_key, CelType::Int())}},
                             *lib, WatToWasm(wat), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -1238,7 +1238,7 @@ constexpr absl::string_view kSumInnerSizesComponentWat = R"WAT(
     (canon lift (core func $f) (memory $mem) (realloc $realloc))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, MapValueListNestedShapeRoundTrips) {
+TEST(PluginTypeMatrix, MapValueListNestedShapeRoundTrips) {
   auto lib = ForeignLibOne("size_at", Prim(CelfnType::Kind::kInt),
                            {{false,
                              MapOf(Prim(CelfnType::Kind::kString),
@@ -1251,8 +1251,8 @@ TEST(ForeignComponentTypeMatrix, MapValueListNestedShapeRoundTrips) {
       Value::Map({{Value::String("a"),
                    Value::List({Value::Int(1), Value::Int(2), Value::Int(3)})},
                   {Value::String("b"), Value::List({})}}));
-  auto v = RunWithComponent(
-      "int @component.size_at(map<string, list<int>> m);", "size_at(m)",
+  auto v = RunWithPlugin(
+      "int @plugin.size_at(map<string, list<int>> m);", "size_at(m)",
       {{"m", CelType::Map(CelType::String(), CelType::List(CelType::Int()))}},
       *lib, WatToWasm(kSumInnerSizesComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -1300,13 +1300,13 @@ constexpr absl::string_view kAgesComponentWat = R"WAT(
     (canon lift (core func $i "f") (memory $mem))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, MapReturnComponentEmitsStringInt) {
+TEST(PluginTypeMatrix, MapReturnPluginEmitsStringInt) {
   auto lib = ForeignLibOne(
       "ages",
       MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("map<string, int> @component.ages();", "ages()", {},
+  auto v = RunWithPlugin("map<string, int> @plugin.ages();", "ages()", {},
                             *lib, WatToWasm(kAgesComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kMap);
@@ -1315,7 +1315,7 @@ TEST(ForeignComponentTypeMatrix, MapReturnComponentEmitsStringInt) {
   EXPECT_EQ((*mb)->Size(), 2u);
 }
 
-TEST(ForeignComponentTypeMatrix, MapMissingKeyAtComponentSurfacesNoSuchKey) {
+TEST(PluginTypeMatrix, MapMissingKeyAtPluginSurfacesNoSuchKey) {
   GTEST_SKIP() << "this cell needs the component to surface a CEL no-such-key "
                   "error through its return channel, but "
                << kNoErrorResultVariant;
@@ -1325,7 +1325,7 @@ TEST(ForeignComponentTypeMatrix, MapMissingKeyAtComponentSurfacesNoSuchKey) {
 // PROTO — the m24 §8 "crosses as bytes" path (the m13 §4.5.1 ban lifted)
 // ═════════════════════════════════════════════════════════════════════
 //
-// kForeignComponent admits proto(...) — the Lift side serializes the
+// kPlugin admits proto(...) — the Lift side serializes the
 // message to wire bytes (list<u8>); the Lower side parses list<u8>
 // back through the generated descriptor pool.
 
@@ -1382,7 +1382,7 @@ constexpr absl::string_view kFirstLetterComponentWat = R"WAT(
     (canon lift (core func $f) (memory $mem) (realloc $realloc))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, ProtoArgComponentReadsField) {
+TEST(PluginTypeMatrix, ProtoArgPluginReadsField) {
   Customer c;
   c.set_name("Ada");
   c.set_age(36);
@@ -1392,8 +1392,8 @@ TEST(ForeignComponentTypeMatrix, ProtoArgComponentReadsField) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("c", Value::Message(c));
-  auto v = RunWithComponent(
-      "string @component.first_letter(proto(celwasm.testdata.Customer) c);",
+  auto v = RunWithPlugin(
+      "string @plugin.first_letter(proto(celwasm.testdata.Customer) c);",
       "first_letter(c)", {{"c", CelType::Message("celwasm.testdata.Customer")}},
       *lib, WatToWasm(kFirstLetterComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -1462,16 +1462,16 @@ constexpr absl::string_view kBuildCustomerComponentWat = R"WAT(
     (canon lift (core func $f) (memory $mem) (realloc $realloc))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, ProtoReturnComponentEmitsCustomer) {
+TEST(PluginTypeMatrix, ProtoReturnPluginEmitsCustomer) {
   auto lib =
       ForeignLibOne("build_customer", ProtoOf("celwasm.testdata.Customer"),
                     {{false, Prim(CelfnType::Kind::kString), "n"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("n", Value::String("Ada"));
-  auto v = RunWithComponent(
+  auto v = RunWithPlugin(
       "proto(celwasm.testdata.Customer) "
-      "@component.build_customer(string n);",
+      "@plugin.build_customer(string n);",
       "build_customer(n).name", {{"n", CelType::String()}}, *lib,
       WatToWasm(kBuildCustomerComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
@@ -1479,24 +1479,24 @@ TEST(ForeignComponentTypeMatrix, ProtoReturnComponentEmitsCustomer) {
 }
 
 // One pin at the interface layer — Builder admits proto(...) for
-// kForeignComponent and synthesizes the message_<fqn> overload-id.
-TEST(ForeignComponentTypeMatrix, BuilderAdmitsProtoForForeignComponent) {
+// kPlugin and synthesizes the message_<fqn> overload-id.
+TEST(PluginTypeMatrix, BuilderAdmitsProtoForPlugin) {
   auto lib =
       FunctionLibrary::Builder()
-          .AddForeignComponent("first_letter", Prim(CelfnType::Kind::kString),
+          .AddPlugin("first_letter", Prim(CelfnType::Kind::kString),
                                {{false, ProtoOf("acme.User"), "u"}})
           .Build();
   ASSERT_TRUE(lib.ok()) << lib.status();
   ASSERT_EQ(lib->decls().size(), 1u);
-  EXPECT_EQ(lib->decls()[0].backend, CelfnDecl::Backend::kForeignComponent);
+  EXPECT_EQ(lib->decls()[0].backend, CelfnDecl::Backend::kPlugin);
   EXPECT_EQ(lib->decls()[0].overload_id, "first_letter_message_acme_User");
   EXPECT_EQ(lib->decls()[0].module_name, "cel_fn");
 }
 
 // Argkind synthesis for the kType / kOptional CelfnType kinds (the
 // kinds themselves exist for the kHost surface even though the
-// foreign-component decl surface rejects them).
-TEST(ForeignComponentTypeMatrix, ArgkindForNewKinds) {
+// plugin decl surface rejects them).
+TEST(PluginTypeMatrix, ArgkindForNewKinds) {
   EXPECT_EQ(TypeOfTypes().Argkind(), "type");
   EXPECT_EQ(OptionalOf(Prim(CelfnType::Kind::kInt)).Argkind(), "optional_int");
   EXPECT_EQ(OptionalOf(ListOf(Prim(CelfnType::Kind::kString))).Argkind(),
@@ -1508,9 +1508,9 @@ TEST(ForeignComponentTypeMatrix, ArgkindForNewKinds) {
 // ═════════════════════════════════════════════════════════════════════
 
 // Decl says one CEL param; the component's export takes two.  Neither
-// AddComponent (parses bytes + conflict-checks overload-ids only) nor
+// AddPlugin (parses bytes + conflict-checks overload-ids only) nor
 // Plan (resolves the export by name and checks it is a function —
-// BindOneComponentDecl, eval/engine.cc:1083 — with no signature
+// BindOnePluginDecl, eval/engine.cc:1083 — with no signature
 // introspection) catches the mismatch; it surfaces at Eval when
 // wasmtime_component_func_call rejects the arg-count.
 constexpr absl::string_view kTwoArgComponentWat = R"WAT(
@@ -1522,30 +1522,30 @@ constexpr absl::string_view kTwoArgComponentWat = R"WAT(
     (canon lift (core func $i "f"))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, NegativeWrongArityFailsAtEval) {
+TEST(PluginTypeMatrix, NegativeWrongArityFailsAtEval) {
   auto lib = ForeignLibOne("two_arg", Prim(CelfnType::Kind::kInt),
                            {{false, Prim(CelfnType::Kind::kInt), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Int(1));
-  auto v = RunWithComponent("int @component.two_arg(int x);", "two_arg(x)",
+  auto v = RunWithPlugin("int @plugin.two_arg(int x);", "two_arg(x)",
                             {{"x", CelType::Int()}}, *lib,
                             WatToWasm(kTwoArgComponentWat), act);
-  ASSERT_FALSE(v.ok()) << "arity-mismatched component call produced a value";
+  ASSERT_FALSE(v.ok()) << "arity-mismatched plugin call produced a value";
   EXPECT_THAT(std::string(v.status().message()),
-              HasSubstr("component func call"));
+              HasSubstr("plugin func call"));
 }
 
-TEST(ForeignComponentTypeMatrix, NegativeMissingExportFailsAtPlan) {
+TEST(PluginTypeMatrix, NegativeMissingExportFailsAtPlan) {
   // Decl names a fn `not_exported` not present in the component.  The
   // export ↔ decl lookup happens at per-Plan component instantiation
-  // (see foreign_component_dispatch_test.cc
-  // MissingExportFailsAtPlanNotAddComponent), so the failure is a
+  // (see plugin_dispatch_test.cc
+  // MissingExportFailsAtPlanNotAddPlugin), so the failure is a
   // FailedPrecondition from Engine::Plan naming the kebab-case export.
   auto lib = ForeignLibOne("not_exported", Prim(CelfnType::Kind::kInt), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithComponent("int @component.not_exported();", "not_exported()",
+  auto v = RunWithPlugin("int @plugin.not_exported();", "not_exported()",
                             {}, *lib, WatToWasm(kTwoArgComponentWat), act);
   ASSERT_FALSE(v.ok());
   EXPECT_EQ(v.status().code(), absl::StatusCode::kFailedPrecondition)
@@ -1553,23 +1553,23 @@ TEST(ForeignComponentTypeMatrix, NegativeMissingExportFailsAtPlan) {
   EXPECT_THAT(std::string(v.status().message()), HasSubstr("not-exported"));
 }
 
-TEST(ForeignComponentTypeMatrix,
-     NegativeMalformedComponentBytesAtAddComponent) {
+TEST(PluginTypeMatrix,
+     NegativeMalformedPluginBytesAtAddPlugin) {
   auto lib = ForeignLibOne("any_fn", Prim(CelfnType::Kind::kInt), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
   const std::vector<uint8_t> garbage = {0xde, 0xad, 0xbe, 0xef};
-  auto st = engine->AddComponent(garbage, *lib);
+  auto st = engine->AddPlugin(garbage, *lib);
   ASSERT_FALSE(st.ok());
   // As shipped, every wasmtime_error_t funnels through
   // WasmtimeErrorToStatus (eval/engine.cc:44), which maps to
   // kFailedPrecondition — including the component-parse failure here.
   EXPECT_EQ(st.code(), absl::StatusCode::kFailedPrecondition) << st;
-  EXPECT_THAT(std::string(st.message()), HasSubstr("parse component"));
+  EXPECT_THAT(std::string(st.message()), HasSubstr("parse plugin"));
 }
 
-TEST(ForeignComponentTypeMatrix, NegativeFnReturnsEvalErrorBecomesCelError) {
+TEST(PluginTypeMatrix, NegativeFnReturnsEvalErrorBecomesCelError) {
   GTEST_SKIP() << kNoErrorResultVariant;
 }
 
@@ -1582,7 +1582,7 @@ constexpr absl::string_view kTrappingComponentWat = R"WAT(
     (canon lift (core func $i "boom"))))
 )WAT";
 
-TEST(ForeignComponentTypeMatrix, NegativeComponentTrapBecomesHostStatus) {
+TEST(PluginTypeMatrix, NegativePluginTrapBecomesHostStatus) {
   // Component traps (`unreachable`); Instance::Eval returns a non-OK
   // absl::Status (NOT a Value::Error).
   auto lib = ForeignLibOne("boom", Prim(CelfnType::Kind::kInt),
@@ -1590,16 +1590,16 @@ TEST(ForeignComponentTypeMatrix, NegativeComponentTrapBecomesHostStatus) {
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Int(1));
-  auto v = RunWithComponent("int @component.boom(int x);", "boom(x)",
+  auto v = RunWithPlugin("int @plugin.boom(int x);", "boom(x)",
                             {{"x", CelType::Int()}}, *lib,
                             WatToWasm(kTrappingComponentWat), act);
-  ASSERT_FALSE(v.ok()) << "trapping component fn produced a value";
+  ASSERT_FALSE(v.ok()) << "trapping plugin fn produced a value";
 }
 
-TEST(ForeignComponentTypeMatrix,
+TEST(PluginTypeMatrix,
      NegativeThreeValuedLogicErrorArgShortCircuits) {
   // 3VL: an error arg short-circuits BEFORE any marshaling
-  // (AbsorbUnknownOrErrorArg in ComponentCallbackTrampoline,
+  // (AbsorbUnknownOrErrorArg in PluginCallbackTrampoline,
   // eval/engine.cc:857) and the component is never invoked — the
   // component body traps if it runs, so a clean Value::Error result
   // proves the absorption.  `1 / 0` produces the CEL divide-by-zero
@@ -1609,20 +1609,20 @@ TEST(ForeignComponentTypeMatrix,
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   auto v =
-      RunWithComponent("int @component.use_int(int x);", "use_int(1 / 0)", {},
+      RunWithPlugin("int @plugin.use_int(int x);", "use_int(1 / 0)", {},
                        *lib, WatToWasm(TrapIfInvokedWat("use-int-int")), act);
   ASSERT_TRUE(v.ok()) << v.status();  // a trap would surface as non-OK
   EXPECT_TRUE(v->IsError());
 }
 
-TEST(ForeignComponentTypeMatrix,
+TEST(PluginTypeMatrix,
      NegativeThreeValuedLogicUnknownArgShortCircuits) {
   // Same absorption contract for unknowns: PartialEval with an
   // AttributePattern over the fn's arg yields an unknown result and
   // the (trap-if-invoked) component never runs.
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("x", CelType::Int());
-  b.AddFunction("int @component.use_unk(int x);");
+  b.AddFunction("int @plugin.use_unk(int x);");
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
   auto program = compiler->Compile("use_unk(x)");
@@ -1633,7 +1633,7 @@ TEST(ForeignComponentTypeMatrix,
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
   ASSERT_TRUE(
-      engine->AddComponent(WatToWasm(TrapIfInvokedWat("use-unk-int")), *lib)
+      engine->AddPlugin(WatToWasm(TrapIfInvokedWat("use-unk-int")), *lib)
           .ok());
   auto instance = engine->Plan(*program);
   ASSERT_TRUE(instance.ok()) << instance.status();
@@ -1653,12 +1653,12 @@ TEST(ForeignComponentTypeMatrix,
 // same fns.wit, proving the contract is language-agnostic)
 // ═════════════════════════════════════════════════════════════════════
 
-TEST(ForeignComponentTypeMatrix, TinyGoBackedComponentProducesSameResult) {
-  GTEST_SKIP() << "Engine::AddComponent itself shipped with m24 "
+TEST(PluginTypeMatrix, TinyGoBackedPluginProducesSameResult) {
+  GTEST_SKIP() << "Engine::AddPlugin itself shipped with m24 "
                   "(eval/engine.cc:1519; dispatch proven in "
-                  "foreign_component_dispatch_test.cc) — this row is blocked "
+                  "plugin_dispatch_test.cc) — this row is blocked "
                   "solely on the TinyGo build fixture: no target exists under "
-                  "e2e/foreign_component_fixtures/tinygo/ (verified "
+                  "e2e/plugin_fixtures/tinygo/ (verified "
                   "2026-06-10).";
 }
 
@@ -1666,35 +1666,35 @@ TEST(ForeignComponentTypeMatrix, TinyGoBackedComponentProducesSameResult) {
 // IDL — m24 §6 declarations via .celfn source
 // ═════════════════════════════════════════════════════════════════════
 //
-// The `@component.` decl prefix landed in the grammar
-// (compiler/celfn/Celfn.g4 componentFnDecl) — pinned positive below
-// and exercised implicitly by every RunWithComponent test above.  The
+// The `@plugin.` decl prefix landed in the grammar
+// (compiler/celfn/Celfn.g4 pluginFnDecl) — pinned positive below
+// and exercised implicitly by every RunWithPlugin test above.  The
 // `type` / `option(...)` keywords never will (m24 §14 permanent
 // closure), so those rows stay skipped with the closure cited.
 
-TEST(ForeignComponentTypeMatrix, CelfnSourceAdmitsForeignComponentDecl) {
-  auto lib = ParseCelfnSource("string @component.first_letter(string s);");
+TEST(PluginTypeMatrix, CelfnSourceAdmitsPluginDecl) {
+  auto lib = ParseCelfnSource("string @plugin.first_letter(string s);");
   ASSERT_TRUE(lib.ok()) << lib.status();
   ASSERT_EQ(lib->decls().size(), 1u);
-  EXPECT_EQ(lib->decls()[0].backend, CelfnDecl::Backend::kForeignComponent);
+  EXPECT_EQ(lib->decls()[0].backend, CelfnDecl::Backend::kPlugin);
   EXPECT_EQ(lib->decls()[0].overload_id, "first_letter_string");
 }
 
-TEST(ForeignComponentTypeMatrix, CelfnSourceAdmitsTypeKeyword) {
+TEST(PluginTypeMatrix, CelfnSourceAdmitsTypeKeyword) {
   GTEST_SKIP() << "the celfn grammar (compiler/celfn/Celfn.g4 `type` rule) "
                   "has no `type` keyword alternative — verified 2026-06-10 — "
                   "and m24 §14 PERMANENTLY rejects `type` as a "
-                  "foreign-component shape (pinned by "
+                  "plugin shape (pinned by "
                   "TypeArgRejectedAtLibraryBuild / "
                   "TypeReturnRejectedAtLibraryBuild), so the keyword will "
                   "not land for this backend.";
 }
 
-TEST(ForeignComponentTypeMatrix, CelfnSourceAdmitsOptionalKeyword) {
+TEST(PluginTypeMatrix, CelfnSourceAdmitsOptionalKeyword) {
   GTEST_SKIP() << "the celfn grammar (compiler/celfn/Celfn.g4 `type` rule) "
                   "has no `option(...)` alternative — verified 2026-06-10 — "
                   "and m24 §14 PERMANENTLY rejects optional<T> as a "
-                  "foreign-component shape (pinned by "
+                  "plugin shape (pinned by "
                   "OptionalArgRejectedAtLibraryBuild), so the keyword will "
                   "not land for this backend.";
 }

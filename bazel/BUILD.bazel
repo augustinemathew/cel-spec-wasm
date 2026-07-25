@@ -20,11 +20,11 @@ cc_library(
     deps = ["//compiler:compiler"],
 )
 
-# The cel_wasm_component Starlark macro — drives the full hermetic
-# component build (cel generate → wit-bindgen c → wasi-sdk cc_binary
+# The cel_wasm_plugin Starlark macro — drives the full hermetic
+# plugin build (cel generate → wit-bindgen c → wasi-sdk cc_binary
 # → wasm-tools component new) from a single celfn .idl + author
 # user_fns.cc.  See its docstring + m26 §6 for usage.
-exports_files(["cel_wasm_component.bzl"])
+exports_files(["cel_wasm_plugin.bzl"])
 
 # Derives the runtime-helper catalogue from the `cel_runtime` C source:
 # every codegen-imported helper is marked `// cel:codegen-export` at its

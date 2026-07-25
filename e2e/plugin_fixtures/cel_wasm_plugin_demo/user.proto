@@ -1,5 +1,5 @@
 // Demo proto used by the proto-bearing demo target
-// (`demo_component_proto` in BUILD.bazel).  Crosses the
+// (`demo_plugin_proto` in BUILD.bazel).  Crosses the
 // Component-Model boundary as serialized bytes via the
 // `proto(...)` IDL type (m24 §8 + m26 §4.1).
 

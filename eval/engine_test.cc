@@ -698,13 +698,13 @@ TEST(EngineBindFunctionTest, MultiDeclStringRejected) {
       << s.message();
 }
 
-TEST(EngineBindFunctionTest, ComponentBackendRejected) {
-  auto s = BindOnFreshEngine("int @component.f(int x);",
+TEST(EngineBindFunctionTest, PluginBackendRejected) {
+  auto s = BindOnFreshEngine("int @plugin.f(int x);",
                              [](int64_t x) -> absl::StatusOr<int64_t> {
                                return x;
                              });
   EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
-  EXPECT_TRUE(absl::StrContains(s.message(), "@component")) << s.message();
+  EXPECT_TRUE(absl::StrContains(s.message(), "@plugin")) << s.message();
 }
 
 TEST(EngineBindFunctionTest, NativeBackendRejected) {
@@ -886,54 +886,54 @@ TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {
   EXPECT_EQ(*v_or->AsInt(), 42);
 }
 
-// ─── m24 — Engine::AddComponent failure-mode coverage ─────────────
+// ─── m24 — Engine::AddPlugin failure-mode coverage ─────────────
 //
-// AddComponent runs at engine setup, before any Plan.  The four
+// AddPlugin runs at engine setup, before any Plan.  The four
 // reachable failure modes are:
-//   - empty `component_bytes` → InvalidArgument
+//   - empty `plugin_bytes` → InvalidArgument
 //   - overload-id collides with an earlier `AddFunction` → AlreadyExists
-//   - overload-id collides with an earlier `AddComponent` → AlreadyExists
-//   - malformed component bytes → InvalidArgument (wasmtime error)
+//   - overload-id collides with an earlier `AddPlugin` → AlreadyExists
+//   - malformed plugin bytes → InvalidArgument (wasmtime error)
 // The dispatch through to `wasmtime_component_func_call` only fires
 // at Plan + Eval time — covered by the e2e foreign-fn matrix
-// (task C.5) once we have a real component fixture.
+// (task C.5) once we have a real plugin fixture.
 
-// A tiny helper to build a kForeignComponent library declaring one
+// A tiny helper to build a kPlugin library declaring one
 // nullary bool fn under the given overload-id.  Used as the
 // conflict-detection surface.
 celwasm::FunctionLibrary OneBoolFnLibrary(absl::string_view fn_name) {
   celwasm::CelfnType ret;
   ret.kind = celwasm::CelfnType::Kind::kBool;
   auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddForeignComponent(fn_name, ret, {})
+                    .AddPlugin(fn_name, ret, {})
                     .Build();
   ABSL_CHECK(lib_or.ok()) << lib_or.status();
   return *std::move(lib_or);
 }
 
-TEST(EngineAddComponentTest, RejectsEmptyComponentBytes) {
+TEST(EngineAddPluginTest, RejectsEmptyPluginBytes) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
   std::vector<uint8_t> empty_bytes;
-  auto s = engine_or->AddComponent(empty_bytes, OneBoolFnLibrary("f"));
+  auto s = engine_or->AddPlugin(empty_bytes, OneBoolFnLibrary("f"));
   EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument);
 }
 
-TEST(EngineAddComponentTest, RejectsMalformedComponentBytes) {
+TEST(EngineAddPluginTest, RejectsMalformedPluginBytes) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
   // Anything that's not a real Component-Model component.  The
   // §13 probe confirmed wasmtime_component_new returns an error
   // shape we can surface as InvalidArgument.
   const std::vector<uint8_t> garbage{0xde, 0xad, 0xbe, 0xef};
-  auto s = engine_or->AddComponent(garbage, OneBoolFnLibrary("g"));
-  EXPECT_FALSE(s.ok()) << "garbage component bytes should fail to parse";
+  auto s = engine_or->AddPlugin(garbage, OneBoolFnLibrary("g"));
+  EXPECT_FALSE(s.ok()) << "garbage plugin bytes should fail to parse";
 }
 
-TEST(EngineAddComponentTest,
+TEST(EngineAddPluginTest,
      ConflictWithEarlierAddFunctionReportedAtRegistration) {
   // Conflict detection runs BEFORE the parse, so the test does not
-  // need to provide a real component — the conflict trips first.
+  // need to provide a real plugin — the conflict trips first.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
   HostCallback impl = [](HostCallContext& /*ctx*/) {
@@ -941,39 +941,39 @@ TEST(EngineAddComponentTest,
   };
   ASSERT_TRUE(engine_or->AddFunction("collide", /*num_args=*/1, impl).ok());
   const std::vector<uint8_t> any_bytes{0x00};  // never parsed
-  auto s = engine_or->AddComponent(any_bytes, OneBoolFnLibrary("collide"));
+  auto s = engine_or->AddPlugin(any_bytes, OneBoolFnLibrary("collide"));
   EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
   EXPECT_NE(std::string(s.message()).find("collide"), std::string::npos);
   EXPECT_NE(std::string(s.message()).find("AddFunction"), std::string::npos);
 }
 
-TEST(EngineAddComponentTest,
-     ConflictWithEarlierAddComponentReportedAtRegistration) {
-  // Two AddComponent calls naming the same overload-id; the second
+TEST(EngineAddPluginTest,
+     ConflictWithEarlierAddPluginReportedAtRegistration) {
+  // Two AddPlugin calls naming the same overload-id; the second
   // is rejected.  The first registration needs bytes that
   // wasmtime_component_new accepts — an empty `(component)` is
   // enough, because the export ↔ decl lookup happens at per-Plan
-  // component instantiation, not at registration.  The second call
+  // plugin instantiation, not at registration.  The second call
   // reuses the overload-id with garbage bytes: the conflict check
   // executes BEFORE any wasmtime parse, so it must surface
-  // AlreadyExists (naming the prior component), not the
+  // AlreadyExists (naming the prior plugin), not the
   // InvalidArgument a parse attempt would produce.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
-  const std::vector<uint8_t> component_bytes = Wat2Wasm("(component)");
+  const std::vector<uint8_t> plugin_bytes = Wat2Wasm("(component)");
   ASSERT_TRUE(
-      engine_or->AddComponent(component_bytes, OneBoolFnLibrary("dup")).ok());
+      engine_or->AddPlugin(plugin_bytes, OneBoolFnLibrary("dup")).ok());
   const std::vector<uint8_t> garbage{0xde, 0xad, 0xbe, 0xef};
-  auto s = engine_or->AddComponent(garbage, OneBoolFnLibrary("dup"));
+  auto s = engine_or->AddPlugin(garbage, OneBoolFnLibrary("dup"));
   EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
   EXPECT_NE(std::string(s.message()).find("dup"), std::string::npos);
-  EXPECT_NE(std::string(s.message()).find("previously-registered component"),
+  EXPECT_NE(std::string(s.message()).find("previously-registered plugin"),
             std::string::npos);
 }
 
-TEST(EngineAddComponentTest, EmptyLibraryNoDeclsParsesOnly) {
-  // An AddComponent call with a library that declares NO
-  // kForeignComponent decls is degenerate but well-defined: the
+TEST(EngineAddPluginTest, EmptyLibraryNoDeclsParsesOnly) {
+  // An AddPlugin call with a library that declares NO
+  // kPlugin decls is degenerate but well-defined: the
   // parse still has to succeed.  Garbage bytes therefore still
   // fail — we're confirming the empty library doesn't bypass the
   // parse step.
@@ -982,15 +982,15 @@ TEST(EngineAddComponentTest, EmptyLibraryNoDeclsParsesOnly) {
   auto lib_or = celwasm::FunctionLibrary::Builder().Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
   const std::vector<uint8_t> garbage{0xde, 0xad, 0xbe, 0xef};
-  auto s = engine_or->AddComponent(garbage, *lib_or);
+  auto s = engine_or->AddPlugin(garbage, *lib_or);
   EXPECT_FALSE(s.ok()) << "garbage bytes should fail even with empty library";
 }
 
-TEST(EngineAddComponentTest, PlanSucceedsWhenNoComponentsRegistered) {
-  // Regression: the new InstantiateAndBindComponents step in Plan
-  // must be a no-op when no components are registered.  This pins
+TEST(EngineAddPluginTest, PlanSucceedsWhenNoPluginsRegistered) {
+  // Regression: the new InstantiateAndBindPlugins step in Plan
+  // must be a no-op when no plugins are registered.  This pins
   // that Plan stays green for code paths that don't use the
-  // component backend at all.
+  // plugin backend at all.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
   auto compiler_or = Compiler::NewBuilder().Build();

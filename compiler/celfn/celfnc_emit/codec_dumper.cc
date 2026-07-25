@@ -57,28 +57,28 @@ int main() {  // NOLINT(misc-use-internal-linkage)
   celwasm::FunctionLibrary::Builder b;
 
   // Every type the emitter handles, in one decl each.
-  b.AddForeignComponent("f_string", Prim(K::kString),
+  b.AddPlugin("f_string", Prim(K::kString),
                         {celwasm::CelfnParam{false, Prim(K::kString), "x"}});
-  b.AddForeignComponent("f_bytes", Prim(K::kBytes),
+  b.AddPlugin("f_bytes", Prim(K::kBytes),
                         {celwasm::CelfnParam{false, Prim(K::kBytes), "x"}});
-  b.AddForeignComponent("f_duration", Prim(K::kDuration),
+  b.AddPlugin("f_duration", Prim(K::kDuration),
                         {celwasm::CelfnParam{false, Prim(K::kDuration), "x"}});
-  b.AddForeignComponent("f_timestamp", Prim(K::kTimestamp),
+  b.AddPlugin("f_timestamp", Prim(K::kTimestamp),
                         {celwasm::CelfnParam{false, Prim(K::kTimestamp), "x"}});
-  b.AddForeignComponent(
+  b.AddPlugin(
       "f_list_int", ListOf(Prim(K::kInt)),
       {celwasm::CelfnParam{false, ListOf(Prim(K::kInt)), "x"}});
-  b.AddForeignComponent(
+  b.AddPlugin(
       "f_list_string", ListOf(Prim(K::kString)),
       {celwasm::CelfnParam{false, ListOf(Prim(K::kString)), "x"}});
-  b.AddForeignComponent(
+  b.AddPlugin(
       "f_list_list_int", ListOf(ListOf(Prim(K::kInt))),
       {celwasm::CelfnParam{false, ListOf(ListOf(Prim(K::kInt))), "x"}});
-  b.AddForeignComponent(
+  b.AddPlugin(
       "f_map_string_int", Prim(K::kInt),
       {celwasm::CelfnParam{false, MapOf(Prim(K::kString), Prim(K::kInt)),
                            "x"}});
-  b.AddForeignComponent(
+  b.AddPlugin(
       "f_proto", Prim(K::kBool),
       {celwasm::CelfnParam{false, ProtoOf("acme.User"), "u"}});
 

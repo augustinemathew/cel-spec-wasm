@@ -818,7 +818,7 @@ std::optional<cel::Type> CelfnScalarToCelType(CelfnType::Kind k) {
     case CelfnType::Kind::kProto:
     case CelfnType::Kind::kType:
     case CelfnType::Kind::kOptional:
-      // kType / kOptional are admitted by the kForeignComponent
+      // kType / kOptional are admitted by the kPlugin
       // backend per m24 §6 — the structural shape is handled in the
       // caller (kOptional has an inner element like kList; kType is
       // the type-of-types).  Neither is reachable through any current
@@ -883,7 +883,7 @@ absl::StatusOr<cel::Type> CelfnTypeToCelType(
   }
   if (t.kind == CelfnType::Kind::kMap) return CelfnMapToCelType(t, arena, pool);
   if (t.kind == CelfnType::Kind::kProto) return CelfnProtoToCelType(t, pool);
-  // kType / kOptional are admitted on CelfnDecl by AddForeignComponent
+  // kType / kOptional are admitted on CelfnDecl by AddPlugin
   // but have no type-checker mapping to cel::TypeType /
   // cel::OptionalType here (cleanup-backlog #44) — a decl using them
   // fails loudly rather than miscompiling.

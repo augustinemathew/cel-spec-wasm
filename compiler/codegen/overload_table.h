@@ -26,7 +26,7 @@ namespace celwasm {
 
 // Which wasm import module an overload's function lives under.  The first
 // three resolve to fixed module strings; `kUser` uses the per-overload
-// alias in `OverloadDef::wasm_import_module_name` (a foreign-component /
+// alias in `OverloadDef::wasm_import_module_name` (a plugin /
 // CEL-defined backend declares its own module name).
 enum class ImportModuleSource : uint8_t {
   kCel = 0,      // "cel"      — cel_runtime.wasm exports (built-in seeds)
@@ -48,10 +48,10 @@ enum class ImportModuleSource : uint8_t {
 //        wasm_import_module_name   = ""             (module name → "cel")
 //        num_args                  = 3              (out_slot + 2 args)
 //
-//   2) @host / @component custom — a trusted C++ lambda OR a sandboxed
-//      wasm component, e.g. `myorg.up(s)`.  The two share ONE shape: a
-//      component fn is a host fn at the call site (m24), so both import
-//      from "cel_fn" and the trampoline picks lambda-vs-component at
+//   2) @host / @plugin custom — a trusted C++ lambda OR a sandboxed
+//      wasm plugin, e.g. `myorg.up(s)`.  The two share ONE shape: a
+//      plugin fn is a host fn at the call site (m24), so both import
+//      from "cel_fn" and the trampoline picks lambda-vs-plugin at
 //      runtime.
 //        overload_id               = "up_str"
 //        wasm_import_function_name = "up_str"

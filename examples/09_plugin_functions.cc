@@ -1,16 +1,16 @@
-// Custom functions, path 2: `@component.` — a SANDBOXED WebAssembly
+// Custom functions, path 2: `@plugin.` — a SANDBOXED WebAssembly
 // component.  The function body (adder_fns.cc) is compiled to
 // wasm32-wasip2 and sealed in its own linear memory: it cannot read
 // the embedder's memory, cannot syscall, cannot do I/O — safe for
 // third-party plugins and not-yet-reviewed code.  Swap in new bytes
-// at runtime by registering a new component on a fresh Engine.
+// at runtime by registering a new plugin on a fresh Engine.
 //
-// The build does the heavy lifting: the `cel_wasm_component` macro in
+// The build does the heavy lifting: the `cel_wasm_plugin` macro in
 // BUILD.bazel turns adder.idl + adder_fns.cc into
-// adder_component.wasm.  This binary loads those bytes, registers
+// adder_plugin.wasm.  This binary loads those bytes, registers
 // them, and calls add() from CEL.
 //
-//   bazel run //examples:09_component_functions
+//   bazel run //examples:09_plugin_functions
 //
 // Expected output:
 //   add(a, b) * 2  =>  84
@@ -45,28 +45,28 @@ celwasm::CelfnType Prim(celwasm::CelfnType::Kind k) {
   return t;
 }
 
-// The component bytes the cel_wasm_component macro produced, located
+// The plugin bytes the cel_wasm_plugin macro produced, located
 // via bazel runfiles (works under both `bazel run` and `bazel test`).
-std::vector<uint8_t> LoadComponentBytes(const char* argv0) {
+std::vector<uint8_t> LoadPluginBytes(const char* argv0) {
   std::string error;
   std::unique_ptr<Runfiles> runfiles(Runfiles::Create(argv0, &error));
   ABSL_QCHECK(runfiles != nullptr) << "runfiles init failed: " << error;
   const std::string path =
-      runfiles->Rlocation("_main/examples/adder_component.wasm");
+      runfiles->Rlocation("_main/examples/adder_plugin.wasm");
   std::ifstream f(path, std::ios::binary);
   ABSL_QCHECK(f.is_open()) << "failed to open " << path;
   return {(std::istreambuf_iterator<char>(f)),
           std::istreambuf_iterator<char>()};
 }
 
-// The embedder's mirror of adder.idl.  AddComponent validates the
-// component's exports against these declarations — a missing or
+// The embedder's mirror of adder.idl.  AddPlugin validates the
+// plugin's exports against these declarations — a missing or
 // mis-typed export is rejected at registration, not at eval.
 celwasm::FunctionLibrary BuildAdderLibrary() {
   auto lib =
       celwasm::FunctionLibrary::Builder()
           .SetWitInterface("cel:greeter/fns@0.1.0")
-          .AddForeignComponent(
+          .AddPlugin(
               "add", Prim(celwasm::CelfnType::Kind::kInt),
               {celwasm::CelfnParam{false, Prim(celwasm::CelfnType::Kind::kInt),
                                    "a"},
@@ -80,7 +80,7 @@ celwasm::FunctionLibrary BuildAdderLibrary() {
 celwasm::Instance BuildInstance(const char* argv0,
                                 const celwasm::FunctionLibrary& lib,
                                 celwasm::Engine& engine) {
-  ABSL_QCHECK_OK(engine.AddComponent(LoadComponentBytes(argv0), lib));
+  ABSL_QCHECK_OK(engine.AddPlugin(LoadPluginBytes(argv0), lib));
 
   auto builder = celwasm::Compiler::NewBuilder();
   builder.DeclareVariable("a", celwasm::CelType::Int())

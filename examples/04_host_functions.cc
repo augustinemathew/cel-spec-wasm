@@ -4,8 +4,8 @@
 // Engine::BindFunction registers your lambda under it, validating the
 // lambda's signature against the declaration at registration time.
 //
-// (Path 2 — `@component.`, sandboxed wasm components for code you
-// DON'T trust — is examples/09_component_functions.cc.)
+// (Path 2 — `@plugin.`, sandboxed wasm plugins for code you
+// DON'T trust — is examples/09_plugin_functions.cc.)
 //
 //   bazel run //examples:04_host_functions
 //

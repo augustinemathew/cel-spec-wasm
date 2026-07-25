@@ -164,7 +164,7 @@ def _rename_to_dot_wasm(name, core_label, tags):
 
 # ── Public macro ──────────────────────────────────────────────────────
 
-def cel_wasm_component(
+def cel_wasm_plugin(
         name,
         idl,
         user_fns,
@@ -195,11 +195,11 @@ def cel_wasm_component(
                with fallback `cel:customfn`).  Mirrors the default in
                `tools/cel/run_generate.cc`.
       copts: extra copts for the wasi-sdk cc_binary step (default: []).
-      tags: bazel tags to apply to the final wasm component target.
+      tags: bazel tags to apply to the final wasm plugin target.
 
     Produces:
       `<name>.wasm` — a Component-Model component the embedder loads
-      via `Engine::AddComponent(component_bytes, lib)`.
+      via `Engine::AddPlugin(plugin_bytes, lib)`.
     """
     copts = copts if copts != None else []
     tags = tags if tags != None else []

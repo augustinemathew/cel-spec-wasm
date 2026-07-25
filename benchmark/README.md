@@ -13,7 +13,7 @@ binaries produce those three columns: `celcpp_bench`, and
 that loads the whole corpus at startup and registers one Google
 Benchmark per cell — so any slice of the corpus is just a
 `--benchmark_filter` away.  The other tiers (`compiler/`, `kernel/`,
-`component/`) exist to localize, not to compare.
+`plugin/`) exist to localize, not to compare.
 
 You're here for one of three reasons:
 
@@ -29,7 +29,7 @@ flagged `⚠️parity` — a mismatch is a bug, not a number.  If a number
 moved and you want to know *which layer* is at fault, drop a tier:
 `//benchmark/kernel:kernel_bench` times the native runtime kernels with
 no wasm in the loop, `//benchmark/compiler:*` times Compile/Plan, and
-`//benchmark/component:foreign_component_bench` isolates the
+`//benchmark/plugin:plugin_bench` isolates the
 Component-Model call boundary.
 
 **You want publishable numbers.** On an idle machine:

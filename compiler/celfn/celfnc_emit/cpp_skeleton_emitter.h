@@ -41,11 +41,11 @@ namespace celwasm::celfnc_emit {
 
 // Render `user_fns.h` text.
 //
-//   - `lib`: only kForeignComponent decls drive emission.
+//   - `lib`: only kPlugin decls drive emission.
 //   - `cpp_namespace`: drives `namespace <cpp_namespace> { ... }`.
 //     Empty → emit at global scope.
 //   - `extra_includes`: emitted before the standard library
-//     headers; same channel cel_wasm_component uses to forward
+//     headers; same channel cel_wasm_plugin uses to forward
 //     proto-header paths from the macro caller.
 //
 // Errors: `FailedPrecondition` if a permanently-rejected

@@ -98,14 +98,14 @@ extend the corpus, the published numbers can only honestly say
 - **Not** a replacement for celwasm-vs-itself regression localisation.
   The kernel µbenches and pipeline shape probes that role needs live in
   the non-comparative tiers of this same tree: `benchmark/kernel/`,
-  `benchmark/compiler/`, `benchmark/component/`.
+  `benchmark/compiler/`, `benchmark/plugin/`.
 
   > Plan-vs-execution delta (2026-06-11): at design time those probes
   > lived in a separate top-level `bench/` tree.  `bench/` was
   > dissolved on 2026-06-11 — eval-shape benches became corpus cells
   > here, Compile/Plan benches moved to `benchmark/compiler/`, the
-  > kernel µbenches to `benchmark/kernel/`, the component-boundary
-  > bench to `benchmark/component/`.  Mentions of `bench/` elsewhere in
+  > kernel µbenches to `benchmark/kernel/`, the plugin-boundary
+  > bench to `benchmark/plugin/`.  Mentions of `bench/` elsewhere in
   > this doc are historical.
 - **Not** a custom benchmarking framework.  **Google Benchmark**
   does iteration scaling, variance reporting, JSON output, and

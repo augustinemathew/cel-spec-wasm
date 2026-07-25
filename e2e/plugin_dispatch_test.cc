@@ -1,5 +1,5 @@
-// e2e: end-to-end dispatch through `Engine::AddComponent` for a
-// kForeignComponent decl — Compile → Plan → component instantiation →
+// e2e: end-to-end dispatch through `Engine::AddPlugin` for a
+// kPlugin decl — Compile → Plan → plugin instantiation →
 // Eval → result.  Uses inline component-model WAT assembled by
 // `wasmtime_wat2wasm` (confirmed accepted by the vendored wasmtime),
 // so the test is self-contained: no wit-bindgen, no wasi-sdk, no
@@ -16,9 +16,9 @@
 // Link-mode coverage: built twice via `link_mode_e2e_cc_test`
 // (`_dynamic` / `_static` — see
 // doc/implementation-plan/rewrite/m28-configurable-linking.md §5.5),
-// so component dispatch is exercised against both dynamically-linked
+// so plugin dispatch is exercised against both dynamically-linked
 // and merged-runtime Programs.  Each test keeps its own Engine
-// (component registrations are per-Engine state), so link mode is
+// (plugin registrations are per-Engine state), so link mode is
 // routed through `e2e::DefaultOpts()` on each Compile call rather
 // than through `e2e::CompilePlan` (which would share GlobalEngine).
 
@@ -86,7 +86,7 @@ CelfnType ListOf(CelfnType elem) {
 FunctionLibrary OneFnLib(absl::string_view fn_name, CelfnType return_type,
                          std::vector<CelfnParam> params) {
   auto lib_or = FunctionLibrary::Builder()
-                    .AddForeignComponent(fn_name, std::move(return_type),
+                    .AddPlugin(fn_name, std::move(return_type),
                                          std::move(params))
                     .Build();
   ABSL_CHECK(lib_or.ok()) << lib_or.status();
@@ -109,8 +109,8 @@ constexpr absl::string_view kAddIntIntComponentWat = R"WAT(
     (canon lift (core func $i "add"))))
 )WAT";
 
-TEST(ForeignComponentDispatch, IntAddRoundTripsBoundaryValues) {
-  // The dispatch path: AddForeignComponent → AddComponent →
+TEST(PluginDispatch, IntAddRoundTripsBoundaryValues) {
+  // The dispatch path: AddPlugin → AddPlugin →
   // Compile("add(a,b)") → Plan → Eval(activation{a,b}) → result.
   // Pins that arg lift + component call + result lower work for
   // the integer scalar arm.
@@ -119,9 +119,9 @@ TEST(ForeignComponentDispatch, IntAddRoundTripsBoundaryValues) {
   auto lib = OneFnLib("add", Prim(CelfnType::Kind::kInt),
                       {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
                        CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}});
-  const std::vector<uint8_t> component_bytes =
+  const std::vector<uint8_t> plugin_bytes =
       WatToWasm(kAddIntIntComponentWat);
-  ASSERT_THAT(engine_or->AddComponent(component_bytes, lib), IsOk());
+  ASSERT_THAT(engine_or->AddPlugin(plugin_bytes, lib), IsOk());
 
   auto builder = Compiler::NewBuilder();
   builder.DeclareVariable("a", CelType::Int())
@@ -165,13 +165,13 @@ constexpr absl::string_view kPassthroughBoolBoolComponentWat = R"WAT(
     (canon lift (core func $i "id"))))
 )WAT";
 
-TEST(ForeignComponentDispatch, BoolPassthroughRoundTrips) {
+TEST(PluginDispatch, BoolPassthroughRoundTrips) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   auto lib = OneFnLib("ident", Prim(CelfnType::Kind::kBool),
                       {CelfnParam{false, Prim(CelfnType::Kind::kBool), "x"}});
   ASSERT_THAT(
-      engine_or->AddComponent(WatToWasm(kPassthroughBoolBoolComponentWat), lib),
+      engine_or->AddPlugin(WatToWasm(kPassthroughBoolBoolComponentWat), lib),
       IsOk());
 
   auto builder = Compiler::NewBuilder();
@@ -194,7 +194,7 @@ TEST(ForeignComponentDispatch, BoolPassthroughRoundTrips) {
 
 // ── Large-payload dispatch at MiB / 10⁵-element scale ──────────────
 //
-// The marshaling-layer test (`eval/internal/cel_component_test.cc::
+// The marshaling-layer test (`eval/internal/cel_plugin_test.cc::
 // Large…`) proves Lift / Lower handle large CelValues; this proves
 // the full pipeline does — every layer the dispatch path crosses:
 //
@@ -240,7 +240,7 @@ constexpr absl::string_view kStringLenComponentWat = R"WAT(
     (canon lift (core func $len_fn) (memory $mem) (realloc $realloc))))
 )WAT";
 
-TEST(ForeignComponentDispatch, LargeStringTransportsAtMiBScale) {
+TEST(PluginDispatch, LargeStringTransportsAtMiBScale) {
   // 256 KiB string crosses the dispatch boundary; the component
   // returns the byte-length so the assertion is byte-exact and
   // tiny — the *transport* is what's under test.
@@ -248,7 +248,7 @@ TEST(ForeignComponentDispatch, LargeStringTransportsAtMiBScale) {
   ASSERT_THAT(engine_or, IsOk());
   auto lib = OneFnLib("len", Prim(CelfnType::Kind::kInt),
                       {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
-  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kStringLenComponentWat), lib),
+  ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kStringLenComponentWat), lib),
               IsOk());
 
   auto builder = Compiler::NewBuilder();
@@ -326,7 +326,7 @@ constexpr absl::string_view kListSumComponentWat = R"WAT(
     (canon lift (core func $sum_fn) (memory $mem) (realloc $realloc))))
 )WAT";
 
-TEST(ForeignComponentDispatch, LargeListIntTransportsAt100kElements) {
+TEST(PluginDispatch, LargeListIntTransportsAt100kElements) {
   // 100 000 element list crosses the boundary; the component sums
   // and returns one s64.  Boundary-style payload: sum_{0..N-1} = N(N-1)/2.
   auto engine_or = Engine::NewBuilder().Build();
@@ -334,7 +334,7 @@ TEST(ForeignComponentDispatch, LargeListIntTransportsAt100kElements) {
   auto lib =
       OneFnLib("sum", Prim(CelfnType::Kind::kInt),
                {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
-  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kListSumComponentWat), lib),
+  ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kListSumComponentWat), lib),
               IsOk());
 
   auto builder = Compiler::NewBuilder();
@@ -404,12 +404,12 @@ constexpr absl::string_view kStringEchoComponentWat = R"WAT(
     (canon lift (core func $echo) (memory $mem) (realloc $realloc))))
 )WAT";
 
-TEST(ForeignComponentDispatch, StringEchoReturnsStringResult) {
+TEST(PluginDispatch, StringEchoReturnsStringResult) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   auto lib = OneFnLib("echo", Prim(CelfnType::Kind::kString),
                       {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
-  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kStringEchoComponentWat), lib),
+  ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kStringEchoComponentWat), lib),
               IsOk());
 
   auto builder = Compiler::NewBuilder();
@@ -436,10 +436,10 @@ TEST(ForeignComponentDispatch, StringEchoReturnsStringResult) {
 
 // ── Error paths ─────────────────────────────────────────────────────
 
-TEST(ForeignComponentDispatch, MissingExportFailsAtPlanNotAddComponent) {
-  // The embedder declares `frob` but registers a component that only
+TEST(PluginDispatch, MissingExportFailsAtPlanNotAddPlugin) {
+  // The embedder declares `frob` but registers a plugin that only
   // exports `add-int-int`.  Pins WHERE the mismatch surfaces:
-  // `AddComponent` only conflict-checks overload-ids and parses the
+  // `AddPlugin` only conflict-checks overload-ids and parses the
   // bytes; the export ↔ decl lookup happens at per-Plan component
   // instantiation, so the failure is a FailedPrecondition from
   // `Engine::Plan`, naming the kebab-case export it looked for.
@@ -447,9 +447,9 @@ TEST(ForeignComponentDispatch, MissingExportFailsAtPlanNotAddComponent) {
   ASSERT_THAT(engine_or, IsOk());
   auto lib = OneFnLib("frob", Prim(CelfnType::Kind::kInt),
                       {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
-  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kAddIntIntComponentWat), lib),
+  ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kAddIntIntComponentWat), lib),
               IsOk())
-      << "AddComponent validates bytes + overload-id conflicts only; "
+      << "AddPlugin validates bytes + overload-id conflicts only; "
          "the export lookup is deferred to Plan";
 
   auto builder = Compiler::NewBuilder();
@@ -477,15 +477,15 @@ constexpr absl::string_view kTrappingComponentWat = R"WAT(
     (canon lift (core func $i "boom"))))
 )WAT";
 
-TEST(ForeignComponentDispatch, TrappingComponentFnFailsEvalCleanly) {
-  // A component fn that traps mid-call must surface as a clean
+TEST(PluginDispatch, TrappingPluginFnFailsEvalCleanly) {
+  // A plugin fn that traps mid-call must surface as a clean
   // non-OK status from `Instance::Eval` — not a crash, not a
   // plausible-looking value.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   auto lib = OneFnLib("boom", Prim(CelfnType::Kind::kInt),
                       {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
-  ASSERT_THAT(engine_or->AddComponent(WatToWasm(kTrappingComponentWat), lib),
+  ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kTrappingComponentWat), lib),
               IsOk());
 
   auto builder = Compiler::NewBuilder();
@@ -500,7 +500,7 @@ TEST(ForeignComponentDispatch, TrappingComponentFnFailsEvalCleanly) {
   Activation act;
   act.Bind("x", Value::Int(1));
   auto v_or = inst_or->Eval(act);
-  ASSERT_FALSE(v_or.ok()) << "trapping component fn produced a value";
+  ASSERT_FALSE(v_or.ok()) << "trapping plugin fn produced a value";
 }
 
 }  // namespace
