@@ -3,6 +3,8 @@
 #include <string>
 #include <utility>
 
+#include "abi/plugin.h"
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -75,6 +77,116 @@ std::string CelTypeToSpec(const CelType& t) {
                     << static_cast<int>(t.kind());
 }
 
+// Renders a `CelfnType` in its `.celfn` source spelling for
+// diagnostics (`list<int>`, `map<string,int>`, `proto(acme.User)`,
+// `optional<string>`, `type`).
+std::string RenderCelfnType(const CelfnType& t) {
+  switch (t.kind) {
+    case CelfnType::Kind::kBool:
+      return "bool";
+    case CelfnType::Kind::kInt:
+      return "int";
+    case CelfnType::Kind::kUint:
+      return "uint";
+    case CelfnType::Kind::kDouble:
+      return "double";
+    case CelfnType::Kind::kString:
+      return "string";
+    case CelfnType::Kind::kBytes:
+      return "bytes";
+    case CelfnType::Kind::kNull:
+      return "null";
+    case CelfnType::Kind::kDuration:
+      return "duration";
+    case CelfnType::Kind::kTimestamp:
+      return "timestamp";
+    case CelfnType::Kind::kList:
+      return absl::StrCat("list<",
+                          t.list_element.empty()
+                              ? "?"
+                              : RenderCelfnType(t.list_element[0]),
+                          ">");
+    case CelfnType::Kind::kMap:
+      if (t.map_kv.size() != 2) return "map<?,?>";
+      return absl::StrCat("map<", RenderCelfnType(t.map_kv[0]), ",",
+                          RenderCelfnType(t.map_kv[1]), ">");
+    case CelfnType::Kind::kProto:
+      return absl::StrCat("proto(", t.proto_fqn, ")");
+    case CelfnType::Kind::kType:
+      return "type";
+    case CelfnType::Kind::kOptional:
+      return absl::StrCat("optional<",
+                          t.optional_element.empty()
+                              ? "?"
+                              : RenderCelfnType(t.optional_element[0]),
+                          ">");
+  }
+  ABSL_CHECK(false) << "RenderCelfnType: unhandled CelfnType::Kind = "
+                    << static_cast<int>(t.kind);
+}
+
+// Returns the first sub-type of `t` that the checker-side mapping
+// (`CelfnTypeToCelType`, compiler/frontend/parse_and_check.cc) has
+// no `cel::Type` for — `type` and `optional<T>` (cleanup-backlog
+// #44) — or nullptr when `t` is fully mappable.  The switch is the
+// mapping's kind coverage restated over the closed enum, so a new
+// `CelfnType::Kind` fails to compile here until classified.
+const CelfnType* absl_nullable FindUnmappableType(const CelfnType& t) {
+  switch (t.kind) {
+    case CelfnType::Kind::kBool:
+    case CelfnType::Kind::kInt:
+    case CelfnType::Kind::kUint:
+    case CelfnType::Kind::kDouble:
+    case CelfnType::Kind::kString:
+    case CelfnType::Kind::kBytes:
+    case CelfnType::Kind::kNull:
+    case CelfnType::Kind::kDuration:
+    case CelfnType::Kind::kTimestamp:
+    case CelfnType::Kind::kProto:
+      return nullptr;
+    case CelfnType::Kind::kType:
+    case CelfnType::Kind::kOptional:
+      return &t;
+    case CelfnType::Kind::kList:
+      return t.list_element.empty() ? nullptr
+                                    : FindUnmappableType(t.list_element[0]);
+    case CelfnType::Kind::kMap: {
+      if (t.map_kv.size() != 2) return nullptr;
+      if (const auto* bad = FindUnmappableType(t.map_kv[0])) return bad;
+      return FindUnmappableType(t.map_kv[1]);
+    }
+  }
+  ABSL_CHECK(false) << "FindUnmappableType: unhandled CelfnType::Kind = "
+                    << static_cast<int>(t.kind);
+}
+
+// Reject function declarations whose types the type-checker cannot
+// map.  `FunctionLibrary::Builder` admits `type` / `optional<T>` on
+// programmatically-built kHost/kCelDefined decls (only the kPlugin
+// surface rejects them), and `CelfnTypeToCelType` has no `cel::Type`
+// for either — without this gate the failure is an ABSL_CHECK crash
+// inside Compile() (cleanup-backlog #44).  Naming the decl + type
+// here turns it into a clean InvalidArgument at Build().
+absl::Status ValidateDeclTypesMappable(const CelfnDecl& d) {
+  if (const auto* bad = FindUnmappableType(d.return_type)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Compiler::Builder::Build: declaration `", d.fn_name,
+        "` (overload-id `", d.overload_id, "`) return type uses `",
+        RenderCelfnType(*bad),
+        "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
+  }
+  for (const auto& p : d.params) {
+    if (const auto* bad = FindUnmappableType(p.type)) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Compiler::Builder::Build: declaration `", d.fn_name,
+          "` (overload-id `", d.overload_id, "`) parameter `", p.name,
+          "` uses `", RenderCelfnType(*bad),
+          "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
+    }
+  }
+  return absl::OkStatus();
+}
+
 // Validate one variable declaration.  Reject:
 //   - kUnknown type (default-constructed CelType — caller forgot to
 //     pick a kind)
@@ -115,6 +227,10 @@ Compiler::Builder& Compiler::Builder::DeclareFunctions(
     celwasm::FunctionLibrary library) {
   function_libraries_.push_back(std::move(library));
   return *this;
+}
+
+Compiler::Builder& Compiler::Builder::Use(const Plugin& plugin) {
+  return DeclareFunctions(plugin.library());
 }
 
 Compiler::Builder& Compiler::Builder::AddFunction(
@@ -162,6 +278,7 @@ absl::StatusOr<Compiler> Compiler::Builder::Build() && {
             "Compiler::Builder::Build: overload-id `", d.overload_id,
             "` is declared by more than one library"));
       }
+      if (auto s = ValidateDeclTypesMappable(d); !s.ok()) return s;
     }
   }
 

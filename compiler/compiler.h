@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "abi/plugin.h"
 #include "absl/base/attributes.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -252,6 +253,15 @@ class Compiler::Builder {
   // overload-id declared twice) are caught at `Build()` time.
   Builder& DeclareFunctions(celwasm::FunctionLibrary library);
 
+  // Register a Plugin's declarations with the type-checker — the
+  // compile-side half of the one-noun flow.  Exactly
+  // `DeclareFunctions(plugin.library())`: every declaration
+  // becomes callable, and each one the emitted wasm imports is
+  // recorded in the Program's cel.abi required-functions table
+  // (m35-plugin-ergonomics.md §5) for Plan-time verification.
+  // Duplicate overload-ids across libraries fail at Build().
+  Builder& Use(const Plugin& plugin);
+
   // Register a single custom-fn declaration from a source string.
   // Convenience over `DeclareFunctions(ParseCelfnSource(s))`.
   // Accepts any valid `.celfn` source — typically a one-liner like
@@ -274,6 +284,10 @@ class Compiler::Builder {
   //   - duplicate variable names declared on this Builder
   //   - a variable declared with CelType::Kind::kUnknown
   //   - a variable of Message type whose FQN is empty
+  //   - the same overload-id declared by more than one library
+  //   - a function declaration whose type the type-checker cannot
+  //     map (`type`, `optional<T>` — cleanup-backlog #44), naming
+  //     the decl and the type
   ABSL_MUST_USE_RESULT absl::StatusOr<Compiler> Build() &&;
 
  private:

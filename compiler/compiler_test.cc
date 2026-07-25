@@ -5,10 +5,16 @@
 
 #include "compiler/compiler.h"
 
+#include <cstdint>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "abi/plugin.h"
+#include "abi/wasm_binary.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/string_view.h"
 #include "compiler/program.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
@@ -447,6 +453,170 @@ TEST(CompilerBuilderDeclareFunctionsTest,
   EXPECT_THAT(lib_or, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(lib_or.status().message()),
               testing::HasSubstr("duplicate"));
+}
+
+// ─── m35 B2 — Compiler::Builder::Use(Plugin) ─────────────────────
+//
+// `Use(plugin)` is exactly `DeclareFunctions(plugin.library())` —
+// the compile side needs no wasm engine, so the fixtures below are
+// hand-framed plugin bytes (Component-Model preamble + a `cel.fns`
+// custom section built with the production framing writer), the
+// same shape abi/plugin_test.cc pins.
+
+// `\0asm` + version/layer word 0x0001000d — a minimal CM component.
+constexpr uint8_t kComponentPreamble[] = {0x00, 0x61, 0x73, 0x6d,
+                                          0x0d, 0x00, 0x01, 0x00};
+
+Plugin MakePlugin(absl::string_view celfn_text) {
+  std::vector<uint8_t> bytes(kComponentPreamble,
+                             kComponentPreamble + sizeof(kComponentPreamble));
+  const std::vector<uint8_t> section = BuildCustomSection(
+      "cel.fns", {reinterpret_cast<const uint8_t*>(celfn_text.data()),
+                  celfn_text.size()});
+  bytes.insert(bytes.end(), section.begin(), section.end());
+  auto plugin_or = Plugin::Load(bytes);
+  EXPECT_THAT(plugin_or, IsOk()) << plugin_or.status();
+  return *std::move(plugin_or);
+}
+
+TEST(CompilerBuilderUseTest, UseRegistersDeclsAndCallSiteTypeChecks) {
+  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int())
+      .DeclareVariable("y", CelType::Int())
+      .Use(plugin);
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  ASSERT_EQ(c->function_libraries().size(), 1u);
+  EXPECT_EQ(c->function_libraries()[0].decls()[0].overload_id, "add_int_int");
+  // The call site type-checks against the plugin's declaration and
+  // lowers to a `cel_fn.add_int_int` import.
+  auto prog_or = c->Compile("add(x, y)", LinkModeOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+  const std::string blob(
+      reinterpret_cast<const char*>(prog_or->wasm_bytes().data()),
+      prog_or->wasm_bytes().size());
+  EXPECT_NE(blob.find("add_int_int"), std::string::npos);
+}
+
+TEST(CompilerBuilderUseTest, CallSiteTypeMismatchFailsAtCompile) {
+  // The declared signature is enforced at the call site — the wrong
+  // argument type fails Compile (checker InvalidArgument), which is
+  // the whole point of declarations flowing from the artifact.
+  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("s", CelType::String()).Use(plugin);
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  EXPECT_THAT(c->Compile("add(s, s)", LinkModeOpts()),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(CompilerBuilderUseTest, DuplicateOverloadIdAcrossTwoUsesFailsAtBuild) {
+  const Plugin p1 = MakePlugin("int @plugin.add(int a, int b);\n");
+  const Plugin p2 = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto b = Compiler::NewBuilder();
+  b.Use(p1).Use(p2);
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("add_int_int"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("more than one library"));
+}
+
+TEST(CompilerBuilderUseTest, DuplicateOverloadIdAcrossUseAndAddFunction) {
+  // A Use'd plugin decl and a text-path AddFunction decl that
+  // synthesise the same overload-id collide at Build(), same as any
+  // cross-library duplicate.
+  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto b = Compiler::NewBuilder();
+  b.Use(plugin);
+  b.AddFunction("int @host.add(int a, int b);");
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("add_int_int"));
+}
+
+// ─── m35 B2 — unmappable decl types rejected at Build() ──────────
+//
+// `FunctionLibrary::Builder` admits `type` / `optional<T>` on
+// programmatically-built kHost decls, but the checker-side mapping
+// (`CelfnTypeToCelType`) has no `cel::Type` for either
+// (cleanup-backlog #44).  Build() must reject with a clean
+// InvalidArgument naming the decl and the type — never crash.
+
+CelfnType Prim(CelfnType::Kind k) {
+  CelfnType t;
+  t.kind = k;
+  return t;
+}
+
+TEST(CompilerBuilderUnmappableTypeTest, TypeReturnRejectedNamingDeclAndType) {
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddHost("weird", Prim(CelfnType::Kind::kType), {})
+                    .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareFunctions(*std::move(lib_or));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`weird`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`type`"));
+}
+
+TEST(CompilerBuilderUnmappableTypeTest,
+     OptionalParamRejectedNamingDeclAndType) {
+  CelfnType opt = Prim(CelfnType::Kind::kOptional);
+  opt.optional_element.push_back(Prim(CelfnType::Kind::kInt));
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("maybe", Prim(CelfnType::Kind::kInt),
+                   {celwasm::CelfnParam{/*is_receiver=*/false, opt, "x"}})
+          .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareFunctions(*std::move(lib_or));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`maybe`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`optional<int>`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("parameter `x`"));
+}
+
+TEST(CompilerBuilderUnmappableTypeTest, NestedUnmappableInsideListRejected) {
+  // The check is structural: `list<optional<string>>` is just as
+  // unmappable as a bare `optional<...>`.
+  CelfnType opt = Prim(CelfnType::Kind::kOptional);
+  opt.optional_element.push_back(Prim(CelfnType::Kind::kString));
+  CelfnType lst = Prim(CelfnType::Kind::kList);
+  lst.list_element.push_back(opt);
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddHost("nested", lst, {})
+                    .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareFunctions(*std::move(lib_or));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`optional<string>`"));
+}
+
+TEST(CompilerBuilderUnmappableTypeTest, MappableDeclStillBuildsAndCompiles) {
+  // Positive twin: every mappable kind passes the gate untouched.
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("s", CelType::String());
+  b.AddFunction("bool @host.is_number(this string s);");
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  EXPECT_THAT(c->Compile("s.is_number()", LinkModeOpts()), IsOk());
 }
 
 TEST(CompilerBuilderDeclareFunctionsTest, MultipleLibrariesWithDistinctOverloadsOk) {
