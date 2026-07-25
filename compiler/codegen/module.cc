@@ -282,6 +282,22 @@ void WasmModule::AddActiveDataSegment(uint32_t offset,
                          static_cast<BinaryenIndex>(bytes.size()));
 }
 
+std::vector<WasmModule::FunctionImportName> WasmModule::ListFunctionImports()
+    const {
+  std::vector<FunctionImportName> out;
+  const BinaryenIndex num_functions = BinaryenGetNumFunctions(module_);
+  for (BinaryenIndex i = 0; i < num_functions; ++i) {
+    BinaryenFunctionRef fn = BinaryenGetFunctionByIndex(module_, i);
+    // Binaryen returns "" (never nullptr) for a defined function.
+    const char* import_module = BinaryenFunctionImportGetModule(fn);
+    if (import_module == nullptr || import_module[0] == '\0') continue;
+    out.push_back(FunctionImportName{
+        /*module=*/import_module,
+        /*base=*/BinaryenFunctionImportGetBase(fn)});
+  }
+  return out;
+}
+
 absl::Status WasmModule::Validate() const {
   if (!BinaryenModuleValidate(module_)) {
     return absl::FailedPreconditionError(

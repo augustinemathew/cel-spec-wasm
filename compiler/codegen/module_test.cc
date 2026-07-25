@@ -154,6 +154,55 @@ TEST(WasmModuleTest, AddFunctionImportValidates) {
   EXPECT_THAT(m.Validate(), IsOk());
 }
 
+// --- ListFunctionImports -------------------------------------------------
+
+TEST(WasmModuleListFunctionImportsTest, EmptyModuleHasNoImports) {
+  WasmModule m;
+  EXPECT_TRUE(m.ListFunctionImports().empty());
+}
+
+TEST(WasmModuleListFunctionImportsTest, ReturnsExternalNamesInModuleOrder) {
+  WasmModule m;
+  const BinaryenType i32 = BinaryenTypeInt32();
+  const BinaryenType params[2] = {i32, i32};
+  m.AddFunctionImport("first", "cel", "arena_reset", params,
+                      BinaryenTypeNone());
+  m.AddFunctionImport("second", "cel_fn", "allow_string", params,
+                      BinaryenTypeNone());
+  const auto imports = m.ListFunctionImports();
+  ASSERT_EQ(imports.size(), 2u);
+  EXPECT_EQ(imports[0].module, "cel");
+  EXPECT_EQ(imports[0].base, "arena_reset");
+  EXPECT_EQ(imports[1].module, "cel_fn");
+  EXPECT_EQ(imports[1].base, "allow_string");
+}
+
+TEST(WasmModuleListFunctionImportsTest,
+     ExternalBaseReturnedWhenInternalNameDiffers) {
+  // The list carries the names the HOST resolves at link time, not
+  // codegen's internal handles.
+  WasmModule m;
+  const BinaryenType params[1] = {BinaryenTypeInt32()};
+  m.AddFunctionImport("$internal_alias", "cel_host", "cel_get_field", params,
+                      BinaryenTypeNone());
+  const auto imports = m.ListFunctionImports();
+  ASSERT_EQ(imports.size(), 1u);
+  EXPECT_EQ(imports[0].module, "cel_host");
+  EXPECT_EQ(imports[0].base, "cel_get_field");
+}
+
+TEST(WasmModuleListFunctionImportsTest, ExcludesDefinedFunctions) {
+  WasmModule m;
+  const BinaryenType params[1] = {BinaryenTypeInt32()};
+  m.AddFunctionImport("imp", "cel", "arena_alloc", params,
+                      BinaryenTypeInt32());
+  BinaryenExpressionRef body = BinaryenNop(m.raw());
+  m.AddFunction("defined_fn", {}, BinaryenTypeNone(), {}, body);
+  const auto imports = m.ListFunctionImports();
+  ASSERT_EQ(imports.size(), 1u);
+  EXPECT_EQ(imports[0].base, "arena_alloc");
+}
+
 TEST(WasmModuleTest, AddFunctionAndExport) {
   WasmModule m;
   BinaryenExpressionRef body = BinaryenNop(m.raw());
