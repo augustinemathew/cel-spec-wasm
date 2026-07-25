@@ -271,6 +271,17 @@ class Plugin {
 };
 ```
 
+> As-built delta (2026-07-25, slice A4): every `Load` error carries a
+> `Plugin::Load: ` prefix; the missing-section text is otherwise
+> verbatim from above.  Final strings live in `abi/plugin.cc` and are
+> pinned by `abi/plugin_test.cc` — that file is the message contract
+> of record.  `ParseCelfnSource` does not stamp `wit_interface`, so
+> `Load` rebuilds the library via `FunctionLibrary::Builder` +
+> `SetWitInterface(DeriveWitInterface(module))`; the WIT derivation
+> was factored to `compiler/celfn/function_library.{h,cc}`
+> (`DeriveWitPackageName`/`DeriveWitInterface`) and `cel generate`
+> refactored onto it, so macro and Load can never drift.
+
 Immutable after Load; safe to share across threads and register on
 any number of compilers and engines.  Per-decl source/doc-comment
 introspection is NOT on this surface (the grammar skips comments and
