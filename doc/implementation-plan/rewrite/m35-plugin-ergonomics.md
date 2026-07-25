@@ -201,6 +201,12 @@ act.Bind("user", celwasm::Value::Message(u));
 auto result = instance.Eval(act);      // -> Value::Bool(true)
 ```
 
+> As-built delta (2026-07-25, slice S verification): the overload-id
+> synthesizer spells proto params `_message_<pkg>_<Msg>` — the real
+> id below is `is_adult_message_acme_User`, not the draft's
+> `is_adult_proto_acme_user`.  The pinned strings in
+> `required_fn_check_test.cc` are the contract of record.
+
 What failure looks like — forgot to register the plugin:
 
 ```
