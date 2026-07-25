@@ -354,6 +354,27 @@ stays Plan-time-only for slice B (NO throwaway instantiation — the
 fallback is the status quo, not a slower variant).  The probe
 result gets a dated callout here with the wasmtime header citation.
 
+> **Probe result (2026-07-25, slice A4): the pin HAS the API — `Use`
+> checks statically.**  `wasmtime_component_get_export_index(const
+> wasmtime_component_t*, const wasmtime_component_export_index_t*
+> instance /* nullable */, const char* name, size_t name_len)` is
+> declared in the pinned wasmtime v43.0.1 C API at
+> `include/wasmtime/component/component.h:136-140` (the
+> `@wasmtime_*` archives in MODULE.bazel).  It operates on the
+> PARSED component only — no store, no instantiation — and the
+> nullable `instance` parameter gives the two-level lookup
+> `Engine::Use` needs: resolve `plugin.wit_interface()` with
+> `instance = nullptr`, then each decl's kebab-case export with the
+> interface's index as parent.  Missing names return NULL (no
+> error object), mapping cleanly to FailedPrecondition.  Verified
+> end-to-end by `compiler/probes/m35/
+> wasmtime_component_export_probe_test.cc` (disposable) against the
+> real macro-built `demo_plugin.wasm`: interface
+> `cel:customfn/fns@0.1.0` and nested `greet-string-int` /
+> `add-int-int` / `len-string` all resolve pre-instantiation;
+> absent names return NULL at both levels.  B1 implements the
+> static branch.
+
 Legacy `AddPlugin(bytes, lib)` (pre-R: `AddComponent`) stays as the
 explicit-decls escape (pure-WAT tests, pre-section artifacts),
 behavior unchanged — its Plan-time-only export check is pinned by

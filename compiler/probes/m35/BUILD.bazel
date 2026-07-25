@@ -1,0 +1,24 @@
+# Disposable m35 probes — deleted at milestone closeout (CLAUDE.md
+# probe rule; they are NOT permanent regression tests).
+#
+# Note the wasmtime dep: this is a probe of the *eval-side* runtime
+# API, parked under compiler/probes/ per the probe convention.  It is
+# a leaf test target — nothing in //compiler production code links it,
+# so the compiler-never-depends-on-wasmtime layering rule is intact.
+
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+cc_test(
+    name = "wasmtime_component_export_probe_test",
+    size = "small",
+    srcs = ["wasmtime_component_export_probe_test.cc"],
+    data = ["//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin"],
+    deps = [
+        "//third_party/wasmtime",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
