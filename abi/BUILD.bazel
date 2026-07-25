@@ -265,8 +265,10 @@ cc_test(
     deps = [
         ":cel_abi_cc_proto",
         ":cel_abi_emit",
+        "//compiler/celfn:function_library",
         "//compiler/codegen:expr_lower",
         "//compiler/codegen:layout_pass",
+        "//compiler/codegen:module",
         "//compiler/codegen:resolve_pass",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:annotations",

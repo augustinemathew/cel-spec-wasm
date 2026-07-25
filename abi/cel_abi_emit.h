@@ -12,12 +12,16 @@
 #ifndef CELWASM_ABI_CEL_ABI_EMIT_H_
 #define CELWASM_ABI_CEL_ABI_EMIT_H_
 
+#include <vector>
+
 #include "abi/cel_abi.pb.h"
 #include "absl/base/attributes.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "compiler/celfn/function_library.h"
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/module.h"
 
 namespace celwasm {
 
@@ -39,6 +43,28 @@ namespace celwasm {
 ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs,
     celwasm::abi::LinkMode link_mode);
+
+// Build the `required_functions[]` table from the FINAL module's
+// import surface: one row per `cel_fn` import in `imports` (module
+// import order preserved), populated from the matching decl across
+// `libraries`.  Imports from any other module (`cel`, `cel_host`,
+// per-module `@native.` aliases) contribute nothing.
+//
+// `imports` MUST be the post-optimize import list
+// (`WasmModule::ListFunctionImports()` after `Optimize`): Binaryen
+// drops unused imports at O1+ while wasmtime demands every SURVIVING
+// import at link time, so deriving the table from anything but the
+// final module desyncs per optimize level (see
+// doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §5.2).
+//
+// Backend mapping: kHost -> HOST, kPlugin -> PLUGIN.  A `cel_fn`
+// import with no matching decl — or one matching a kCelDefined decl,
+// whose imports are never `cel_fn` — is an invariant violation
+// (codegen installed the import FROM these libraries) and
+// CHECK-fails.
+std::vector<celwasm::abi::RequiredFunction> BuildRequiredFunctions(
+    absl::Span<const WasmModule::FunctionImportName> imports,
+    absl::Span<const FunctionLibrary> libraries);
 
 }  // namespace celwasm
 

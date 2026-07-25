@@ -437,12 +437,20 @@ namespace {
 // `link_mode` is the wire-format marker for the mode this module was
 // emitted under — embedder-tooling metadata, not an engine routing
 // input (see doc/implementation-plan/rewrite/m28-configurable-linking.md
-// §6).
+// §6).  `libraries` feeds the required-functions table, which is
+// derived from `module`'s CURRENT import surface — the caller must
+// invoke this after the optimize pass so the table equals the final
+// `cel_fn` import list (m35-plugin-ergonomics.md §5.2).
 absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
                                  absl::Span<const FieldRefRow> field_refs,
-                                 celwasm::abi::LinkMode link_mode) {
+                                 celwasm::abi::LinkMode link_mode,
+                                 absl::Span<const FunctionLibrary> libraries) {
   auto abi_or = BuildCelAbi(layout, field_refs, link_mode);
   if (!abi_or.ok()) return abi_or.status();
+  for (celwasm::abi::RequiredFunction& row :
+       BuildRequiredFunctions(module.ListFunctionImports(), libraries)) {
+    *abi_or->add_required_functions() = std::move(row);
+  }
   std::string abi_bytes;
   if (!abi_or->SerializeToString(&abi_bytes)) {
     return absl::InternalError("compile: failed to serialize cel.abi proto");
@@ -645,7 +653,7 @@ absl::StatusOr<CompiledArtifact> LowerExportAndFinalise(
   if (auto s = ValidateAndOptimize(out, opts); !s.ok()) return s;
   if (auto s = AttachCelAbiSection(out.module, out.layout,
                                    absl::MakeConstSpan(out.eval_fn.field_refs),
-                                   link_mode);
+                                   link_mode, opts.function_libraries);
       !s.ok()) {
     return s;
   }

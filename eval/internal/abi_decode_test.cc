@@ -269,6 +269,41 @@ TEST(AbiDecodeTest, RoundTripsFieldRefsFromCompiler) {
   EXPECT_EQ(decoded->fields(2).owner_fqn(), "celwasm.testdata.Address");
 }
 
+TEST(AbiDecodeTest, RoundTripsRequiredFunctionsFromCompiler) {
+  // Emit → decode equality for the required-functions table: compile
+  // a program calling one of two declared plugin fns at O2 (the
+  // unused import is dropped), decode the emitted bytes, and assert
+  // the surviving row's full shape.
+  CelfnType bool_t;
+  bool_t.kind = CelfnType::Kind::kBool;
+  CelfnType string_t;
+  string_t.kind = CelfnType::Kind::kString;
+  CompileOptions opts;
+  opts.optimize_level = 2;
+  opts.check.variable_specs = {"u:string"};
+  opts.function_libraries = {
+      *FunctionLibrary::Builder()
+           .AddPlugin("allow", bool_t,
+                      {CelfnParam{/*is_receiver=*/false, string_t, "u"}})
+           .AddPlugin("deny", bool_t,
+                      {CelfnParam{/*is_receiver=*/false, string_t, "u"}})
+           .Build()};
+  opts.check.function_libraries = opts.function_libraries;
+  auto artifact = Compile("allow(u)", opts);
+  ASSERT_THAT(artifact, IsOk()) << artifact.status();
+  auto decoded = DecodeCelAbiFromWasm(artifact->wasm_bytes);
+  ASSERT_THAT(decoded, IsOk());
+  ASSERT_EQ(decoded->required_functions_size(), 1);
+  const auto& row = decoded->required_functions(0);
+  EXPECT_EQ(row.overload_id(), "allow_string");
+  EXPECT_EQ(row.fn_name(), "allow");
+  EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::PLUGIN);
+  ASSERT_EQ(row.param_types_size(), 1);
+  EXPECT_EQ(row.param_types(0).kind(), celwasm::abi::FnType::FN_KIND_STRING);
+  EXPECT_EQ(row.return_type().kind(), celwasm::abi::FnType::FN_KIND_BOOL);
+  EXPECT_FALSE(row.is_receiver());
+}
+
 // --- Error paths ---------------------------------------------------
 
 TEST(AbiDecodeErrorTest, FailsOnTooShortStream) {

@@ -700,6 +700,175 @@ TEST(CompileProtoMapTest, ProtoMapEmittedModuleSerializesAndValidates) {
   EXPECT_EQ(art_or->wasm_bytes[3], 0x6D);
 }
 
+// ── required_functions in the `cel.abi` custom section ─────────────
+//
+// The table must equal the FINAL module's `cel_fn` import list — the
+// post-optimize surface, not the registered libraries: overload
+// imports are installed unconditionally for every declared custom
+// fn, Binaryen drops the unused ones at O1+, and wasmtime demands
+// every SURVIVING import at link time.  See
+// doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §5.2.
+
+namespace {
+
+CelfnType RfScalar(CelfnType::Kind kind) {
+  CelfnType t;
+  t.kind = kind;
+  return t;
+}
+
+// Two plugin decls — the O2 pin calls only `allow`, so `deny_string`
+// must survive at O0 and vanish at O2.
+std::vector<FunctionLibrary> TwoPluginFnLibs() {
+  auto lib =
+      *FunctionLibrary::Builder()
+           .AddPlugin("allow", RfScalar(CelfnType::Kind::kBool),
+                      {CelfnParam{/*is_receiver=*/false,
+                                  RfScalar(CelfnType::Kind::kString), "u"}})
+           .AddPlugin("deny", RfScalar(CelfnType::Kind::kBool),
+                      {CelfnParam{/*is_receiver=*/false,
+                                  RfScalar(CelfnType::Kind::kString), "u"}})
+           .Build();
+  return {std::move(lib)};
+}
+
+// The `cel_fn` import base names of the artifact's FINAL module, in
+// import order.
+std::vector<std::string> CelFnImportBases(const CompiledArtifact& art) {
+  std::vector<std::string> bases;
+  for (const auto& import : art.module.ListFunctionImports()) {
+    if (import.module == "cel_fn") bases.push_back(import.base);
+  }
+  return bases;
+}
+
+std::vector<std::string> RequiredFunctionIds(const celwasm::abi::CelAbi& abi) {
+  std::vector<std::string> ids;
+  ids.reserve(static_cast<size_t>(abi.required_functions_size()));
+  for (const auto& row : abi.required_functions()) {
+    ids.push_back(row.overload_id());
+  }
+  return ids;
+}
+
+CompileOptions RequiredFnOpts(CompileOptions::LinkMode link_mode,
+                              int optimize_level) {
+  CompileOptions opts;
+  opts.link_mode = link_mode;
+  opts.optimize_level = optimize_level;
+  opts.check.variable_specs = {"u:string"};
+  opts.function_libraries = TwoPluginFnLibs();
+  // Both hops need the decls: the checker resolves call sites from
+  // `check.function_libraries`; codegen + the required-functions
+  // emitter read `function_libraries`.
+  opts.check.function_libraries = opts.function_libraries;
+  return opts;
+}
+
+}  // namespace
+
+TEST(CompileRequiredFunctionsTest, EmptyWithoutCustomFnLibraries) {
+  for (auto mode : {CompileOptions::LinkMode::kDynamic,
+                    CompileOptions::LinkMode::kStatic}) {
+    CompileOptions opts;
+    opts.link_mode = mode;
+    auto art_or = Compile("1 + 2", opts);
+    ASSERT_THAT(art_or, IsOk());
+    auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+    ASSERT_THAT(abi_or, IsOk());
+    EXPECT_EQ(abi_or->required_functions_size(), 0);
+    EXPECT_TRUE(CelFnImportBases(*art_or).empty());
+  }
+}
+
+TEST(CompileRequiredFunctionsTest, TableEqualsImportListAtOptZero) {
+  // O0: no DCE — BOTH declared fns' imports survive even though only
+  // `allow` is called, and the table mirrors that.
+  for (auto mode : {CompileOptions::LinkMode::kDynamic,
+                    CompileOptions::LinkMode::kStatic}) {
+    auto art_or = Compile("allow(u)", RequiredFnOpts(mode, 0));
+    ASSERT_THAT(art_or, IsOk());
+    auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+    ASSERT_THAT(abi_or, IsOk());
+    const auto import_bases = CelFnImportBases(*art_or);
+    EXPECT_EQ(RequiredFunctionIds(*abi_or), import_bases);
+    EXPECT_EQ(import_bases,
+              (std::vector<std::string>{"allow_string", "deny_string"}));
+  }
+}
+
+// THE load-bearing pin of the post-optimize attach: at O2 Binaryen
+// drops the uncalled `deny_string` import, and the table must track
+// the SURVIVING import list — one row — or wasmtime link demands and
+// Plan verification desync per optimize level.
+TEST(CompileRequiredFunctionsTest, OptTwoDropsUnusedImportFromTable) {
+  for (auto mode : {CompileOptions::LinkMode::kDynamic,
+                    CompileOptions::LinkMode::kStatic}) {
+    auto art_or = Compile("allow(u)", RequiredFnOpts(mode, 2));
+    ASSERT_THAT(art_or, IsOk());
+    auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+    ASSERT_THAT(abi_or, IsOk());
+    const auto import_bases = CelFnImportBases(*art_or);
+    EXPECT_EQ(import_bases, (std::vector<std::string>{"allow_string"}));
+    ASSERT_EQ(abi_or->required_functions_size(), 1);
+    EXPECT_EQ(abi_or->required_functions(0).overload_id(), "allow_string");
+    EXPECT_EQ(RequiredFunctionIds(*abi_or), import_bases);
+  }
+}
+
+TEST(CompileRequiredFunctionsTest, MixedBackendsCarryBackendPerRow) {
+  CompileOptions opts;
+  opts.check.variable_specs = {"u:string"};
+  opts.function_libraries = {
+      *FunctionLibrary::Builder()
+           .AddHost("discount_pct", RfScalar(CelfnType::Kind::kInt),
+                    {CelfnParam{false, RfScalar(CelfnType::Kind::kString),
+                                "s"}})
+           .AddPlugin("allow", RfScalar(CelfnType::Kind::kBool),
+                      {CelfnParam{false, RfScalar(CelfnType::Kind::kString),
+                                  "u"}})
+           .Build()};
+  opts.check.function_libraries = opts.function_libraries;
+  auto art_or = Compile("allow(u) && discount_pct(u) > 0", opts);
+  ASSERT_THAT(art_or, IsOk()) << art_or.status();
+  auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+  ASSERT_THAT(abi_or, IsOk());
+  ASSERT_EQ(abi_or->required_functions_size(), 2);
+  for (const auto& row : abi_or->required_functions()) {
+    if (row.overload_id() == "discount_pct_string") {
+      EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::HOST);
+      EXPECT_EQ(row.fn_name(), "discount_pct");
+    } else {
+      EXPECT_EQ(row.overload_id(), "allow_string");
+      EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::PLUGIN);
+      EXPECT_EQ(row.fn_name(), "allow");
+    }
+  }
+}
+
+TEST(CompileRequiredFunctionsTest, ReceiverRowCarriesTypesAndReceiverBit) {
+  CompileOptions opts;
+  opts.check.variable_specs = {"name:string"};
+  opts.function_libraries = {
+      *FunctionLibrary::Builder()
+           .AddHost("is_number", RfScalar(CelfnType::Kind::kBool),
+                    {CelfnParam{/*is_receiver=*/true,
+                                RfScalar(CelfnType::Kind::kString), "s"}})
+           .Build()};
+  opts.check.function_libraries = opts.function_libraries;
+  auto art_or = Compile("name.is_number()", opts);
+  ASSERT_THAT(art_or, IsOk()) << art_or.status();
+  auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+  ASSERT_THAT(abi_or, IsOk());
+  ASSERT_EQ(abi_or->required_functions_size(), 1);
+  const auto& row = abi_or->required_functions(0);
+  EXPECT_EQ(row.overload_id(), "is_number_string");
+  EXPECT_TRUE(row.is_receiver());
+  ASSERT_EQ(row.param_types_size(), 1);
+  EXPECT_EQ(row.param_types(0).kind(), celwasm::abi::FnType::FN_KIND_STRING);
+  EXPECT_EQ(row.return_type().kind(), celwasm::abi::FnType::FN_KIND_BOOL);
+}
+
 TEST(CompileProtoMapTest, ProtoMapFieldLayoutReusesSelectAndCallSlot) {
   // `c.metadata["env"]` lays out as: c slot (variable), kSelect
   // result slot, kCallExpr(_[_]) result slot.  The kCallExpr
