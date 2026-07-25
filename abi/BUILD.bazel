@@ -3,6 +3,40 @@ load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# The wasm binary-format layer: preamble classification, LEB128
+# codec, top-level custom-section read/write over raw bytes.  The
+# ONLY first-party code allowed to know wasm binary framing
+# (feature-pipeline-checklist §2.7).  Deliberately absl-only — no
+# Binaryen, no wasmtime, no proto — so it sits below both compiler/
+# and eval/.  First-party internal, not public API.
+cc_library(
+    name = "wasm_binary",
+    srcs = ["wasm_binary.cc"],
+    hdrs = ["wasm_binary.h"],
+    visibility = ["//:internal"],
+    deps = [
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "wasm_binary_test",
+    size = "small",
+    srcs = ["wasm_binary_test.cc"],
+    deps = [
+        ":wasm_binary",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Schema of the `cel.abi` custom section emitted by the compiler.
 # Fresh v2 schema — decoupled from v1's compiler/codegen/cel_abi.proto.
 # See cel_abi.proto for the rationale and field-by-field docs.
