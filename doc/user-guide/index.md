@@ -319,6 +319,8 @@ CLI (`tools/cel/`, built via
 | `cel check <expr>` | parse + type-check; print `OK` or the error | compile only |
 | `cel compile <expr>` | compile to wasm bytes (`--output PATH`, else stdout) | compile only |
 | `cel eval <expr>` | **compile *and* evaluate** in one shot; print the result | compile + run |
+| `cel run <prog.wasm>` | evaluate a **precompiled** program — no recompile | run only |
+| `cel inspect <prog.wasm>` | print what a program declares (vars, link mode, ABI versions) | neither |
 | `cel generate` | emit component-function bindings (`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl` file — the front half of the `cel_wasm_component` macro ([component functions](writing-component-functions.md)) | codegen only |
 
 ```bash
@@ -337,24 +339,27 @@ for the generated sources). Normally you don't run it by hand — the
 `cel_wasm_component` Bazel macro drives it.
 
 Note the split: `eval` is the *whole* pipeline (it compiles the
-expression in-process, then runs it — `cel.cc:RunEval`), while `compile`
-stops at wasm bytes. **There is no subcommand today that evaluates an
-*already-compiled* `.wasm`** — so `compile` currently produces an
-artifact the CLI itself can't consume back.
+expression in-process, then runs it), while `compile` stops at wasm
+bytes and `run` picks them back up:
 
-> **Missing: evaluate a precompiled program (`cel run`) ⛔.** The
-> portable `Program` (§3.3) is meant to be compiled once and run many
-> times — possibly in another process — but the CLI has no
-> `cel run expr.wasm --var …` to close that loop. The planned command
-> instantiates the wasm under an `Engine`, reads the variable schema from
-> the program's `cel.abi` section (so it binds `--var` without
-> re-declaring types), and evaluates:
-> ```bash
-> cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm  # ✅ today
-> cel run     expr.wasm   --var "a:int=6"  --var "b:int=7"                 # ⛔ planned → 43
-> ```
-> Until it lands, use `cel eval` (which recompiles each time) or the C++
-> `Engine::Plan(Program)` path (§4) to run a precompiled program.
+```bash
+cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm
+cel inspect expr.wasm                        # vars:  a:int, b:int
+cel run     expr.wasm --var "a=6" --var "b=7"    # → 43
+```
+
+On `run`, `--var` supplies **values only** — the type comes from the
+program's `cel.abi`, so declarations are never repeated. An aggregate
+variable still needs the explicit `--var name:Type=value` form, because
+`cel.abi` carries a variable's kind but not its full type (no element
+type for a list, no key/value types for a map, no message FQN); the
+error message says so when you hit it. `inspect` prints kinds for the
+same reason — `xs:list`, never `xs:list<int>`.
+
+A program that calls `@host` / `@component` functions cannot be run by
+the stock CLI — those implementations are C++ in your process — and
+`run` reports that explicitly rather than failing with a wasm link
+error.
 
 Flags: `--var name:Type[=value]` (typed binding — the literal parser is
 type-directed), `--proto <file>` / `--descriptor_set <file>` (schema for
@@ -444,7 +449,8 @@ variables too (§3.3).
 | **Component fns** (`@component`, C++ via the `cel_wasm_component` Bazel macro) | ✅ scalar / int / bool round-trips; component built end-to-end and dispatched via `Engine::AddComponent`; proto args/returns via the manual-tagged `demo_component_proto` fixture; component-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
 | **Component fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
-| `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ⛔ no subcommand today; `eval` recompiles each time (§9) |
+| `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ✅ |
+| `cel inspect <file.wasm>` — print a program's declared variables + link mode | ✅ |
 | `.celfn` IDL accepted as a whole-file string (`ParseCelfnSource`); caller does the file read | ✅ |
 | `.celfn` grammar v2 (`@native`, prefix-module) + doc-comment capture; the `Module foo;` directive remains current (it names `@native` wasm modules and seeds the WIT package name for `@component` builds) | ✅ shipped (`m13-custom-fns.md` §3.0) |
 | Doc-comment → `cel.abi` (cross-process introspection) / `--celfn` CLI flag | 🟡 description on `CelfnDecl` only; ABI carriage + CLI flag pending |

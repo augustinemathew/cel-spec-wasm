@@ -662,6 +662,52 @@ genuine harness/scope limitation, convert it to a reasoned
 `GTEST_SKIP` AND record it in `cleanup-backlog.md`.  Do not leave a
 bare FAIL with no test documenting it.
 
+## Breaking public APIs is allowed — this is pre-1.0
+
+**There are no pinned external consumers.**  No release tags, no
+published package, no downstream repo builds against these headers.
+The entire cost of a breaking change is fixing the in-tree call sites,
+and the build finds every one of them for you.  So:
+
+  - **Change the signature; fix the callers in the same commit.**  Do
+    not add an overload beside the old one, a `*_v2`, a deprecation
+    shim, a compat alias, or a "legacy path kept for existing
+    callers".  There are no existing callers but us.
+  - **Two APIs that do the same thing is a defect, not a migration
+    step.**  When verification shows a surface is wrong, *replace* it.
+    Adding a second, correct API next to the wrong one doubles the
+    surface, doubles the docs, and guarantees somebody picks the wrong
+    one.
+  - **Delete rather than deprecate.**  A method nobody should call is
+    removed, not annotated.  If it turns out to be needed, git has it.
+
+This is the posture that let `Find` become `Resolve` (a lazy binder
+needs a status channel and the old signature had none — two call
+sites, both fixed in the same commit), `OverrideFunction` be deleted
+outright, and `mem_size_bytes` be removed from a public struct rather
+than documented around.  Each of those had been sitting behind an
+implicit "but it's public API" hesitation that was never real.
+
+**What this does NOT license:**
+
+  - **Silent behaviour changes.**  A break must be *loud* — a compile
+    error, not a runtime surprise.  Changing what a function returns
+    while keeping its signature is the one thing worse than changing
+    the signature.
+  - **Skipping the docs.**  A break lands with its doc update in the
+    same commit (next section), and with the reasoning recorded if the
+    old shape was ever documented as correct.
+  - **Skipping the tests.**  Callers you fix include test callers; a
+    test that no longer compiles gets rewritten, never deleted to make
+    the build pass.
+  - **Unilateral design changes.**  `PROPOSALS.md` still exists for
+    decisions that are genuinely contentious (what *should* the API
+    be).  "This would be a breaking change" is not by itself a reason
+    to defer something to that file.
+
+Revisit this section the moment a semver tag or an external consumer
+exists — at that point the cost model inverts.
+
 ## Docs ship with the change (public API + CLI)
 
 **A public-API or CLI change is not done until the user-facing docs

@@ -9,6 +9,7 @@
 // See tools/cel/var_parser.h for the `--var` literal
 // grammar and tools/cel/value_format.h for `--format`.
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -27,6 +28,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler/frontend/parse_and_check.h"
@@ -43,6 +45,7 @@
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
+#include "tools/cel/abi_describe.h"
 #include "tools/cel/run_generate.h"
 #include "tools/cel/value_format.h"
 #include "tools/cel/var_parser.h"
@@ -492,6 +495,182 @@ int RunCompile(absl::string_view expr) {
   return kExitOk;
 }
 
+// Read a whole file as bytes.  Used by `run` / `inspect` to load a
+// precompiled program.
+absl::StatusOr<std::vector<uint8_t>> ReadFileBytes(absl::string_view path) {
+  std::ifstream in{std::string(path), std::ios::binary};
+  if (!in) {
+    return absl::NotFoundError(absl::StrCat("cannot open ", path));
+  }
+  std::string bytes((std::istreambuf_iterator<char>(in)),
+                    std::istreambuf_iterator<char>());
+  return std::vector<uint8_t>(bytes.begin(), bytes.end());
+}
+
+int RunInspect(absl::string_view path) {
+  auto bytes = ReadFileBytes(path);
+  if (!bytes.ok()) {
+    std::cerr << "ERROR: " << bytes.status().message() << "\n";
+    return kExitUsage;
+  }
+  auto facts = DescribeProgram(*bytes);
+  if (!facts.ok()) {
+    std::cerr << "ERROR: " << facts.status().message() << "\n";
+    return kExitUsage;
+  }
+  std::cout << FormatProgramFacts(*facts);
+  return kExitOk;
+}
+
+// Bind `--var` values against the types the program declares.
+//
+// On `run` the program already carries its declarations, so `--var`
+// supplies values only (`a=6`).  The declared repr selects the parse:
+// we splice it back into the `name:Type=value` form the var parser
+// consumes, so both subcommands share one literal grammar.  The
+// explicit form is still accepted and is the only way to bind an
+// aggregate, whose full type the wire does not carry.
+// Expand one `run` --var flag into the full `name:Type=value` spec the
+// var parser consumes.  The explicit form passes through untouched;
+// the value-only form `name=value` recovers its type from cel.abi.
+absl::StatusOr<std::string> ResolveVarSpec(const ProgramFacts& facts,
+                                           const std::string& flag) {
+  const std::size_t colon = flag.find(':');
+  const std::size_t eq = flag.find('=');
+  if (eq == std::string::npos || (colon != std::string::npos && colon < eq)) {
+    return flag;
+  }
+  const absl::string_view name(flag.data(), eq);
+  for (const DeclaredVar& v : facts.vars) {
+    if (v.name != name) continue;
+    auto type_spec = ScalarTypeSpecForRepr(v.repr, name);
+    if (!type_spec.ok()) return type_spec.status();
+    return absl::StrCat(name, ":", *type_spec, flag.substr(eq));
+  }
+  std::vector<std::string> declared;
+  declared.reserve(facts.vars.size());
+  for (const DeclaredVar& v : facts.vars) {
+    declared.push_back(v.name);
+  }
+  return absl::InvalidArgumentError(absl::StrCat(
+      "--var ", name, ": the program declares no such variable; it declares ",
+      declared.empty() ? "none" : absl::StrJoin(declared, ", ")));
+}
+
+// Every declared variable must be bound.  Checked up front rather than
+// letting the first omission surface mid-eval: forgetting a --var is a
+// bad invocation, and the caller wants all of them named at once.
+absl::Status CheckAllDeclaredVarsBound(const ProgramFacts& facts,
+                                       const std::vector<ParsedVar>& owned) {
+  std::vector<std::string> missing;
+  for (const DeclaredVar& d : facts.vars) {
+    const bool bound =
+        std::any_of(owned.begin(), owned.end(), [&d](const ParsedVar& v) {
+          return v.has_value && v.name == d.name;
+        });
+    if (!bound) missing.push_back(d.name);
+  }
+  if (missing.empty()) return absl::OkStatus();
+  return absl::InvalidArgumentError(absl::StrCat(
+      "the program declares ", absl::StrJoin(missing, ", "),
+      " but no --var bound ", missing.size() == 1 ? "it" : "them"));
+}
+
+absl::Status BindDeclaredVars(const ProgramFacts& facts,
+                              const google::protobuf::DescriptorPool& pool,
+                              google::protobuf::DynamicMessageFactory& factory,
+                              std::vector<ParsedVar>& owned, Activation& act) {
+  for (const std::string& flag : VarFlags()) {
+    auto spec = ResolveVarSpec(facts, flag);
+    if (!spec.ok()) return spec.status();
+    auto pv = ParseVarFlag(*spec, pool, factory);
+    if (!pv.ok()) return pv.status();
+    owned.push_back(*std::move(pv));
+  }
+  for (const ParsedVar& v : owned) {
+    if (v.has_value) act.Bind(v.name, v.value);
+  }
+  return CheckAllDeclaredVarsBound(facts, owned);
+}
+
+// Turn wasmtime's opaque missing-import message into the actionable
+// one.  A program that calls @host / @component functions cannot run
+// under the stock CLI: those are C++ in the embedder's process.
+std::string ExplainPlanFailure(absl::string_view message) {
+  static constexpr absl::string_view kCelFn = "cel_fn";
+  if (!absl::StrContains(message, kCelFn)) return std::string(message);
+  return absl::StrCat(
+      message,
+      "\n  the program imports a custom function from `cel_fn`; the CLI "
+      "cannot supply @host / @component implementations — use the C++ API "
+      "(Engine::AddFunction / AddComponent), or redefine the function as "
+      "@native");
+}
+
+// Everything `run` needs before it can Plan: the program bytes, the
+// declarations they carry, and an Activation bound from --var.
+struct LoadedProgram {
+  std::vector<uint8_t> bytes;
+  PoolBundle pool;
+  std::unique_ptr<google::protobuf::DynamicMessageFactory> factory;
+  // Keeps every parsed message alive for the whole Eval —
+  // Value::Message references the message by const&.
+  std::vector<ParsedVar> owned;
+  Activation activation;
+};
+
+absl::StatusOr<LoadedProgram> LoadProgramAndBind(absl::string_view path) {
+  LoadedProgram out;
+  auto bytes = ReadFileBytes(path);
+  if (!bytes.ok()) return bytes.status();
+  out.bytes = *std::move(bytes);
+  auto facts = DescribeProgram(out.bytes);
+  if (!facts.ok()) return facts.status();
+  auto pool = BuildPool();
+  if (!pool.ok()) return pool.status();
+  out.pool = *std::move(pool);
+  out.factory =
+      std::make_unique<google::protobuf::DynamicMessageFactory>(out.pool.pool);
+  if (auto s = BindDeclaredVars(*facts, *out.pool.pool, *out.factory, out.owned,
+                                out.activation);
+      !s.ok()) {
+    return s;
+  }
+  return out;
+}
+
+int RunProgram(absl::string_view path) {
+  auto formats = ResolveFormats();
+  if (!formats.ok()) {
+    std::cerr << "ERROR: " << formats.status().message() << "\n";
+    return kExitUsage;
+  }
+  auto loaded = LoadProgramAndBind(path);
+  if (!loaded.ok()) {
+    std::cerr << "ERROR: " << loaded.status().message() << "\n";
+    return kExitUsage;
+  }
+  Program program(std::move(loaded->bytes));
+  auto engine = Engine::NewBuilder().Build();
+  if (!engine.ok()) {
+    std::cerr << "ERROR: engine: " << engine.status().message() << "\n";
+    return kExitExprFailure;
+  }
+  auto instance = engine->Plan(program);
+  if (!instance.ok()) {
+    std::cerr << "ERROR: plan: "
+              << ExplainPlanFailure(instance.status().message()) << "\n";
+    return kExitExprFailure;
+  }
+  auto value = loaded->owned.empty() ? instance->Eval()
+                                     : instance->Eval(loaded->activation);
+  if (!value.ok()) {
+    std::cerr << "ERROR: eval: " << value.status().message() << "\n";
+    return kExitExprFailure;
+  }
+  return ReportResult(*value, *formats);
+}
+
 // Pull every `--<name>=VALUE` and `--<name> VALUE` occurrence out of
 // `argv`, appending to `sink` in order.  Returns the surviving argv
 // (caller passes that to absl::ParseCommandLine).  The original
@@ -521,16 +700,19 @@ std::vector<char*> ExtractRepeated(absl::Span<char* const> argv,
 }
 
 void PrintUsage(std::ostream& os, absl::string_view argv0) {
-  os << "usage: " << argv0 << " <subcommand> <expr> [flags...]\n"
+  os << "usage: " << argv0 << " <subcommand> <expr|prog.wasm> [flags...]\n"
      << "subcommands:\n"
      << "  eval     compile + evaluate <expr>; print the result\n"
      << "  check    parse + type-check <expr>; print OK / errors\n"
      << "  compile  compile <expr> to wasm bytes (--output PATH)\n"
+     << "  run      evaluate a precompiled <prog.wasm> (no recompile)\n"
+     << "  inspect  print what a <prog.wasm> declares\n"
      << "  generate emit custom-function bindings (fns.wit, codec.h,\n"
      << "           generated_stub.cc, user_fns.h) from a .idl file\n"
      << "common flags:\n"
      << "  --var name:Type=value    (repeatable) declare + bind\n"
      << "  --var name:Type          (repeatable) declare only\n"
+     << "  --var name=value         (run) bind; type comes from cel.abi\n"
      << "  --proto PATH             .proto source for message types\n"
      << "  --descriptor_set PATH    FileDescriptorSet for message types\n"
      << "  --container PKG          name-resolution container\n"
@@ -556,7 +738,14 @@ bool WantsHelp(absl::Span<char* const> argv) {
 }
 
 bool IsKnownSubcommand(absl::string_view s) {
-  return s == "eval" || s == "check" || s == "compile" || s == "generate";
+  return s == "eval" || s == "check" || s == "compile" || s == "generate" ||
+         s == "run" || s == "inspect";
+}
+
+// True for subcommands whose positional argument is a path to a
+// compiled program rather than a CEL expression.
+bool TakesProgramPath(absl::string_view s) {
+  return s == "run" || s == "inspect";
 }
 
 // Peel the subcommand out of argv, pull the repeatable `--var` /
@@ -615,15 +804,18 @@ int Dispatch(absl::string_view subcommand, absl::Span<char* const> positional,
     return RunGenerateSubcommand();
   }
   if (positional.size() != 2) {
-    std::cerr << "ERROR: expected exactly one positional <expr>, got "
-              << (positional.size() - 1) << "\n";
+    std::cerr << "ERROR: expected exactly one positional "
+              << (TakesProgramPath(subcommand) ? "<prog.wasm>" : "<expr>")
+              << ", got " << (positional.size() - 1) << "\n";
     PrintUsage(std::cerr, argv0);
     return kExitUsage;
   }
-  const absl::string_view expr = positional[1];
-  if (subcommand == "eval") return RunEval(expr);
-  if (subcommand == "check") return RunCheck(expr);
-  if (subcommand == "compile") return RunCompile(expr);
+  const absl::string_view arg = positional[1];
+  if (subcommand == "eval") return RunEval(arg);
+  if (subcommand == "check") return RunCheck(arg);
+  if (subcommand == "compile") return RunCompile(arg);
+  if (subcommand == "run") return RunProgram(arg);
+  if (subcommand == "inspect") return RunInspect(arg);
   ABSL_CHECK(false) << "subcommand `" << subcommand << "` slipped the gate";
 }
 

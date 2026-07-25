@@ -94,11 +94,44 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "abi_describe",
+    srcs = ["abi_describe.cc"],
+    hdrs = ["abi_describe.h"],
+    deps = [
+        "//abi:cel_abi_cc_proto",
+        "//compiler/ir:annotations",
+        "//eval:abi_decode",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "abi_describe_test",
+    size = "small",
+    srcs = ["abi_describe_test.cc"],
+    deps = [
+        ":abi_describe",
+        "@com_google_absl//absl/log:absl_check",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/ir:annotations",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "cel",
     srcs = ["cel.cc"],
     visibility = ["//visibility:public"],
     deps = [
+        ":abi_describe",
         ":run_generate",
         ":value_format",
         ":var_parser",

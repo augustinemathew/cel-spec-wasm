@@ -31,6 +31,20 @@ expect() {
   fi
 }
 
+# Assert a command's exit status.  See the exit-code contract below.
+expect_exit() {
+  local label="$1"; shift
+  local want="$1"; shift
+  local got rc
+  got="$("$@" 2>&1)" && rc=0 || rc=$?
+  if [[ "${rc}" != "${want}" ]]; then
+    echo "FAIL ${label}: want exit ${want}, got ${rc}"
+    echo "  cmd:    $*"
+    echo "  output: ${got}"
+    fail=1
+  fi
+}
+
 expect "scalar literal" "6" \
   "${CEL}" eval "1 + 2 + 3"
 
@@ -87,6 +101,38 @@ else
   fi
 fi
 
+# --- compile -> inspect -> run round trip ---------------------------------
+# The loop the whole AOT design exists for: compile once, describe the
+# artifact, evaluate it later with no recompile.
+rt_wasm="${TEST_TMPDIR:-/tmp}/roundtrip.wasm"
+"${CEL}" compile "a * b + 1" --var "a:int" --var "b:int" \
+    --output "${rt_wasm}" >/dev/null 2>&1
+
+expect "inspect reports declared vars" \
+  "vars:  a:int, b:int" \
+  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | head -1"
+
+expect "run evaluates a precompiled program" "43" \
+  "${CEL}" run "${rt_wasm}" --var "a=6" --var "b=7"
+
+expect "run accepts the explicit typed form too" "43" \
+  "${CEL}" run "${rt_wasm}" --var "a:int=6" --var "b:int=7"
+
+expect_exit "run: undeclared --var"        2 \
+  "${CEL}" run "${rt_wasm}" --var "a=6" --var "b=7" --var "nope=1"
+expect_exit "run: unbound declared var"    2 "${CEL}" run "${rt_wasm}" --var "a=6"
+expect_exit "run: bad value for repr"      2 \
+  "${CEL}" run "${rt_wasm}" --var "a=notanint" --var "b=7"
+expect_exit "run: missing file"            2 "${CEL}" run /nonexistent.wasm
+expect_exit "inspect: missing file"        2 "${CEL}" inspect /nonexistent.wasm
+expect_exit "inspect: not a wasm module"   2 "${CEL}" inspect "$0"
+
+# A CEL error from a precompiled program follows the same contract as
+# `eval`: stderr, exit 1.
+dz_wasm="${TEST_TMPDIR:-/tmp}/divzero.wasm"
+"${CEL}" compile "1 / 0" --output "${dz_wasm}" >/dev/null 2>&1
+expect_exit "run: CEL error exits 1"       1 "${CEL}" run "${dz_wasm}"
+
 # --- Exit-code contract -----------------------------------------------------
 # Pins the three codes declared by the kExit* constants in cel.cc and
 # documented in tools/cel/README.md:
@@ -96,18 +142,6 @@ fi
 #   2  usage (bad subcommand, flag, --var syntax, positional count)
 # A CEL error used to print on stdout and exit 0, which made the CLI
 # unsafe to branch on from a script; these cases lock that shut.
-expect_exit() {
-  local label="$1"; shift
-  local want="$1"; shift
-  local got rc
-  got="$("$@" 2>&1)" && rc=0 || rc=$?
-  if [[ "${rc}" != "${want}" ]]; then
-    echo "FAIL ${label}: want exit ${want}, got ${rc}"
-    echo "  cmd:    $*"
-    echo "  output: ${got}"
-    fail=1
-  fi
-}
 
 expect_exit "success"                0 "${CEL}" eval "1 + 1"
 expect_exit "help"                   0 "${CEL}" --help

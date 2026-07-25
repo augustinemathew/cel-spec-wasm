@@ -41,12 +41,23 @@ bazel-bin/tools/cel/cel eval "[1, 3, 5, 7].exists(x, x > 5)"
 The first build compiles the vendored cel-cpp front end (several
 minutes, once). After that, the loop is seconds.
 
-To produce a portable artifact, use `compile`:
+To produce a portable artifact, use `compile` — then `inspect` it and
+`run` it later, with no recompile:
 
 ```bash
 bazel-bin/tools/cel/cel compile 'a * b + 1' \
     --var a:int --var b:int --output /tmp/expr.wasm
+
+bazel-bin/tools/cel/cel inspect /tmp/expr.wasm
+# vars:  a:int, b:int
+# link:  static (cel.abi v1, runtime abi v4)
+
+bazel-bin/tools/cel/cel run /tmp/expr.wasm --var a=6 --var b=7
+# => 43
 ```
+
+On `run` you bind values only — the types travel with the program in
+its `cel.abi` section.
 
 ## 4. First embed — C++
 

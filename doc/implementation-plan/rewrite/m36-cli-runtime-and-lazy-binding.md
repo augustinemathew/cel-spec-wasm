@@ -50,80 +50,91 @@ Flag errors reach code 2 by replacing `absl::ParseCommandLine` with
 
 ## 2. `cel inspect <prog.wasm>`
 
-Answers "what does this artifact need in order to run?" — the operator-facing
-half. Decodes the `cel.abi` custom section via
-`DecodeCelAbiFromWasm` (no wasmtime, no Engine) and walks the wasm **import
-section** to classify what the module demands of its host.
+Answers "what does this artifact declare?" — the operator-facing half.
+Decodes the `cel.abi` custom section via `DecodeCelAbiFromWasm` (no
+wasmtime, no `Engine`), so it works on a program this build could not
+actually run.
 
-Output — fixed labels, `none` as the empty sentinel:
+Output as shipped:
 
 ```
-vars:     a:int, b:int
-requires: none
-host fns: none
-link:     static (cel.abi v1, runtime abi v4)
+vars:  a:int, b:int
+link:  static (cel.abi v1, runtime abi v4)
 ```
 
-`--format json` emits the same facts as a machine-readable object.
+**Variable types are kinds, not full types.** `cel.abi`'s
+`VariableEntry` carries only `repr` (a numeric mirror of `ir::Repr`) —
+field 5 is reserved for a full `CelType` and unused. So an aggregate
+shows as `xs:list`, never `xs:list<int>`. Stated rather than faked.
 
-**Import classification.** Import module names partition into fixed
-namespaces (`compiler/codegen/overload_table.h`, `ImportModuleSource`) and
-everything else:
-
-| Module | Meaning for `inspect` |
-|---|---|
-| `cel` | `cel_runtime.wasm` exports — supplied by the engine (dynamic link mode). Not reported. |
-| `cel_host` | Host trampolines — always supplied by the engine. Not reported. |
-| `cel_env` | Host environment helpers (`cel_log`). Not reported. |
-| `cel_fn` | `@host` / `@component` custom functions. Reported under `host fns:`. **The CLI cannot supply these.** |
-| anything else | A foreign-module alias. Reported under `requires:` with the `--module` remediation hint. |
-
-This is why `inspect` walks imports rather than reading `cel.abi`: the ABI
-section carries neither a host-import list nor a foreign-alias list
-(`cel-cli-design.md` §7 open question (a)). Walking the import section
-answers it with no wire-format change, so **no `cel.abi` extension is in
-scope for m36**.
-
-**Variable types.** `cel.abi`'s `VariableEntry` carries only `repr` (a
-numeric mirror of `ir::Repr`), not a full `CelType` — field 5 is reserved
-for that. So `inspect` prints the repr name (`int`, `string`, `map`,
-`message`), not a parameterized type: an aggregate shows as `m:map`, never
-`m:map<string,int>`. Stated in the output legend rather than faked.
+> **Plan-vs-execution delta — the import walk was built, then
+> reverted.** The first cut added `DecodeImportsFromWasm` to
+> `abi_decode` and classified import namespaces (`cel`, `cel_host`,
+> `cel_env`, `wasi_snapshot_preview1` = engine-supplied; `cel_fn` =
+> host functions; anything else = a foreign-module alias), so `inspect`
+> could also print `requires:` and `host fns:` lines. That was reverted
+> on finding `m35-component-ergonomics.md` specifies both halves
+> better:
+>
+>   - **§4** consolidates *all* wasm binary-format knowledge into
+>     `//abi:wasm_binary` (absl-only, below both `compiler/` and
+>     `eval/`). Its 2026-07-25 sweep counted five existing copies of the
+>     framing logic and declares a sixth a review finding; `abi_decode`
+>     refactors onto it in slice A1.
+>   - **§5.1** puts the required-function table *on the wire* as
+>     `cel.abi` field 8 (`required_functions`) with full signatures and
+>     a HOST/COMPONENT backend tag, emitted from the **post-optimize**
+>     import surface and verified at `Engine::Plan`. Deriving the same
+>     facts from a byte-level import walk would be a second, weaker
+>     source of truth — and would miss the optimize-level nuance §5.2
+>     calls out.
+>
+> So `inspect` reports declarations today; the `requires:` /
+> `host fns:` lines land with field 8. One thing the reverted probe did
+> establish and is worth keeping: a **static**-linked program also
+> imports `wasi_snapshot_preview1` (the adopted runtime's own libc
+> imports), which any future classifier must treat as engine-supplied.
 
 ## 3. `cel run <prog.wasm>`
 
 Evaluates a precompiled program with **no recompile**: read file →
-`Program(std::move(bytes))` → `Engine::Plan` → `Instance::Eval`. `Program`
-needs nothing but the bytes; `Engine::Plan` decodes `cel.abi` itself.
+`Program(std::move(bytes))` → `Engine::Plan` → `Instance::Eval`.
+`Program` needs nothing but the bytes; `Engine::Plan` decodes `cel.abi`
+itself and auto-detects the link mode.
 
 ```
-cel compile "a * b" --var a:int --var b:int -o p.wasm
-cel run p.wasm --var a=6 --var b=7
+cel compile "a * b + 1" --var a:int --var b:int --output p.wasm
+cel run p.wasm --var a=6 --var b=7        # → 43
 ```
 
-**`--var` on `run` takes values, not declarations.** The type comes from
-the program's `cel.abi`. Because only `repr` is on the wire, this resolves
-cleanly for scalar reprs (bool/int/uint/double/string/bytes/duration/
-timestamp) and cannot for aggregates. So:
+**`--var` on `run` takes values, not declarations.** The type comes
+from the program's `cel.abi`, so the CLI reconstructs the full
+`name:Type=value` spec and hands it to the same literal parser `eval`
+uses — one grammar, two entry points.
 
-  - `--var name=value` — the normal form. The repr from `cel.abi` selects
-    the parse. A name not declared by the program is a **usage error**
-    (exit 2) naming the declared set.
-  - `--var name:Type=value` — the escape hatch for aggregate-repr
-    variables, where the caller supplies the full type because the wire
-    cannot. If the given type's repr disagrees with the declared repr,
-    that is a usage error.
+  - `--var name=value` — the normal form; the declared repr selects the
+    parse.
+  - `--var name:Type=value` — still accepted, and the **only** way to
+    bind an aggregate, whose full type the wire does not carry. The
+    refusal names the escape hatch instead of guessing an element type.
 
-Unsupplied host functions get the explicit error the design doc mandates
-verbatim, rather than a wasmtime link failure:
+Two usage errors are caught before evaluation rather than during it:
+binding a name the program does not declare (the message lists the ones
+it does), and leaving a declared variable unbound (all missing names
+reported at once, rather than the first one surfacing as a
+`FailedPrecondition` mid-marshal).
 
-> program imports host fn 'rate_string'; the CLI cannot supply host impls
-> — use the C++ API, or redefine it as @native / foreign.
+A program importing `@host` / `@component` functions cannot run under
+the stock CLI — those are C++ in the embedder's process. `run`
+translates the `cel_fn` link failure into an actionable message
+pointing at `Engine::AddFunction` / `AddComponent`. When `cel.abi`
+field 8 lands, `Engine::Plan` will produce that diagnosis itself and
+this translation can be deleted.
 
-`--module <alias>=<path.wasm>` (repeatable) wires `Engine::AddModule`.
-Required aliases are validated against the import section **before**
-evaluation, so a missing alias is a usage error naming the alias, not a
-link trap.
+**Deferred:** `--module <alias>=<path.wasm>`. m35 reshapes how
+components are supplied (`Component::Load`, `Engine::Use`, selective
+instantiation), so wiring `Engine::AddModule` from the CLI now would be
+rework.
 
 ## 4. `Activation` — `OverrideFunction` removed, `BindLazy` implemented
 
@@ -221,14 +232,32 @@ applicable stages:
       result now reports on stderr and exits 1; flag errors reclassified
       to 2 via `ParseAbseilFlagsOnly`; `--help` honoured in any position;
       the duplicated per-subcommand prologue factored into `PrepareCli`.
-- [ ] **CLI `run` + `inspect`** — with `tools/cel/abi_describe.{h,cc}` as
-      the shared decode/describe helper (per `cel-cli-design.md` §6: one
-      helper, not two implementations), plus `abi_describe_test.cc`.
-- [ ] **Import walk** — extend the `abi_decode` byte walker to parse
-      section id 2, exposed for `inspect`; its own test.
+- [x] **CLI `run` + `inspect`** — `tools/cel/abi_describe.{h,cc}` is the
+      shared decode/describe helper (per `cel-cli-design.md` §6: one
+      helper, not two implementations), with `abi_describe_test.cc`.
+      `run` binds `--var name=value` by recovering the type from the
+      program's declared repr, pre-flights the whole declared set, and
+      translates a `cel_fn` link failure into the actionable message.
+- [x] **Import walk** — **dropped, deliberately.**  The first cut added
+      `DecodeImportsFromWasm` to `abi_decode` so `inspect` could report
+      required foreign modules and host functions.  It was reverted on
+      finding that `m35-component-ergonomics.md` already specifies both
+      halves better: §4 consolidates *all* wasm binary-format knowledge
+      into `//abi:wasm_binary` (its 2026-07-25 sweep counted five
+      existing copies of the framing logic and declares a sixth a review
+      finding), and §5.1 puts the required-function table on the wire as
+      `cel.abi` field 8, emitted from the post-optimize import surface
+      and verified at `Engine::Plan`.  A byte-level import walk would
+      have been a second, weaker source of truth for the same facts,
+      deleted within weeks.  `inspect` therefore reports what the
+      program *declares* today; the `requires:` / `host fns:` lines land
+      when field 8 does.
 - [x] **e2e (exit codes)** — 18 `expect_exit` cases in
       `cel_smoke_test.sh` pinning each code, plus stdout/stderr routing.
-- [ ] **e2e (run)** — compile→run round trip; pending `cel run`.
+- [x] **e2e (run)** — compile→inspect→run round trip in
+      `cel_smoke_test.sh`, plus usage-error cases (undeclared var,
+      unbound declared var, bad value, missing file, non-wasm input) and
+      a CEL-error-exits-1 case for a precompiled program.
 - [x] **Docs** — `tools/cel/README.md` exit-code table;
       `doc/user-guide/index.md` §4.5 (`BindLazy`) and §9 (exit codes,
       message-typed `--var` forms); `testing-checklist.md` rows;

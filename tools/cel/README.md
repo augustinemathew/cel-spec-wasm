@@ -9,12 +9,17 @@ cel eval 'd > duration("1s")' --var 'd:duration="2s"' # → true
 cel eval "[1, 3, 5, 7].exists(x, x > 5)"              # → true
 cel check "u.name" --proto user.proto --var "u:acme.User"   # → OK
 cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm
+cel inspect expr.wasm                                 # what does it declare?
+cel run expr.wasm --var "a=6" --var "b=7"              # → 43 (no recompile)
 ```
 
 ```
 cel eval     <expr> [flags...]  compile + evaluate; print the result
 cel check    <expr> [flags...]  parse + type-check; print OK / errors
 cel compile  <expr> [flags...]  emit wasm bytes (--output PATH or stdout)
+cel run      <prog.wasm> [flags...]
+                                evaluate a precompiled program; no recompile
+cel inspect  <prog.wasm>        print what the program declares
 cel generate --idl PATH --out_dir DIR
                                 emit custom-function bindings (fns.wit,
                                 codec.h, generated_stub.cc, user_fns.h)
@@ -50,6 +55,50 @@ Binary: `bazel-bin/tools/cel/cel` (built via
 a relative `--output` path is resolved inside the runfiles tree, not your
 shell's working directory — pass an absolute path (e.g.
 `--output /tmp/expr.wasm`).
+
+## Compile once, run later
+
+`compile` emits a portable `.wasm`; `run` evaluates it with no
+recompile, and `inspect` tells you what it needs first.
+
+```bash
+cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm
+
+cel inspect expr.wasm
+# vars:  a:int, b:int
+# link:  static (cel.abi v1, runtime abi v4)
+
+cel run expr.wasm --var "a=6" --var "b=7"    # → 43
+```
+
+On `run`, `--var` supplies **values only** — the type comes from the
+program's `cel.abi` section, so you never re-declare it. Binding a
+name the program doesn't declare is a usage error that lists the ones
+it does, and leaving a declared variable unbound is caught before
+evaluation rather than partway through it.
+
+Aggregates are the exception. `cel.abi` carries a variable's *kind*
+but not its full type — there is no element type for a list, no
+key/value types for a map, no message FQN — so those need the explicit
+form, and the error says so:
+
+```bash
+cel run list.wasm --var "xs=[1, 2, 3]"
+# ERROR: --var xs: the program declares `xs` as list, whose full type is
+#        not carried in the program's cel.abi; bind it with the explicit
+#        form `--var xs:<Type>=<value>`
+
+cel run list.wasm --var "xs:list<int>=[1, 2, 3]"     # → works
+```
+
+`inspect` prints kinds for the same reason: an aggregate shows as
+`xs:list`, never `xs:list<int>`.
+
+**What `run` cannot do:** evaluate a program that calls `@host` or
+`@component` custom functions. Those are C++ in *your* process, and no
+generic binary can supply them — use the C++ API (`Engine::AddFunction`
+/ `AddComponent`) instead. The CLI says so explicitly rather than
+failing with a raw wasm link error.
 
 ## Scalar arithmetic
 
