@@ -228,6 +228,28 @@ class FunctionLibrary {
 // semantic-validation failure.
 absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source);
 
+// ── WIT name derivation ─────────────────────────────────────────────
+//
+// The WIT package/interface a macro-built plugin exports its
+// functions under is ALWAYS derivable from the `.celfn` declaration
+// text — never configured (m35-plugin-ergonomics.md §4).  These
+// helpers are the single source of truth for that derivation, shared
+// by the generator (`cel generate` → wit_emitter) and by
+// `Plugin::Load`; do not re-derive the strings anywhere else.
+
+// The WIT package version the generator stamps.
+inline constexpr absl::string_view kWitPackageVersion = "0.1.0";
+
+// WIT package name for a library's `Module` directive:
+// `cel:<module>`, falling back to `cel:customfn` when the library
+// has no module name.
+std::string DeriveWitPackageName(absl::string_view module_name);
+
+// The full WIT interface name a macro-built plugin exports:
+// `cel:<module>/fns@0.1.0` (fallback module `customfn`), e.g.
+// `Module scorer;` → "cel:scorer/fns@0.1.0".
+std::string DeriveWitInterface(absl::string_view module_name);
+
 }  // namespace celwasm
 
 #endif  // CELWASM_COMPILER_CELFN_FUNCTION_LIBRARY_H_

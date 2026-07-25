@@ -554,4 +554,17 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source) {
   return std::move(b).Build();
 }
 
+// ── WIT name derivation ─────────────────────────────────────────────
+
+std::string DeriveWitPackageName(absl::string_view module_name) {
+  return absl::StrCat(
+      "cel:", module_name.empty() ? absl::string_view("customfn")
+                                  : module_name);
+}
+
+std::string DeriveWitInterface(absl::string_view module_name) {
+  return absl::StrCat(DeriveWitPackageName(module_name), "/fns@",
+                      kWitPackageVersion);
+}
+
 }  // namespace celwasm

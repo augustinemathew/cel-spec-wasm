@@ -627,5 +627,23 @@ int  @plugin.score(this string user_id);
   EXPECT_EQ(r->decls().size(), 8u);
 }
 
+// ── WIT name derivation ─────────────────────────────────────────────
+
+TEST(DeriveWitNames, PackageNameFromModule) {
+  EXPECT_EQ(DeriveWitPackageName("scorer"), "cel:scorer");
+}
+
+TEST(DeriveWitNames, PackageNameFallsBackToCustomfn) {
+  EXPECT_EQ(DeriveWitPackageName(""), "cel:customfn");
+}
+
+TEST(DeriveWitNames, InterfaceFromModule) {
+  EXPECT_EQ(DeriveWitInterface("scorer"), "cel:scorer/fns@0.1.0");
+}
+
+TEST(DeriveWitNames, InterfaceFallsBackToCustomfn) {
+  EXPECT_EQ(DeriveWitInterface(""), "cel:customfn/fns@0.1.0");
+}
+
 }  // namespace
 }  // namespace celwasm
