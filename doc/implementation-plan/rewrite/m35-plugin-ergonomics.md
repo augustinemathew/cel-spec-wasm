@@ -954,6 +954,27 @@ doc-comment capture that `CelfnDecl` doesn't store today.
     stock-Go plugins become a real ask.
   - `Swap` (slice C) and the C ABI (slice D) as drafted above.
 
+## 11.5 Pre-close cleanup (from the 2026-07-25 closeout review)
+
+Per `reviews/2026-07-25-m35-closeout.md` (verdict: mixed, leaning
+clean; no P0).  P1s tracked here, ticked as they land; P2s went to
+cleanup-backlog #52.
+
+  - [ ] D1 renderer unification — compiler.cc's diverged
+        `RenderCelfnType` deleted in favor of celfn_wire's
+        `RenderFnType` (grammar-accurate spellings win; pinned
+        messages updated).
+  - [ ] D2 `BackendPrefix` triplication → one celfn helper.
+  - [ ] D3 Load/embed-decls shared validation helpers (messages
+        byte-identical).
+  - [ ] D4 `ParsePluginComponent` helper in engine.cc.
+  - [ ] D5 engine_test.cc hand-rolled LEB/walker → `//abi:wasm_binary`
+        (violated the invariant m35 itself legislated).
+  - [ ] P1-3 delete `compiler/probes/m35/` (probe discipline).
+  - [ ] rename-sweep miss: `current-capabilities.md:96`.
+  - [ ] Slice N (compile-path benches, user-scoped) + B4/G gates —
+        in flight.
+
 ## 12. Slices
 
   0. **This doc** + `feature-pipeline-checklist.md` §2.7 ("new
