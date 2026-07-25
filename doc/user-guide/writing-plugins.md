@@ -306,9 +306,9 @@ type-checks against the plugin's declaration like any other function:
 ```cpp
 auto counter_plugin = Plugin::Load(counter_bytes).value();
 
-auto b = Compiler::NewBuilder();
-b.Use(counter_plugin);
-auto compiler = std::move(b).Build().value();
+auto builder = Compiler::NewBuilder();
+builder.Use(counter_plugin);
+auto compiler = std::move(builder).Build().value();
 auto program = compiler.Compile("invocation_id()").value();
 // `program` is wasm that calls the plugin fn on every Eval.
 ```
