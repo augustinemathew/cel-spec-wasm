@@ -825,6 +825,53 @@ instantiate zero.
 > link modes), incl. the honest-compat
 > `EmptyRequiredTableKeepsInstantiateAll`.
 
+## 6.5 Polyglot plugins — Rust, Go
+
+> Recovered 2026-07-25 from a sibling session's commit (`f2dcc52`,
+> orphaned by the master rebase + rename force-push) and ported onto
+> the plugin vocabulary.
+
+The component boundary is language-agnostic by construction: the
+engine resolves WIT exports and lifts/lowers canonical-ABI values
+(`eval/internal/cel_plugin.cc`); registration, verification, and
+dispatch never see the source language.  The contract for any
+language is identical: implement the `fns.wit` that `cel generate`
+emits (package `cel:<module>`, interface `fns@0.1.0`, kebab-case
+export names), produce a wasm32-wasip2 component, and run
+`cel embed-decls` over the artifact — the tool is deliberately
+standalone so non-macro builds get the same self-description.
+Protos cross as serialized bytes in every language.
+
+Per-language reality (Go findings PROVEN by the m22 probes,
+`probes/foreign_go/` + `m22-foreign-fn.md` §5.1, for the core-module
+C-ABI path; the component-path deltas are noted):
+
+  - **Rust** — the smooth path: native wasip2 components via
+    `cargo component` / `wit-bindgen`, lean std.  Keep the hot path
+    off WASI-touching std features (see the import caveat below).
+  - **TinyGo** — has a wasip2 target + `wit-bindgen-go`; fine for
+    scalar/string functions (~118 KB proven on the C-ABI path);
+    **proto-typed functions trap** — TinyGo's incomplete reflection
+    breaks `proto.Unmarshal` (probe-confirmed).
+  - **Stock Go** — proven end-to-end incl. protos on the C-ABI path
+    (Go ≥ 1.24 `//go:wasmexport`, +4.7 MB, 7 WASI imports), but has
+    no native component output: the component path is a wasip1
+    reactor wrapped via the preview1 adapter, AND the Go runtime
+    wants clocks/random at init — see the WASI caveat.
+
+**The WASI import caveat (applies to all languages):** Plan
+instantiates plugins with every unknown import trap-stubbed and
+only `wasi:random/get-random-bytes` given a real (deterministic)
+impl.  Instantiation succeeds regardless; any code path that CALLS a
+stubbed import traps at eval (the same class as the known libc++
+string-return trap in the C++ demo).  Rust/TinyGo library plugins
+that stay compute-only are fine; stock Go needs at least a
+deterministic `wasi:clocks` stub engine-side before it is real.
+
+Nothing here is m35 scope: no Rust/Go fixture exists yet, so the
+user guide must NOT claim polyglot support until an e2e fixture pins
+it (§11).
+
 ## 7. Multi-plugin reality
 
 The engine supports N registered plugins — each Plan instantiates
@@ -901,6 +948,10 @@ doc-comment capture that `CelfnDecl` doesn't store today.
     round-trips `ir::Repr` and rides on the `Repr` relocation).
   - Per-decl source re-render + doc-comment capture for slice D
     introspection.
+  - Polyglot e2e fixtures (§6.5): a Rust plugin (scalar + proto)
+    and a TinyGo plugin (scalar) driven through Load → Use →
+    Plan → Eval; a deterministic `wasi:clocks` stub engine-side if
+    stock-Go plugins become a real ask.
   - `Swap` (slice C) and the C ABI (slice D) as drafted above.
 
 ## 12. Slices
