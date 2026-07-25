@@ -12,14 +12,20 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <ios>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include "abi/cel_abi.pb.h"
+#include "abi/plugin.h"
 #include "abi/runtime_catalogue.h"
+#include "abi/wasm_binary.h"
 #include "absl/log/absl_check.h"
+#include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
@@ -35,11 +41,14 @@
 #include "eval/value.h"
 #include "google/protobuf/message.h"
 #include "gtest/gtest.h"
+#include "tools/cpp/runfiles/runfiles.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
 namespace celwasm {
 namespace {
+
+using ::bazel::tools::cpp::runfiles::Runfiles;
 
 // Returns `CompilerOptions` with `link_mode` set to the per-binary
 // `kTestLinkMode` — picked at build time by `link_mode_cc_test`.
@@ -1002,6 +1011,199 @@ TEST(EngineAddPluginTest, PlanSucceedsWhenNoPluginsRegistered) {
   auto v_or = inst_or->Eval();
   ASSERT_TRUE(v_or.ok()) << v_or.status();
   EXPECT_EQ(*v_or->AsInt(), 42);
+}
+
+// ─── m35 B1 — Engine::Use (one-noun plugin registration) ─────────
+//
+// `Use(plugin)` wraps the AddPlugin internals and adds (a) a STATIC
+// export check against the parsed component (interface + every
+// decl's kebab-case export, via wasmtime_component_get_export_index
+// — no store, no instantiation) and (b) content-hash retention on
+// the registry entry.  Failure matrix per m35-plugin-ergonomics.md
+// §3.3/§3.4:
+//   - overload-id collision (AddFunction / prior plugin) →
+//     AlreadyExists, checked BEFORE the parse + export check
+//   - structurally-corrupt component body → InvalidArgument
+//   - missing WIT interface / missing per-decl export →
+//     FailedPrecondition naming the missing thing, at registration
+//     (BEFORE any Plan)
+
+// Loads the macro-built `demo_plugin.wasm` (carries its `cel.fns`
+// section: Module customfn; @plugin.{greet,add,len}) from runfiles.
+std::vector<uint8_t> LoadDemoPluginBytes() {
+  std::string error;
+  auto runfiles = absl::WrapUnique(Runfiles::CreateForTest(&error));
+  ABSL_CHECK(runfiles != nullptr) << "runfiles init failed: " << error;
+  const std::string path = runfiles->Rlocation(
+      "_main/e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin.wasm");
+  ABSL_CHECK(!path.empty()) << "demo_plugin.wasm not in runfiles";
+  std::ifstream f(path, std::ios::binary);
+  ABSL_CHECK(f.is_open()) << "failed to open " << path;
+  return {(std::istreambuf_iterator<char>(f)),
+          std::istreambuf_iterator<char>()};
+}
+
+// A valid-but-empty component carrying a `cel.fns` section that
+// declares `fns` the component does not export: the fixture the
+// static-export-check negatives are built from (component WAT has
+// no cel.fns of its own; the section is appended with the
+// production framing writer).
+std::vector<uint8_t> ComponentWithCelFns(absl::string_view component_wat,
+                                         absl::string_view celfn_text) {
+  const std::vector<uint8_t> component = Wat2Wasm(component_wat);
+  auto with_fns = AppendCustomSection(
+      component, "cel.fns",
+      {reinterpret_cast<const uint8_t*>(celfn_text.data()),
+       celfn_text.size()});
+  ABSL_CHECK_OK(with_fns.status());
+  return *std::move(with_fns);
+}
+
+TEST(EngineUseTest, HappyPathRegistersMacroBuiltDemoPlugin) {
+  // The macro-built artifact self-describes (cel.fns embedded);
+  // Load → Use resolves interface `cel:customfn/fns@0.1.0` and the
+  // kebab exports greet-string-int / add-int-int / len-string
+  // statically.  Plan/Eval through the registered plugin is the
+  // demo e2e's job (demo_plugin_e2e_test.cc).
+  auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
+  ASSERT_TRUE(plugin_or.ok()) << plugin_or.status();
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  EXPECT_TRUE(engine_or->Use(*plugin_or).ok());
+}
+
+TEST(EngineUseTest, MissingInterfaceFailsAtUseNamingInterface) {
+  // `(component)` exports nothing; the appended cel.fns declares a
+  // phantom fn, deriving interface `cel:customfn/fns@0.1.0` (no
+  // Module directive → fallback module `customfn`).  Use must fail
+  // FailedPrecondition at registration — BEFORE any Plan — naming
+  // the interface it could not resolve.
+  auto plugin_or = Plugin::Load(
+      ComponentWithCelFns("(component)", "int @plugin.phantom(int x);\n"));
+  ASSERT_TRUE(plugin_or.ok()) << plugin_or.status();
+  ASSERT_EQ(plugin_or->wit_interface(), "cel:customfn/fns@0.1.0");
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto s = engine_or->Use(*plugin_or);
+  EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(),
+                                "does not export interface "
+                                "`cel:customfn/fns@0.1.0`"))
+      << s;
+}
+
+// Component exporting interface `cel:customfn/fns@0.1.0` with ONE
+// nested export (`add-int-int`) — the fixture for the
+// export-missing-under-interface arm.
+constexpr absl::string_view kAddOnlyIfaceComponentWat = R"WAT(
+(component
+  (core module $m
+    (func (export "add") (param i64 i64) (result i64)
+      (i64.add (local.get 0) (local.get 1))))
+  (core instance $ci (instantiate $m))
+  (func $add (param "a" s64) (param "b" s64) (result s64)
+    (canon lift (core func $ci "add")))
+  (instance $fns (export "add-int-int" (func $add)))
+  (export "cel:customfn/fns@0.1.0" (instance $fns)))
+)WAT";
+
+TEST(EngineUseTest, MissingExportUnderInterfaceFailsAtUseNamingExport) {
+  // The interface resolves; the second decl's kebab export
+  // (`phantom-int`) does not exist under it.  Use fails
+  // FailedPrecondition naming the kebab export, the interface, and
+  // the CEL overload-id — before any Plan.
+  auto plugin_or = Plugin::Load(ComponentWithCelFns(
+      kAddOnlyIfaceComponentWat,
+      "int @plugin.add(int a, int b);\nint @plugin.phantom(int x);\n"));
+  ASSERT_TRUE(plugin_or.ok()) << plugin_or.status();
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  auto s = engine_or->Use(*plugin_or);
+  EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "`phantom-int`")) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "cel:customfn/fns@0.1.0")) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "`phantom_int`")) << s;
+}
+
+TEST(EngineUseTest, AllDeclaredExportsPresentUnderInterfacePasses) {
+  // Positive twin of the negative above: decls exactly matching the
+  // interface's nested exports register cleanly.
+  auto plugin_or = Plugin::Load(ComponentWithCelFns(
+      kAddOnlyIfaceComponentWat, "int @plugin.add(int a, int b);\n"));
+  ASSERT_TRUE(plugin_or.ok()) << plugin_or.status();
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  EXPECT_TRUE(engine_or->Use(*plugin_or).ok());
+}
+
+TEST(EngineUseTest, CollisionWithEarlierAddFunctionAlreadyExists) {
+  // Collision detection runs FIRST — before the parse and the
+  // static export check — so even a plugin that would fail the
+  // export check reports the AlreadyExists collision.
+  auto plugin_or = Plugin::Load(
+      ComponentWithCelFns("(component)", "int @plugin.phantom(int x);\n"));
+  ASSERT_TRUE(plugin_or.ok()) << plugin_or.status();
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  HostCallback impl = [](HostCallContext& /*ctx*/) {
+    return absl::OkStatus();
+  };
+  ASSERT_TRUE(
+      engine_or->AddFunction("phantom_int", /*num_args=*/2, impl).ok());
+  auto s = engine_or->Use(*plugin_or);
+  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "Engine::Use")) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "phantom_int")) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "AddFunction")) << s;
+}
+
+TEST(EngineUseTest, CollisionWithPriorPluginAlreadyExists) {
+  // Same Plugin registered twice: the second Use collides on every
+  // overload-id with the first registration.
+  auto plugin_or = Plugin::Load(ComponentWithCelFns(
+      kAddOnlyIfaceComponentWat, "int @plugin.add(int a, int b);\n"));
+  ASSERT_TRUE(plugin_or.ok()) << plugin_or.status();
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  ASSERT_TRUE(engine_or->Use(*plugin_or).ok());
+  auto s = engine_or->Use(*plugin_or);
+  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "add_int_int")) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "previously-registered plugin"))
+      << s;
+}
+
+TEST(EngineUseTest, CollisionAcrossUseAndLegacyAddPluginAlreadyExists) {
+  // The registry is shared between Use and the legacy AddPlugin
+  // escape: an overload-id registered via AddPlugin blocks a later
+  // Use of a plugin declaring the same id.
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine_or.ok()) << engine_or.status();
+  ASSERT_TRUE(engine_or
+                  ->AddPlugin(Wat2Wasm("(component)"),
+                              OneBoolFnLibrary("phantom"))
+                  .ok());
+  auto plugin_or = Plugin::Load(
+      ComponentWithCelFns("(component)", "bool @plugin.phantom();\n"));
+  ASSERT_TRUE(plugin_or.ok()) << plugin_or.status();
+  auto s = engine_or->Use(*plugin_or);
+  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "previously-registered plugin"))
+      << s;
+}
+
+TEST(EngineUseTest, HashRetainedOnRegistryEntry) {
+  GTEST_SKIP()
+      << "RegisteredPlugin::hash is populated by Engine::Use (all-zero on "
+         "the legacy AddPlugin path) but has no observation seam: the "
+         "registry lives on the private WasmtimeEngineState and the "
+         "Plan-time diagnostics that would surface the hash are future "
+         "work (m35-plugin-ergonomics.md §9/§11 — hash enforcement is an "
+         "embedder conversation).  Un-skip by asserting on the Plan-time "
+         "hash diagnostic once that surface lands.";
+  // Intended assertion: after engine.Use(plugin), the registry entry
+  // for `plugin` carries plugin.hash() (non-zero); after the legacy
+  // engine.AddPlugin(bytes, lib), the entry's hash is all-zero.
 }
 
 // ─── m28 — link-mode label tripwire (`ValidateLinkModeLabel`) ──────

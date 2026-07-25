@@ -24,6 +24,7 @@
 #ifndef CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_
 #define CELWASM_EVAL_INTERNAL_WASMTIME_ENGINE_STATE_H_
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -74,8 +75,8 @@ struct RegisteredHostCallback {
   celwasm::HostCallback callback;
 };
 
-// A plugin registered via `Engine::AddPlugin` — the parsed
-// `wasmtime_component_t` plus the FunctionLibrary that
+// A plugin registered via `Engine::Use` or `Engine::AddPlugin` —
+// the parsed `wasmtime_component_t` plus the FunctionLibrary that
 // names which exports back which CEL decls.  The component is shared
 // across Plans (each Plan instantiates it into its own per-Plan store).
 // The library lives by value here so the decl signatures stay
@@ -83,6 +84,12 @@ struct RegisteredHostCallback {
 struct RegisteredPlugin {
   wasmtime_component_t* component = nullptr;
   celwasm::FunctionLibrary library;
+  // Content identity of the registered plugin — `Plugin::hash()`
+  // (SHA-256 over bytes ‖ cel.fns text), retained for Plan-time
+  // diagnostics that name which plugin mismatched.  All-zero on the
+  // legacy `AddPlugin(bytes, lib)` path, which has no Plugin object
+  // and therefore no hash (m35-plugin-ergonomics.md §9).
+  std::array<uint8_t, 32> hash{};
 };
 
 struct WasmtimeEngineState {

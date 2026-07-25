@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "abi/plugin.h"
 #include "abi/runtime_catalogue.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -1387,6 +1388,80 @@ bool CppParamMatchesDeclType(celwasm::HostParamKind cpp_kind,
   return false;
 }
 
+// ——— Plugin-registration helpers (Engine::Use / Engine::AddPlugin) ———
+
+// Conflict-check every kPlugin overload-id in `lib` against the
+// callbacks + plugins already registered on `state` — catching a
+// collision here turns the failure into a clean AlreadyExists at
+// registration time, before the per-Plan linker_define_func would
+// surface a less-helpful "duplicate import" error.  Shared by
+// `Engine::Use` and `Engine::AddPlugin`; `context` names the caller
+// in the message.
+absl::Status CheckPluginOverloadCollisions(
+    const celwasm::WasmtimeEngineState& state,
+    const celwasm::FunctionLibrary& lib, absl::string_view context) {
+  for (const auto& decl : lib.decls()) {
+    if (decl.backend != celwasm::CelfnDecl::Backend::kPlugin) continue;
+    if (state.host_callbacks.find(decl.overload_id) !=
+        state.host_callbacks.end()) {
+      return absl::AlreadyExistsError(absl::StrCat(
+          context, ": overload-id `", decl.overload_id,
+          "` is already bound by an earlier `AddFunction` registration"));
+    }
+    for (const auto& prior : state.plugin_registry) {
+      for (const auto& prior_decl : prior.library.decls()) {
+        if (prior_decl.backend != celwasm::CelfnDecl::Backend::kPlugin) {
+          continue;
+        }
+        if (prior_decl.overload_id == decl.overload_id) {
+          return absl::AlreadyExistsError(absl::StrCat(
+              context, ": overload-id `", decl.overload_id,
+              "` is already bound by a previously-registered plugin"));
+        }
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+// The static export check behind `Engine::Use`
+// (m35-plugin-ergonomics.md §3.3): resolve the plugin's WIT
+// interface, then every decl's kebab-case export nested under it,
+// against the PARSED component via
+// `wasmtime_component_get_export_index` — no store, no
+// instantiation (the nullable `instance_export_index` parameter
+// gives the two-level lookup).  Missing names return NULL, mapped
+// to FailedPrecondition naming the missing thing.
+absl::Status CheckPluginExportsStatically(
+    const wasmtime_component_t* component, const celwasm::Plugin& plugin) {
+  const std::string& iface = plugin.wit_interface();
+  wasmtime_component_export_index_t* iface_idx =
+      wasmtime_component_get_export_index(
+          component, /*instance_export_index=*/nullptr, iface.data(),
+          iface.size());
+  if (iface_idx == nullptr) {
+    return absl::FailedPreconditionError(absl::StrCat(
+        "Engine::Use: plugin does not export interface `", iface, "`"));
+  }
+  absl::Status status = absl::OkStatus();
+  for (const auto& decl : plugin.decls()) {
+    const std::string export_name = OverloadIdToKebab(decl.overload_id);
+    wasmtime_component_export_index_t* exp_idx =
+        wasmtime_component_get_export_index(
+            component, iface_idx, export_name.data(), export_name.size());
+    if (exp_idx == nullptr) {
+      status = absl::FailedPreconditionError(absl::StrCat(
+          "Engine::Use: plugin does not export `", export_name,
+          "` under interface `", iface, "` (CEL overload-id `",
+          decl.overload_id, "`)"));
+      break;
+    }
+    wasmtime_component_export_index_delete(exp_idx);
+  }
+  wasmtime_component_export_index_delete(iface_idx);
+  return status;
+}
+
 // Front half of `Engine::BindFunction`'s validation: parse + require
 // exactly one declaration with the `@host.` backend.
 absl::StatusOr<celwasm::CelfnDecl> ParseSingleHostDecl(
@@ -1573,23 +1648,50 @@ absl::Status Engine::BindParsedFunction(absl::string_view celfn_decl,
   return AddFunction(decl.overload_id, fn.num_args, std::move(fn.callback));
 }
 
-// ——— Engine::AddPlugin (m24 §3.5 — forward-declared, not yet wired) ———
+// ——— Engine::Use / Engine::AddPlugin (plugin registration) ———
 //
-// The full implementation per m24 §3.5 is:
-//
-//   1. Instantiate the plugin with the wasmtime component API.
-//   2. For each `kPlugin` decl in `lib`, validate the
-//      plugin exports a typed fn with a matching FuncType.
-//   3. Register a host callback (via `AddFunction`) whose body marshals
-//      args through the per-fn typed WIT codec (m24 §4–§7) into the
-//      plugin's typed export, then marshals the result back.
-//
-// The Component-Model surface of the vendored wasmtime C API is the
-// open prerequisite (m24 §13 — "verify the vendored build exposes it;
-// the C API's component surface is thinner than Rust's — may force a
-// shim").  This sibling is the surface the e2e test matrix
-// (e2e/foreign_fn_type_matrix_test.cc) is written against; tests SKIP
-// until this returns ok.
+// Both register a Component-Model plugin whose declared fns are
+// dispatched at Plan time (instantiate per-Plan store, bind each
+// decl's kebab-case export as a `cel_fn.<overload_id>` trampoline —
+// see `InstantiateAndBindPlugins`).  `Use` is the one-noun path
+// (decls come from the artifact's `cel.fns` section, exports are
+// checked statically here); `AddPlugin` is the explicit-decls
+// escape, whose export lookup stays Plan-time-only.
+
+absl::Status Engine::Use(const Plugin& plugin) {
+  if (auto s = CheckPluginOverloadCollisions(*wasmtime_, plugin.library(),
+                                             "Engine::Use");
+      !s.ok()) {
+    return s;
+  }
+  // Parse the plugin bytes.  `Plugin::Load` already proved the CM
+  // preamble, so a parse failure here means a structurally-corrupt
+  // component body — surface it as InvalidArgument per the m35 §3.4
+  // per-phase contract.  The parsed `wasmtime_component_t*` is
+  // shared across Plans (each Plan instantiates it into its own
+  // per-Plan store).
+  wasmtime_component_t* component = nullptr;
+  wasmtime_error_t* err = wasmtime_component_new(
+      wasmtime_->engine, plugin.bytes().data(), plugin.bytes().size(),
+      &component);
+  if (err != nullptr) {
+    absl::Status parse =
+        WasmtimeErrorToStatus("Engine::Use: parse plugin", err);
+    return absl::InvalidArgumentError(parse.message());
+  }
+  // Static export check — a bad plugin upload is rejected HERE, at
+  // registration, not at traffic time.  No instantiation happens.
+  if (auto s = CheckPluginExportsStatically(component, plugin); !s.ok()) {
+    wasmtime_component_delete(component);
+    return s;
+  }
+  celwasm::RegisteredPlugin entry;
+  entry.component = component;
+  entry.library = plugin.library();
+  entry.hash = plugin.hash();
+  wasmtime_->plugin_registry.push_back(std::move(entry));
+  return absl::OkStatus();
+}
 
 absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
                                   const FunctionLibrary& lib) {
@@ -1597,31 +1699,10 @@ absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
     return absl::InvalidArgumentError(
         "Engine::AddPlugin: plugin_bytes must be non-empty");
   }
-  // Conflict-check the overload-ids in `lib` against every callback
-  // already registered (host_callbacks + prior plugins).  Catching
-  // it here turns the failure into a clean AlreadyExists at
-  // registration time, before the per-Plan linker_define_func would
-  // surface a less-helpful "duplicate import" error.
-  for (const auto& decl : lib.decls()) {
-    if (decl.backend != CelfnDecl::Backend::kPlugin) continue;
-    if (wasmtime_->host_callbacks.find(decl.overload_id) !=
-        wasmtime_->host_callbacks.end()) {
-      return absl::AlreadyExistsError(absl::StrCat(
-          "Engine::AddPlugin: overload-id `", decl.overload_id,
-          "` is already bound by an earlier `AddFunction` registration"));
-    }
-    for (const auto& prior : wasmtime_->plugin_registry) {
-      for (const auto& prior_decl : prior.library.decls()) {
-        if (prior_decl.backend != CelfnDecl::Backend::kPlugin) {
-          continue;
-        }
-        if (prior_decl.overload_id == decl.overload_id) {
-          return absl::AlreadyExistsError(absl::StrCat(
-              "Engine::AddPlugin: overload-id `", decl.overload_id,
-              "` is already bound by a previously-registered plugin"));
-        }
-      }
-    }
+  if (auto s = CheckPluginOverloadCollisions(*wasmtime_, lib,
+                                             "Engine::AddPlugin");
+      !s.ok()) {
+    return s;
   }
   // Parse the plugin bytes.  Surfaces malformed-plugin errors
   // here rather than at first Plan.  The parsed
@@ -1635,6 +1716,8 @@ absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
   if (err != nullptr) {
     return WasmtimeErrorToStatus("Engine::AddPlugin: parse plugin", err);
   }
+  // `entry.hash` stays all-zero — this legacy path has no Plugin
+  // object and therefore no content hash (see RegisteredPlugin).
   celwasm::RegisteredPlugin entry;
   entry.component = component;
   entry.library = lib;

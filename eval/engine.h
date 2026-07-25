@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "abi/plugin.h"
 #include "absl/base/attributes.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -152,22 +153,44 @@ class Engine {
                                                 uint8_t num_args,
                                                 HostCallback impl);
 
+  // Register a Plugin as the sandboxed backend for its
+  // declarations — the eval-side half of the one-noun flow.  Wraps
+  // the AddPlugin internals and adds:
+  //   - a STATIC export check: the interface
+  //     (`plugin.wit_interface()`) and every decl's kebab-case
+  //     export are resolved against the parsed component — a
+  //     missing interface/export fails HERE, FailedPrecondition,
+  //     naming it.  No instantiation.
+  //   - the plugin's content hash is retained for Plan-time
+  //     diagnostics (names which plugin mismatched).
+  // Collisions (vs AddFunction/BindFunction and prior plugins)
+  // -> AlreadyExists.  NOT thread-safe; startup-only, same contract
+  // as the rest of the registration family.
+  ABSL_MUST_USE_RESULT absl::Status Use(const Plugin& plugin);
+
   // Register a plugin (a Component-Model wasm binary) as the backend
-  // for every `kPlugin` decl in `lib`.  Per m24 §3.5: instantiate the
-  // plugin with the wasmtime component API, validate each declared
-  // fn is exported with the matching `FuncType`, and bind a host
-  // callback (via the existing `AddFunction` path) whose body marshals
-  // args via the per-fn typed WIT codec → the plugin's typed export
-  // → marshals the result.
+  // for every `kPlugin` decl in `lib` — the explicit-decls escape
+  // hatch (pure-WAT tests, pre-`cel.fns` artifacts).  Prefer
+  // `Use(plugin)`, which derives `lib` from the artifact itself and
+  // adds a registration-time static export check.
   //
-  // Conflict checks (same shape as `AddFunction`):
+  // Registration validates ONLY:
   //   - Any `overload_id` from `lib`'s kPlugin decls already
   //     registered → AlreadyExists.
-  //   - `plugin_bytes` fail to parse as a Component-Model component
-  //     → InvalidArgument.
-  //   - A declared fn is not exported by the plugin, or its
-  //     exported `FuncType` does not match the decl's signature →
-  //     FailedPrecondition.
+  //   - `plugin_bytes` empty → InvalidArgument; failing to parse as
+  //     a Component-Model component → FailedPrecondition (the
+  //     wasmtime parse error, passed through).
+  //
+  // Export ↔ decl resolution is Plan-time-only on this path: each
+  // Plan instantiates the component and looks up every decl's
+  // kebab-case export, so a missing export surfaces as
+  // FailedPrecondition from `Plan`, not here (pinned by
+  // e2e/plugin_dispatch_test.cc MissingExportFailsAtPlanNotAddPlugin).
+  // No `FuncType`-vs-decl signature validation exists on either
+  // path — the wasmtime C API's component type introspection is too
+  // thin — so a wrong-arity export surfaces only as a call-time
+  // trap (`Use` narrows this to export *existence*, checked
+  // statically at registration).
   //
   // **NOT thread-safe** — same contract as `AddFunction` / `AddModule`.
   //
