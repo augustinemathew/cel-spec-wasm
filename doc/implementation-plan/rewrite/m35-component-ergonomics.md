@@ -166,8 +166,8 @@ and already on both sides' dep paths.  The new edge
 is the same data-vocabulary class of edge `eval` already holds.
 Support targets stay `//:internal`: `//abi/internal:sha256` (small
 first-party SHA-256 — no crypto dep exists in MODULE.bazel),
-`//abi:fns_section` (§4 walker), `//abi:celfn_wire` (§5 type
-mapping).
+`//abi:wasm_binary` (§4 — the consolidated binary-format layer),
+`//abi:celfn_wire` (§5 type mapping).
 
 ```cpp
 class Component {
@@ -344,33 +344,82 @@ core module*, invisible to a top-level walker; and Binaryen's
 `AddCustomSection` cannot produce/edit CM binaries at all.  Raw
 top-level framing is the only correct mechanism.
 
-**Reader/writer: `//abi:fns_section`** (`abi/fns_section.{h,cc}`):
+**Reader/writer: `//abi:wasm_binary`** (`abi/wasm_binary.{h,cc}`) —
+THE wasm binary-format layer, not a `cel.fns`-only helper.  A
+2026-07-25 sweep found the framing knowledge (magic, version words,
+LEB128, section walk) already lives in FIVE places, and m35 would
+have added four more:
+
+  - `eval/internal/abi_decode.cc:19-106` — the only production
+    reader (core-module-only, anonymous namespace, eval-side).
+  - `compiler/internal/compile_test.cc:270-325` — a full duplicate
+    walker, duplicated *because* the compiler tree can't reach the
+    eval-side one.
+  - `eval/internal/abi_decode_test.cc:44-71` — a raw *writer*
+    (`AppendLeb128U32` + `MakeWasmWithCustomSection`) that exists
+    nowhere in production.
+  - `compiler/codegen/module_test.cc:32-40` and
+    `runtime/cel_runtime_stripped_wasm_bytes_test.cc:42-48` —
+    byte-level magic/version assertions.
+
+The consolidation: one module, **absl-only deps** (no Binaryen, no
+wasmtime, no proto) so it sits below both `compiler/` and `eval/`
+— the property neither existing copy has.  Visibility `//:internal`.
 
 ```cpp
+// abi/wasm_binary.h — the ONLY first-party code allowed to know
+// wasm binary framing.  A magic constant or LEB decoder anywhere
+// else is a review finding (feature-pipeline-checklist §2.7).
+
+enum class WasmLayer { kCoreModule, kComponent };
+
+// Preamble classification: \0asm + version word 0x00000001 (core
+// module) vs version/layer word 0x0001000d (CM component).
+std::optional<WasmLayer> ClassifyWasmBinary(absl::Span<const uint8_t>);
+bool IsCoreModule(absl::Span<const uint8_t> bytes);
 bool IsComponentBinary(absl::Span<const uint8_t> bytes);
-    // preamble \0asm + version/layer word 0x0001000d
 
-absl::StatusOr<absl::Span<const uint8_t>> FindComponentCustomSection(
-    absl::Span<const uint8_t> component_bytes, absl::string_view name);
-    // top-level walk only; custom sections keep id 0x00 at component
-    // level; never recurses into nested core-module (id 1) /
-    // component (id 4) payloads.  OK -> zero-copy span; NotFound;
-    // InvalidArgument (not a component / framing overrun /
-    // duplicate name).
+// LEB128 (unsigned 32-bit) read/append — shared by walk and build.
+bool ReadLeb128U32(absl::Span<const uint8_t>, size_t* pos, uint32_t* out);
+void AppendLeb128U32(std::vector<uint8_t>& out, uint32_t value);
 
-absl::StatusOr<std::vector<uint8_t>> AppendComponentCustomSection(
-    absl::Span<const uint8_t> component_bytes, absl::string_view name,
+// Find the top-level custom section named `name`.  Works on BOTH
+// layers (the id/size framing is identical; custom sections keep
+// id 0x00 at component level); never recurses into nested
+// core-module (id 1) / component (id 4) payloads.  OK -> zero-copy
+// span into the input; NotFound; InvalidArgument (bad preamble /
+// framing overrun / duplicate name).
+absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
+    absl::Span<const uint8_t> wasm_bytes, absl::string_view name);
+
+// Return a copy of `wasm_bytes` with a custom section appended at
+// top level.  InvalidArgument on bad preamble or existing `name`.
+absl::StatusOr<std::vector<uint8_t>> AppendCustomSection(
+    absl::Span<const uint8_t> wasm_bytes, absl::string_view name,
     absl::Span<const uint8_t> payload);
+
+// Test/build helper: frame {name, payload} as custom-section bytes.
+std::vector<uint8_t> BuildCustomSection(absl::string_view name,
+                                        absl::Span<const uint8_t> payload);
 ```
 
-This deliberately does NOT reuse `eval/internal/abi_decode.cc`'s
-`FindCustomSection`: that walker is core-module-only (hard
-`kWasmVersion == 1` check rejects the component preamble), sits in
-an anonymous namespace, and lives on the eval side where the
-compiler tree must not reach (`compile_test.cc` duplicates a walker
-for exactly that reason).  Unifying the two walkers under `abi/` is
-future work (§11) — it rides on the `Repr` relocation already noted
-in CLAUDE.md.
+Migration (slice A1, before `Component::Load` lands on top):
+`abi_decode.cc` refactors onto the shared walker — behavior-neutral,
+its existing tests pin that; only the proto-decode half (which
+round-trips `ir::Repr`) stays eval-side until the `Repr` relocation.
+`compile_test.cc`'s duplicate walker and `abi_decode_test.cc`'s
+hand-builder are DELETED in favor of the module.  The magic asserts
+in `module_test.cc` / the stripped-bytes test may switch to
+`IsCoreModule` opportunistically.
+
+What deliberately does NOT move here: Binaryen-mediated module
+mutation (`WasmModule::AddCustomSection`/`Serialize`,
+`strip_command_wrappers` — semantic rewrites belong to Binaryen)
+and wasmtime import introspection
+(`eval/internal/module_imports.cc` operates on a parsed
+`wasmtime_module_t`, not bytes).  The layering line: **byte-level
+framing → `//abi:wasm_binary`; module semantics → Binaryen;
+runtime linking → wasmtime.**
 
 **Writer tool: `cel embed-decls`** (`tools/cel/run_embed_decls.{h,cc}`,
 dispatched from the `cel` driver like `run_generate`):
@@ -384,7 +433,7 @@ Reads the component; validates (CM preamble; idl parses; **all decls
 section); appends the verbatim idl bytes; writes.  Deterministic
 (pure function of its inputs).  Not wasm-tools: the step needs
 celfn-aware validation with proper messages, which only a
-first-party tool linking `ParseCelfnSource` + `//abi:fns_section`
+first-party tool linking `ParseCelfnSource` + `//abi:wasm_binary`
 gives hermetically.
 
 **Macro change:** `bazel/cel_wasm_component.bzl` step 4
@@ -700,9 +749,10 @@ today.
   - CPU-time limits for component calls (the
     `cel_engine_component_max_memory` setter in the draft C header
     is the ABI slot such knobs land in).
-  - Unify `eval/internal/abi_decode.cc`'s core-module walker with
-    `//abi:fns_section` under `abi/` (rides on the `Repr`
-    relocation).
+  - Move the `cel.abi` PROTO-decode half of
+    `eval/internal/abi_decode.cc` to `abi/` (the raw section walker
+    moves in slice A1 via `//abi:wasm_binary`; the proto decode
+    round-trips `ir::Repr` and rides on the `Repr` relocation).
   - Per-decl source re-render + doc-comment capture for slice D
     introspection.
   - `Swap` (slice C) and the C ABI (slice D) as drafted above.
@@ -713,7 +763,11 @@ today.
      custom section on a component binary").
   A. Self-describing artifact: A0 package-override removal (macro
      attr + `cel generate` flags; zero callers, no migration);
-     A1 `//abi/internal:sha256` + `//abi:fns_section`;
+     A1 `//abi/internal:sha256` + `//abi:wasm_binary` (the
+     consolidated binary-format layer, §4) INCLUDING the migration —
+     `abi_decode.cc` refactored onto the shared walker,
+     `compile_test.cc`'s duplicate walker and `abi_decode_test.cc`'s
+     hand-builder deleted;
      A2 `cel embed-decls`; A3 macro step-4 swap + demo-e2e
      integration pin (macro output carries the section;
      `Component::Load` round-trips it); A4 wasmtime component-level

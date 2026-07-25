@@ -280,16 +280,19 @@ the component preamble, by design).
     greppable: `cel.abi` (core module, Program) / `cel.fns`
     (component, declarations).  One section, one owner doc.
   - [ ] **Writer** — a build-time tool step (`cel` subcommand +
-    `//abi:fns_section` `AppendComponentCustomSection`); NEVER a
+    `//abi:wasm_binary` `AppendCustomSection`); NEVER a
     compile-step `__attribute__((section))` (lands inside the
     nested core module) and NEVER Binaryen (cannot edit CM
     binaries).
   - [ ] **Build wiring** — `bazel/cel_wasm_component.bzl` step that
     invokes the writer; macro docstring's "Produces:" updated.
-  - [ ] **Reader** — via `//abi:fns_section`
-    `FindComponentCustomSection` (top-level walk only, no recursion
-    into nested module/component sections), reachable from both
-    compile- and eval-side consumers.
+  - [ ] **Reader** — via `//abi:wasm_binary` `FindCustomSection`
+    (top-level walk only, no recursion into nested
+    module/component sections), reachable from both compile- and
+    eval-side consumers.  `//abi:wasm_binary` is THE binary-format
+    layer (absl-only deps, below compiler AND eval): any new magic
+    constant, LEB codec, or section walker outside it is a review
+    finding — see m35 §4 for the consolidation inventory.
   - [ ] **Consumer** — the API surface that parses the payload
     (e.g. `Component::Load`), with its error contract written
     before implementation.
