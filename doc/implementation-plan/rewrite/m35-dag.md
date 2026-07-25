@@ -80,7 +80,7 @@ graph TD
 | 2 | A4 probe + Plugin::Load (//abi:plugin) | agent-A4 | done (1c4e0fb probe: static export lookup EXISTS in pin — B1 goes static; 25b5bf4 Plugin::Load) |
 | 2 | V1 + V2 (wire + emission) | agent-V | done (ec658ab, d2cfb3c, f53692f; O2-import-drop pin green both link modes; conformance 2035/2035 both legs; delta: FN_KIND_NULL=14 added) |
 | 3 | B0 + B1 + B2 (one agent — B and V3 share eval/engine.cc, so serialized) | agent-B | done (8ff6ce4 DeclareFunctions; 42ab8dc Engine::Use static check + hash; 0140dd4 Builder::Use + #44 hardening; 3c3f843 one-noun e2e both link modes; 108/108, R36 resolved) |
-| 3 | V3 + V4 (check + selective instantiation; after B — §5.3 messages cite Engine::Use) | agent-V34 | in flight |
+| 3 | V3 + V4 (check + selective instantiation; after B — §5.3 messages cite Engine::Use) | agent-V34 | done (869621a required_fn_check + BindFunction typed capture + e2e negatives; ff1a97d selective instantiation + §6.4 pins incl. verified-failing-before proof; gates: //eval+//e2e 88/88 + all 17 manual-tagged, bazel build //... 303 targets, conformance 2035/2035 both legs; deltas recorded in plan §5.3/§6.4 callouts: BindFunction-mismatch message shape, legacy-hash rendering `hash unavailable; registered via AddPlugin`, empty-table = legacy instantiate-all) |
 | 4 | B3 examples + demo e2e | agent-B3 | done (24d70e3; mirror + SetWitInterface deleted, smoke green) |
 | 4 | N benchmarks | agent-N | pending |
 | 5 | S1–S5 doc site (parallel per page group) | agent-S | done (a8d828d, cb90689, b5ab6ef, 0690648, 75074a5, dc42913, 57eb983; all quoted strings grep-verified; diagrams regenerated) |
