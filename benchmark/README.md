@@ -28,9 +28,12 @@ Every corpus cell runs on celwasm and cel-cpp; mismatched results are
 flagged `⚠️parity` — a mismatch is a bug, not a number.  If a number
 moved and you want to know *which layer* is at fault, drop a tier:
 `//benchmark/kernel:kernel_bench` times the native runtime kernels with
-no wasm in the loop, `//benchmark/compiler:*` times Compile/Plan, and
+no wasm in the loop, `//benchmark/compiler:*` times Compile/Plan,
 `//benchmark/plugin:plugin_bench` isolates the
-Component-Model call boundary.
+Component-Model call boundary, and
+`//benchmark/plugin:plugin_compile_bench` its compile path
+(`Plugin::Load`, `Use` decl registration, required-functions
+emission; latest numbers: `plugin/results/`).
 
 **You want publishable numbers.** On an idle machine:
 
