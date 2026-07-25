@@ -135,6 +135,74 @@ TEST(AbiDecodeTest, DecodesEveryScalarRepr) {
   }
 }
 
+// --- required_functions (field 8) ----------------------------------
+
+TEST(AbiDecodeTest, DecodesRequiredFunctions) {
+  celwasm::abi::CelAbi abi;
+  abi.set_version(1);
+  auto* host_fn = abi.add_required_functions();
+  host_fn->set_overload_id("discount_pct_string");
+  host_fn->set_fn_name("discount_pct");
+  host_fn->set_backend(celwasm::abi::RequiredFunction::HOST);
+  host_fn->add_param_types()->set_kind(celwasm::abi::FnType::FN_KIND_STRING);
+  host_fn->mutable_return_type()->set_kind(celwasm::abi::FnType::FN_KIND_INT);
+  auto* plugin_fn = abi.add_required_functions();
+  plugin_fn->set_overload_id("is_adult_message_acme_User");
+  plugin_fn->set_fn_name("is_adult");
+  plugin_fn->set_backend(celwasm::abi::RequiredFunction::PLUGIN);
+  auto* param = plugin_fn->add_param_types();
+  param->set_kind(celwasm::abi::FnType::FN_KIND_LIST);
+  auto* elem = param->add_params();
+  elem->set_kind(celwasm::abi::FnType::FN_KIND_PROTO);
+  elem->set_proto_fqn("acme.User");
+  plugin_fn->mutable_return_type()->set_kind(
+      celwasm::abi::FnType::FN_KIND_BOOL);
+  plugin_fn->set_is_receiver(true);
+
+  auto decoded = DecodeCelAbiFromWasm(
+      MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi)));
+  ASSERT_THAT(decoded, IsOk());
+  ASSERT_EQ(decoded->required_functions_size(), 2);
+  const auto& h = decoded->required_functions(0);
+  EXPECT_EQ(h.overload_id(), "discount_pct_string");
+  EXPECT_EQ(h.fn_name(), "discount_pct");
+  EXPECT_EQ(h.backend(), celwasm::abi::RequiredFunction::HOST);
+  ASSERT_EQ(h.param_types_size(), 1);
+  EXPECT_EQ(h.param_types(0).kind(), celwasm::abi::FnType::FN_KIND_STRING);
+  EXPECT_EQ(h.return_type().kind(), celwasm::abi::FnType::FN_KIND_INT);
+  EXPECT_FALSE(h.is_receiver());
+  const auto& p = decoded->required_functions(1);
+  EXPECT_EQ(p.overload_id(), "is_adult_message_acme_User");
+  EXPECT_EQ(p.backend(), celwasm::abi::RequiredFunction::PLUGIN);
+  ASSERT_EQ(p.param_types_size(), 1);
+  ASSERT_EQ(p.param_types(0).params_size(), 1);
+  EXPECT_EQ(p.param_types(0).params(0).proto_fqn(), "acme.User");
+  EXPECT_TRUE(p.is_receiver());
+}
+
+// Open-set wire contract: unknown FnType kinds and unknown Backend
+// values decode without rejection and survive numerically — a
+// program emitted by a future compiler must not fail decode on an
+// older engine (the signature compare treats them numerically).
+TEST(AbiDecodeTest, DecodesUnknownFnKindAndBackendWithoutRejection) {
+  celwasm::abi::CelAbi abi;
+  abi.set_version(1);
+  auto* fn = abi.add_required_functions();
+  fn->set_overload_id("future_fn");
+  fn->set_backend(static_cast<celwasm::abi::RequiredFunction::Backend>(7));
+  fn->mutable_return_type()->set_kind(
+      static_cast<celwasm::abi::FnType::Kind>(99));
+
+  auto decoded = DecodeCelAbiFromWasm(
+      MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi)));
+  ASSERT_THAT(decoded, IsOk());
+  ASSERT_EQ(decoded->required_functions_size(), 1);
+  EXPECT_EQ(static_cast<int>(decoded->required_functions(0).backend()), 7);
+  EXPECT_EQ(
+      static_cast<int>(decoded->required_functions(0).return_type().kind()),
+      99);
+}
+
 // --- End-to-end (real compiler output) -----------------------------
 
 TEST(AbiDecodeTest, RoundTripsCompilerOutput) {

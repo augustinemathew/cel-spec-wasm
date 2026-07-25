@@ -191,6 +191,73 @@ message TypeEntry {
   string fully_qualified_name = 2;
 }
 
+// Recursive type spelling for a custom-function signature.  Mirrors
+// `CelfnType` (compiler/celfn/function_library.h) 1:1; open-set on
+// wire (unknown kinds compare numerically, never rejected at
+// decode).  Emitted by `FnTypeFromCelfn`, compared by `FnTypeEquals`
+// (abi/celfn_wire.h).
+message FnType {
+  enum Kind {
+    FN_KIND_UNSPECIFIED = 0;
+    FN_KIND_BOOL = 1;
+    FN_KIND_INT = 2;
+    FN_KIND_UINT = 3;
+    FN_KIND_DOUBLE = 4;
+    FN_KIND_STRING = 5;
+    FN_KIND_BYTES = 6;
+    FN_KIND_DURATION = 7;
+    FN_KIND_TIMESTAMP = 8;
+    FN_KIND_PROTO = 9;  // fqn in proto_fqn
+    FN_KIND_LIST = 10;  // params = [elem]
+    FN_KIND_MAP = 11;   // params = [key, value]
+    FN_KIND_TYPE = 12;
+    FN_KIND_OPTIONAL = 13;  // params = [elem]
+    // CEL `null` is a declarable celfn shape (`CelfnType::kNull`;
+    // grammar production `type: ... | 'null'`), so it needs a wire
+    // kind.  Additive value — lands past the m35 plan's original 13
+    // (the plan's §5.1 enum omitted it despite the 1:1-mirror
+    // intent).
+    FN_KIND_NULL = 14;
+  }
+  Kind kind = 1;
+  string proto_fqn = 2;
+  repeated FnType params = 3;
+}
+
+// One custom function the Program's wasm imports (module `cel_fn`)
+// — i.e. one function instantiation WILL demand.  Engine::Plan
+// verifies each row against its registry before any wasmtime
+// linking, and instantiates only the plugins the PLUGIN rows
+// name.  Programs emitted before this field carry an empty list:
+// the check no-ops and Plan behaves as before the field existed
+// (including instantiate-all of registered plugins).
+//
+// `@host.` rows ARE included: the wire cost is trivial, and it
+// converts the worst failure — an opaque `unknown import
+// cel_fn.<id>` wasmtime link error when a host registration was
+// forgotten — into a clean FailedPrecondition.  `@native.`
+// (kCelDefined) decls are excluded naturally: their imports are
+// per-module aliases, not `cel_fn`.
+//
+// Populated from the POST-optimize import surface (see
+// doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §5.2):
+// the table equals the final wasm's `cel_fn` import list, because
+// Binaryen drops unused imports at O1+ while wasmtime demands every
+// surviving import at link time.
+message RequiredFunction {
+  enum Backend {
+    BACKEND_UNSPECIFIED = 0;
+    HOST = 1;
+    PLUGIN = 2;
+  }
+  string overload_id = 1;  // == the cel_fn import base name
+  string fn_name = 2;      // source-level name, for messages
+  Backend backend = 3;
+  repeated FnType param_types = 4;  // excludes out_slot; wasm arity = size+1
+  FnType return_type = 5;
+  bool is_receiver = 6;
+}
+
 // Link mode a Program was compiled with.  See
 // doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
 //
@@ -272,4 +339,13 @@ message CelAbi {
   // enum values skip validation (open-set wire data).  See
   // doc/implementation-plan/rewrite/m28-configurable-linking.md §6.
   LinkMode link_mode = 7;
+
+  // The custom functions this Program's wasm imports (module
+  // `cel_fn`) — one row per surviving import, in module import
+  // order.  Engine::Plan verifies each row against its registry
+  // (existence + full signature agreement) before any wasmtime
+  // linking.  Empty for programs with no custom-fn call sites and
+  // for programs emitted before this field existed (the check
+  // no-ops on both).
+  repeated RequiredFunction required_functions = 8;
 }

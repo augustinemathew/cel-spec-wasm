@@ -37,6 +37,35 @@ cc_test(
     ],
 )
 
+# celfn signature vocabulary <-> `cel.abi` wire mapping: CelfnType ->
+# FnType (recursive), FnType structural equality (proto-FQN-sensitive,
+# open-set on unknown kinds), and THE signature renderer shared by
+# emit tests and Engine::Plan diagnostics.  First-party internal.
+cc_library(
+    name = "celfn_wire",
+    srcs = ["celfn_wire.cc"],
+    hdrs = ["celfn_wire.h"],
+    visibility = ["//:internal"],
+    deps = [
+        ":cel_abi_cc_proto",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "celfn_wire_test",
+    size = "small",
+    srcs = ["celfn_wire_test.cc"],
+    deps = [
+        ":cel_abi_cc_proto",
+        ":celfn_wire",
+        "//compiler/celfn:function_library",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Schema of the `cel.abi` custom section emitted by the compiler.
 # Fresh v2 schema — decoupled from v1's compiler/codegen/cel_abi.proto.
 # See cel_abi.proto for the rationale and field-by-field docs.
