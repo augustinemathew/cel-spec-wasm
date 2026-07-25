@@ -26,7 +26,7 @@ namespace celwasm {
 
 // The two binary layers a `.wasm` file can carry: a core module or a
 // Component-Model component (which nests core modules as sections).
-enum class WasmLayer { kCoreModule, kComponent };
+enum class WasmLayer : std::uint8_t { kCoreModule, kComponent };
 
 // Preamble classification: `\0asm` + version word 0x00000001 (core
 // module) vs version/layer word 0x0001000d (CM component).  Returns

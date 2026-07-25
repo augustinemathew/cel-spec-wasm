@@ -63,7 +63,7 @@ void LoadSchedule(const uint8_t* block, std::array<uint32_t, 64>& w) {
 
 // §6.2.2 steps 2-4: one compression round over a 64-byte block.
 void ProcessBlock(const uint8_t* block, std::array<uint32_t, 8>& state) {
-  std::array<uint32_t, 64> w;
+  std::array<uint32_t, 64> w = {};
   LoadSchedule(block, w);
   uint32_t a = state[0];
   uint32_t b = state[1];
@@ -126,7 +126,7 @@ std::array<uint8_t, kSha256DigestSize> Sha256(absl::Span<const uint8_t> data) {
     ProcessBlock(data.data() + off, state);
   }
   ProcessFinalBlocks(data.subspan(full_end), data.size(), state);
-  std::array<uint8_t, kSha256DigestSize> digest;
+  std::array<uint8_t, kSha256DigestSize> digest = {};
   for (size_t i = 0; i < state.size(); ++i) {
     digest[4 * i] = static_cast<uint8_t>(state[i] >> 24);
     digest[(4 * i) + 1] = static_cast<uint8_t>(state[i] >> 16);
