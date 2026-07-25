@@ -1,28 +1,44 @@
-# Custom functions — the three backends
+# Custom functions — host functions vs wasm plugins
 
-The overview of extending CEL with your own functions: the `.celfn` IDL, the
-backend prefixes, and each backend's registration surface. Deep dives with
-worked examples live on their own pages:
-[host functions](writing-host-functions.md) ·
-[plugin functions](writing-plugins.md).
+A CEL expression sees only what the host hands it. Custom functions are
+the escape hatch: you register functions, and rule authors call them
+like built-ins. There are **two shipped mechanisms**, and one decision
+picks between them: *does the function's code belong inside your
+process?*
+
+| | `@host.` — host function | `@plugin.` — plugin function |
+|---|---|---|
+| Trust model | **fully trusted** — your C++, your address space, your privileges | **untrusted OK** — sealed in its own wasm sandbox |
+| Body lives in | a C++ lambda in your binary | a sandboxed wasm plugin (own linear memory) |
+| Declared as | `int @host.length(string s);` | `bool @plugin.allow(string s, string a);` |
+| Compile-side registration | `Builder::AddFunction(decl)` / `DeclareFunctions(lib)` | `Builder::Use(plugin)` |
+| Eval-side registration | `Engine::BindFunction(decl, lambda)` | `Engine::Use(plugin)` |
+| Values cross by | zero-copy slots in shared memory | marshalled across the boundary (protos as serialized bytes) |
+| Update | re-link your binary | hand new bytes to a fresh `Engine` |
+| Per-call cost | ~110 ns | ~450 ns |
+| Guide | [Writing host functions](writing-host-functions.md) | [Writing plugins](writing-plugins.md) |
+
+Rule of thumb: **a function body you wrote → `@host`; a function body
+you didn't → `@plugin`.** (A third prefix, `@native`, is reserved for
+CEL-defined bodies and unimplemented — §3.)
+
+Both mechanisms share the same `.celfn` IDL, the same synthesized
+overload-ids, and the same call-site experience — an expression cannot
+tell them apart. The trust boundary is the only difference that
+matters. Precise sandbox guarantees: [security model](security-model.md).
 
 ---
 
-## 1. Extending CEL with custom functions — overview
+## 1. The `.celfn` IDL — declarations first
 
-Custom functions are declared in a small **`.celfn` IDL** and come in three
-backends, distinguished by the *shape* of the declaration:
+Custom functions are declared in a small IDL; the **backend prefix**
+(`@host.` / `@plugin.` / `@native.`) selects the mechanism. Every
+declaration carries a prefix; there is no unprefixed form.
 
-| Backend | Declaration shape | Who provides the body | Registered on |
-|---|---|---|---|
-| **Host** | `int @host.length(string s);` | your C++ at runtime | `Engine::AddFunction` |
-| **CEL-defined** ⛔ | `int @native.addone(int x) = x + 1;` | a CEL expression body | **not yet implemented** — reserved syntax; see §3 |
-| **Plugin** ✅ | `bool @plugin.allow(string subject, string action);` | a sandboxed wasm plugin (C++ today, TinyGo/Rust designed) | `Engine::AddPlugin` |
-
-The backend is the **module prefix**: `@host` (C++ impl), `@plugin`
-(sandboxed wasm plugin), or `@native` (reserved for CEL-defined bodies —
-unimplemented, §3). Every declaration carries an `@<backend>.` prefix; there
-is no unprefixed form. (Grammar reference: `m13-custom-fns.md` §3.0.)
+The type grammar (`compiler/celfn/function_library.h`):
+`bool int uint double string bytes null Duration Timestamp`, `list<T>`,
+`map<K,V>` (K ∈ bool/int/uint/string), `proto(<fqn>)`, and a leading
+`this` on the first param for method-style dispatch (`x.is_admin()`).
 
 Register declarations on the `Compiler` so call sites type-check:
 
@@ -30,19 +46,16 @@ Register declarations on the `Compiler` so call sites type-check:
 auto b = celwasm::Compiler::NewBuilder();
 b.AddFunction("int @host.length(string s);");       // one decl from a string
 b.DeclareFunctions(*celwasm::ParseCelfnSource(celfn_text));   // a whole .celfn file/library (StatusOr — check in real code)
+b.Use(plugin);                                      // a Plugin's embedded declarations (§4)
 auto compiler = std::move(b).Build();
 ```
 
 `AddFunction(celfn_source)` parses one (or more) decl from a string;
-`DeclareFunctions(FunctionLibrary)` registers a parsed `.celfn` library (from
-`celwasm::ParseCelfnSource(text)` or `FunctionLibrary::Builder`). A call to an
-unregistered function fails at compile time with
+`DeclareFunctions(FunctionLibrary)` registers a parsed `.celfn` library
+(from `celwasm::ParseCelfnSource(text)` or `FunctionLibrary::Builder`);
+`Use(plugin)` registers a plugin's own embedded declarations (§4). A
+call to an unregistered function fails at compile time with
 `"undeclared reference to '<fn>'"`.
-
-The IDL type grammar (`compiler/celfn/function_library.h`):
-`bool int uint double string bytes null Duration Timestamp`, `list<T>`,
-`map<K,V>` (K ∈ bool/int/uint/string), `proto(<fqn>)`, and a leading `this`
-on the first param for method-style dispatch (`x.is_admin()`).
 
 ### 1.1 Building a reusable expression library (`.celfn` files)
 
@@ -98,71 +111,57 @@ for (const celwasm::FunctionLibrary& lib : compiler->function_libraries()) {
 }
 ```
 
-!!! note "Grammar status"
-    ✅ The `@host`/`@native`/`@plugin` prefix-module grammar + doc-comment
-    capture shown here is the **in-tree grammar** (`m13-custom-fns.md` §3.0).
-    The loading model is unchanged: `ParseCelfnSource(text)` takes the whole
-    IDL as a string; the caller reads the file.
-
 ---
 
-## 2. Host functions (`@host.`)
+## 2. Host functions (`@host.`) — trusted, in-process
 
-A host function is implemented by your C++ at runtime. The expression imports
-it; you register the impl on the `Engine`.
+A host function is implemented by your C++ at runtime. The expression
+imports it; you register the impl on the `Engine`. It runs in your
+address space with your privileges — the sandbox does nothing for you
+here, which is exactly right for code you already trust (an in-memory
+cache lookup, a call into a library you already ship).
 
 > **→ Full guide: [Writing host functions](writing-host-functions.md)** — the
 > typed API, `HostCallContext` accessors, proto / list / map args, owning
 > returns, unknown/error handling, and the canonical-type + kind-safety
 > rules, with worked examples. This section is the summary.
 
-### 2.1 The typed API — `AddTypedFunction` ✅ (recommended)
-
-Write a plain C++ lambda over **canonical CEL types**; the binding decodes
-each argument, calls you, and encodes the result. No slots, no `memcpy`, no
-kind-checking by hand:
+The recommended surface is **declaration-first**: one `.celfn` string is
+the single source of truth, used verbatim on both sides — the compiler
+declares it, the engine binds it, and the lambda's signature is
+validated against the declaration at registration:
 
 ```cpp
-auto b = celwasm::Compiler::NewBuilder();
-b.DeclareVariable("x", celwasm::CelType::Int());
-b.AddFunction("int @host.double_it(int x);");        // overload-id: double_it_int
-auto program = (*std::move(b).Build()).Compile("double_it(x)");
+const char* kDecl = "int @host.discount_pct(string tier);";
 
-auto engine = celwasm::Engine::NewBuilder().Build();
-engine->AddTypedFunction("double_it_int",
-    [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; });   // ✅
+builder.AddFunction(kDecl);              // compile side: declare it
+engine.BindFunction(kDecl,              // eval side: implement it
+    [](absl::string_view tier) -> absl::StatusOr<int64_t> {
+      return tier == "gold" ? 20 : 5;
+    });
 ```
 
-The lambda must return `absl::StatusOr<R>`. Only canonical CEL types compile —
-`int`/`float`/`char*`/by-value proto are a **compile error**, never a silent
-narrowing. Each CEL type maps to exactly one C++ type (`int`→`int64_t`,
-`string`/`bytes`→`absl::string_view`, `proto(M)`→`const M&`,
-`list<T>`→`HostListView`, `map<K,V>`→`HostMapView`, any→`Value`, …) — the
-full table is in [Writing host functions §1.1](writing-host-functions.md).
-Proto / list / map arguments and newly-allocated string / aggregate returns
-all work; `list<proto(...)>` and `map<…,proto(...)>` compose by recursing into
-element/value backings.
+Only canonical CEL types compile — `int`/`float`/`char*`/by-value proto
+are a **compile error**, never a silent narrowing. Each CEL type maps to
+exactly one C++ type (`int`→`int64_t`, `string`/`bytes`→
+`absl::string_view`, `proto(M)`→`const M&`, `list<T>`→`HostListView`,
+`map<K,V>`→`HostMapView`, any→`Value`, …) — the full table is in
+[Writing host functions §1.1](writing-host-functions.md).
 
-### 2.2 The context API — `HostCallContext&` ✅ (per-arg control)
+The lower-level surfaces: `AddTypedFunction(overload_id, lambda)` skips
+the decl string (you spell the synthesized overload-id yourself), and
+`AddFunction(overload_id, num_args, callback)` is the raw
+`HostCallContext&` layer for per-argument control — every accessor
+(`ctx.ArgInt(0)`, `ctx.ArgString` / `ArgProto` / `ArgList` / `ArgMap` /
+`ArgValue`, `ctx.ReturnInt(...)`) is kind-checked and returns
+`absl::StatusOr<T>`.
 
-When you need per-argument control (dynamic arity, mixed handling), the
-`HostCallback` is `std::function<absl::Status(HostCallContext&)>`; every
-accessor (`ctx.ArgInt(0)`, `ctx.ArgString` / `ArgProto` / `ArgList` /
-`ArgMap` / `ArgValue`, `ctx.ReturnInt(...)`) is kind-checked and returns
-`absl::StatusOr<T>` — worked example in
-[Writing host functions §2](writing-host-functions.md).
-
-Unknown / error arguments are **auto-absorbed by the trampoline before your
-callback runs** (a body only ever sees all-known args); a function may
-explicitly emit an unknown via `ctx.ReturnUnknown()` (stamping
-`celwasm::kFunctionUnknownSentinel`). `num_args` for `AddFunction` is
-`params + 1`; `AddTypedFunction` derives arity from the lambda.
-
-> **Plugin backend note:** a `@plugin` decl crosses into a
-> separately-instantiated plugin with its own linear memory, so values are
-> marshalled across the boundary (proto messages travel as serialized bytes;
-> see §4.5). The shared-memory zero-copy path used by `@host` is not
-> available across that boundary.
+Unknown / error arguments are **auto-absorbed by the trampoline before
+your callback runs** (a body only ever sees all-known args); a function
+may explicitly emit an unknown via `ctx.ReturnUnknown()` (stamping
+`celwasm::kFunctionUnknownSentinel`). `num_args` for the raw
+`AddFunction` is `params + 1`; the typed layers derive arity from the
+lambda.
 
 ## 3. CEL-defined functions (`@native`) ⛔
 
@@ -176,298 +175,101 @@ explicitly emit an unknown via `ctx.ReturnUnknown()` (stamping
 
 ---
 
-## 4. Plugin functions — sandboxed wasm plugins (Rust / Go / C) ✅
+## 4. Plugin functions (`@plugin.`) — sandboxed wasm ✅
 
-> **→ Full guide: [Writing plugins](writing-plugins.md)** —
-> the `cel_wasm_plugin` Bazel macro, the C++ author surface, the proto
-> path, the type matrix, and the open performance follow-ups. This section is
-> the summary.
+> **→ Full guide: [Writing plugins](writing-plugins.md)** — the
+> quickstart, the `cel_wasm_plugin` Bazel macro, the sharing model, the
+> proto path, the type matrix, and how verification works. This section
+> is the summary.
 
-A plugin function is implemented by a **sandboxed WebAssembly plugin** you
-produce from another language (Rust, TinyGo, C, …) — a plugin is packaged as
-a Component-Model component. Unlike a host function, a plugin has **its own
-linear memory** — values are *marshalled* across the boundary by a host
-trampoline.
+A plugin function is implemented inside a **sandboxed WebAssembly
+plugin** — a separate wasm artifact with its own linear memory, no
+syscalls, and no access to your process. It is the path for code you
+didn't write: a customer-authored scoring function, a partner's
+predicate, anything not yet reviewed.
 
-### 4.1 Declaration and registration ✅
+### 4.1 One noun, both sides
 
-A plugin decl carries the `@plugin.` prefix; the embedder declares the
-same shape on the C++ side (so the engine knows which exports to bind) and
-supplies the plugin bytes at runtime:
-
-```cpp
-// Compile time: the decl makes `allow(...)` type-check.
-b.AddFunction("bool @plugin.allow(string subject, string action);");
-
-// Run time: supply the plugin's bytes + the library; the engine
-// binds each `@plugin` decl to the matching typed export inside
-// the plugin.
-engine->AddPlugin(rules_plugin_bytes, lib);
-```
-
-Building the `rules_plugin_bytes` from a `.celfn` + `user_fns.cc` is one
-Bazel macro call — see
-[Writing plugins §2](writing-plugins.md#2-quick-start-c).
-
-### 4.2 One fixed canonical ABI + generated shims
-
-Three generated pieces bridge a plugin call: caller slot glue in the expr
-module (the same 24-byte CelValue slot contract `@host` uses), a
-language-agnostic host trampoline (hand-written C++ dispatching on CEL type,
-not source language), and the per-language plugin shim the build macro
-generates — your function signature looks natural, the wire contract
-stays fixed.
-
-The trampoline does a **recursive lift/lower** per the WASI Component Model
-canonical ABI: lower the CEL args into the plugin's memory (allocating via
-its exported `cabi_realloc`), call the export, lift the result back. Supported
-types: scalars, `string`, `bytes`, `list<T>`, `map<K,V>`, nested aggregates,
-`Duration`, `Timestamp`, and **proto messages serialized to bytes** (§4.5).
-`type` and `optional` are rejected at the plugin boundary. A guest trap
-fails the Eval cleanly rather than producing a wrong value — §4.6.
-
-### 4.3 WASI vs plain — which toolchain target?
-
-> **What ships today:** the C++ authoring path — `cel_wasm_plugin`
-> compiles your `user_fns.cc` under **wasm32-wasip2**, which emits a
-> Component-Model binary directly. The rest of this section (and the
-> stock-Go / TinyGo material in §4.4) is **probe-validated design background
-> for the unshipped Go authoring path**.
-
-Plugins differ in whether they pull in WASI and whether they
-own/initialize their memory:
-
-| Toolchain target | Memory | Init call | Notes |
-|---|---|---|---|
-| **Plain** `wasm32-unknown-unknown` (Rust `no_std`), `--target=wasm32 -nostdlib` (C) | defines its own, no WASI | none | smallest; closest to hand-WAT; just exports the fn + `cabi_realloc` |
-| **WASI reactor** `wasm32-wasip1 -mexec-model=reactor` (C/clang), TinyGo `-target=wasip1 -buildmode=c-shared` | defines its own | **must call `_initialize`** | full libc available; the host calls `_initialize` once after instantiation before any export |
-| Stock Go (`GOOS=wasip1`), Rust `wasm32-wasi` | defines + WASI imports | yes | heavier runtime; full WASI preview1 stdlib |
-
-The engine negotiates this at `AddPlugin` time: it instantiates the
-plugin in the same store, calls `_initialize` if the plugin is a WASI
-reactor, and binds its exports to the declared `@plugin` fns. **Plain**
-targets are the lightest default for pure compute; choose **WASI** when the
-function genuinely needs libc or stdlib facilities.
-
-> **Empirically confirmed (probe — `foreign-go-bindgen-findings.md`).** A
-> stock-Go module (`GOOS=wasip1`) is a reactor: `_initialize` is **mandatory**
-> (skipping it traps), and it imports a real `wasi_snapshot_preview1` surface
-> (10–17 funcs incl. `fd_write`, `random_get`, `clock_time_get`,
-> `fd_prestat_*`) — the engine must wire a **full WASI preview1 context**, not
-> stubs. **TinyGo carries the scalar/string path only** (118 KB, 2 WASI
-> imports) — it **cannot** carry the §4.5 proto path: TinyGo's incomplete
-> reflection traps in `proto.Unmarshal`.
-
-> A second, deferred model — reusable *separately-instantiated* library
-> modules sharing the runtime's memory via `__memory_base` relocation — is
-> prototyped (`modules-and-ffi.md` §4.5) but not the v1 path.
-
-### 4.4 Worked example: a plugin function in Go (`GOOS=wasip1`) ⛔ design notes
-
-> **Go authoring is not shipped.** The shipped path is C++ via the
-> `cel_wasm_plugin` macro — see
-> [Writing plugins](writing-plugins.md) for the
-> working example. Everything below is the probe-validated *target* shape for
-> the Go path (`cel generate --language=go` is pending; the in-tree plan
-> favours TinyGo for size, stock Go as the proto-capable fallback — see
-> writing-plugins §4).
-
-An authorization predicate `allow(subject, action)` implemented in Go, reused
-across many CEL expressions:
-
-**1. Declare it** in your `.celfn`:
-
-```celfn
-/// True if `subject` may perform `action`, per the Go policy plugin.
-bool @plugin.allow(string subject, string action);
-```
-
-**2. Write the Go function.** You write a *natural* Go function; the
-`celfnc`-generated glue (`rules_celfn.go`) handles the canonical-ABI
-marshalling and the wasm export:
-
-```go
-// rules.go
-package main
-
-//celfn:export allow
-func Allow(subject, action string) bool {
-    return subject == "admin" || action == "read"
-}
-
-func main() {} // required; a reactor module has no real entry point
-```
-
-Under the hood the generated glue produces the fixed-ABI exports the host
-trampoline calls — one per function, named by the **overload id** (`fn_name` +
-each arg's type token, joined by `_`), plus the canonical ABI allocator the
-host uses to place arguments in *this* plugin's memory:
-
-```go
-//go:wasmexport allow_string_string   // export name == overload id (verbatim)
-func _allow_string_string(subjPtr, subjLen, actPtr, actLen uint32) uint32 {
-    if Allow(strFromMem(subjPtr, subjLen), strFromMem(actPtr, actLen)) {
-        return 1
-    }
-    return 0
-}
-
-//go:wasmexport cabi_realloc   // host allocates arg bytes in our memory through this
-func _cabi_realloc(ptr, oldLen, align, newLen uint32) uint32 { /* … */ }
-```
-
-*(Shown value-only for clarity — the real generated export also carries a
-`recover()` guard and a status slot so a panic surfaces as a CEL error, not a
-trap or a spurious `false`; see §4.6.)*
-
-**3. Build it** to a plugin (WASI-reactor core module wrapped with
-`wasm-tools component new`):
-
-```bash
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o rules.core.wasm ./rules
-wasm-tools component new rules.core.wasm -o rules.wasm
-# TinyGo — far smaller (118 KB vs 1.6 MB) for a SCALAR/STRING fn, but
-# cannot carry the §4.5 proto path (reflection trap); also needs
-# -buildmode=c-shared for the //go:wasmexport reactor shape:
-#   tinygo build -target=wasip1 -buildmode=c-shared -o rules.core.wasm ./rules
-```
-
-**4. Register + use** — the decl makes the call type-check at compile time;
-the plugin bytes are supplied to the Engine at run time, along with the
-library so the engine knows which decls to bind:
+A plugin built with the `cel_wasm_plugin` Bazel macro is
+**self-describing**: the macro embeds the `.idl` declaration text
+verbatim in a `cel.fns` custom section inside the `.wasm`.
+`Plugin::Load` reads it back out, so the declarations provably describe
+the deployed bytes — there is no hand-written C++ mirror to drift:
 
 ```cpp
-auto lib = *celwasm::ParseCelfnSource(
-    "bool @plugin.allow(string subject, string action);");
+#include "abi/plugin.h"
 
+auto plugin = celwasm::Plugin::Load(plugin_bytes).value();
+// plugin.decls()      — the parsed declarations
+// plugin.hash_hex()   — SHA-256 over (bytes ‖ declarations)
+
+// Compile side: call sites type-check against the artifact's decls.
 auto b = celwasm::Compiler::NewBuilder();
-b.DeclareVariable("subject", celwasm::CelType::String());
-b.DeclareFunctions(lib);
+b.Use(*plugin);
 auto compiler = std::move(b).Build();
-auto program  = compiler->Compile(R"(allow(subject, "read"))");
 
-auto engine = celwasm::Engine::NewBuilder().Build();
-engine->AddPlugin(ReadFileToBytes("rules.wasm"), lib);
-
-auto instance = engine->Plan(*program);
-celwasm::Activation act;
-act.Bind("subject", celwasm::Value::String("guest"));
-auto v = instance->Eval(act);     // host: _initialize(rules) once at AddPlugin,
-                                  // then lowers the two strings into the plugin's
-                                  // memory, calls allow_string_string, lifts the
-                                  // bool → true
+// Eval side (possibly another process): the same noun registers the
+// sandboxed backend.  Registration statically checks the plugin
+// actually exports every declared function — a bad upload fails
+// here, not at traffic time.
+CHECK_OK(engine.Use(*plugin));
 ```
 
-At `AddPlugin` the engine instantiates `rules.wasm` **with a full WASI
-preview1 context**, calls `_initialize` (mandatory for a Go wasip1 reactor),
-and binds every `@plugin` decl to a matching export. Per call, the
-trampoline lowers the CEL `string` args (via `cabi_realloc`), invokes
-`allow_string_string`, and lifts the `bool` back. *(Probe-confirmed —
-`foreign-go-bindgen-findings.md`.)*
+At `Plan`, the engine verifies every custom function the program calls
+exists in its registry with an **exactly matching signature** (recorded
+in the program's `cel.abi`), then instantiates only the plugins the
+program actually needs — each into its own sandbox. A missing or
+drifted plugin is a clean `FailedPrecondition` at `Plan`, before any
+traffic.
 
-### 4.5 Proto messages cross as serialized bytes
+### 4.2 What crosses the boundary
 
-A proto message lives in the host's interner, not the plugin's memory, so
-it cannot cross by handle. The ABI carries it as **serialized bytes**: the
-host passes a `(ptr, len)` reference allocated via `cabi_realloc`; the
-plugin's generated glue **deserializes** into that language's message type.
-The wire is plain protobuf binary — any language with a protobuf runtime
-works:
+Unlike a host function (zero-copy slots in shared memory), a plugin has
+its own linear memory, so a host trampoline **marshals** every call:
+scalars, `string`, `bytes`, `list<T>`, `map<K,V>`, nested aggregates,
+`Duration`, `Timestamp` — and **proto messages as serialized bytes**
+(both sides compile the same `.proto`; the generated codec
+de/serializes). `type` and `optional<T>` are rejected at the plugin
+boundary. The full matrix: [Writing plugins §5](writing-plugins.md#5-type-matrix).
 
-```celfn
-/// ✅ shipped on the C++ path (the `demo_plugin_proto` fixture,
-/// manual-tagged — libprotobuf under wasm32-wasip2 is a slow build);
-/// the Go snippet below is design notes (§4.4).
-bool @plugin.is_admin(proto(acme.User) u);
-```
+### 4.3 When a plugin fails
 
-```go
-//celfn:export is_admin
-func IsAdmin(u *acmepb.User) bool { return u.GetRole() == "admin" }
-// generated glue: var u acmepb.User; proto.Unmarshal(argBytes, &u); → IsAdmin(&u)
-// (argBytes = the host-serialized acme.User, copied into our memory)
-```
+A plugin function that traps mid-call surfaces as a **failed Eval** (a
+non-OK `absl::Status`) — the embedding process does not crash, and the
+failure cannot masquerade as a legitimate value (pinned by
+`e2e/plugin_dispatch_test.cc`, `TrappingPluginFnFailsEvalCleanly`).
+Plugin state (anything `static` in the plugin, caches, allocations) is
+**per-`Instance`** — see the sharing model in
+[Writing plugins §4](writing-plugins.md#4-the-sharing-model-where-plugin-state-lives).
 
-Host side: serialize `u` → bytes → `cabi_realloc` + copy into the plugin →
-pass `(ptr, len)`. A returned proto is symmetric. The trade vs. `@host`
-(which passes a zero-copy `msg_slot` handle) is a serialize/deserialize **per
-call** — inherent to the plugin-memory boundary. Both sides need the proto
-generated from the same `.proto`.
+### 4.4 Legacy escape hatch: `Engine::AddPlugin(bytes, lib)`
 
-> **Probe-confirmed, with two real costs.** `proto.Unmarshal` does link and
-> run inside stock-Go wasip1 wasm (validated end-to-end). But: (1) it pulls
-> the **Go protobuf runtime into the module — ~+4.7 MB** (a 1.6 MB string
-> module → 6.4 MB) and ~7 extra WASI imports; (2) it requires **stock Go —
-> NOT TinyGo** (TinyGo's incomplete reflection traps in `proto.Unmarshal` at
-> `reflect.NewAt`). So a proto-bearing foreign module is stock-Go, multi-MB,
-> opt-in. See `foreign-go-bindgen-findings.md`.
+Before plugins were self-describing, registration took the raw bytes
+*plus* a hand-built `FunctionLibrary` mirroring the plugin's
+declarations. That surface remains as
+`Engine::AddPlugin(plugin_bytes, lib)` for exactly one audience:
+**pre-`cel.fns` artifacts** — hand-built or pure-WAT plugins that carry
+no embedded declarations. It validates less (no static export check;
+export resolution is Plan-time only) and keeps the drift risk `Use`
+was built to end. If you have such an artifact, prefer re-embedding its
+declarations with `cel embed-decls` and loading it as a `Plugin`
+([Writing plugins §6](writing-plugins.md#6-plugins-built-outside-the-macro-cel-embed-decls));
+reach for `AddPlugin` only when you can't.
 
-> **Status of §4.4/§4.5:** the plugin backend is **shipped for C++
-> authoring** — host trampoline, `celfnc` C++ emitters, the
-> `cel_wasm_plugin` macro, `Engine::AddPlugin` (`eval/engine.cc`), and
-> the proto-as-serialized-bytes path all run end-to-end
-> (`e2e/plugin_fixtures/cel_wasm_plugin_demo/`; proto via the
-> manual-tagged `demo_plugin_proto` target). The **Go authoring path is
-> designed, not implemented** — probe-validated (Go 1.24, wasmtime;
-> `foreign-go-bindgen-findings.md`) but `cel generate --language=go` does not
-> exist yet.
+### 4.5 What about `Engine::AddModule`?
 
-### 4.6 When a plugin function fails — panics, traps, and the error channel
-
-> **What ships today:** a plugin function that traps mid-call surfaces as a
-> **failed Eval** (a non-OK `absl::Status`) — the embedding process does not
-> crash, and the failure cannot masquerade as a legitimate value (pinned by
-> `e2e/plugin_dispatch_test.cc`,
-> `TrappingPluginFnFailsEvalCleanly`). The `recover()` shim, the ABI
-> `status` slot, and the re-instantiate policy below are **design notes for
-> the unshipped Go authoring path** (§4.4).
-
-A Go `panic` (or a runtime fault — nil deref, index out of range) **unwinds
-to a wasm `unreachable`**, surfacing as a trap. The design turns a failure
-into a CEL **error value**, never a crash and never a wrong answer:
-
-- **A Go panic is a wasm trap (`TrapCode.UNREACHABLE`), not a WASI
-  `proc_exit`.** The host trampoline catches it as an ordinary
-  `wasmtime::Trap` and maps it to a CEL error (`kError`) for that eval.
-  *(Probe-confirmed for explicit `panic()`, nil deref, and index-OOB —
-  `foreign-go-bindgen-findings.md`.)*
-
-- **The generated shim wraps your function in `recover()`**, so the common
-  case never even traps:
-
-  ```go
-  //go:wasmexport allow_string_string   // export name == overload id (verbatim)
-  func _allow_string_string(...) (status uint32) {   // status: 0 = ok, 1 = plugin error
-      defer func() {
-          if recover() != nil { status = 1 }   // panic → typed error, no trap
-      }()
-      // … lift args, call your Allow(...), lower the result …
-      return
-  }
-  ```
-
-  `celfnc` emits this guard around every user call, catching **both**
-  explicit `panic()` and runtime panics.
-
-- **The fixed ABI carries a `status` slot alongside the value**, so a
-  plugin error is **distinguishable from a legitimate `false` / `0` /
-  empty result**; on `status != 0` the trampoline writes a CEL error.
-  *(`modules-and-ffi.md` §5.3; surfaced by the panic probe.)*
-
-- **Instance recovery policy.** On an *uncaught* plugin trap, the engine
-  writes `kError` and **re-instantiates the plugin** before the next eval
-  (a fresh `_initialize` — cheap); Go's `fatalpanic` is nominally fatal, so
-  the engine does not trust reuse of an aborted plugin.
-
-Takeaway: **write your Go function as if a panic is caught and reported as a
-CEL error.** If it genuinely can't produce a value, `panic` (or return the
-error path) rather than returning a plausible wrong answer.
+`Engine::AddModule(alias, wasm_bytes)` — an alias-keyed "register a
+core wasm module" API — is reserved for the unimplemented `@native`
+backend (§3) and is **not** a plugin registration path. Use
+`Engine::Use` (or the `AddPlugin` escape hatch) for every
+plugin-backed function.
 
 ---
 
-### 4.7 What about `Engine::AddModule`?
+## 5. Authoring languages
 
-`Engine::AddModule(alias, wasm_bytes)` — an alias-keyed
-"register a core wasm module" API — is reserved for the unimplemented
-`@native` backend (§3) and is **not** the registration path for `@plugin`
-decls. Use `AddPlugin` for every plugin-backed function.
+The shipped authoring path is **C++** via the `cel_wasm_plugin` macro
+(`wasm32-wasip2`). A Go path (TinyGo for scalar/string functions, stock
+Go where proto support is needed) is probe-validated design — see
+[Writing plugins §7](writing-plugins.md#7-go-authoring-designed-not-implemented)
+and `doc/implementation-plan/rewrite/foreign-go-bindgen-findings.md`.
