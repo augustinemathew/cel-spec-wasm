@@ -79,9 +79,9 @@ graph TD
 | 2 | A0 + A2 + A3 (tool + macro chain) | agent-A | done (d3265dd embed-decls tool; 2bdab21 macro embed step + package-override removal; gates: //tools + //abi:plugin_test + //e2e 70/70 incl. manual-tagged plugin/host/matrix targets, bazel build //... 303 targets; demo wit_interface cel:customfn/fns@0.1.0; demo_plugin_proto blocked by pre-existing absl-sync wasm32-wasip2 cross-compile break, unrelated) |
 | 2 | A4 probe + Plugin::Load (//abi:plugin) | agent-A4 | done (1c4e0fb probe: static export lookup EXISTS in pin — B1 goes static; 25b5bf4 Plugin::Load) |
 | 2 | V1 + V2 (wire + emission) | agent-V | done (ec658ab, d2cfb3c, f53692f; O2-import-drop pin green both link modes; conformance 2035/2035 both legs; delta: FN_KIND_NULL=14 added) |
-| 3 | B0 + B1 + B2 (one agent — B and V3 share eval/engine.cc, so serialized) | agent-B | in flight |
-| 3 | V3 + V4 (check + selective instantiation; after B — §5.3 messages cite Engine::Use) | agent-V34 | pending |
-| 4 | B3 examples + demo e2e | agent-B3 | pending |
+| 3 | B0 + B1 + B2 (one agent — B and V3 share eval/engine.cc, so serialized) | agent-B | done (8ff6ce4 DeclareFunctions; 42ab8dc Engine::Use static check + hash; 0140dd4 Builder::Use + #44 hardening; 3c3f843 one-noun e2e both link modes; 108/108, R36 resolved) |
+| 3 | V3 + V4 (check + selective instantiation; after B — §5.3 messages cite Engine::Use) | agent-V34 | in flight |
+| 4 | B3 examples + demo e2e | agent-B3 | in flight |
 | 4 | N benchmarks | agent-N | pending |
 | 5 | S1–S5 doc site (parallel per page group) | agents-S | pending |
 | 6 | B4 closeout (testing-checklist, plan-doc status) | orchestrator | pending |
