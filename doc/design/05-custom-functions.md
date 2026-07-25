@@ -1,6 +1,8 @@
 # 05 — The custom-function subsystem (`.celfn`)
 
-Status: current — authored 2026-06-10 from the design-rebuild notes. The
+Status: current — authored 2026-06-10 from the design-rebuild notes;
+updated 2026-07-25 for the self-describing plugin surface (`Plugin`,
+`cel.fns`, `Use`, Plan-time required-function verification — m35). The
 @native backend fork (§6) is an open owner decision (V5). Supersedes
 doc/implementation-plan/rewrite/{m13-custom-fns, m22-foreign-fn,
 m24-foreign-fn-component-backend, m26-celfnc-and-component-build,
@@ -8,8 +10,9 @@ modules-and-fnis}.md.
 
 A `.celfn` declaration is parsed in `compiler/celfn/`, stamped by the cel-cpp
 checker, lowered by codegen as a wasm import, bound by the evaluator at Plan,
-and — for the plugin backend — scaffolded by `cel generate` and built by a
-Bazel macro. Evaluator-side dispatch internals live in 02-evaluator.md §3–§4
+and — for the plugin backend — scaffolded by `cel generate`, built by a
+Bazel macro, and shipped as a self-describing `Plugin` artifact (§5.0).
+Evaluator-side dispatch internals live in 02-evaluator.md §3–§4
 and §9; cited, not repeated.
 
 ## 1. The decl model & three backends
@@ -22,7 +25,7 @@ One struct describes every custom function: `CelfnDecl`
 | Backend | Prefix | Body | Bound by |
 |---|---|---|---|
 | `kHost` | `@host.` | none — C++ callable | `BindFunction` / `AddTypedFunction` / `AddFunction` (`eval/engine.h:137-235`); §4 |
-| `kPlugin` | `@plugin.` | none — sandboxed plugin | `Engine::AddPlugin(bytes, lib)` (engine.cc:1594); §5 |
+| `kPlugin` | `@plugin.` | none — sandboxed plugin | `Engine::Use(plugin)` (the one-noun flow, §5.0); `Engine::AddPlugin(bytes, lib)` stays as the explicit-decls escape hatch |
 | `kCelDefined` | `@native.` | CEL expression after `=` (`Celfn.g4:66-68`) | **declaration-only today** — no body compiler exists; §6 |
 
 Backend choice changes exactly two things: the wasm import-module string
@@ -71,8 +74,8 @@ original.
 
 Uniqueness: cross-library at `Compiler::Builder::Build` (compiler.cc:155-166);
 per-library at `FunctionLibrary::Builder::Build` (§3); engine-side,
-`AddFunction`/`AddPlugin` conflict-check ids against everything previously
-registered (02-evaluator.md §3).
+`AddFunction`/`Use`/`AddPlugin` conflict-check ids against everything
+previously registered (02-evaluator.md §3).
 
 ## 3. The IDL & the Builder validation funnel
 
@@ -141,7 +144,9 @@ The long-claimed 254/255 cap test does not exist.
 
 ### 3.4 Library → compile flow
 
-`Compiler::Builder::DeclareFunctions` (renamed from `AddLibrary`, m35 B0) / `AddFunction(celfn_source)` accumulate
+`Compiler::Builder::DeclareFunctions` (renamed from `AddLibrary`) /
+`AddFunction(celfn_source)` / `Use(plugin)` (≡
+`DeclareFunctions(plugin.library())`, §5.0) accumulate
 libraries (compiler.cc:114-133); `Compile()` forwards them to *both* the
 checker (`CheckOptions.function_libraries`, §2 station 1) and codegen
 (`CompileOptions.function_libraries`, stations 2-3) (compiler.cc:191-192).
@@ -185,6 +190,55 @@ The plugin backend runs an embedder-authored function inside a sandboxed
 plugin — packaged as a Component-Model component; eval-side marshaling is
 02-evaluator.md §9.
 
+### 5.0 The self-describing artifact & the one-noun flow
+
+The public noun is **`Plugin`** (`abi/plugin.{h,cc}`, `//abi:plugin` in
+the curated public set). A plugin artifact carries its own `.celfn`
+declaration text verbatim in a top-level **`cel.fns` custom section**
+(appended by the macro's `cel embed-decls` step, §5.2), and
+`Plugin::Load(bytes)` is the *only* constructor — it parses and
+validates the section (CM preamble, framing, UTF-8, decl parse, all
+`@plugin.`, ≥1 decl), so every `Plugin` is self-describing by
+construction. The declaration triplication the old flow required (the
+`.idl`, a hand-written `FunctionLibrary` mirror, and the
+`SetWitInterface` magic string) is gone; the WIT interface name is
+always derivable as `cel:<module>/fns@0.1.0` from the text's `Module`
+directive (`DeriveWitInterface`, function_library.h), so macro and
+`Load` cannot drift.
+
+`Plugin` sits in `abi/` because both sides take `const Plugin&`:
+
+- **Compile side** — `Compiler::Builder::Use(plugin)` ≡
+  `DeclareFunctions(plugin.library())` (compiler.cc). Call sites
+  type-check against the artifact's decls, and `Compile` records every
+  `cel_fn` import the final wasm carries — name, backend, full
+  recursive signature — as `required_functions` rows in the Program's
+  `cel.abi` (08-abi-wire-format.md §1.1 field 8).
+- **Eval side** — `Engine::Use(plugin)` wraps the AddPlugin internals
+  and adds a **static export check** against the *parsed* component
+  (`CheckPluginExportsStatically`, engine.cc: interface + every decl's
+  kebab export via `wasmtime_component_get_export_index`, no store, no
+  instantiation) plus retention of the plugin's content hash
+  (SHA-256(bytes ‖ decl text), `abi/internal/sha256`) for Plan-time
+  diagnostics.
+- **Plan** — verifies every `required_functions` row against the
+  registry (existence + exact signature; protos by FQN; `@host` rows
+  included, so a forgotten `BindFunction` fails cleanly too), then
+  instantiates only the plugins owning at least one required PLUGIN
+  row. Legacy Programs with no `required_functions` table keep the
+  pre-verification behavior (no check, instantiate-all).
+
+Byte-framing primitives live in `//abi:wasm_binary`
+(`abi/wasm_binary.{h,cc}`) — the ONLY first-party code allowed to know
+wasm binary framing (preamble classification, LEB128, top-level
+custom-section find/append); `cel embed-decls`
+(`tools/cel/run_embed_decls.cc`) is the standalone writer for
+artifacts built outside the macro. `Engine::AddPlugin(bytes, lib)`
+remains the explicit-decls escape hatch (pure-WAT fixtures,
+pre-`cel.fns` artifacts): no static export check, export resolution
+Plan-time only (pinned by `e2e/plugin_dispatch_test.cc`
+`MissingExportFailsAtPlanNotAddPlugin`).
+
 ### 5.1 The celfnc emitters & `cel generate`
 
 Four pure text emitters under `compiler/celfn/celfnc_emit/` (string in/out, no
@@ -197,10 +251,14 @@ I/O), keyed off kPlugin decls only:
 | `EmitStubCc` (cpp_stub_emitter.cc) | One `extern "C"` export body per decl, symbol `exports_<pkg-normalized>_fns_<overload_id>` (cc:224); scalar returns by value, everything else fills `<struct>* ret` via `codec::lower(ret, user::CamelFn(codec::lift(*arg)...))`. `SnakeToCamel` makes the author-facing name. |
 | `EmitUserFnsH` (cpp_skeleton_emitter.cc) | The author skeleton: `std::string_view`, `const std::vector<T>&`, `const std::map<K,V>&`, `const acme::User&` params; returns by value. |
 
-CLI: `cel generate --idl <file> --out_dir <dir> [--language=cpp] [--include=...]
-[--package --package_version]` (`tools/cel/run_generate.{h,cc}`). Defaults:
-package `cel:<module>`, version `0.1.0`, C++ namespace = the IDL module name.
-`--language=go` is explicitly rejected (run_generate.cc:96-101; §8).
+CLI: `cel generate --idl <file> --out_dir <dir> [--language=cpp]
+[--include=...]` (`tools/cel/run_generate.{h,cc}`). The WIT package
+name is **not configurable**: always `cel:<module>` (fallback
+`cel:customfn`), version `0.1.0`, C++ namespace = the IDL module name —
+the former `--package`/`--package_version` override flags were deleted
+(zero callers; the derivation is shared with `Plugin::Load` via
+`DeriveWitInterface`, so the two can never disagree).
+`--language=go` is explicitly rejected (run_generate.cc; §8).
 
 Emitter regressions fail the build: a `codec_dumper` genrule emits a codec for
 a fixed library and a `cc_library` compile-checks it against the hand-curated
@@ -211,12 +269,14 @@ map only as an *arg* — matching the missing map-lower (§5.4).
 
 `bazel/cel_wasm_plugin.bzl`: genrule(`cel generate`) →
 genrule(`wit-bindgen c --world customfn`) → wasi-sdk `cc_binary` under the
-**wasm32-wasip2** platform transition → rename to `<name>.wasm`. wasip2 emits a
+**wasm32-wasip2** platform transition → genrule(`cel embed-decls`), which
+stamps the verbatim `.idl` text into the binary as the top-level `cel.fns`
+custom section and emits the final `<name>.wasm`. wasip2 emits a
 Component-Model binary *directly* (preamble 0x1000d) — no `wasm-tools
-component new` step. The wasip2 and wasi-threads toolchains coexist, selected
-by target platform constraint. (The macro's docblock still mentions absl time
-types; the emitters use `::google::protobuf::Duration/Timestamp` — the code
-wins.)
+component new` step; the section is appended by the tool because a
+linker-emitted custom section would land inside the *nested core
+module*, invisible to a top-level walker. The wasip2 and wasi-threads
+toolchains coexist, selected by target platform constraint.
 
 ### 5.3 Naming translations & ownership rules
 
@@ -250,21 +310,29 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
   stub calling a nonexistent `codec::lower`. The fixture declaring exactly such
   decls (`fixtures/full_matrix.idl`) is referenced by no BUILD target, so no
   gate catches it.
-- **Example 09's visibility hole.** The embedder-side `FunctionLibrary` mirror
-  requires `//compiler/celfn:function_library`, visibility `//:internal` — an
-  external embedder cannot copy the example (examples/BUILD.bazel:173 vs
-  compiler/celfn/BUILD.bazel:4; cleanup-backlog #32).
-- **No export validation at registration.** Export resolution is Plan-time and
-  **no FuncType-vs-decl comparison exists** — arity/shape mismatches surface as
-  call-time traps (R36; full contract and open probe V21 in 02-evaluator.md §3).
+- **Example 09's visibility hole — closed by the `Plugin` surface.**
+  The example's former `FunctionLibrary` mirror needed the
+  `//:internal` `//compiler/celfn:function_library` target; the
+  rewritten `examples/09_plugin_functions.cc` depends only on the
+  public `//abi:plugin` (V33 resolved by construction).
+- **Export existence is checked statically at `Engine::Use`;
+  FuncType is not.** `Use` resolves the interface + every decl's
+  kebab export against the parsed component at registration (§5.0).
+  The legacy `AddPlugin` path stays Plan-time-only. On **no** path is
+  the export's WIT-level FuncType compared to the decl — a
+  wrong-shaped export on a hand-built plugin still traps at call time
+  (unreachable for macro-built plugins, where WIT and decls derive
+  from one `.idl`; R36 resolved, probe V21 in 02-evaluator.md §3).
 
 > **Open question (V28):** confirm the map-return failure shape, then either
 > emit map-lower or reject map returns at `Build()`; the durable fix is wiring
 > `full_matrix.idl` into the §5.1 compile gate (§8).
 
-> **Open question (V33):** promote `function_library` to the public surface
-> (`AddPlugin` already takes it as a public-API parameter) or re-scope
-> example 09. Widening visibility is a reviewable event.
+> V33 (example-09 visibility) is resolved: the example now consumes the
+> public `//abi:plugin` and builds no `FunctionLibrary` mirror. The
+> `AddPlugin` escape hatch still takes `FunctionLibrary` as a
+> public-API parameter while the target stays `//:internal` — live for
+> external `AddPlugin` callers only, tracked in cleanup-backlog #32.
 
 ## 6. `@native` (kCelDefined): the fork
 
@@ -343,7 +411,8 @@ between 1 and 2. A reachable not-done path fails loudly at the edge.
 - The map-lower emitter (V28, §5.4).
 - The Go bindgen path: `--language=go` is rejected today; the tinygo toolchain
   was never registered.
-- Example 09 visibility (V33, §5.4) — promote or re-scope.
+- `FunctionLibrary` visibility for external `AddPlugin` callers
+  (cleanup-backlog #32; example 09 itself now rides `//abi:plugin`, §5.4).
 - The string-return trap (§5.4) — root-cause the wasip2 libc++ interaction.
 - Manual-tag audit: `function_library_test` and `celfn_parser_probe_test` are
   `manual`-tagged (compiler/celfn/BUILD.bazel); record why or untag.
