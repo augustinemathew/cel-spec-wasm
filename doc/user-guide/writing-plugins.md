@@ -1,294 +1,355 @@
 # Writing plugins (`@plugin`)
 
-Plugin functions live in a **separate sandboxed WebAssembly plugin**
-instantiated alongside the CEL expression. The plugin runs in
-its own linear memory; values cross the boundary through the canonical ABI.
+A **plugin** is a self-describing, sandboxed WebAssembly artifact that
+implements CEL functions. It runs in its own linear memory, cannot read
+the embedder's memory, cannot syscall, cannot do I/O — which is why it
+is the path for function bodies you didn't write. And it *describes
+itself*: the plugin's function declarations travel inside the `.wasm`,
+so the artifact is the single source of truth on both the compile side
+and the eval side.
 
-The `cel_wasm_plugin` Bazel macro takes a `.celfn` IDL and your
-implementation source, runs the whole pipeline (codegen, interface glue,
-and the wasm cross-compile), and produces a single `.wasm` plugin you
-load via `Engine::AddPlugin`. You write two files; everything between
-them and the final `.wasm` is an implementation detail.
+The whole lifecycle:
 
-> **Status:** the C++ pipeline ships end-to-end for the scalar / int / bool
-> round trip — what the
+```
+ scorer.idl ┐
+ scorer.cc  ├─► cel_wasm_plugin ─► scorer_plugin.wasm ─► Plugin::Load(bytes)
+ (protos)   ┘   (one macro call)    (self-describing:         │
+                                     decls embedded in a      ├─► Compiler::Builder::Use(plugin)
+                                     `cel.fns` section)       │     call sites type-check
+                                                              └─► Engine::Use(plugin)
+                                                                    static export check, then
+                                                                    Plan verifies signatures →
+                                                                    sandboxed call at Eval
+```
+
+> **Status:** the C++ authoring pipeline ships end-to-end for scalar /
+> int / bool round trips — what the
 > [`demo_plugin`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/plugin_fixtures/cel_wasm_plugin_demo)
-> fixture exercises in CI. String returns from the plugin side currently
-> route through a libc++ code path we'd like to skip rather than fully
-> support — see [Performance follow-ups](#8-performance-follow-ups-open-invitation).
-> The Go path (TinyGo) is designed; the `--language=go` arm is planned.
+> fixture exercises in CI. Proto arguments/returns work via the
+> manual-tagged `demo_plugin_proto` fixture (§5). String *returns* from
+> the plugin side currently trap in a libc++ code path (skipped
+> `GreetRoundTripsString`); string *arguments* are fine. The Go path is
+> designed, not implemented (§7).
 
 ---
 
-## 1. The pipeline at a glance
+## 1. Why self-describing?
 
-```
-fns.idl        ┐
-user_fns.cc    ├─►  cel_wasm_plugin  ─►  demo_plugin.wasm
-acme/user.proto┘    (one macro call)     (load with AddPlugin)
-```
+Registering a plugin function used to require the same declaration
+three times: in the `.idl` the plugin was built from, as a hand-written
+C++ `FunctionLibrary` mirror, and threaded into both the compiler and
+the engine. The C++ mirror was the bug farm — it could silently drift
+from the `.idl`, and the resulting failure surfaced at Plan or eval,
+far from the drift.
 
-Your inputs are the IDL and your implementation; the output is one
-`.wasm`. The only generated file you touch is `user_fns.h` — it gives
-your implementation its function signatures.
-
-??? note "Under the hood (implementation detail)"
-    The macro chains `cel generate` → `wit-bindgen c` → a
-    `wasm32-wasip2` `cc_binary`, emitting `fns.wit`, `codec.h`,
-    `generated_stub.cc`, and `user_fns.h` into the package's gen tree.
-    The output is a plugin packaged as a WASI Component-Model component
-    (preamble `0x1000d`); `wasm-tools component wit` on it shows
-    `export cel:customfn/fns@0.1.0`. None of this surfaces in the API —
-    the engine resolves your `@plugin` declarations against the
-    plugin's exports by itself.
+The current model ends that: the `cel_wasm_plugin` build macro embeds
+the `.idl` declaration text **verbatim** in a `cel.fns` custom section
+inside the artifact, and `Plugin::Load` is the only way to construct a
+`Plugin` — every `Plugin` is self-describing by construction. One noun
+carries the wasm bytes, the parsed declarations, and a content hash;
+the same object registers on any number of compilers and engines, from
+any thread (it is immutable after `Load`).
 
 ---
 
 ## 2. Quick start — C++ ✅
 
-Three input files plus one Bazel macro call.
+Write the declarations once, in an `.idl`:
 
-### 2.1 The IDL — `fns.idl`
+```c
+// scorer.idl
+Module scorer;
 
-```celfn
-Module customfn;
-
-int    @plugin.add(int a, int b);
-string @plugin.greet(string name, int age);
+bool             @plugin.is_adult(proto(acme.User) u);
+proto(acme.User) @plugin.capitalize(proto(acme.User) u);
 ```
 
-The `Module` directive names the plugin; each `@plugin.<fn>` decl
-becomes a typed export. (Internally the module name seeds an interface
-identifier — override with `package = ...` on the macro if you ever need
-to, but nothing in normal use reads it.)
+The `Module` directive names the plugin (it seeds the plugin's
+interface name, §3). Each `@plugin.<fn>` decl becomes a typed export.
 
-### 2.2 The implementation — `user_fns.cc`
+### 2.1 The implementation
 
-One C++ function per IDL decl. Signatures come from a generated `user_fns.h`
-(the macro emits it); types follow the canonical mapping (§5).
+One C++ function per decl. Signatures come from a generated
+`user_fns.h` (the macro emits it); the function name is the CamelCase
+of the IDL name (`add` → `Add`, `is_adult` → `IsAdult`), the namespace
+matches the `Module` directive. Protos cross the sandbox boundary as
+serialized bytes; the generated codec deserializes before calling you:
 
 ```cpp
+// scorer_fns.cc — implements the generated user_fns.h
 #include "user_fns.h"
+#include "acme/user.pb.h"
 
-#include <string>
-#include <string_view>
-
-namespace customfn {
-
-int64_t Add(int64_t a, int64_t b) {
-  return a + b;
-}
-
-std::string Greet(std::string_view name, int64_t age) {
-  return std::string("Hello, ") + std::string(name) + " (age " +
-         std::to_string(age) + ")";
-}
-
-}  // namespace customfn
+namespace scorer {
+bool IsAdult(const acme::User& u) { return u.age() >= 18; }
+acme::User Capitalize(const acme::User& u) { /* ... */ }
+}  // namespace scorer
 ```
 
-The `customfn` namespace matches the IDL's `Module customfn;`. The C++
-function name is the CamelCase of the IDL fn name (`add` → `Add`,
-`is_admin` → `IsAdmin`, `allow_user` → `AllowUser`).
-
-### 2.3 The Bazel target — `BUILD.bazel`
+### 2.2 The build
 
 ```python
 load("//bazel:cel_wasm_plugin.bzl", "cel_wasm_plugin")
 
 cel_wasm_plugin(
-    name = "demo_plugin",
-    idl = "fns.idl",
-    user_fns = ["user_fns.cc"],
-)
-```
-
-`bazel build :demo_plugin` produces `bazel-bin/.../demo_plugin.wasm`
-(~54 KB for the example above) — the one artifact you ship. Curious what's
-inside? `bazel run //third_party/wasm_tools:wasm-tools -- component wit
-<path>` prints its typed interface, but you never need to.
-
-### 2.4 Loading it from C++
-
-This mirrors the working fixture test
-(`e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin_e2e_test.cc`):
-
-```cpp
-#include <fstream>
-#include <utility>
-
-#include "compiler/celfn/function_library.h"
-#include "compiler/compiler.h"
-#include "eval/activation.h"
-#include "eval/engine.h"
-#include "eval/instance.h"
-#include "eval/value.h"
-#include "shared/type.h"
-
-// CelfnType is a plain struct; a tiny helper keeps scalar decls terse.
-celwasm::CelfnType Prim(celwasm::CelfnType::Kind k) {
-  celwasm::CelfnType t;
-  t.kind = k;
-  return t;
-}
-
-// Load the .wasm bytes (via bazel runfiles in a test, or wherever you
-// ship them):
-std::ifstream f("path/to/demo_plugin.wasm", std::ios::binary);
-std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                           std::istreambuf_iterator<char>());
-
-// Mirror the IDL's decls on the C++ side so the engine knows what to
-// bind to which export.  SetWitInterface tells the engine where to
-// look — the macro's default world is `cel:<module>/fns@0.1.0`.
-auto lib_or =
-    celwasm::FunctionLibrary::Builder()
-        .SetWitInterface("cel:customfn/fns@0.1.0")
-        .AddPlugin(
-            "add", Prim(celwasm::CelfnType::Kind::kInt),
-            {celwasm::CelfnParam{false, Prim(celwasm::CelfnType::Kind::kInt), "a"},
-             celwasm::CelfnParam{false, Prim(celwasm::CelfnType::Kind::kInt), "b"}})
-        .Build();
-ABSL_CHECK_OK(lib_or);
-const celwasm::FunctionLibrary lib = *std::move(lib_or);
-
-auto engine = celwasm::Engine::NewBuilder().Build();
-ABSL_CHECK_OK(engine);
-ABSL_CHECK_OK(engine->AddPlugin(bytes, lib));
-
-// Compile and evaluate as usual — `add(...)` is now a callable export.
-// Note `Compiler::Builder::Build()` is rvalue-qualified: chain setters
-// on a named builder, then `std::move(b).Build()`.
-auto b = celwasm::Compiler::NewBuilder();
-b.DeclareVariable("a", celwasm::CelType::Int())
-    .DeclareVariable("b", celwasm::CelType::Int())
-    .DeclareFunctions(lib);
-auto compiler = std::move(b).Build();
-ABSL_CHECK_OK(compiler);
-
-auto program = compiler->Compile("add(a, b)");
-ABSL_CHECK_OK(program);
-auto instance = engine->Plan(*program);
-ABSL_CHECK_OK(instance);
-
-celwasm::Activation act;
-act.Bind("a", celwasm::Value::Int(40));
-act.Bind("b", celwasm::Value::Int(2));
-auto v = instance->Eval(act);
-ABSL_CHECK_OK(v);
-// *v->AsInt() == 42
-```
-
-Working e2e fixture:
-[`e2e/plugin_fixtures/cel_wasm_plugin_demo/`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/plugin_fixtures/cel_wasm_plugin_demo).
-
----
-
-## 3. Proto messages
-
-The IDL admits `proto(<fully.qualified.name>)` for any plugin-backed
-function. Proto values **cross the boundary as serialized bytes** (m24 §8):
-the host serializes, the plugin deserializes, and vice versa for returns.
-User code on both sides sees the natural language-native message type.
-
-```celfn
-// In fns.idl
-Module customfn;
-
-bool             @plugin.is_admin(proto(acme.User) u);
-proto(acme.User) @plugin.capitalize(proto(acme.User) u);
-```
-
-```cpp
-// In user_fns.cc — pull the generated header through the macro's
-// `extra_includes` argument so user_fns.h #include resolves.
-#include "acme/user.pb.h"
-
-namespace customfn {
-bool IsAdult(const acme::User& u) {
-  return u.age() >= 18;
-}
-acme::User Capitalize(const acme::User& u) {
-  acme::User r = u;
-  // … mutate r …
-  return r;
-}
-}  // namespace customfn
-```
-
-```python
-# In BUILD.bazel — feed the proto cc_library as a wasm-cross dep so the
-# wasi-sdk cc_binary can compile your `.pb.h`/`.pb.cc`.
-cel_wasm_plugin(
-    name = "demo_plugin_proto",
-    idl = "fns_proto.idl",
-    user_fns = ["user_fns_proto.cc"],
-    deps = ["//acme:user_cc_proto"],
+    name = "scorer_plugin",
+    idl  = "scorer.idl",
+    user_fns = ["scorer_fns.cc"],          # implements user_fns.h
+    deps = [":user_cc_proto"],             # acme.User C++ proto
     extra_includes = ["acme/user.pb.h"],
-    tags = ["manual"],   # libprotobuf-cpp cross-build is slow; opt-in
 )
 ```
+
+`bazel build :scorer_plugin` produces `scorer_plugin.wasm` — the one
+artifact you ship. The macro compiles your implementation to a
+sandboxed Component-Model wasm **and embeds the declarations verbatim
+in a `cel.fns` custom section** — the artifact describes itself.
+
+??? note "Under the hood (implementation detail)"
+    The macro chains `cel generate` → `wit-bindgen c` → a
+    `wasm32-wasip2` `cc_binary` → `cel embed-decls`, emitting
+    `fns.wit`, `codec.h`, `generated_stub.cc`, and `user_fns.h` into
+    the package's gen tree. The output is packaged as a WASI
+    Component-Model component (preamble `0x1000d`), exporting the
+    interface `cel:<module>/fns@0.1.0` — always derived from the
+    IDL's `Module` directive (fallback `customfn`); there is no
+    override. None of this surfaces in the API — the engine resolves
+    your declarations against the plugin's exports by itself.
 
 !!! note
-    The proto path drags **libprotobuf-cpp** into the wasm32-wasip2
-    cross-compile — a multi-minute cold-cache build. Tag the target `manual`
-    so default `bazel build //...` doesn't pay the cost; build it explicitly
-    when you exercise that path.
+    A proto-typed plugin drags **libprotobuf-cpp** into the
+    wasm32-wasip2 cross-compile — a multi-minute cold-cache build. Tag
+    such targets `manual` so default `bazel build //...` doesn't pay
+    the cost (that is how the in-tree `demo_plugin_proto` fixture is
+    built). Scalar/string plugins build in seconds (~54 KB artifacts).
+
+### 2.3 Load it — one noun carries everything
+
+```cpp
+#include "abi/plugin.h"
+
+auto plugin = celwasm::Plugin::Load(scorer_bytes).value();
+// plugin.decls()      — the parsed declarations
+// plugin.hash_hex()   — SHA-256 over (bytes ‖ declarations)
+```
+
+`Load` validates the artifact up front: a core wasm module instead of a
+component, a missing `cel.fns` section, unparseable declarations, or a
+non-`@plugin.` decl are all a clean `InvalidArgument` right here. An
+artifact without an embedded section fails with:
+
+```
+Plugin::Load: no cel.fns section — rebuild with cel_wasm_plugin or
+run `cel embed-decls`
+```
+
+(§6 covers `cel embed-decls`, for artifacts built outside the macro.)
+
+### 2.4 Compile side — declarations flow to the type-checker
+
+```cpp
+auto builder = celwasm::Compiler::NewBuilder();
+builder.DeclareVariable("user", celwasm::CelType::Message("acme.User"))
+       .Use(*plugin);
+auto compiler = std::move(builder).Build().value();
+auto program = compiler.Compile("is_adult(user) && user.age < 120").value();
+// The call site type-checks against the .idl signature —
+// `is_adult(user.age)` fails HERE, at compile.  The Program records
+// every custom function it calls (name + full signature) in its
+// cel.abi, for Plan to verify.
+```
+
+No mirror: `Use(plugin)` is exactly
+`DeclareFunctions(plugin.library())` — the declarations the checker
+sees provably came out of the deployed artifact.
+
+### 2.5 Eval side — possibly a different process
+
+```cpp
+auto engine = celwasm::Engine::NewBuilder().Build().value();
+CHECK_OK(engine.Use(*plugin));
+// Fail-fast registration: overload-id collisions, byte parse, and a
+// static check that the plugin actually exports every declared
+// function — a bad plugin upload is rejected HERE, not at traffic
+// time.  No instantiation happens yet.
+
+auto instance = engine.Plan(program).value();
+// Plan verifies every function the program requires exists in the
+// registry with an EXACTLY matching signature (protos compare by
+// fully-qualified name), then instantiates ONLY the plugins the
+// program actually calls — each into its own sandbox with its own
+// linear memory.
+
+acme::User u;  u.set_name("ada");  u.set_age(30);
+celwasm::Activation act;
+act.Bind("user", celwasm::Value::Message(u));
+auto result = instance.Eval(act);      // -> Value::Bool(true)
+```
+
+The runnable, CI-exercised version of this flow (scalar shape) is
+[`examples/09_plugin_functions.cc`](https://github.com/augustinemathew/cel-wasm/blob/master/examples/09_plugin_functions.cc).
+
+### 2.6 What failure looks like
+
+Forgot to register the plugin before `Plan`:
+
+```
+FailedPrecondition: Engine::Plan: program requires plugin function
+`is_adult_proto_acme_user` (`bool is_adult(proto(acme.User))`) but no
+registered plugin declares it; register the providing plugin with
+Engine::Use before Plan
+```
+
+— and a plugin update that changed a signature out from under a
+compiled program:
+
+```
+FailedPrecondition: Engine::Plan: program requires plugin function
+`is_adult_proto_acme_user` with signature
+`bool is_adult(proto(acme.User))` but the registered plugin
+(hash 3f9a2c1b04de) declares `bool is_adult(proto(acme.Person))`;
+signatures must match exactly — recompile the program or rebuild the
+plugin
+```
+
+Both fire at `Plan` — before any traffic, naming the function, the
+signature, and (for a mismatch) the plugin's content hash. A plugin
+upload that doesn't export what it declares fails even earlier, at
+`Engine::Use`:
+
+```
+Engine::Use: plugin does not export `is-adult-proto-acme-user` under
+interface `cel:scorer/fns@0.1.0` (CEL overload-id
+`is_adult_proto_acme_user`)
+```
 
 ---
 
-## 4. Go via TinyGo ⛔ (designed, not implemented)
+## 3. How it works
 
-The intended Go authoring shape — for parity with C++:
+Four pieces make the flow verifiable end to end (wire-level detail:
+[ABI wire format](../design/08-abi-wire-format.md)):
 
-```go
-package main
+- **The `cel.fns` section.** The macro's last step appends the `.idl`
+  declaration text verbatim (UTF-8) as a top-level custom section named
+  `cel.fns` on the component. `Plugin::Load` parses it back into a
+  `FunctionLibrary`; the plugin's interface name is always derivable
+  from the text's `Module` directive (`cel:<module>/fns@0.1.0`), so no
+  side channel is needed.
+- **The content hash.** `Plugin::hash()` is SHA-256 over
+  (wasm bytes ‖ declaration text) — a stable identity for embedder
+  bookkeeping, surfaced in Plan-time mismatch diagnostics. It is *not*
+  enforced anywhere (§8).
+- **Plan-time signature verification.** `Compile` records every custom
+  function the emitted wasm imports — name, backend, and full recursive
+  signature — in the Program's `cel.abi` (`required_functions`).
+  `Engine::Plan` checks each entry against its registry before any
+  linking: existence, receiver-ness, arity, each parameter type, and
+  the return type must match exactly (protos by fully-qualified name).
+  `@host` functions are covered too — a forgotten `BindFunction` is the
+  same clean `FailedPrecondition` instead of an opaque wasmtime link
+  error.
+- **Selective instantiation.** Because Plan knows exactly which
+  functions the program needs, it instantiates **only** the registered
+  plugins that provide them. Register ten plugins; a program calling
+  one instantiates one, and a program calling none instantiates zero.
+  (Programs compiled before `required_functions` existed carry no
+  table; for those, Plan behaves as before — no check, instantiate
+  all.)
 
-//celfn:export add
-func Add(a, b int64) int64 { return a + b }
+---
 
-//celfn:export greet
-func Greet(name string, age int64) string {
-    return fmt.Sprintf("Hello, %s (age %d)", name, age)
+## 4. The sharing model — where plugin state lives
+
+What is shared and what is not:
+
+- **Shared per engine:** the parsed component (compiled once at `Use`)
+  and the declarations. One registration serves every Program the
+  engine ever plans. A `Plugin` value itself is immutable —
+  registerable on many compilers/engines from many threads.
+- **Fresh per Plan:** the plugin *instance*. Each Plan instantiates
+  into its own store with its own linear memory — Instances never see
+  each other's plugin state.
+- **Persistent per Instance:** the plugin instance lives as long as
+  the Instance, so state a plugin fn keeps in its linear memory (a
+  cache, a counter) survives across `Eval` calls on the SAME Instance
+  and resets on a fresh Plan. Write plugin fns as pure functions
+  unless per-Instance memoization is the intent.
+- **Registration is startup-only** (not thread-safe, like the rest of
+  the registration family); `Plan` is concurrent-safe.
+
+### 4.1 The lifecycle, made observable
+
+Consider a plugin function with internal state, declared and
+implemented in a plugin:
+
+```c
+// counter.idl
+Module counter;
+
+int @plugin.invocation_id();
+```
+
+```cpp
+// counter_fns.cc — the author's implementation
+namespace counter {
+int InvocationId() {
+  static int i = 0;   // lives in the PLUGIN INSTANCE's linear memory
+  return i++;
 }
-
-func main() {}  // required for a reactor module
+}  // namespace counter
 ```
 
-The planned macro extension would emit Go bindings instead of C++:
+The embedder compiles a CEL expression that calls it — the call site
+type-checks against the plugin's declaration like any other function:
 
-```python
-cel_wasm_plugin(
-    name = "demo_plugin",
-    idl = "fns.idl",
-    language = "go",                  # planned
-    user_fns = ["user_fns.go"],
-)
+```cpp
+auto counter_plugin = Plugin::Load(counter_bytes).value();
+
+auto b = Compiler::NewBuilder();
+b.Use(counter_plugin);
+auto compiler = std::move(b).Build().value();
+auto program = compiler.Compile("invocation_id()").value();
+// `program` is wasm that calls the plugin fn on every Eval.
 ```
 
-Behind the scenes:
+Now run that ONE Program several ways and watch where the counter
+state actually lives:
 
+```cpp
+auto engine = Engine::NewBuilder().Build().value();
+CHECK_OK(engine.Use(counter_plugin));      // registered; compiled once, run never
+
+auto a = engine.Plan(program).value();     // plugin instance A created
+auto b = engine.Plan(program).value();     // plugin instance B created
+
+Activation act;                            // no variables in this expr
+a.Eval(act);   // -> 0     A's counter: i was 0, now 1
+a.Eval(act);   // -> 1     same Instance, same linear memory — persists
+b.Eval(act);   // -> 0     B is the SAME program on the SAME engine,
+               //          but its own sandbox — not 2
+a.Eval(act);   // -> 2     A unaffected by B
+
+auto a2 = engine.Plan(program).value();    // re-plan the same program
+a2.Eval(act);  // -> 0     a fresh Plan is a fresh sandbox — reset
 ```
-fns.idl  ─► cel generate --language=go  ─► fns.wit + customfn_bindings.go
-                                            +  user_fns.go (yours)
-                ↓
-            tinygo build -target=wasip2 -buildmode=c-shared -o core.wasm
-                ↓
-            (the wasip2 TinyGo target emits a Component-Model binary
-             directly, same as the C++ path)
-```
 
-**Why it's not available yet:** only `--language=cpp` is wired through
-`cel generate`; the Go emitter (mirror of `cpp_codec_emitter` /
-`cpp_stub_emitter`) hasn't been written, and the macro doesn't accept
-`language = "go"`.
+The rules this pins:
 
-**Why TinyGo over stock Go:** TinyGo's wasip2 output is ~118 KB for a
-scalar/string fn vs stock Go's ~1.6 MB, and needs ~2 WASI imports vs ~17. The
-trade is no proto support — TinyGo's incomplete reflection traps in
-`proto.Unmarshal` — so a proto-bearing Go fn would use stock Go and pay the
-size cost. Empirically confirmed; see
-`doc/implementation-plan/rewrite/foreign-go-bindgen-findings.md`.
+- `static` / global state in a plugin fn is **per-Instance**, not
+  per-engine and not per-process. Two Instances of the same Program on
+  the same engine each start from zero.
+- The same holds for heap allocations, lazily-built caches, and
+  library init inside the plugin — each Instance pays its own init and
+  keeps its own copy.
+- A re-plan is a state reset. Anything a deployment does that re-plans
+  (rollout, config reload) silently zeroes plugin-internal state —
+  never park state a correctness property depends on inside a plugin.
+- Corollary for CEL semantics: an expression calling such a function
+  is not referentially transparent across Evals. That is the
+  embedder's choice to make, but the intended model is pure functions;
+  treat in-plugin state as an optimization (memoization) whose loss is
+  always safe.
 
 ---
 
@@ -317,27 +378,84 @@ codec emits per-type `lift` / `lower` overloads on demand; only types actually
 used in the IDL are pulled into the plugin, so a string-only IDL doesn't
 link the map machinery.
 
+Proto values cross the boundary as **serialized bytes**: the host
+serializes, the plugin deserializes (and vice versa for returns) — a
+per-call cost inherent to the plugin-memory boundary; user code on both
+sides sees the natural message type. Both sides need the proto
+generated from the same `.proto`.
+
 `optional<T>` and `type` are **permanently rejected** at the plugin
-boundary (m24 §14) — they don't compose with the canonical ABI.
+boundary — they don't compose with the canonical ABI.
+
+Known envelope limits, each pinned by a test or tracked entry: plugin
+functions that *return* a `string` currently trap in libc++ under
+wasm32-wasip2 (skipped `GreetRoundTripsString` in the demo fixture;
+string arguments are unaffected), and a map-*returning* decl hits a
+codec-emitter gap.
 
 ---
 
-## 6. Backend distinction
+## 6. Plugins built outside the macro — `cel embed-decls`
 
-Three function-IDL backends; only one routes through a sandboxed plugin:
+If you build a plugin artifact by other means (another build system,
+another toolchain), stamp its declarations in yourself:
 
-| Prefix | Where the body lives | Registration |
-| --- | --- | --- |
-| `@host.fn` | embedder C++ | `Engine::AddFunction` (or `AddTypedFunction`) |
-| `@plugin.fn` | a sandboxed wasm plugin | `Engine::AddPlugin(bytes, lib)` |
-| `@native.fn = expr` | CEL expression body | — (codegen path unshipped; see [Custom functions §3](custom-functions.md#3-cel-defined-functions-native)) |
+```
+cel embed-decls --plugin=<in.wasm> --idl=<file.idl> --out=<out.wasm>
+```
 
-This page covers `@plugin.` exclusively. For host functions see
-[Writing host functions](writing-host-functions.md).
+It validates the same things the macro's build step does — the input is
+a Component-Model component, the `.idl` parses, **every decl is
+`@plugin.`**, and no `cel.fns` section already exists — then appends
+the verbatim `.idl` bytes as the section and writes the result. It is
+deterministic (a pure function of its inputs), so re-running it in a
+build is safe. The output loads with `Plugin::Load` like any
+macro-built artifact.
+
+**The legacy escape hatch.** For artifacts you cannot re-embed
+(hand-built or pure-WAT fixtures with top-level exports),
+`Engine::AddPlugin(plugin_bytes, lib)` keeps explicit-decls
+registration alive: you supply the bytes *and* a hand-built
+`FunctionLibrary`. It validates less than `Use` — no static export
+check (a missing export surfaces at `Plan`, not registration) — and
+reintroduces the decl-drift risk the self-describing flow was built to
+end. Prefer `cel embed-decls` + `Plugin::Load` whenever the artifact is
+yours to modify.
 
 ---
 
-## 7. Performance + size
+## 7. Go authoring ⛔ (designed, not implemented)
+
+The intended Go authoring shape — for parity with C++:
+
+```go
+package main
+
+//celfn:export add
+func Add(a, b int64) int64 { return a + b }
+
+func main() {}  // required for a reactor module
+```
+
+The planned macro extension would emit Go bindings instead of C++
+(`language = "go"`), building with TinyGo's wasip2 target — which
+emits a Component-Model binary directly, same as the C++ path.
+
+**Why it's not available yet:** only `--language=cpp` is wired through
+`cel generate`; the Go emitter (mirror of `cpp_codec_emitter` /
+`cpp_stub_emitter`) hasn't been written, and the macro doesn't accept
+`language = "go"`.
+
+**Why TinyGo over stock Go:** TinyGo's output is ~118 KB for a
+scalar/string fn vs stock Go's ~1.6 MB, and needs ~2 WASI imports vs
+~17. The trade is no proto support — TinyGo's incomplete reflection
+traps in `proto.Unmarshal` — so a proto-bearing Go fn would use stock
+Go and pay the size cost. Empirically confirmed; see
+`doc/implementation-plan/rewrite/foreign-go-bindgen-findings.md`.
+
+---
+
+## 8. Performance + size
 
 Per-call overhead, M-series Mac, `-c opt` (re-measured 2026-07-22; reproduce
 with `bazel run -c opt //benchmark/plugin:plugin_bench`):
@@ -350,48 +468,33 @@ with `bazel run -c opt //benchmark/plugin:plugin_bench`):
 
 The **canonical-ABI hop costs ~340 ns over a native host callback** on the
 scalar shape — the price of process-like isolation: own linear memory, no
-access to host state, swappable at runtime without recompiling the policy.
-Where you'd otherwise reach for a `cel-cpp` plugin in your host process, this
-is usually a worthwhile trade. If the per-call cost matters, the host-function
-path (`@host.` — [Writing host functions](writing-host-functions.md)) is the
-direct alternative: same process / memory, no isolation.
+access to host state, swappable without recompiling the policy.
+Where you'd otherwise reach for a `cel-cpp` extension in your host
+process, this is usually a worthwhile trade. If the per-call cost
+matters, the host-function path (`@host.` —
+[Writing host functions](writing-host-functions.md)) is the direct
+alternative: same process / memory, no isolation.
+
+What is deliberately **not** checked, stated honestly: program↔plugin
+*hash* agreement (`Plugin::hash()` is exposed for embedder bookkeeping;
+enforcement is future work), and the WIT-level `FuncType` of exports
+(the wasmtime C API's type introspection is too thin; unreachable for
+macro-built plugins, where WIT and decls derive from one `.idl`).
 
 ---
 
-## 8. Performance follow-ups (open invitation)
-
-Optimisations in the design queue, all targeting the per-call boundary cost:
-
-- **AOT-cache the plugin instance.** Every `Engine` rebuilds the wasmtime
-  instance from bytes at `AddPlugin`. Caching the cwasm machine
-  code (`wasmtime::Module::serialize`) on disk would amortise the
-  ~240-300 µs Plan cost across processes — the same lever already documented
-  for the expression module (`engine.h:24`).
-- **Plugin-side allocator pool.** `cabi_realloc` is called once per
-  argument lift; a small per-call slab would cut that to one bump-pointer
-  touch.
-- **Skip the canonical-ABI hop for compute-only plugins.** With a `pure`
-  annotation in the IDL, the engine could cache lifted args across repeated
-  Evals with the same activation — common in batch-eval loops.
-- **A non-libc++ build mode.** The wasm32-wasip2 toolchain pulls all of
-  libc++ as soon as you `#include <string>`; building against a tiny
-  header-only replacement would strip the import surface.
-
-If you have a workload where any of these would matter, the
-[bench harness](https://github.com/augustinemathew/cel-wasm/blob/master/benchmark/plugin/plugin_bench.cc) is the
-right place to add a row and measure.
-
 ## 9. Where to look next
 
-- **Working demo**:
+- **Canonical example**:
+  [`examples/09_plugin_functions.cc`](https://github.com/augustinemathew/cel-wasm/blob/master/examples/09_plugin_functions.cc)
+  — the one-noun flow end to end (`bazel run //examples:09_plugin_functions`).
+- **Working e2e fixture**:
   [`e2e/plugin_fixtures/cel_wasm_plugin_demo/`](https://github.com/augustinemathew/cel-wasm/tree/master/e2e/plugin_fixtures/cel_wasm_plugin_demo)
-  — `fns.idl` + `user_fns.cc` + `BUILD.bazel`, end-to-end `cc_test` that
-  round-trips `add(a, b)` through `Engine::AddPlugin`.
+  — `fns.idl` + `user_fns.cc` + `BUILD.bazel`, end-to-end tests.
 - **Macro source**:
   [`bazel/cel_wasm_plugin.bzl`](https://github.com/augustinemathew/cel-wasm/blob/master/bazel/cel_wasm_plugin.bzl).
-- **Design doc**:
-  [`doc/implementation-plan/rewrite/m26-celfnc-and-component-build.md`](https://github.com/augustinemathew/cel-wasm/blob/master/doc/implementation-plan/rewrite/m26-celfnc-and-component-build.md).
-- **Type matrix detail / canonical ABI**:
-  [`doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md`](https://github.com/augustinemathew/cel-wasm/blob/master/doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md).
+- **The `Plugin` API**: `abi/plugin.h`; wire detail:
+  [ABI wire format](../design/08-abi-wire-format.md).
+- **Security guarantees**: [security model](security-model.md).
 - **TinyGo / Go probe findings**:
   `doc/implementation-plan/rewrite/foreign-go-bindgen-findings.md`.
