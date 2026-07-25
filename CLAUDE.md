@@ -411,6 +411,53 @@ input first.  So:
     the pattern: comprehension-over-unknown-range confirmed against
     `eval/eval/comprehension_step.cc`).
 
+### Probe our own surfaces too — and delete the ones with no working setting
+
+The two sections above are about *cel-cpp's* behaviour.  The same
+discipline applies to **our own** options, flags, and public fields,
+where the failure mode is quieter: nobody questions a knob that has
+been in the header for a year.
+
+**A hedge in a doc is an unrun experiment.**  When a design note says
+"plausibly fails", "may be a no-op", "probe pending", or "the knob may
+be deleted" — that is not a finding, it is a five-minute experiment
+somebody deferred.  Run it before you write another word of prose
+around it.  `mem_size_bytes` was diagnosed correctly in four separate
+findings (R6, R8, R72, V8), each with the probe recipe spelled out,
+and survived for months because the probe was never run; every pass
+over the docs added more careful hedging instead.
+
+**Probing our own code is usually cheaper than reading it.**  The
+whole experiment is a `cc_test` that exercises the surface two ways
+and prints the difference:
+
+  - "Does this option affect the output?" — compile the same
+    expression at two settings and compare `wasm_bytes()`.  Identical
+    bytes is proof, not evidence.
+  - "Does this option work at all?" — carry it through to
+    `Engine::Plan` / `Instance::Eval`, not just `Compile`.  The
+    `mem_size_bytes` failure was invisible at compile time and only
+    appeared as `incompatible import type` at Plan.
+
+Same rules as any probe: it lives under `compiler/probes/<milestone>/`,
+it is deleted at closeout, and what it proved is recorded in the
+milestone doc.
+
+**Deletion is a legitimate — often the correct — outcome.**  When a
+probe shows a surface has *no working configuration*, delete it; do
+not document the caveat.  Documenting is the tempting move because it
+is smaller, and it is how a dead knob acquires four accurate
+paragraphs across four pages and stays dead.  The test to apply: *is
+there any value a user could set here that does something useful?*  If
+no, the option, its plumbing, its flag, and its prose all go in one
+commit.  If yes, document the real envelope.
+
+The same test retires unimplemented surfaces.  A public method whose
+body is `ABSL_CHECK(false)` with no milestone that owns it is not a
+promise, it is a crash with documentation — implement it or delete it
+(`Activation::OverrideFunction` sat declared for months after the plan
+doc had already sanctioned removing it).
+
 ## WAT-first for ABI and codegen design
 
 Before implementing any new codegen arm (kSelect, kCall, kComprehension,
@@ -618,57 +665,36 @@ bare FAIL with no test documenting it.
 ## Docs ship with the change (public API + CLI)
 
 **A public-API or CLI change is not done until the user-facing docs
-say the new thing, in the same commit.**  Code and docs drifting apart
-is the single most common defect this repo produces: the readiness
-audit found `mem_size_bytes` documented as an arena knob in four
-places when it has no effect in the default configuration, and a
-`BindLazy` contract promising behaviour the eager marshal cannot
-deliver.  Both shipped because the code moved and the prose didn't.
-
-**What counts as triggering this rule:**
-
-  - Any change to a public header: `compiler/{compiler,program}.h`,
-    `eval/{engine,instance,activation,value,error,attribute,
-    host_call_context,typed_function}.h`, `shared/type.h`, `abi/*`,
-    `runtime/*.h`.  Signature, contract, status codes, defaults,
-    thread-safety — all of it.
-  - Any change to `tools/cel/` that a user can observe: a subcommand,
-    a flag, output shape, an exit code, an error message.
+say the new thing, in the same commit.**  Triggering changes: any
+public header (`compiler/{compiler,program}.h`, the `eval/` public
+leaves, `shared/type.h`, `abi/*`, `runtime/*.h`) — signature,
+contract, status codes, defaults, thread-safety; and anything in
+`tools/cel/` a user can observe — subcommand, flag, output shape,
+exit code, error message.
 
 **There are two separate tellings, and both must be updated.**
-`mkdocs.yml` sets `docs_dir: doc`, so **only `doc/**.md` is
-published to the site**.  `tools/cel/README.md`, the root
-`README.md`, `conformance/README.md` and `benchmark/README.md` live
-outside it and are GitHub-only.  Updating one is not updating the
-other — check both:
+`mkdocs.yml` sets `docs_dir: doc`, so **only `doc/**.md` reaches the
+site** — `doc/user-guide/` for embedder how-to, `doc/design/` for
+architecture claims.  `tools/cel/README.md` and the root `README.md`
+live outside it and are GitHub-only.  Updating one is not updating
+the other.
 
-  - **Site** — `doc/user-guide/` (the embedder how-to: `index.md`,
-    `getting-started.md`, `faq.md`) and `doc/design/` when the
-    architecture claim changes.
-  - **GitHub** — `tools/cel/README.md` for CLI surface; root
-    `README.md` when a headline capability or limitation changes.
+**Verify before you write.**  Check every claim against the code that
+implements it, never against a sibling doc or memory.  Two docs
+disagreeing is worse than a gap — the reader can't tell which to
+trust — so find the code path and fix both.  And correct a promise
+you can't keep rather than restating it: `BindLazy` documented a
+trigger the eager marshal cannot deliver, so the contract was
+replaced with the achievable one and the reason recorded
+(`m36-cli-runtime-and-lazy-binding.md` §4.2).
 
-**Verify before you write.**  Every claim in a doc is checked against
-the code that implements it, not against a sibling doc or memory.  If
-two docs disagree, find the code path and fix both — a contradiction
-between published pages is worse than a gap, because the reader can't
-tell which one to trust.  Correct a promise you can't keep rather
-than restating it (see `m36-cli-runtime-and-lazy-binding.md` §4.2 for
-the pattern: the impossible contract was replaced with the achievable
-one and the reason recorded).
-
-**Keep them readable.**  These pages are read by someone deciding
-whether to adopt the project, not by someone auditing it:
-
-  - Lead with a runnable example; explain after.
-  - One telling per topic.  If a fact needs to appear twice, the
-    second place links to the first — never a second copy of the same
-    table that can drift.
-  - Prose in complete sentences, not fragments or arrow chains.
-  - State limitations plainly and in place.  An honest "not
-    implemented" beats a hedge the reader has to decode.
-  - No milestone numbers in user-facing docs — a reader doesn't know
-    what m21 is.  Those belong in `doc/implementation-plan/`.
+**Keep them readable** — these pages are read by someone deciding
+whether to adopt the project, not by someone auditing it.  Lead with
+a runnable example.  One telling per topic; a fact needed twice gets
+a link, never a second copy of a table that can drift.  Complete
+sentences, not fragments or arrow chains.  State limitations plainly
+and in place — an honest "not implemented" beats a hedge.  No
+milestone numbers: a reader doesn't know what m21 is.
 
 ## Feature work is tracked in `PROPOSALS.md`
 
@@ -893,6 +919,15 @@ invisible.
     expected to merge in >1 week) is about to merge to master.
   - A planning doc closed out (per "Closing out a planning doc"
     above) — the review verifies the closeout is honest.
+
+**`git fetch` first — always.**  A review or audit run against a
+stale checkout produces confident findings that were fixed weeks ago,
+and the stale ones are indistinguishable from the live ones in the
+report.  Sync (or at minimum `git fetch` and read via
+`git show origin/master:<path>`) before reading a single file, and
+state the SHA the review was run against at the top of the report.  A
+2026-07-25 readiness audit ran 45 commits behind and had to have every
+finding re-verified; roughly a third had already been fixed upstream.
 
 **Scope of each pass.**  The reviewer agent reads:
 
