@@ -125,6 +125,12 @@ struct CelfnDecl {
   std::string body;
 };
 
+// The `@<backend>.` source spelling of a decl's backend (`@host.`,
+// `@native.`, `@plugin.`), for diagnostics.  THE spelling helper for
+// every surface that names a decl's backend in an error message —
+// do not re-spell it per call site.
+absl::string_view BackendPrefix(CelfnDecl::Backend backend);
+
 // Embedder-facing collection of custom CEL function declarations.
 // Constructed via Builder — no other public construction path.
 class FunctionLibrary {

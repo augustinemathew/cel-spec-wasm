@@ -60,6 +60,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":program",
+        "//abi:celfn_wire",
         "//abi:plugin",
         "//shared:type",
         "//compiler/internal:compile",

@@ -318,6 +318,29 @@ TEST(RenderSignatureTest, UnspecifiedKindRendersNumerically) {
   EXPECT_EQ(RenderSignature(fn), "bool f(<kind 0>)");
 }
 
+// --- RenderFnType (the public single-type renderer) ----------------
+
+TEST(RenderFnTypeTest, GrammarSpellingsIncludingNestedComposites) {
+  // The grammar spellings (`Duration` / `Timestamp` capitalised,
+  // `map<K, V>` with a space) — the contract Plan messages and emit
+  // tests pin; compiler.cc diagnostics compose FnTypeFromCelfn with
+  // this renderer so they can't diverge from it.
+  EXPECT_EQ(RenderFnType(WireScalar(FnType::FN_KIND_DURATION)), "Duration");
+  EXPECT_EQ(RenderFnType(WireScalar(FnType::FN_KIND_TIMESTAMP)), "Timestamp");
+  EXPECT_EQ(RenderFnType(FnTypeFromCelfn(
+                Map(Scalar(CelfnType::Kind::kString),
+                    Scalar(CelfnType::Kind::kDuration)))),
+            "map<string, Duration>");
+  EXPECT_EQ(RenderFnType(FnTypeFromCelfn(Optional(
+                Map(Scalar(CelfnType::Kind::kString),
+                    Scalar(CelfnType::Kind::kInt))))),
+            "optional<map<string, int>>");
+}
+
+TEST(RenderFnTypeTest, UnknownKindRendersNumerically) {
+  EXPECT_EQ(RenderFnType(WireUnknownKind(99)), "<kind 99>");
+}
+
 // --- RequiredFunctionFromDecl --------------------------------------
 
 CelfnDecl MakeDecl(CelfnDecl::Backend backend, std::string fn_name,

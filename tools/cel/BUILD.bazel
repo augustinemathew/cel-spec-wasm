@@ -99,10 +99,10 @@ cc_library(
     srcs = ["run_embed_decls.cc"],
     hdrs = ["run_embed_decls.h"],
     deps = [
+        "//abi:plugin_validate",
         "//abi:wasm_binary",
         "//compiler/celfn:function_library",
         "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

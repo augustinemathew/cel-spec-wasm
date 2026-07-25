@@ -1369,21 +1369,6 @@ absl::Status InstantiateExpr(celwasm::InstanceImpl* impl) {
 
 // ——— Engine::BindFunction helpers ———
 
-// Decl-side backend spelling for diagnostics.
-absl::string_view BackendName(celwasm::CelfnDecl::Backend backend) {
-  switch (backend) {
-    case celwasm::CelfnDecl::Backend::kHost:
-      return "@host";
-    case celwasm::CelfnDecl::Backend::kCelDefined:
-      return "@native";
-    case celwasm::CelfnDecl::Backend::kPlugin:
-      return "@plugin";
-  }
-  ABSL_CHECK(false) << "BackendName: unhandled CelfnDecl::Backend = "
-                    << static_cast<int>(backend);
-  return "unreachable";
-}
-
 // Compatibility between a callable's canonical C++ parameter kind and
 // the CEL type declared at the same position.  `Value` matches any
 // declared type; `absl::string_view` serves both string and bytes;
@@ -1498,6 +1483,26 @@ absl::Status CheckPluginExportsStatically(
   return status;
 }
 
+// Parses plugin bytes into the `wasmtime_component_t*` shared across
+// Plans (each Plan instantiates it into its own per-Plan store,
+// mirroring how RegisteredCustomModule's parsed `wasmtime_module_t*`
+// is reused).  On parse failure returns the raw wasmtime error
+// (FailedPrecondition), `context` naming the caller; each caller owns
+// its status-code policy at the call site (see
+// doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §3.4).
+absl::StatusOr<wasmtime_component_t*> ParsePluginComponent(
+    const celwasm::WasmtimeEngineState& state,
+    absl::Span<const uint8_t> bytes, absl::string_view context) {
+  wasmtime_component_t* component = nullptr;
+  wasmtime_error_t* err = wasmtime_component_new(state.engine, bytes.data(),
+                                                 bytes.size(), &component);
+  if (err != nullptr) {
+    return WasmtimeErrorToStatus(absl::StrCat(context, ": parse plugin"),
+                                 err);
+  }
+  return component;
+}
+
 // Front half of `Engine::BindFunction`'s validation: parse + require
 // exactly one declaration with the `@host.` backend.
 absl::StatusOr<celwasm::CelfnDecl> ParseSingleHostDecl(
@@ -1518,8 +1523,8 @@ absl::StatusOr<celwasm::CelfnDecl> ParseSingleHostDecl(
   if (decl.backend != celwasm::CelfnDecl::Backend::kHost) {
     return absl::InvalidArgumentError(absl::StrCat(
         "Engine::BindFunction: declaration `", decl.fn_name, "` uses the `",
-        BackendName(decl.backend),
-        ".` backend; only `@host.` declarations can bind a C++ callable"));
+        celwasm::BackendPrefix(decl.backend),
+        "` backend; only `@host.` declarations can bind a C++ callable"));
   }
   return decl;
 }
@@ -1722,29 +1727,22 @@ absl::Status Engine::Use(const Plugin& plugin) {
       !s.ok()) {
     return s;
   }
-  // Parse the plugin bytes.  `Plugin::Load` already proved the CM
-  // preamble, so a parse failure here means a structurally-corrupt
-  // component body — surface it as InvalidArgument per the m35 §3.4
-  // per-phase contract.  The parsed `wasmtime_component_t*` is
-  // shared across Plans (each Plan instantiates it into its own
-  // per-Plan store).
-  wasmtime_component_t* component = nullptr;
-  wasmtime_error_t* err = wasmtime_component_new(
-      wasmtime_->engine, plugin.bytes().data(), plugin.bytes().size(),
-      &component);
-  if (err != nullptr) {
-    absl::Status parse =
-        WasmtimeErrorToStatus("Engine::Use: parse plugin", err);
-    return absl::InvalidArgumentError(parse.message());
+  // `Plugin::Load` already proved the CM preamble, so a parse
+  // failure here means a structurally-corrupt component body —
+  // surface it as InvalidArgument per the per-phase contract.
+  absl::StatusOr<wasmtime_component_t*> component =
+      ParsePluginComponent(*wasmtime_, plugin.bytes(), "Engine::Use");
+  if (!component.ok()) {
+    return absl::InvalidArgumentError(component.status().message());
   }
   // Static export check — a bad plugin upload is rejected HERE, at
   // registration, not at traffic time.  No instantiation happens.
-  if (auto s = CheckPluginExportsStatically(component, plugin); !s.ok()) {
-    wasmtime_component_delete(component);
+  if (auto s = CheckPluginExportsStatically(*component, plugin); !s.ok()) {
+    wasmtime_component_delete(*component);
     return s;
   }
   celwasm::RegisteredPlugin entry;
-  entry.component = component;
+  entry.component = *component;
   entry.library = plugin.library();
   entry.hash = plugin.hash();
   wasmtime_->plugin_registry.push_back(std::move(entry));
@@ -1762,22 +1760,15 @@ absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
       !s.ok()) {
     return s;
   }
-  // Parse the plugin bytes.  Surfaces malformed-plugin errors
-  // here rather than at first Plan.  The parsed
-  // `wasmtime_component_t*` is shared across Plans (each Plan
-  // instantiates it into its own per-Plan store), mirroring how
-  // RegisteredCustomModule's parsed `wasmtime_module_t*` is reused.
-  wasmtime_component_t* component = nullptr;
-  wasmtime_error_t* err =
-      wasmtime_component_new(wasmtime_->engine, plugin_bytes.data(),
-                             plugin_bytes.size(), &component);
-  if (err != nullptr) {
-    return WasmtimeErrorToStatus("Engine::AddPlugin: parse plugin", err);
-  }
+  // Surfaces malformed-plugin errors here rather than at first Plan,
+  // keeping the raw wasmtime FailedPrecondition on this legacy path.
+  absl::StatusOr<wasmtime_component_t*> component =
+      ParsePluginComponent(*wasmtime_, plugin_bytes, "Engine::AddPlugin");
+  if (!component.ok()) return component.status();
   // `entry.hash` stays all-zero — this legacy path has no Plugin
   // object and therefore no content hash (see RegisteredPlugin).
   celwasm::RegisteredPlugin entry;
-  entry.component = component;
+  entry.component = *component;
   entry.library = lib;
   wasmtime_->plugin_registry.push_back(std::move(entry));
   return absl::OkStatus();

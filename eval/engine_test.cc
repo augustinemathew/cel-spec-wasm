@@ -32,6 +32,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "bazel/link_mode_test_helpers.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -1217,55 +1218,23 @@ TEST(EngineUseTest, HashRetainedOnRegistryEntry) {
 // fixtures, legacy Programs).  Unknown future enum values → no
 // validation (open-set wire data).
 
-// Reads an unsigned LEB128 u32 at `*pos`, advancing it.  Test-local
-// minimal reader — fixture wasm is well-formed by construction.
-uint32_t ReadLebU32(const std::vector<uint8_t>& bytes, size_t* pos) {
-  uint32_t result = 0;
-  uint32_t shift = 0;
-  while (true) {
-    ABSL_CHECK_LT(*pos, bytes.size());
-    const uint8_t b = bytes[(*pos)++];
-    result |= static_cast<uint32_t>(b & 0x7f) << shift;
-    if ((b & 0x80) == 0) return result;
-    shift += 7;
-  }
-}
-
-// Appends `v` as unsigned LEB128.
-void AppendLebU32(std::vector<uint8_t>& out, uint32_t v) {
-  do {
-    uint8_t b = v & 0x7f;
-    v >>= 7;
-    if (v != 0) b |= 0x80;
-    out.push_back(b);
-  } while (v != 0);
-}
-
 // Locates the `cel.abi` custom section's proto payload (the bytes
-// AFTER the section name) within a wasm byte stream.  Returns
-// [begin, end) indices into `bytes`.  CHECK-fails if absent — the
-// fixtures that call this always carry the section.
+// AFTER the section name) within a wasm byte stream, via
+// `FindCustomSection` (abi/wasm_binary.h).  Returns [begin, end)
+// indices into `bytes` — offsets rather than the returned span,
+// because the caller patches the payload in place.  CHECK-fails if
+// absent — the fixtures that call this always carry the section.
 struct PayloadRange {
   size_t begin;
   size_t end;
 };
 PayloadRange FindCelAbiPayload(const std::vector<uint8_t>& bytes) {
-  size_t pos = 8;  // skip magic + version
-  while (pos < bytes.size()) {
-    const uint8_t section_id = bytes[pos++];
-    const uint32_t section_size = ReadLebU32(bytes, &pos);
-    const size_t section_end = pos + section_size;
-    if (section_id == 0) {
-      size_t p = pos;
-      const uint32_t name_len = ReadLebU32(bytes, &p);
-      const absl::string_view name(
-          reinterpret_cast<const char*>(bytes.data() + p), name_len);
-      if (name == "cel.abi") return {p + name_len, section_end};
-    }
-    pos = section_end;
-  }
-  ABSL_CHECK(false) << "no cel.abi custom section in fixture wasm";
-  return {0, 0};
+  const absl::StatusOr<absl::Span<const uint8_t>> payload =
+      FindCustomSection(bytes, "cel.abi");
+  ABSL_CHECK_OK(payload.status())
+      << "no cel.abi custom section in fixture wasm";
+  const auto begin = static_cast<size_t>(payload->data() - bytes.data());
+  return {begin, begin + payload->size()};
 }
 
 // Compiles `42` in the given mode and returns a mutable copy of the
@@ -1347,24 +1316,22 @@ TEST(EnginePlanLinkModeTripwireTest,
      MislabeledDynamicShapedModuleRejectedAtPlan) {
   // The opposite arm: a module that DOES import cel.* (the synthetic
   // WAT fixture) carrying a cel.abi section that claims
-  // LINK_MODE_STATIC.  Built by appending a hand-framed cel.abi
-  // custom section — custom sections may appear anywhere, and the
-  // fixture has none of its own.  `runtime_abi_version` stays 0 with
-  // an otherwise-empty abi, which `CheckRuntimeAbiVersion` admits.
+  // LINK_MODE_STATIC.  Built by appending a cel.abi custom section
+  // framed by `BuildCustomSection` (abi/wasm_binary.h) — custom
+  // sections may appear anywhere, and the fixture has none of its
+  // own.  `runtime_abi_version` stays 0 with an otherwise-empty abi,
+  // which `CheckRuntimeAbiVersion` admits.
   celwasm::abi::CelAbi abi;
   abi.set_link_mode(celwasm::abi::LINK_MODE_STATIC);
   const std::string payload = abi.SerializeAsString();
 
-  std::vector<uint8_t> body;
-  constexpr absl::string_view kName = "cel.abi";
-  AppendLebU32(body, static_cast<uint32_t>(kName.size()));
-  body.insert(body.end(), kName.begin(), kName.end());
-  body.insert(body.end(), payload.begin(), payload.end());
+  const std::vector<uint8_t> section = BuildCustomSection(
+      "cel.abi", absl::Span<const uint8_t>(
+                     reinterpret_cast<const uint8_t*>(payload.data()),
+                     payload.size()));
 
   std::vector<uint8_t> bytes = Wat2Wasm(kSyntheticExprWat);
-  bytes.push_back(0x00);  // custom section id
-  AppendLebU32(bytes, static_cast<uint32_t>(body.size()));
-  bytes.insert(bytes.end(), body.begin(), body.end());
+  bytes.insert(bytes.end(), section.begin(), section.end());
 
   // Sanity: the appended section decodes as intended.
   auto abi_or = DecodeCelAbiFromWasm(bytes);

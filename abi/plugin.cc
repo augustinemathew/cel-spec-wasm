@@ -3,14 +3,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "abi/internal/sha256.h"
+#include "abi/plugin_validate.h"
 #include "abi/wasm_binary.h"
-#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
@@ -60,34 +59,17 @@ bool IsValidUtf8(absl::Span<const uint8_t> bytes) {
   return true;
 }
 
-// The `@<backend>.` spelling of a decl's backend, for error messages.
-absl::string_view BackendPrefix(CelfnDecl::Backend backend) {
-  switch (backend) {
-    case CelfnDecl::Backend::kHost:
-      return "@host.";
-    case CelfnDecl::Backend::kCelDefined:
-      return "@native.";
-    case CelfnDecl::Backend::kPlugin:
-      return "@plugin.";
-  }
-  ABSL_CHECK(false) << "unknown CelfnDecl::Backend "
-                    << static_cast<int>(backend);
-  return "";
-}
-
 // Classifies the binary and extracts the `cel.fns` payload as
 // validated UTF-8 text.
 absl::StatusOr<std::string> ExtractCelfnSource(
     absl::Span<const uint8_t> plugin_bytes) {
-  const std::optional<WasmLayer> layer = ClassifyWasmBinary(plugin_bytes);
-  if (layer == WasmLayer::kCoreModule) {
-    return absl::InvalidArgumentError(
-        "Plugin::Load: bytes are a core wasm module, not a Component-Model "
-        "component — plugins are components; build with cel_wasm_plugin");
-  }
-  if (layer != WasmLayer::kComponent) {
-    return absl::InvalidArgumentError(
-        "Plugin::Load: not a wasm binary (bad preamble)");
+  if (absl::Status s = RequireComponentLayer(
+          plugin_bytes,
+          "Plugin::Load: bytes are a core wasm module, not a Component-Model "
+          "component — plugins are components; build with cel_wasm_plugin",
+          "Plugin::Load: not a wasm binary (bad preamble)");
+      !s.ok()) {
+    return s;
   }
   const auto section = FindCustomSection(plugin_bytes, kCelFnsSection);
   if (absl::IsNotFound(section.status())) {
@@ -116,16 +98,8 @@ absl::Status ValidatePluginDecls(const FunctionLibrary& lib) {
         "Plugin::Load: cel.fns declares no functions — a plugin must "
         "declare at least one @plugin. function");
   }
-  for (const CelfnDecl& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kPlugin) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "Plugin::Load: decl `", d.fn_name, "` is ",
-          BackendPrefix(d.backend),
-          "-backed — every declaration in a plugin's cel.fns must be "
-          "@plugin."));
-    }
-  }
-  return absl::OkStatus();
+  return RequireAllPluginBacked(lib, "Plugin::Load: ",
+                                "in a plugin's cel.fns");
 }
 
 // Rebuilds the parsed library with the derived WIT interface stamped

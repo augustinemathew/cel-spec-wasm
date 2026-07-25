@@ -7,13 +7,12 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "abi/plugin_validate.h"
 #include "abi/wasm_binary.h"
-#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -27,38 +26,19 @@ namespace {
 constexpr absl::string_view kCelFnsSection = "cel.fns";
 constexpr absl::string_view kErrorPrefix = "cel embed-decls: ";
 
-// The `@<backend>.` spelling of a decl's backend, for error messages.
-absl::string_view BackendPrefix(CelfnDecl::Backend backend) {
-  switch (backend) {
-    case CelfnDecl::Backend::kHost:
-      return "@host.";
-    case CelfnDecl::Backend::kCelDefined:
-      return "@native.";
-    case CelfnDecl::Backend::kPlugin:
-      return "@plugin.";
-  }
-  ABSL_CHECK(false) << "unknown CelfnDecl::Backend "
-                    << static_cast<int>(backend);
-  return "";
-}
-
 // Validation 1: the input is a Component-Model component (a core
 // module gets a distinct message — the macro's step-3 output is
 // already a component; a core module means the wrong artifact was
 // fed in).
 absl::Status ValidateComponent(absl::Span<const uint8_t> plugin_bytes) {
-  const std::optional<WasmLayer> layer = ClassifyWasmBinary(plugin_bytes);
-  if (layer == WasmLayer::kCoreModule) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        kErrorPrefix,
-        "--plugin is a core wasm module, not a Component-Model component — "
-        "plugins are components; feed the wasm32-wasip2 build output"));
-  }
-  if (layer != WasmLayer::kComponent) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        kErrorPrefix, "--plugin is not a wasm binary (bad preamble)"));
-  }
-  return absl::OkStatus();
+  return RequireComponentLayer(
+      plugin_bytes,
+      absl::StrCat(
+          kErrorPrefix,
+          "--plugin is a core wasm module, not a Component-Model component — "
+          "plugins are components; feed the wasm32-wasip2 build output"),
+      absl::StrCat(kErrorPrefix,
+                   "--plugin is not a wasm binary (bad preamble)"));
 }
 
 // Validations 2 + 3: the idl parses (line+col preserved) and every
@@ -69,15 +49,7 @@ absl::Status ValidateIdl(absl::string_view idl_text) {
     return absl::InvalidArgumentError(
         absl::StrCat(kErrorPrefix, "--idl: ", lib.status().message()));
   }
-  for (const CelfnDecl& d : lib->decls()) {
-    if (d.backend != CelfnDecl::Backend::kPlugin) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          kErrorPrefix, "decl `", d.fn_name, "` is ", BackendPrefix(d.backend),
-          "-backed — every declaration embedded in a plugin must be "
-          "@plugin."));
-    }
-  }
-  return absl::OkStatus();
+  return RequireAllPluginBacked(*lib, kErrorPrefix, "embedded in a plugin");
 }
 
 // Validation 4: no pre-existing `cel.fns` section (NotFound is the

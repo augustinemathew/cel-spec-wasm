@@ -52,7 +52,9 @@ FnType::Kind WireKindForScalar(CelfnType::Kind kind) {
   return FnType::FN_KIND_UNSPECIFIED;
 }
 
-// Renders one wire FnType in its `.celfn` grammar spelling.
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 std::string RenderFnType(const FnType& type) {
   switch (type.kind()) {
     case FnType::FN_KIND_BOOL:
@@ -104,8 +106,6 @@ std::string RenderFnType(const FnType& type) {
       return absl::StrCat("<kind ", static_cast<int>(type.kind()), ">");
   }
 }
-
-}  // namespace
 
 // Public declarations live in celfn_wire.h; clang-tidy's include
 // path for the header is incomplete in compile_commands.json and it

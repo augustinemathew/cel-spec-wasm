@@ -960,16 +960,29 @@ Per `reviews/2026-07-25-m35-closeout.md` (verdict: mixed, leaning
 clean; no P0).  P1s tracked here, ticked as they land; P2s went to
 cleanup-backlog #52.
 
-  - [ ] D1 renderer unification — compiler.cc's diverged
+  - [x] D1 renderer unification — compiler.cc's diverged
         `RenderCelfnType` deleted in favor of celfn_wire's
-        `RenderFnType` (grammar-accurate spellings win; pinned
-        messages updated).
-  - [ ] D2 `BackendPrefix` triplication → one celfn helper.
-  - [ ] D3 Load/embed-decls shared validation helpers (messages
-        byte-identical).
-  - [ ] D4 `ParsePluginComponent` helper in engine.cc.
-  - [ ] D5 engine_test.cc hand-rolled LEB/walker → `//abi:wasm_binary`
-        (violated the invariant m35 itself legislated).
+        `RenderFnType` (grammar-accurate spellings win; the existing
+        pinned messages — `type`, `optional<int>`, `optional<string>`
+        — are spelling-identical in both renderers, so none changed;
+        the divergent spellings only surfaced on composites nested
+        inside `optional<>`, now pinned by
+        `DiagnosticUsesCelfnGrammarSpelling` asserting
+        `optional<map<string, Duration>>`).
+  - [x] D2 `BackendPrefix` triplication → one celfn helper
+        (`function_library.h::BackendPrefix`; engine.cc's `BackendName`
+        near-copy deleted, its call site keeps the dot in the literal).
+  - [x] D3 Load/embed-decls shared validation helpers (messages
+        byte-identical) — `//abi:plugin_validate`
+        (`RequireComponentLayer` / `RequireAllPluginBacked`; callers
+        own their message text per the §3.4 per-phase policy).
+  - [x] D4 `ParsePluginComponent` helper in engine.cc (Use keeps
+        InvalidArgument, AddPlugin keeps the raw FailedPrecondition,
+        both at the call site).
+  - [x] D5 engine_test.cc hand-rolled LEB/walker → `//abi:wasm_binary`
+        (violated the invariant m35 itself legislated); payload
+        offsets derived from the `FindCustomSection` span, framing
+        via `BuildCustomSection`.
   - [ ] P1-3 delete `compiler/probes/m35/` (probe discipline).
   - [ ] rename-sweep miss: `current-capabilities.md:96`.
   - [ ] Slice N (compile-path benches, user-scoped) + B4/G gates —

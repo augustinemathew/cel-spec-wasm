@@ -645,5 +645,16 @@ TEST(DeriveWitNames, InterfaceFallsBackToCustomfn) {
   EXPECT_EQ(DeriveWitInterface(""), "cel:customfn/fns@0.1.0");
 }
 
+// ── Backend spelling ────────────────────────────────────────────────
+
+TEST(BackendPrefixTest, EveryBackendSpelledWithAtAndTrailingDot) {
+  // The closed backend set, spelled exactly as `.celfn` source writes
+  // it — the shared diagnostic vocabulary for Plugin::Load,
+  // `cel embed-decls`, and Engine::BindFunction messages.
+  EXPECT_EQ(BackendPrefix(CelfnDecl::Backend::kHost), "@host.");
+  EXPECT_EQ(BackendPrefix(CelfnDecl::Backend::kCelDefined), "@native.");
+  EXPECT_EQ(BackendPrefix(CelfnDecl::Backend::kPlugin), "@plugin.");
+}
+
 }  // namespace
 }  // namespace celwasm

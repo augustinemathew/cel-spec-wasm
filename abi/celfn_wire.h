@@ -12,6 +12,10 @@
 //   - `FnTypeEquals`      — recursive structural equality over wire
 //     `FnType`s; proto-FQN-sensitive; unknown kinds compare
 //     numerically (open-set wire data is never rejected here).
+//   - `RenderFnType`      — one wire `FnType` → its `.celfn` grammar
+//     spelling.  THE type renderer for error messages: compose with
+//     `FnTypeFromCelfn` to render a `CelfnType` diagnostic so the
+//     spelling can never drift from the grammar.
 //   - `RenderSignature`   — a `RequiredFunction` row → the `.celfn`
 //     source spelling, e.g. `bool is_adult(proto(acme.User))`.
 //     THE renderer for signature strings in error messages: emit
@@ -47,6 +51,13 @@ celwasm::abi::FnType FnTypeFromCelfn(const CelfnType& type);
 // byte-for-byte, and their `params` match pairwise (same count,
 // each recursively equal).
 bool FnTypeEquals(const celwasm::abi::FnType& a, const celwasm::abi::FnType& b);
+
+// Render one wire `FnType` in its `.celfn` grammar spelling
+// (`Duration`, `Timestamp`, `map<K, V>`, `list<T>`, `optional<T>`,
+// `proto(<fqn>)`).  An unknown wire kind renders as `<kind N>` —
+// open-set wire data is never rejected.  A composite with missing
+// element types renders the gap as `?`.
+std::string RenderFnType(const celwasm::abi::FnType& type);
 
 // Render a `RequiredFunction` row as its `.celfn` source spelling:
 //

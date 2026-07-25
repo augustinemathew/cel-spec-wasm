@@ -609,6 +609,31 @@ TEST(CompilerBuilderUnmappableTypeTest, NestedUnmappableInsideListRejected) {
               testing::HasSubstr("`optional<string>`"));
 }
 
+TEST(CompilerBuilderUnmappableTypeTest,
+     DiagnosticUsesCelfnGrammarSpelling) {
+  // The rejected type is rendered via THE `.celfn` grammar renderer
+  // (abi/celfn_wire.h::RenderFnType) — `Duration` capitalised,
+  // `map<K, V>` with a space — the same spellings Plan messages and
+  // emit tests pin, not an ad-hoc per-call-site respelling.
+  CelfnType m = Prim(CelfnType::Kind::kMap);
+  m.map_kv.push_back(Prim(CelfnType::Kind::kString));
+  m.map_kv.push_back(Prim(CelfnType::Kind::kDuration));
+  CelfnType opt = Prim(CelfnType::Kind::kOptional);
+  opt.optional_element.push_back(m);
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("later", Prim(CelfnType::Kind::kInt),
+                   {celwasm::CelfnParam{/*is_receiver=*/false, opt, "x"}})
+          .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareFunctions(*std::move(lib_or));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`optional<map<string, Duration>>`"));
+}
+
 TEST(CompilerBuilderUnmappableTypeTest, MappableDeclStillBuildsAndCompiles) {
   // Positive twin: every mappable kind passes the gate untouched.
   auto b = Compiler::NewBuilder();

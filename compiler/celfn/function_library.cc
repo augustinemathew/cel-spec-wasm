@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -66,6 +67,22 @@ std::string CelfnType::Argkind() const {
                                            : optional_element[0].Argkind());
   }
   return "unknown";
+}
+
+// ── Backend spelling ─────────────────────────────────────────────────
+
+absl::string_view BackendPrefix(CelfnDecl::Backend backend) {
+  switch (backend) {
+    case CelfnDecl::Backend::kHost:
+      return "@host.";
+    case CelfnDecl::Backend::kCelDefined:
+      return "@native.";
+    case CelfnDecl::Backend::kPlugin:
+      return "@plugin.";
+  }
+  ABSL_CHECK(false) << "BackendPrefix: unhandled CelfnDecl::Backend = "
+                    << static_cast<int>(backend);
+  return "";
 }
 
 namespace {

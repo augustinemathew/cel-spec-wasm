@@ -3,6 +3,7 @@
 #include <string>
 #include <utility>
 
+#include "abi/celfn_wire.h"
 #include "abi/plugin.h"
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_set.h"
@@ -77,52 +78,12 @@ std::string CelTypeToSpec(const CelType& t) {
                     << static_cast<int>(t.kind());
 }
 
-// Renders a `CelfnType` in its `.celfn` source spelling for
-// diagnostics (`list<int>`, `map<string,int>`, `proto(acme.User)`,
-// `optional<string>`, `type`).
-std::string RenderCelfnType(const CelfnType& t) {
-  switch (t.kind) {
-    case CelfnType::Kind::kBool:
-      return "bool";
-    case CelfnType::Kind::kInt:
-      return "int";
-    case CelfnType::Kind::kUint:
-      return "uint";
-    case CelfnType::Kind::kDouble:
-      return "double";
-    case CelfnType::Kind::kString:
-      return "string";
-    case CelfnType::Kind::kBytes:
-      return "bytes";
-    case CelfnType::Kind::kNull:
-      return "null";
-    case CelfnType::Kind::kDuration:
-      return "duration";
-    case CelfnType::Kind::kTimestamp:
-      return "timestamp";
-    case CelfnType::Kind::kList:
-      return absl::StrCat("list<",
-                          t.list_element.empty()
-                              ? "?"
-                              : RenderCelfnType(t.list_element[0]),
-                          ">");
-    case CelfnType::Kind::kMap:
-      if (t.map_kv.size() != 2) return "map<?,?>";
-      return absl::StrCat("map<", RenderCelfnType(t.map_kv[0]), ",",
-                          RenderCelfnType(t.map_kv[1]), ">");
-    case CelfnType::Kind::kProto:
-      return absl::StrCat("proto(", t.proto_fqn, ")");
-    case CelfnType::Kind::kType:
-      return "type";
-    case CelfnType::Kind::kOptional:
-      return absl::StrCat("optional<",
-                          t.optional_element.empty()
-                              ? "?"
-                              : RenderCelfnType(t.optional_element[0]),
-                          ">");
-  }
-  ABSL_CHECK(false) << "RenderCelfnType: unhandled CelfnType::Kind = "
-                    << static_cast<int>(t.kind);
+// Renders a `CelfnType` for diagnostics via THE `.celfn` grammar
+// renderer (abi/celfn_wire.h), so the spelling (`Duration`,
+// `map<K, V>`, `optional<T>`, …) can never drift from the one Plan
+// messages and emit tests pin.
+std::string RenderCelfnTypeForDiagnostic(const CelfnType& t) {
+  return RenderFnType(FnTypeFromCelfn(t));
 }
 
 // Returns the first sub-type of `t` that the checker-side mapping
@@ -172,7 +133,7 @@ absl::Status ValidateDeclTypesMappable(const CelfnDecl& d) {
     return absl::InvalidArgumentError(absl::StrCat(
         "Compiler::Builder::Build: declaration `", d.fn_name,
         "` (overload-id `", d.overload_id, "`) return type uses `",
-        RenderCelfnType(*bad),
+        RenderCelfnTypeForDiagnostic(*bad),
         "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
   }
   for (const auto& p : d.params) {
@@ -180,7 +141,7 @@ absl::Status ValidateDeclTypesMappable(const CelfnDecl& d) {
       return absl::InvalidArgumentError(absl::StrCat(
           "Compiler::Builder::Build: declaration `", d.fn_name,
           "` (overload-id `", d.overload_id, "`) parameter `", p.name,
-          "` uses `", RenderCelfnType(*bad),
+          "` uses `", RenderCelfnTypeForDiagnostic(*bad),
           "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
     }
   }
