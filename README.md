@@ -265,15 +265,16 @@ your process?
 - **`@host` — trusted.** Your own C++, in your address space. An
   in-memory cache lookup, a call into a library you already ship.
 - **`@plugin` — untrusted.** Code you didn't write. A
-  customer-authored scoring function, a partner's plugin. It runs in its
-  own WebAssembly sandbox and can be hot-swapped at runtime.
+  customer-authored scoring function, a partner's plugin. It runs in
+  its own WebAssembly sandbox; updating it is handing new bytes to a
+  fresh `Engine` — no re-link, no redeploy.
 
 | | `@host` — trusted C++ | `@plugin` — sandboxed wasm |
 | --- | --- | --- |
 | Runs | in your address space, as a C++ lambda | in an isolated wasm instance with its own linear memory |
 | Author language | C++ | anything with a `wasm32-wasip2` toolchain (C++ today; TinyGo planned) |
 | Can read host memory / syscall | yes — whatever the C++ does | no — cannot escape the sandbox or perform I/O |
-| Update | re-link your binary | hot-swap: hand new bytes to `AddPlugin` |
+| Update | re-link your binary | hand new bytes to a fresh `Engine` (`Engine::Use`) |
 | Per-call cost | ~110 ns | ~450 ns |
 
 ```celfn
@@ -291,6 +292,15 @@ engine.BindFunction("int @host.length(string s);",
                       return static_cast<int64_t>(s.size());
                     });
 ```
+
+A plugin is a **self-describing artifact**: the `cel_wasm_plugin` build
+macro embeds its declarations in the `.wasm` itself, so one
+`Plugin::Load(bytes)` yields an object that registers on both sides —
+`Compiler::Builder::Use(plugin)` for type-checking,
+`Engine::Use(plugin)` for sandboxed dispatch. No hand-written mirror of
+the declarations to drift. At `Plan`, the engine verifies every
+function the program calls exists with an exactly matching signature,
+then instantiates only the plugins that program needs.
 
 Loading not-yet-reviewed third-party code safely is the point. A stock
 in-process CEL runtime cannot do it. Guides:

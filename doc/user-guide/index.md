@@ -176,9 +176,10 @@ across the process. **`Engine::Plan` is safe to call concurrently from
 many threads** — each call mints an independent store/linker/memory,
 sharing only the (thread-safe) engine + parsed runtime module.
 
-> **Not** thread-safe: `Engine::AddFunction` / `AddPlugin` (custom-fn
-> registration — see [custom functions](custom-functions.md)). Configure those once at startup, *then*
-> `Plan` from many threads.
+> **Not** thread-safe: the registration family — `Engine::Use` /
+> `BindFunction` / `AddFunction` / `AddPlugin` (custom-fn
+> registration — see [custom functions](custom-functions.md)).
+> Configure those once at startup, *then* `Plan` from many threads.
 
 ### 4.2 Plan — Program → Instance
 
@@ -261,7 +262,7 @@ bool err    = v.IsError();
 |---|---|---|
 | `Compiler` | value, copyable | immutable after Build; share freely |
 | `Program` | value, copyable | immutable; share/serialize freely |
-| `Engine` | one per process | `Plan` concurrent-safe; `AddFunction`/`AddPlugin` single-thread setup |
+| `Engine` | one per process | `Plan` concurrent-safe; `Use`/`BindFunction`/`AddFunction`/`AddPlugin` single-thread setup |
 | `Instance` | one per worker thread | thread-owned; outlives the Engine handle (shared_ptr) |
 | `Activation` | per-eval, reusable | not shared across threads |
 
@@ -271,10 +272,14 @@ bool err    = v.IsError();
 
 CEL is extended with your own functions through a small `.celfn` IDL
 with three backends: `@host` (trusted C++ in your process),
-`@plugin` (sandboxed WebAssembly, hot-swappable), and `@native`
-(reserved, unimplemented). The full overview — declarations,
-libraries, registration, and the backend comparison — is on its own
-page:
+`@plugin` (sandboxed WebAssembly), and `@native` (reserved,
+unimplemented). A wasm plugin is a **self-describing artifact**: it
+carries its own declarations in an embedded `cel.fns` section, so one
+`Plugin::Load(bytes)` registers on both sides —
+`Compiler::Builder::Use(plugin)` and `Engine::Use(plugin)` — and
+`Plan` verifies the program's required function signatures against
+the registry. The full overview — declarations, libraries,
+registration, and the backend comparison — is on its own page:
 
 - **[Custom functions — the three backends](custom-functions.md)**
 - [Writing host functions](writing-host-functions.md) — worked examples
@@ -288,7 +293,7 @@ page:
 
 For one-shot compile / check / eval without writing C++, use the `cel`
 CLI (`tools/cel/`, built via
-`bazel build //tools/cel:cel`). Four subcommands ship today:
+`bazel build //tools/cel:cel`). Five subcommands ship today:
 
 | Subcommand | What it does | Phase |
 |---|---|---|
@@ -296,6 +301,7 @@ CLI (`tools/cel/`, built via
 | `cel compile <expr>` | compile to wasm bytes (`--output PATH`, else stdout) | compile only |
 | `cel eval <expr>` | **compile *and* evaluate** in one shot; print the result | compile + run |
 | `cel generate` | emit plugin-function bindings (`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl` file — the front half of the `cel_wasm_plugin` macro ([plugin functions](writing-plugins.md)) | codegen only |
+| `cel embed-decls` | stamp a `.idl`'s declaration text into an existing plugin `.wasm` as its `cel.fns` custom section (`--plugin` / `--idl` / `--out`) — for plugin artifacts built outside the `cel_wasm_plugin` macro ([writing plugins](writing-plugins.md)) | build tooling |
 
 ```bash
 cel eval    "1 + 2 + 3"                              # → 6   (compile + evaluate)
@@ -360,17 +366,18 @@ backend of the functions it calls:
 | Function backend | Needed at run time (eval) | `.celfn` IDL needed at run time? |
 |---|---|---|
 | **`@native`** (CEL-defined) ⛔ | n/a — the backend is unimplemented ([details](custom-functions.md#3-cel-defined-functions-native)); a program that calls one does not evaluate | **No** |
-| **`@plugin`** ⛔ | the plugin's **bytes**, plus the `FunctionLibrary` so the engine knows which decls to bind (`Engine::AddPlugin` / a planned `--component path.wasm`) | **Partially** — `AddPlugin` takes the library so it can bind every `@plugin` decl to a matching export; you supply both the *bytes* and the parsed IDL |
-| **`@host`** | a **C++ impl** registered via `Engine::AddFunction` | **No, but** — the IDL only declares the *signature*; the *behavior* is C++ the generic CLI can't supply, so a wasm with host imports isn't runnable by stock `cel` at all |
+| **`@plugin`** ✅ | the plugin's **bytes only** — the artifact carries its own declarations in an embedded `cel.fns` section, so `Plugin::Load(bytes)` + `Engine::Use(plugin)` need no separate IDL (the legacy `Engine::AddPlugin(bytes, lib)` escape hatch still takes an explicit library, for pre-`cel.fns` artifacts) | **No** — the declarations travel inside the `.wasm` |
+| **`@host`** | a **C++ impl** registered via `Engine::BindFunction` / `AddFunction` | **No, but** — the IDL only declares the *signature*; the *behavior* is C++ the generic CLI can't supply, so a wasm with host imports isn't runnable by stock `cel` at all |
 
 So the answer is clean: a pure-CEL expression compiles to a
 self-contained `.wasm` that `Engine::Plan` evaluates with **no IDL and
-no extra modules**;
-a `@plugin`-using expression additionally needs the plugin bytes
-**and the library** (so the engine knows which `@plugin` decls to bind
-to which exports). The variable schema needed to bind `--var` travels in
-the program's `cel.abi` section, so the run side is self-describing for
-variables too (§3.3).
+no extra modules**; a `@plugin`-using expression additionally needs
+just the plugin **bytes** — the plugin's declarations travel inside
+the artifact (`cel.fns`), and the program's own `cel.abi` records
+every custom function it calls (name + full signature), which `Plan`
+verifies against the registry. The variable schema needed to bind
+`--var` travels in the same `cel.abi` section, so the run side is
+self-describing for variables too (§3.3).
 
 > **Target CLI design.** The planned surface — `run`, `inspect`,
 > `--celfn`, `--component`, `--activation`, and `celfn gen --lang <…>` — is
@@ -393,7 +400,9 @@ variables too (§3.3).
 | Typed `AddTypedFunction` + `HostCallContext` adapter | ✅ (m21); raw 4-arg `HostCallback` removed |
 | **CEL-defined fns** (`@native`) — parse + type-check (call sites compile) | ✅ |
 | **CEL-defined fns** (`@native`) — body lowering + eval | ⛔ not implemented ([details](custom-functions.md#3-cel-defined-functions-native)); a `@native`-using program does not evaluate |
-| **Plugin fns** (`@plugin`, C++ via the `cel_wasm_plugin` Bazel macro) | ✅ scalar / int / bool round-trips; plugin built end-to-end and dispatched via `Engine::AddPlugin`; proto args/returns via the manual-tagged `demo_plugin_proto` fixture; plugin-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
+| **Plugin fns** (`@plugin`, C++ via the `cel_wasm_plugin` Bazel macro) | ✅ scalar / int / bool round-trips; plugin built end-to-end, loaded via `Plugin::Load`, registered via `Engine::Use`; proto args/returns via the manual-tagged `demo_plugin_proto` fixture; plugin-side string *returns* currently blocked by a libc++ trap (see the skipped `GreetRoundTripsString`) |
+| **Self-describing plugins** — declarations embedded in the artifact (`cel.fns`), one-noun registration (`Plugin::Load` → `Builder::Use` / `Engine::Use`), static export check at `Use` | ✅ |
+| **Plan-time verification** — every custom function the program calls is checked against the registry (existence + full signature) at `Plan`; only the required plugins are instantiated | ✅ |
 | **Plugin fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
 | `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ⛔ no subcommand today; `eval` recompiles each time (§9) |

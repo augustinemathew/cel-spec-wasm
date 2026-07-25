@@ -153,7 +153,39 @@ opts.optimize_level = 2;
 auto program = compiler.Compile("a * b + 1", opts).value();
 ```
 
-## 7. Where to go next
+## 7. Extending CEL — two kinds of custom function
+
+CEL expressions call only what you hand them. To add your own
+functions, pick a trust model:
+
+- **`@host` — trusted C++** in your process. Declare once, bind a
+  lambda with the same declaration string:
+
+  ```cpp
+  builder.AddFunction("int @host.length(string s);");
+  engine.BindFunction("int @host.length(string s);",
+      [](absl::string_view s) -> absl::StatusOr<int64_t> {
+        return static_cast<int64_t>(s.size());
+      });
+  ```
+
+- **`@plugin` — sandboxed wasm** for code you didn't write. A plugin
+  built with the `cel_wasm_plugin` Bazel macro is a *self-describing*
+  artifact — its declarations travel inside the `.wasm` — so one
+  object serves both sides:
+
+  ```cpp
+  auto plugin = celwasm::Plugin::Load(plugin_bytes).value();
+  builder.Use(plugin);          // compile side: call sites type-check
+  CHECK_OK(engine.Use(plugin)); // eval side: sandboxed dispatch
+  ```
+
+  `Engine::Plan` then verifies every function the program calls exists
+  with an exactly matching signature before anything runs.
+
+Chooser and details: [Custom functions](custom-functions.md).
+
+## 8. Where to go next
 
 | You want to… | Go to |
 | --- | --- |
