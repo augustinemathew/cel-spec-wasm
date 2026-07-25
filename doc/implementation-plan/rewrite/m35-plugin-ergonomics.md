@@ -667,6 +667,25 @@ with wasm arity 2 but it was registered with arity 3
 Thread-safety is unchanged: the check reads registration-time-frozen
 state; `Plan` stays concurrent-safe.
 
+> As-built delta (2026-07-25, slice V3): three message shapes this
+> section left open were settled in `eval/internal/required_fn_check.cc`
+> (pinned exactly by `required_fn_check_test.cc`):
+>
+>   - **BindFunction typed mismatch** (same arity, drifted types —
+>     only reachable for `BindFunction` registrations):
+>     `Engine::Plan: program requires host function \`<id>\` with
+>     signature \`<sig>\` but Engine::BindFunction registered
+>     \`<sig>\`; signatures must match exactly — recompile the
+>     program or fix the registration`.
+>   - **Legacy AddPlugin hash rendering**: an all-zero hash (the
+>     `AddPlugin(bytes, lib)` escape has no `Plugin` object) renders
+>     as `(hash unavailable; registered via AddPlugin)` in the §2
+>     mismatch message, not as twelve zeros posing as a digest.
+>   - **Unknown backends are skipped** (open-set wire): a row stamped
+>     by a future compiler with a backend this engine doesn't know is
+>     never rejected — an unbound import still fails loudly at
+>     wasmtime link time.
+
 ## 6. Sharing model — one plugin, many expressions
 
 > Like §2, this section is user-guide material: slice S3 lifts it
@@ -788,6 +807,17 @@ one broken at instantiation; a new-format Program calling only the
 healthy one must Plan+Eval green (fails today), a legacy-format
 Program must keep failing, and a Program calling neither must
 instantiate zero.
+
+> As-built delta (2026-07-25, slice V4): a Program whose
+> `required_functions` table is EMPTY is indistinguishable on the
+> wire from a legacy pre-field-8 Program (proto3 repeated fields
+> have no presence), so "calling none instantiates zero" holds for
+> Programs whose table carries at least one row (e.g. a HOST row) —
+> a Program calling no custom fns AT ALL keeps legacy
+> instantiate-all.  All four shapes are pinned by
+> `e2e/plugin_dispatch_test.cc` (`SelectiveInstantiation.*`, both
+> link modes), incl. the honest-compat
+> `EmptyRequiredTableKeepsInstantiateAll`.
 
 ## 7. Multi-plugin reality
 

@@ -802,5 +802,138 @@ TEST(RequiredFnPlanCheck, TwoPluginsOnePlanBothDispatch) {
   EXPECT_EQ(*v_or->AsInt(), 9);
 }
 
+// ── Selective instantiation (m35 §6.4) ─────────────────────────────
+//
+// A component whose core module traps in its `start` — parsing
+// succeeds (so AddPlugin admits it) but ANY instantiation fails.
+// The observable for "did Plan instantiate this plugin?".
+constexpr absl::string_view kBrokenAtInstantiateComponentWat = R"WAT(
+(component
+  (core module $m
+    (func $boom unreachable)
+    (start $boom)
+    (func (export "f") (param i64) (result i64) local.get 0))
+  (core instance $i (instantiate $m))
+  (func (export "broken-int") (param "x" s64) (result s64)
+    (canon lift (core func $i "f"))))
+)WAT";
+
+// Engine with the broken plugin registered FIRST (so instantiate-all
+// would always hit it before any healthy plugin) and the healthy
+// add plugin second.  Returns the add library for the compile side.
+struct BrokenPlusHealthy {
+  Engine engine;
+  FunctionLibrary add_lib;
+};
+
+BrokenPlusHealthy MakeBrokenPlusHealthyEngine() {
+  auto engine_or = Engine::NewBuilder().Build();
+  ABSL_CHECK_OK(engine_or.status());
+  auto broken_lib =
+      OneFnLib("broken", Prim(CelfnType::Kind::kInt),
+               {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  ABSL_CHECK_OK(engine_or->AddPlugin(
+      WatToWasm(kBrokenAtInstantiateComponentWat), broken_lib));
+  auto add_lib = OneFnLib("add", Prim(CelfnType::Kind::kInt),
+                          {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
+                           CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}});
+  ABSL_CHECK_OK(
+      engine_or->AddPlugin(WatToWasm(kAddIntIntComponentWat), add_lib));
+  return {*std::move(engine_or), std::move(add_lib)};
+}
+
+TEST(SelectiveInstantiation, ProgramCallingOnlyHealthyPluginPlansGreen) {
+  // §6.4 behavioral pin (1): two plugins registered, one broken at
+  // instantiation; a new-format Program calling only the healthy one
+  // must Plan + Eval green — Plan instantiates ONLY the plugins
+  // owning a required PLUGIN row.  (Before selective instantiation
+  // this failed: instantiate-all hit the broken plugin.)
+  BrokenPlusHealthy fx = MakeBrokenPlusHealthyEngine();
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareFunctions(fx.add_lib);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("add(1, 2)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  auto inst_or = fx.engine.Plan(*prog_or);
+  ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
+  Activation act;
+  auto v_or = inst_or->Eval(act);
+  ASSERT_THAT(v_or, IsOk()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 3);
+}
+
+TEST(SelectiveInstantiation, LegacyProgramWithoutField8KeepsInstantiateAll) {
+  // §6.4 behavioral pin (2): a legacy-format Program (cel.abi
+  // rebuilt WITHOUT field 8 by section surgery — the in-tree
+  // compiler can no longer emit that shape) gives the engine no
+  // required-function table, so compat instantiate-all holds and the
+  // broken plugin keeps failing the Plan.
+  BrokenPlusHealthy fx = MakeBrokenPlusHealthyEngine();
+  auto builder = Compiler::NewBuilder();
+  builder.DeclareFunctions(fx.add_lib);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("add(1, 2)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  std::vector<uint8_t> legacy_bytes =
+      StripRequiredFunctions(prog_or->wasm_bytes());
+  auto inst_or = fx.engine.Plan(Program(std::move(legacy_bytes)));
+  ASSERT_FALSE(inst_or.ok())
+      << "legacy Program must keep instantiate-all and hit the broken plugin";
+  EXPECT_THAT(std::string(inst_or.status().message()),
+              ::testing::HasSubstr("instantiate(plugin)"));
+}
+
+TEST(SelectiveInstantiation, ProgramRequiringNoPluginsInstantiatesZero) {
+  // §6.4 behavioral pin (3): a Program calling no plugin functions
+  // (its required table carries a HOST row only) instantiates ZERO
+  // plugins — observable because the broken plugin is registered and
+  // Plan still goes green.
+  BrokenPlusHealthy fx = MakeBrokenPlusHealthyEngine();
+  ASSERT_THAT(
+      fx.engine.BindFunction(
+          "int @host.discount_pct(string tier);",
+          [](absl::string_view tier) -> absl::StatusOr<int64_t> {
+            return tier == "gold" ? 20 : 5;
+          }),
+      IsOk());
+  auto builder = Compiler::NewBuilder();
+  builder.AddFunction("int @host.discount_pct(string tier);");
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or =
+      compiler_or->Compile("discount_pct('gold')", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  auto inst_or = fx.engine.Plan(*prog_or);
+  ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
+  Activation act;
+  auto v_or = inst_or->Eval(act);
+  ASSERT_THAT(v_or, IsOk()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 20);
+}
+
+TEST(SelectiveInstantiation, EmptyRequiredTableKeepsInstantiateAll) {
+  // The honest compat boundary: a Program with NO custom-fn call
+  // sites carries an EMPTY required_functions table — on the wire
+  // that is indistinguishable from a legacy pre-field-8 Program, so
+  // the engine must keep instantiate-all (a legacy Program that DOES
+  // call plugin fns depends on it) and the broken plugin still fails
+  // this Plan.
+  BrokenPlusHealthy fx = MakeBrokenPlusHealthyEngine();
+  auto compiler_or = Compiler::NewBuilder().Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("42", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+  auto inst_or = fx.engine.Plan(*prog_or);
+  ASSERT_FALSE(inst_or.ok())
+      << "empty required table must keep legacy instantiate-all";
+  EXPECT_THAT(std::string(inst_or.status().message()),
+              ::testing::HasSubstr("instantiate(plugin)"));
+}
+
 }  // namespace
 }  // namespace celwasm

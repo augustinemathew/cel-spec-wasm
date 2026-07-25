@@ -10,6 +10,7 @@
 #include "abi/celfn_wire.h"
 #include "abi/plugin.h"
 #include "abi/runtime_catalogue.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -1230,17 +1231,50 @@ absl::Status BindPluginLibraryDecls(
   return status;
 }
 
+// Does `reg` own at least one kPlugin decl the Program's verified
+// required-function table names?  The selection predicate for
+// selective instantiation (m35-plugin-ergonomics.md §6.4).
+bool PluginOwnsRequiredDecl(
+    const celwasm::RegisteredPlugin& reg,
+    const absl::flat_hash_set<absl::string_view>& required_plugin_ids) {
+  for (const auto& decl : reg.library.decls()) {
+    if (decl.backend != celwasm::CelfnDecl::Backend::kPlugin) continue;
+    if (required_plugin_ids.contains(decl.overload_id)) return true;
+  }
+  return false;
+}
+
 absl::Status InstantiateAndBindPlugins(celwasm::WasmtimeEngineState* state,
                                           celwasm::InstanceImpl* impl) {
   if (state->plugin_registry.empty()) {
     return absl::OkStatus();
   }
+  // Selective instantiation (§6.4): the required-function table was
+  // verified before any binding ran, so Plan knows exactly which
+  // plugins this Program needs — instantiate only the registered
+  // plugins owning at least one required PLUGIN row.  A Program
+  // whose table is EMPTY is indistinguishable on the wire from a
+  // legacy pre-required_functions Program (proto3 repeated fields
+  // have no presence), so it keeps the legacy instantiate-all — a
+  // legacy Program that does call plugin fns depends on that.
+  const bool selective = impl->abi.required_functions_size() > 0;
+  absl::flat_hash_set<absl::string_view> required_plugin_ids;
+  for (const auto& row : impl->abi.required_functions()) {
+    if (row.backend() == celwasm::abi::RequiredFunction::PLUGIN) {
+      required_plugin_ids.insert(row.overload_id());
+    }
+  }
   wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
   for (auto& reg : state->plugin_registry) {
+    if (selective && !PluginOwnsRequiredDecl(reg, required_plugin_ids)) {
+      continue;
+    }
     wasmtime_component_instance_t cinst{};
     if (auto s = InstantiateOnePlugin(state, ctx, reg, &cinst); !s.ok()) {
       return s;
     }
+    // Per-plugin bind loop unchanged for selected plugins: every
+    // kPlugin decl the plugin declares binds, required or not.
     if (auto s = BindPluginLibraryDecls(impl, ctx, reg, cinst); !s.ok()) {
       return s;
     }
