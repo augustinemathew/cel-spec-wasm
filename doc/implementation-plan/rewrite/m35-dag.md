@@ -75,7 +75,7 @@ graph TD
 | 0 | P0 plan fold-in (rename + R/S slices + this DAG) | orchestrator | done |
 | 1 | R1–R4 code rename | agent-R | done (e9dd240; $PROJ 151/151, conformance 2035/2035 both modes) |
 | 1 | A1 wasm_binary + sha256 + migration | agent-A1 | done (eb2f0f7, 692e474, 5736b7a, bc1b485) |
-| 1→2 | R5 doc terminology sweep (after R names verified) | agent-R5 | in flight |
+| 1→2 | R5 doc terminology sweep (after R names verified) | agent-R5 | done (e823a76; writing-plugins.md live, CLEANUP_PLAN/PROPOSALS updated as live registers) |
 | 2 | A0 + A2 + A3 (tool + macro chain) | agent-A | queued (build-lane free next) |
 | 2 | A4 probe + Plugin::Load (//abi:plugin) | agent-A4 | in flight |
 | 2 | V1 + V2 (wire + emission) | agent-V | in flight |
