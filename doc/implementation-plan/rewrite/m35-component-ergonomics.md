@@ -539,32 +539,58 @@ milestone, except §6.4):
 
 ### 6.1 The lifecycle, made observable
 
-Consider a component function with internal state:
+Consider a component function with internal state, declared and
+implemented in a plugin:
 
 ```c
-// invocation.idl:  int @component.invocation_id();
-int InvocationId() {
-  static int i = 0;
-  return i++;
-}
+// counter.idl
+Module counter;
+
+int @component.invocation_id();
 ```
 
-What an embedder observes:
+```cpp
+// counter_fns.cc — the author's implementation
+namespace counter {
+int InvocationId() {
+  static int i = 0;   // lives in the COMPONENT INSTANCE's linear memory
+  return i++;
+}
+}  // namespace counter
+```
+
+The embedder compiles a CEL expression that calls it — the call site
+type-checks against the plugin's declaration like any other function:
+
+```cpp
+auto counter_component = Component::Load(counter_bytes).value();
+
+auto compiler = Compiler::NewBuilder()
+                    .Use(counter_component)
+                    .Build().value();
+auto program = compiler.Compile("invocation_id()").value();
+// `program` is wasm that calls the component fn on every Eval.
+```
+
+Now run that ONE Program several ways and watch where the counter
+state actually lives:
 
 ```cpp
 auto engine = Engine::NewBuilder().Build().value();
-CHECK_OK(engine.Use(counter_component));          // compiled once, run never
+CHECK_OK(engine.Use(counter_component));   // registered; compiled once, run never
 
-auto a = engine.Plan(program).value();            // instance A created
-auto b = engine.Plan(program).value();            // instance B created
+auto a = engine.Plan(program).value();     // component instance A created
+auto b = engine.Plan(program).value();     // component instance B created
 
-a.Eval(act);   // -> 0     A's counter
-a.Eval(act);   // -> 1     state persists across Evals on ONE Instance
-b.Eval(act);   // -> 0     B has its own linear memory — not 2
+Activation act;                            // no variables in this expr
+a.Eval(act);   // -> 0     A's counter: i was 0, now 1
+a.Eval(act);   // -> 1     same Instance, same linear memory — persists
+b.Eval(act);   // -> 0     B is the SAME program on the SAME engine,
+               //          but its own sandbox — not 2
 a.Eval(act);   // -> 2     A unaffected by B
 
-auto a2 = engine.Plan(program).value();           // re-plan
-a2.Eval(act);  // -> 0     a fresh Plan resets everything
+auto a2 = engine.Plan(program).value();    // re-plan the same program
+a2.Eval(act);  // -> 0     a fresh Plan is a fresh sandbox — reset
 ```
 
 The rules this pins:
