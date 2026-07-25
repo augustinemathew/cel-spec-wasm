@@ -195,8 +195,8 @@ Forgot to register the plugin before `Plan`:
 
 ```
 FailedPrecondition: Engine::Plan: program requires plugin function
-`is_adult_proto_acme_user` (`bool is_adult(proto(acme.User))`) but no
-registered plugin declares it; register the providing plugin with
+`is_adult_message_acme_User` (`bool is_adult(proto(acme.User))`) but
+no registered plugin declares it; register the providing plugin with
 Engine::Use before Plan
 ```
 
@@ -205,7 +205,7 @@ compiled program:
 
 ```
 FailedPrecondition: Engine::Plan: program requires plugin function
-`is_adult_proto_acme_user` with signature
+`is_adult_message_acme_Person` with signature
 `bool is_adult(proto(acme.User))` but the registered plugin
 (hash 3f9a2c1b04de) declares `bool is_adult(proto(acme.Person))`;
 signatures must match exactly — recompile the program or rebuild the
@@ -213,14 +213,14 @@ plugin
 ```
 
 Both fire at `Plan` — before any traffic, naming the function, the
-signature, and (for a mismatch) the plugin's content hash. A plugin
-upload that doesn't export what it declares fails even earlier, at
-`Engine::Use`:
+signature, and (for a mismatch) the registered plugin's content hash.
+A plugin upload that doesn't export what it declares fails even
+earlier, at `Engine::Use`:
 
 ```
-Engine::Use: plugin does not export `is-adult-proto-acme-user` under
+Engine::Use: plugin does not export `is-adult-message-acme-user` under
 interface `cel:scorer/fns@0.1.0` (CEL overload-id
-`is_adult_proto_acme_user`)
+`is_adult_message_acme_User`)
 ```
 
 ---

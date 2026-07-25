@@ -161,7 +161,7 @@ hash, e.g.:
 
 ```
 Engine::Plan: program requires plugin function
-`is_adult_proto_acme_user` with signature
+`is_adult_message_acme_Person` with signature
 `bool is_adult(proto(acme.User))` but the registered plugin
 (hash 3f9a2c1b04de) declares `bool is_adult(proto(acme.Person))`;
 signatures must match exactly — recompile the program or rebuild the
