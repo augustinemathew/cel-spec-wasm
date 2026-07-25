@@ -167,6 +167,35 @@ bool FnTypeEquals(const FnType& a, const FnType& b) {
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+celwasm::abi::RequiredFunction RequiredFunctionFromDecl(
+    const CelfnDecl& decl) {
+  celwasm::abi::RequiredFunction row;
+  row.set_overload_id(decl.overload_id);
+  row.set_fn_name(decl.fn_name);
+  switch (decl.backend) {
+    case CelfnDecl::Backend::kHost:
+      row.set_backend(celwasm::abi::RequiredFunction::HOST);
+      break;
+    case CelfnDecl::Backend::kPlugin:
+      row.set_backend(celwasm::abi::RequiredFunction::PLUGIN);
+      break;
+    case CelfnDecl::Backend::kCelDefined:
+      // kCelDefined decls import under their per-module alias, never
+      // `cel_fn` — they have no wire backend and no RequiredFunction
+      // row; reaching here is a caller invariant violation.
+      ABSL_CHECK(false) << "RequiredFunctionFromDecl: kCelDefined decl `"
+                        << decl.overload_id << "` has no cel_fn wire backend";
+      break;
+  }
+  for (const CelfnParam& param : decl.params) {
+    *row.add_param_types() = FnTypeFromCelfn(param.type);
+  }
+  *row.mutable_return_type() = FnTypeFromCelfn(decl.return_type);
+  row.set_is_receiver(decl.is_receiver);
+  return row;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 std::string RenderSignature(const celwasm::abi::RequiredFunction& fn) {
   std::vector<std::string> params;
   params.reserve(static_cast<size_t>(fn.param_types_size()));

@@ -728,8 +728,49 @@ cc_library(
     tags = ["manual"],
     deps = [
         ":host_callback",
+        "//abi:cel_abi_cc_proto",
         "//compiler/celfn:function_library",
         "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+# Internal — Plan-time required-function verification: every
+# `cel.abi.required_functions[]` row must resolve against the
+# engine's registered host callbacks / plugin registry with an
+# agreeing signature.  Own TU (vs engine.cc) keeps engine.cc inside
+# the function-size gate.  Tagged manual; wasmtime dep via
+# wasmtime_engine_state.
+cc_library(
+    name = "required_fn_check",
+    srcs = ["internal/required_fn_check.cc"],
+    hdrs = ["internal/required_fn_check.h"],
+    tags = ["manual"],
+    deps = [
+        ":wasmtime_engine_state",
+        "//abi:cel_abi_cc_proto",
+        "//abi:celfn_wire",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "required_fn_check_test",
+    size = "small",
+    srcs = ["internal/required_fn_check_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":required_fn_check",
+        ":wasmtime_engine_state",
+        "//abi:cel_abi_cc_proto",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -867,9 +908,11 @@ cc_library(
         ":instance",
         ":instance_impl",
         ":module_imports",
+        ":required_fn_check",
         ":typed_function",
         ":value",
         ":wasmtime_engine_state",
+        "//abi:celfn_wire",
         "//abi:plugin",
         "//abi:runtime_catalogue",
         "//compiler/celfn:function_library",

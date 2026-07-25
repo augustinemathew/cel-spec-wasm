@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "abi/celfn_wire.h"
 #include "abi/plugin.h"
 #include "abi/runtime_catalogue.h"
 #include "absl/log/absl_check.h"
@@ -24,6 +25,7 @@
 #include "eval/internal/cel_host_wasmtime.h"
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/module_imports.h"
+#include "eval/internal/required_fn_check.h"
 #include "eval/internal/wasmtime_engine_state.h"
 #include "eval/typed_function.h"
 #include "google/protobuf/descriptor.h"
@@ -1512,6 +1514,17 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   // link-mode tripwire below fire before any instantiation work.
   auto abi_present = DecodeAbiAndBindHostEnv(impl.get(), program);
   if (!abi_present.ok()) return abi_present.status();
+  // Verify every required custom function against the registered
+  // host callbacks / plugin registry before any wasmtime work — a
+  // missing or drifted registration fails here with the frozen
+  // m35-plugin-ergonomics.md §2/§5.3 diagnostics instead of an
+  // opaque link error or a call-time trap.  Reads only
+  // registration-frozen state; Plan stays concurrent-safe.
+  if (auto s = celwasm::CheckRequiredFunctions(
+          impl->abi, wasmtime_->host_callbacks, wasmtime_->plugin_registry);
+      !s.ok()) {
+    return s;
+  }
   if (auto s = InitPlanState(wasmtime_.get(), impl.get(), program); !s.ok()) {
     return s;
   }
@@ -1645,7 +1658,18 @@ absl::Status Engine::BindParsedFunction(absl::string_view celfn_decl,
           HostParamKindName(fn.param_kinds[i]), "`"));
     }
   }
-  return AddFunction(decl.overload_id, fn.num_args, std::move(fn.callback));
+  if (auto s = AddFunction(decl.overload_id, fn.num_args,
+                           std::move(fn.callback));
+      !s.ok()) {
+    return s;
+  }
+  // Capture the parsed decl's full signature on the registry entry —
+  // this is what upgrades the Plan-time required-function check from
+  // arity-only (raw AddFunction / AddTypedFunction) to the full
+  // recursive type compare for BindFunction registrations.
+  wasmtime_->host_callbacks.at(decl.overload_id).decl_signature =
+      RequiredFunctionFromDecl(decl);
+  return absl::OkStatus();
 }
 
 // ——— Engine::Use / Engine::AddPlugin (plugin registration) ———

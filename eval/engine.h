@@ -148,6 +148,12 @@ class Engine {
   // Conflict checks:
   //   - `overload_id` already registered → AlreadyExists
   //
+  // Plan-time verification is ARITY-ONLY for this path: a raw
+  // callback carries no declared parameter/return types, so the
+  // required-function check (`Engine::Plan`, m35-plugin-ergonomics.md
+  // §5.3) can only compare the wasm arity.  Register through
+  // `BindFunction` to get the full recursive signature compare.
+  //
   // **NOT thread-safe** — same contract as `AddModule`.
   ABSL_MUST_USE_RESULT absl::Status AddFunction(absl::string_view overload_id,
                                                 uint8_t num_args,
@@ -207,7 +213,11 @@ class Engine {
   //   engine.AddTypedFunction("double_it_int",
   //       [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; });
   //
-  // Same conflict / thread-safety contract as AddFunction.
+  // Same conflict / thread-safety contract as AddFunction — and the
+  // same ARITY-ONLY Plan-time verification: without a parsed decl the
+  // required-function check cannot compare CEL types (the C++
+  // parameter kinds are canonical spellings, not CEL declarations).
+  // Use `BindFunction` for the full signature compare.
   template <typename Fn>
   ABSL_MUST_USE_RESULT absl::Status AddTypedFunction(
       absl::string_view overload_id, Fn fn) {
@@ -249,6 +259,13 @@ class Engine {
   // **NOT thread-safe** with concurrent calls to itself or the other
   // setup methods — configure once at startup, then `Plan` from many
   // threads.
+  //
+  // Because this path parses a full declaration, the registration
+  // captures the declared signature: `Engine::Plan`'s
+  // required-function check compares it recursively (param types,
+  // return type, receiver-ness — protos by FQN) against what the
+  // Program was compiled with, not just the wasm arity that raw
+  // `AddFunction` / `AddTypedFunction` registrations are limited to.
   template <typename Fn>
   ABSL_MUST_USE_RESULT absl::Status BindFunction(absl::string_view celfn_decl,
                                                  Fn fn) {

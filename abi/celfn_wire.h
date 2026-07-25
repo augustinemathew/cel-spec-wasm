@@ -17,6 +17,10 @@
 //     THE renderer for signature strings in error messages: emit
 //     tests and Engine::Plan diagnostics both call it, so a
 //     signature always reads identically everywhere.
+//   - `RequiredFunctionFromDecl` — a whole `CelfnDecl` → its wire
+//     `RequiredFunction` row.  Shared by the emitter's per-import
+//     row build and the eval side's registered-decl spelling (so
+//     both sides of a Plan-time compare are built by one function).
 //
 // See doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §5.
 
@@ -56,6 +60,15 @@ bool FnTypeEquals(const celwasm::abi::FnType& a, const celwasm::abi::FnType& b);
 // unknown wire kind renders as `<kind N>` — messages must not
 // reject open-set wire data.
 std::string RenderSignature(const celwasm::abi::RequiredFunction& fn);
+
+// Translate a whole `CelfnDecl` into its wire `RequiredFunction`
+// row: overload_id, fn_name, backend (kHost → HOST, kPlugin →
+// PLUGIN), per-param `FnType`s (out_slot excluded), return type,
+// is_receiver.  A `kCelDefined` decl has no `cel_fn` wire backend
+// (its imports are per-module aliases) — passing one is a caller
+// invariant violation and CHECK-fails.
+celwasm::abi::RequiredFunction RequiredFunctionFromDecl(
+    const CelfnDecl& decl);
 
 }  // namespace celwasm
 

@@ -23,14 +23,22 @@
 // than through `e2e::CompilePlan` (which would share GlobalEngine).
 
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "abi/cel_abi.pb.h"
+#include "abi/plugin.h"
+#include "abi/wasm_binary.h"
 #include "absl/log/absl_check.h"
+#include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler/celfn/function_library.h"
@@ -43,6 +51,8 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
+#include "tools/cel/run_embed_decls.h"
+#include "tools/cpp/runfiles/runfiles.h"
 #include "wasm.h"
 #include "wasmtime.h"
 
@@ -501,6 +511,295 @@ TEST(PluginDispatch, TrappingPluginFnFailsEvalCleanly) {
   act.Bind("x", Value::Int(1));
   auto v_or = inst_or->Eval(act);
   ASSERT_FALSE(v_or.ok()) << "trapping plugin fn produced a value";
+}
+
+// ── Plan-time required-function verification (m35 §2/§5.3) ─────────
+//
+// The Plan-time check unit matrix lives in
+// eval/internal/required_fn_check_test.cc (hand-built rows + registry
+// states, every signature axis).  The cases below pin the two §2
+// headline shapes and the two §5.3 host shapes through the FULL
+// pipeline: Compile (required_functions emission) → Plan (check).
+
+using ::bazel::tools::cpp::runfiles::Runfiles;
+
+// Loads the macro-built `demo_plugin.wasm` (self-describing: carries
+// `cel.fns` with Module customfn; @plugin.{greet,add,len}).
+std::vector<uint8_t> LoadDemoPluginBytes() {
+  std::string error;
+  auto runfiles = absl::WrapUnique(Runfiles::CreateForTest(&error));
+  ABSL_CHECK(runfiles != nullptr) << "runfiles init failed: " << error;
+  const std::string path = runfiles->Rlocation(
+      "_main/e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin.wasm");
+  ABSL_CHECK(!path.empty()) << "demo_plugin.wasm not in runfiles";
+  std::ifstream f(path, std::ios::binary);
+  ABSL_CHECK(f.is_open()) << "failed to open " << path;
+  return {(std::istreambuf_iterator<char>(f)),
+          std::istreambuf_iterator<char>()};
+}
+
+// Returns `bytes` minus the top-level custom section named `name`
+// (which must exist).  Works on both wasm layers — the id/size
+// framing is identical; LEB decoding comes from //abi:wasm_binary.
+std::vector<uint8_t> RemoveTopLevelCustomSection(
+    absl::Span<const uint8_t> bytes, absl::string_view name) {
+  std::vector<uint8_t> out(bytes.begin(), bytes.begin() + 8);
+  size_t pos = 8;
+  bool removed = false;
+  while (pos < bytes.size()) {
+    const size_t section_start = pos;
+    const uint8_t section_id = bytes[pos++];
+    uint32_t size = 0;
+    ABSL_CHECK(ReadLeb128U32(bytes, &pos, &size));
+    const size_t body_end = pos + size;
+    ABSL_CHECK_LE(body_end, bytes.size());
+    bool is_target = false;
+    if (section_id == 0) {
+      size_t p = pos;
+      uint32_t name_len = 0;
+      ABSL_CHECK(ReadLeb128U32(bytes, &p, &name_len));
+      const absl::string_view section_name(
+          reinterpret_cast<const char*>(bytes.data() + p), name_len);
+      is_target = section_name == name;
+    }
+    if (is_target) {
+      removed = true;
+    } else {
+      out.insert(out.end(), bytes.begin() + section_start,
+                 bytes.begin() + body_end);
+    }
+    pos = body_end;
+  }
+  ABSL_CHECK(removed) << "no `" << name << "` custom section to remove";
+  return out;
+}
+
+// Rebuilds a Program's `cel.abi` WITHOUT field 8 — the legacy
+// (pre-required_functions) wire shape, which cannot be produced by
+// the in-tree compiler anymore, so it is crafted by section surgery:
+// decode the payload, clear the field, re-frame the section.
+std::vector<uint8_t> StripRequiredFunctions(
+    absl::Span<const uint8_t> program_bytes) {
+  auto payload_or = FindCustomSection(program_bytes, "cel.abi");
+  ABSL_CHECK_OK(payload_or.status());
+  celwasm::abi::CelAbi abi;
+  ABSL_CHECK(
+      abi.ParseFromArray(payload_or->data(),
+                         static_cast<int>(payload_or->size())));
+  ABSL_CHECK_GT(abi.required_functions_size(), 0)
+      << "fixture Program must carry required_functions to strip";
+  abi.clear_required_functions();
+  const std::string new_payload = abi.SerializeAsString();
+  const std::vector<uint8_t> without =
+      RemoveTopLevelCustomSection(program_bytes, "cel.abi");
+  auto with_or = AppendCustomSection(
+      without, "cel.abi",
+      {reinterpret_cast<const uint8_t*>(new_payload.data()),
+       new_payload.size()});
+  ABSL_CHECK_OK(with_or.status());
+  return *std::move(with_or);
+}
+
+// A minimal self-describing plugin: `mul-int-int` under the derived
+// interface `cel:mymath/fns@0.1.0`, with the matching `cel.fns`
+// declaration text appended with the production framing writer.
+constexpr absl::string_view kMulIfaceComponentWat = R"WAT(
+(component
+  (core module $m
+    (func (export "mul") (param i64 i64) (result i64)
+      (i64.mul (local.get 0) (local.get 1))))
+  (core instance $ci (instantiate $m))
+  (func $mul (param "a" s64) (param "b" s64) (result s64)
+    (canon lift (core func $ci "mul")))
+  (instance $fns (export "mul-int-int" (func $mul)))
+  (export "cel:mymath/fns@0.1.0" (instance $fns)))
+)WAT";
+
+constexpr absl::string_view kMulIdl =
+    "Module mymath;\nint @plugin.mul(int a, int b);\n";
+
+Plugin LoadMulPlugin() {
+  const std::vector<uint8_t> component = WatToWasm(kMulIfaceComponentWat);
+  auto with_fns = AppendCustomSection(
+      component, "cel.fns",
+      {reinterpret_cast<const uint8_t*>(kMulIdl.data()), kMulIdl.size()});
+  ABSL_CHECK_OK(with_fns.status());
+  auto plugin_or = Plugin::Load(*with_fns);
+  ABSL_CHECK_OK(plugin_or.status());
+  return *std::move(plugin_or);
+}
+
+TEST(RequiredFnPlanCheck, MissingPluginFnFailsAtPlanWithFrozenMessage) {
+  // Compile with `Use` (one-noun flow), Plan on an engine that was
+  // never given the plugin: the §2 missing-plugin shape, verbatim.
+  const Plugin mul_plugin = LoadMulPlugin();
+  auto builder = Compiler::NewBuilder();
+  builder.Use(mul_plugin);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("mul(2, 3)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition)
+      << inst_or.status();
+  EXPECT_EQ(inst_or.status().message(),
+            "Engine::Plan: program requires plugin function `mul_int_int` "
+            "(`int mul(int, int)`) but no registered plugin declares it; "
+            "register the providing plugin with Engine::Use before Plan");
+}
+
+TEST(RequiredFnPlanCheck, SignatureMismatchFailsAtPlanWithFrozenMessage) {
+  // The plugin-update-drift scenario: the engine holds a rebuilt
+  // demo plugin whose `add` changed its return type (int → string)
+  // out from under a Program compiled against the pristine decls.
+  // The rebuilt artifact is crafted by real section surgery: strip
+  // the embedded `cel.fns`, re-embed a modified idl with the
+  // production `cel embed-decls` core.  Overload-ids (and therefore
+  // the kebab exports) are unchanged, so `Engine::Use`'s static
+  // export check still passes — only Plan's signature compare can
+  // catch the drift, with the §2 mismatch shape verbatim (including
+  // the plugin hash rendered as its first 12 lowercase hex chars).
+  const std::vector<uint8_t> demo_bytes = LoadDemoPluginBytes();
+  auto pristine_or = Plugin::Load(demo_bytes);
+  ASSERT_THAT(pristine_or, IsOk());
+
+  const std::vector<uint8_t> stripped =
+      RemoveTopLevelCustomSection(demo_bytes, "cel.fns");
+  constexpr absl::string_view kModifiedIdl =
+      "Module customfn;\n"
+      "string @plugin.greet(string name, int age);\n"
+      "string @plugin.add(int a, int b);\n"
+      "int    @plugin.len(string s);\n";
+  auto modified_bytes_or = tools::cel::EmbedDecls(stripped, kModifiedIdl);
+  ASSERT_THAT(modified_bytes_or, IsOk());
+  auto modified_or = Plugin::Load(*modified_bytes_or);
+  ASSERT_THAT(modified_or, IsOk());
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  ASSERT_THAT(engine_or->Use(*modified_or), IsOk())
+      << "Use checks export existence only; the kebab exports are "
+         "unchanged, so the drift must survive to Plan";
+
+  auto builder = Compiler::NewBuilder();
+  builder.Use(*pristine_or);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or = compiler_or->Compile("add(1, 2)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition)
+      << inst_or.status();
+  EXPECT_EQ(inst_or.status().message(),
+            absl::StrCat(
+                "Engine::Plan: program requires plugin function `add_int_int` "
+                "with signature `int add(int, int)` but the registered plugin "
+                "(hash ",
+                modified_or->hash_hex().substr(0, 12),
+                ") declares `string add(int, int)`; signatures must match "
+                "exactly — recompile the program or rebuild the plugin"));
+}
+
+TEST(RequiredFnPlanCheck, ProtoFqnMismatchEndToEnd) {
+  GTEST_SKIP()
+      << "blocked on the demo_plugin_proto fixture's known pre-existing "
+         "wasip2/absl-sync build break (the proto demo cross-compiles "
+         "libprotobuf under the WASI sysroot and fails there) — do not "
+         "depend on it; the proto-FQN axis is pinned at unit level by "
+         "required_fn_check_test.ProtoFqnMismatchExactFrozenMessage.";
+  // Intended assertion: compile against `bool is_adult(proto(acme.User))`,
+  // register a rebuilt plugin declaring `bool is_adult(proto(acme.Person))`
+  // (same overload-id via re-embedded idl), and expect the §2 mismatch
+  // message naming both proto FQNs.
+}
+
+TEST(RequiredFnPlanCheck, MissingHostFnFailsAtPlanWithFrozenMessage) {
+  // The §5.3 missing-host shape, verbatim: a forgotten host
+  // registration fails Plan cleanly instead of surfacing as an
+  // opaque `unknown import cel_fn.<id>` wasmtime link error.
+  auto builder = Compiler::NewBuilder();
+  builder.AddFunction("int @host.discount_pct(string tier);");
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or =
+      compiler_or->Compile("discount_pct('gold')", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition)
+      << inst_or.status();
+  EXPECT_EQ(inst_or.status().message(),
+            "Engine::Plan: program requires host function "
+            "`discount_pct_string` (`int discount_pct(string)`) but none is "
+            "registered; call Engine::BindFunction (or AddFunction) before "
+            "Plan");
+}
+
+TEST(RequiredFnPlanCheck, HostArityMismatchFailsAtPlanWithFrozenMessage) {
+  // The §5.3 arity shape, verbatim.  `AddFunction` is arity-only
+  // (no decl to compare), but a wrong arity is still caught.
+  auto builder = Compiler::NewBuilder();
+  builder.AddFunction("int @host.discount_pct(string tier);");
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or =
+      compiler_or->Compile("discount_pct('gold')", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  ASSERT_THAT(engine_or->AddFunction(
+                  "discount_pct_string", /*num_args=*/3,
+                  [](HostCallContext&) { return absl::OkStatus(); }),
+              IsOk());
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_FALSE(inst_or.ok());
+  EXPECT_EQ(inst_or.status().code(), absl::StatusCode::kFailedPrecondition)
+      << inst_or.status();
+  EXPECT_EQ(inst_or.status().message(),
+            "Engine::Plan: program requires host function "
+            "`discount_pct_string` with wasm arity 2 but it was registered "
+            "with arity 3");
+}
+
+TEST(RequiredFnPlanCheck, TwoPluginsOnePlanBothDispatch) {
+  // The multi-plugin positive: two self-describing plugins Used on
+  // one engine, one Program calling a function from each — Plan
+  // verifies both rows, instantiates both, and Eval dispatches into
+  // both sandboxes.
+  const std::vector<uint8_t> demo_bytes = LoadDemoPluginBytes();
+  auto demo_or = Plugin::Load(demo_bytes);
+  ASSERT_THAT(demo_or, IsOk());
+  const Plugin mul_plugin = LoadMulPlugin();
+
+  auto engine_or = Engine::NewBuilder().Build();
+  ASSERT_THAT(engine_or, IsOk());
+  ASSERT_THAT(engine_or->Use(*demo_or), IsOk());
+  ASSERT_THAT(engine_or->Use(mul_plugin), IsOk());
+
+  auto builder = Compiler::NewBuilder();
+  builder.Use(*demo_or).Use(mul_plugin);
+  auto compiler_or = std::move(builder).Build();
+  ASSERT_THAT(compiler_or, IsOk());
+  auto prog_or =
+      compiler_or->Compile("add(1, 2) + mul(2, 3)", e2e::DefaultOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+
+  auto inst_or = engine_or->Plan(*prog_or);
+  ASSERT_THAT(inst_or, IsOk()) << inst_or.status();
+  Activation act;
+  auto v_or = inst_or->Eval(act);
+  ASSERT_THAT(v_or, IsOk()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 9);
 }
 
 }  // namespace

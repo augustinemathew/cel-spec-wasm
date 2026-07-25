@@ -121,25 +121,6 @@ const CelfnDecl* FindDeclByOverloadId(
   return nullptr;
 }
 
-celwasm::abi::RequiredFunction::Backend WireBackend(const CelfnDecl& decl) {
-  switch (decl.backend) {
-    case CelfnDecl::Backend::kHost:
-      return celwasm::abi::RequiredFunction::HOST;
-    case CelfnDecl::Backend::kPlugin:
-      return celwasm::abi::RequiredFunction::PLUGIN;
-    case CelfnDecl::Backend::kCelDefined:
-      // kCelDefined decls import under their per-module alias, never
-      // `cel_fn` — a cel_fn import resolving to one is an invariant
-      // violation in the overload-table wiring.
-      break;
-  }
-  ABSL_CHECK(false) << "BuildRequiredFunctions: cel_fn import `"
-                    << decl.overload_id
-                    << "` resolved to a non-cel_fn backend "
-                    << static_cast<int>(decl.backend);
-  return celwasm::abi::RequiredFunction::BACKEND_UNSPECIFIED;
-}
-
 }  // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -155,16 +136,9 @@ std::vector<celwasm::abi::RequiredFunction> BuildRequiredFunctions(
         << "` has no matching decl across the registered function "
            "libraries — codegen installed the import from those libraries, "
            "so a miss is an overload-table wiring bug";
-    celwasm::abi::RequiredFunction row;
-    row.set_overload_id(decl->overload_id);
-    row.set_fn_name(decl->fn_name);
-    row.set_backend(WireBackend(*decl));
-    for (const CelfnParam& param : decl->params) {
-      *row.add_param_types() = FnTypeFromCelfn(param.type);
-    }
-    *row.mutable_return_type() = FnTypeFromCelfn(decl->return_type);
-    row.set_is_receiver(decl->is_receiver);
-    rows.push_back(std::move(row));
+    // A cel_fn import resolving to a kCelDefined decl is the same
+    // wiring-invariant violation — RequiredFunctionFromDecl CHECKs it.
+    rows.push_back(RequiredFunctionFromDecl(*decl));
   }
   return rows;
 }

@@ -318,5 +318,58 @@ TEST(RenderSignatureTest, UnspecifiedKindRendersNumerically) {
   EXPECT_EQ(RenderSignature(fn), "bool f(<kind 0>)");
 }
 
+// --- RequiredFunctionFromDecl --------------------------------------
+
+CelfnDecl MakeDecl(CelfnDecl::Backend backend, std::string fn_name,
+                   std::string overload_id, CelfnType return_type,
+                   std::vector<CelfnParam> params) {
+  CelfnDecl d;
+  d.backend = backend;
+  d.fn_name = std::move(fn_name);
+  d.overload_id = std::move(overload_id);
+  d.params = std::move(params);
+  d.num_args = static_cast<uint8_t>(d.params.size() + 1);
+  d.is_receiver = !d.params.empty() && d.params[0].is_receiver;
+  d.return_type = std::move(return_type);
+  return d;
+}
+
+TEST(RequiredFunctionFromDeclTest, PluginDeclMapsAllFields) {
+  const CelfnDecl decl = MakeDecl(
+      CelfnDecl::Backend::kPlugin, "is_adult", "is_adult_message_acme_User",
+      Scalar(CelfnType::Kind::kBool),
+      {CelfnParam{false, Proto("acme.User"), "u"}});
+  const RequiredFunction row = RequiredFunctionFromDecl(decl);
+  EXPECT_EQ(row.overload_id(), "is_adult_message_acme_User");
+  EXPECT_EQ(row.fn_name(), "is_adult");
+  EXPECT_EQ(row.backend(), RequiredFunction::PLUGIN);
+  ASSERT_EQ(row.param_types_size(), 1);
+  EXPECT_EQ(row.param_types(0).kind(), FnType::FN_KIND_PROTO);
+  EXPECT_EQ(row.param_types(0).proto_fqn(), "acme.User");
+  EXPECT_EQ(row.return_type().kind(), FnType::FN_KIND_BOOL);
+  EXPECT_FALSE(row.is_receiver());
+  EXPECT_EQ(RenderSignature(row), "bool is_adult(proto(acme.User))");
+}
+
+TEST(RequiredFunctionFromDeclTest, HostReceiverDeclMapsBackendAndReceiver) {
+  const CelfnDecl decl = MakeDecl(
+      CelfnDecl::Backend::kHost, "upper", "upper_string",
+      Scalar(CelfnType::Kind::kString),
+      {CelfnParam{true, Scalar(CelfnType::Kind::kString), "s"}});
+  const RequiredFunction row = RequiredFunctionFromDecl(decl);
+  EXPECT_EQ(row.backend(), RequiredFunction::HOST);
+  EXPECT_TRUE(row.is_receiver());
+  EXPECT_EQ(RenderSignature(row), "string upper(this string)");
+}
+
+TEST(RequiredFunctionFromDeclDeathTest, CelDefinedDeclChecks) {
+  const CelfnDecl decl =
+      MakeDecl(CelfnDecl::Backend::kCelDefined, "twice", "twice_int",
+               Scalar(CelfnType::Kind::kInt),
+               {CelfnParam{false, Scalar(CelfnType::Kind::kInt), "x"}});
+  EXPECT_DEATH(RequiredFunctionFromDecl(decl),
+               "has no cel_fn wire backend");
+}
+
 }  // namespace
 }  // namespace celwasm

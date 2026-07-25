@@ -27,9 +27,11 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "abi/cel_abi.pb.h"
 #include "compiler/celfn/function_library.h"
 #include "eval/host_callback.h"  // for celwasm::HostCallback
 #include "wasm.h"
@@ -73,6 +75,13 @@ struct RegisteredHostCallback {
   // Matches the underlying `OverloadDef::num_args`.
   std::uint8_t num_args = 0;
   celwasm::HostCallback callback;
+  // Full declared signature, captured ONLY when the registration
+  // came through `Engine::BindFunction` (which parses a `.celfn`
+  // decl).  Plan's required-function verification uses it for the
+  // full recursive type compare; raw `AddFunction` /
+  // `AddTypedFunction` registrations leave it empty and stay
+  // arity-only at that check.
+  std::optional<celwasm::abi::RequiredFunction> decl_signature;
 };
 
 // A plugin registered via `Engine::Use` or `Engine::AddPlugin` —
