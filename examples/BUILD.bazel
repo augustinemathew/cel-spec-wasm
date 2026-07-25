@@ -5,7 +5,8 @@
 #   bazel run //examples:01_hello_world
 #
 # Examples depend ONLY on the sanctioned public targets
-# (//compiler:{compiler,program}, //eval:*, //shared:type) — they
+# (//compiler:{compiler,program}, //eval:*, //shared:type,
+# //abi:plugin) — they
 # double as a compile-time check that the public surface is sufficient
 # for real embedders.  `:examples_smoke_test` runs every binary and
 # asserts on its output, so the examples (and the doc snippets built
@@ -168,9 +169,9 @@ cc_binary(
     srcs = ["09_plugin_functions.cc"],
     data = [":adder_plugin"],
     deps = [
+        "//abi:plugin",
         "//compiler:compiler",
         "//compiler:program",
-        "//compiler/celfn:function_library",
         "//eval:activation",
         "//eval:engine",
         "//eval:instance",

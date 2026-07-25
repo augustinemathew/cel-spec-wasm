@@ -1,9 +1,9 @@
 // Declaration for //examples:09_plugin_functions — one sandboxed
 // custom function, compiled to a WebAssembly Component-Model
-// component by the cel_wasm_plugin macro.  The same declaration is
-// mirrored by the embedder (FunctionLibrary in
-// 09_plugin_functions.cc) so Engine::AddPlugin can validate the
-// plugin's exports against it.
+// component by the cel_wasm_plugin macro.  The macro embeds this
+// declaration text verbatim in the artifact's `cel.fns` custom
+// section, so the embedder never re-declares it: Plugin::Load
+// reads it back out of the bytes.
 //
 // Scalar-only on purpose: string-RETURNING plugin fns currently
 // trap inside libc++ under the wasi-preview2 stubs (see the skipped
