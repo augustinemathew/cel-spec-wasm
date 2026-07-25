@@ -997,8 +997,14 @@ void WriteCelValueAt(wasmtime_context_t* /*ctx*/, wasmtime_sharedmemory_t* mem,
 // activation binding.  Used pre-pass to know how much host arena to
 // reserve before any encoder writes — growing memory mid-loop would
 // invalidate any previously-cached `wasmtime_memory_data` pointer.
-uint32_t TotalHostStringBytes(const celwasm::abi::CelAbi& abi,
-                              const Activation& activation) {
+// Defined below; the sizing pre-pass and the marshal must agree on
+// which variables an unknown pattern blanks.
+std::optional<uint32_t> BareVariableUnknownId(
+    const celwasm::CelHostBindings& bindings, absl::string_view name);
+
+absl::StatusOr<uint32_t> TotalHostStringBytes(
+    const celwasm::abi::CelAbi& abi, const Activation& activation,
+    const celwasm::CelHostBindings& bindings) {
   uint32_t total = 0;
   for (const celwasm::abi::VariableEntry& dv : abi.variables()) {
     const celwasm::Repr repr = celwasm::DecodeRepr(dv.repr());
@@ -1006,7 +1012,17 @@ uint32_t TotalHostStringBytes(const celwasm::abi::CelAbi& abi,
         repr != celwasm::Repr::kType) {
       continue;
     }
-    const Value* bound = activation.Find(dv.name());
+    // Skip variables a FULL unknown pattern blanks: their slot holds a
+    // CEL_UNKNOWN descriptor rather than a payload, so they consume no
+    // string arena — and resolving them here would invoke a lazy
+    // binder for a variable the caller declared opaque.
+    if (BareVariableUnknownId(bindings, dv.name()).has_value()) continue;
+    // Resolve, not a bare lookup: a lazy binder runs here and its
+    // value is memoized, so the marshal below sees the same bytes this
+    // pre-pass budgeted for.
+    auto resolved = activation.Resolve(dv.name());
+    if (!resolved.ok()) return resolved.status();
+    const Value* bound = *resolved;
     if (bound == nullptr) continue;  // missing variable surfaces below.
     if (repr == celwasm::Repr::kString &&
         bound->kind() == Value::Kind::kString) {
@@ -1175,7 +1191,11 @@ absl::Status MarshalOneVariable(wasmtime_context_t* absl_nonnull ctx,
     WriteCelValueAt(ctx, mem, dv.slot_offset(), unk);
     return absl::OkStatus();
   }
-  const Value* bound = activation.Find(dv.name());
+  // Resolved after the unknown check above, so a lazy binder never
+  // runs for a variable the caller declared opaque.
+  auto resolved = activation.Resolve(dv.name());
+  if (!resolved.ok()) return resolved.status();
+  const Value* bound = *resolved;
   if (bound == nullptr) {
     return absl::FailedPreconditionError(
         absl::StrCat("Activation: variable `", dv.name(),
@@ -1197,13 +1217,20 @@ absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
   wasmtime_sharedmemory_t* mem = impl->memory;
   const celwasm::abi::CelAbi& abi = impl->abi;
 
+  // Each evaluation re-invokes its lazy binders: drop values memoized
+  // by the previous one before anything reads the activation.
+  activation.ClearLazyCache();
+
   // Pre-pass: ensure the activation buffer has room for every
   // kString / kBytes payload AND every fully-unknown variable's
   // UnknownSet descriptor before any encoder runs.  A malloc'd
   // buffer's pointer doesn't move under us across reentry calls (no
   // memory.grow side-effect on the same Eval), so the encoders that
   // follow can read `wasmtime_memory_data` once and use it stably.
-  const uint32_t need = TotalHostStringBytes(abi, activation) +
+  auto string_bytes =
+      TotalHostStringBytes(abi, activation, impl->host_env.bindings);
+  if (!string_bytes.ok()) return string_bytes.status();
+  const uint32_t need = *string_bytes +
                         (kUnknownDescriptorBytes *
                          CountUnknownVariables(abi, impl->host_env.bindings));
   if (need > 0) {

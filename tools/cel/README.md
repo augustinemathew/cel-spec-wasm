@@ -21,8 +21,29 @@ cel generate --idl PATH --out_dir DIR
                                 from a .idl file
 ```
 
-Exit codes: `0` success, `1` compile/eval failure, `2` usage error.
-Diagnostics go to stderr; `eval` writes the result body to stdout.
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success. |
+| `1`  | **The expression or program failed** — parse/check diagnostics, a compile failure, a non-OK evaluation, or a result that is a CEL **error** (`1/0`, missing key, overflow) or **unknown**. |
+| `2`  | **Usage** — unknown subcommand, unrecognized or invalid flag, malformed `--var` / `--format`, wrong positional count, unreadable input. |
+
+Diagnostics go to **stderr**; only a successful result body goes to
+stdout. That split is what makes the CLI safe to script:
+
+```bash
+if result=$(cel eval "$expr" --var "n:int=$n"); then
+  echo "ok: $result"        # only reached for a real value
+else                        # $? is 1 (CEL said no) or 2 (bad invocation)
+  echo "failed: $?" >&2
+fi
+```
+
+A CEL error is a legitimate *library* result — `Instance::Eval` returns
+it as a `Value` your C++ code can catch with `||` or `?:` — but at the
+process boundary it means the expression produced no result, so `cel`
+reports it on stderr and exits `1`.
 
 Binary: `bazel-bin/tools/cel/cel` (built via
 `bazel build //tools/cel:cel`).  Note: under `bazel run //tools/cel:cel`,

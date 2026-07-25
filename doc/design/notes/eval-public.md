@@ -214,11 +214,21 @@ Plan from many threads.
   (attribute.h:60-63); `AttributePattern::Parse("a.b.*")` is the embedder
   entry, wildcard `*` segments, root wildcard rejected
   (attribute.h:202-211, attribute_test.cc:279).
-- `Activation` is a name→Value `flat_hash_map`; `Bind` overwrites and returns
-  `*this` for fluency; `Find` returns nullptr when unbound (activation.cc:15-44).
-  `BindLazy` and `OverrideFunction` are signature-final `ABSL_CHECK(false)`
-  stubs ("until M2" / "until M5"), death-tested (activation.cc:23-38,
-  activation_test.cc:50-71).
+- `Activation` maps names to values two ways: `Bind` takes a `Value`
+  directly, `BindLazy` registers a callback that produces one on demand.
+  Both overwrite any prior binding of the same name (either kind) and
+  return `*this` for fluency.  `Resolve` is the single lookup entry point
+  — it returns nullptr when unbound, and a non-OK status only when a lazy
+  binder failed (propagated verbatim).  A lazy binder runs at most once
+  per evaluation and only for a variable the program declares and no
+  unknown pattern blanks; `Instance` calls `ClearLazyCache` at the start
+  of each marshal so the next evaluation re-invokes it.  The memo cache
+  makes `Activation` move-only and not thread-safe — one per evaluation,
+  matching `Instance`'s thread-owned model (activation.{h,cc},
+  activation_test.cc).
+  `OverrideFunction` was removed rather than implemented: per-call
+  function override never shipped and had no user, so overriding stays
+  an `Engine`-build-time operation (`AddFunction` / `BindFunction`).
 
 ### 1.7 Thread-safety model (as documented + tested)
 

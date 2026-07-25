@@ -14,6 +14,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <utility>
@@ -77,9 +78,10 @@ ABSL_FLAG(int, O, 0,
           "0 = no-op (default); 2 = balanced; recommended on a hot path.");
 
 ABSL_FLAG(std::uint32_t, mem_size_bytes, 128u * 1024u,
-          "Total linear-memory size in bytes for the emitted module.  "
-          "Rounded up to the next 64KiB wasm page.  Raise when the "
-          "expression needs a larger arena (heavy string concat, big lists).");
+          "Initial linear-memory size in bytes for the emitted module, "
+          "rounded up to the next 64KiB wasm page.  Applies to dynamic "
+          "link mode only — it has no effect on the default static "
+          "output, and is not a way to enlarge the eval arena.");
 
 ABSL_FLAG(std::string, output, "",
           "`cel compile` only: path to write the emitted wasm bytes.  "
@@ -111,6 +113,22 @@ using ::celwasm::Activation;
 using ::celwasm::Engine;
 using ::celwasm::Program;
 using ::celwasm::Value;
+
+// Process exit codes.  The contract is documented in tools/cel/README.md
+// and pinned by cel_smoke_test.sh; keep the three in sync.
+//
+//   0  success
+//   1  the expression or program failed — check/compile diagnostics, a
+//      non-OK Eval status, or a result that is a CEL error or unknown
+//   2  usage — bad subcommand, flag, --var syntax, or unreadable input
+//
+// The split matters for scripting: `1` means "the CEL said no", `2`
+// means "the invocation was wrong".  Both are distinguishable from `0`,
+// which is the bug this replaced — a CEL error value used to print on
+// stdout and exit 0.
+inline constexpr int kExitOk = 0;
+inline constexpr int kExitExprFailure = 1;
+inline constexpr int kExitUsage = 2;
 
 // Same schema-loading shape as parse_and_check.cc::LoadDescriptorPool,
 // re-implemented here so the CLI can construct DynamicMessage
@@ -322,146 +340,163 @@ absl::StatusOr<std::vector<ParsedVar>> ParseAllVars(
   return out;
 }
 
+// --- Shared subcommand front end --------------------------------------------
+
+// The descriptor pool, the dynamic-message factory that must outlive
+// every message `Value` parsed against it, the parsed `--var` list, and
+// the compile options derived from them.  Every expression-taking
+// subcommand needs exactly this bundle, so it is assembled once here
+// rather than repeated per subcommand.
+struct CliSetup {
+  PoolBundle pool;
+  std::unique_ptr<google::protobuf::DynamicMessageFactory> factory;
+  std::vector<ParsedVar> vars;
+  celwasm::CompileOptions opts;
+};
+
+absl::StatusOr<CliSetup> PrepareCli(absl::string_view source_desc) {
+  CliSetup s;
+  auto pool = BuildPool();
+  if (!pool.ok()) return pool.status();
+  s.pool = *std::move(pool);
+  s.factory =
+      std::make_unique<google::protobuf::DynamicMessageFactory>(s.pool.pool);
+  auto vars = ParseAllVars(*s.pool.pool, *s.factory);
+  if (!vars.ok()) return vars.status();
+  s.vars = *std::move(vars);
+  auto opts = BuildCompileOptions(source_desc, s.vars);
+  if (!opts.ok()) return opts.status();
+  s.opts = *std::move(opts);
+  return s;
+}
+
+// Parse every `--format` value.  Done before any compilation so a typo
+// fails as usage rather than after the expensive work.
+absl::StatusOr<std::vector<Format>> ResolveFormats() {
+  std::vector<Format> formats;
+  for (const auto& name : FormatFlags()) {
+    auto f = ParseFormatName(name);
+    if (!f.ok()) return f.status();
+    formats.push_back(*f);
+  }
+  return formats;
+}
+
+// Render a successful evaluation result and return the process exit
+// code.  A CEL error or unknown is a legitimate library result but not
+// a usable process result: it goes to stderr and fails, so a caller can
+// branch on `$?` instead of scraping stdout.
+int ReportResult(const Value& value, const std::vector<Format>& formats) {
+  if (value.kind() == Value::Kind::kError ||
+      value.kind() == Value::Kind::kUnknown) {
+    auto rendered = FormatScalar(value);
+    std::cerr << "ERROR: " << (rendered.ok() ? *rendered : "<unrenderable>")
+              << "\n";
+    return kExitExprFailure;
+  }
+  if (value.kind() == Value::Kind::kMessage) {
+    auto out = FormatMessage(value, formats);
+    if (!out.ok()) {
+      std::cerr << "ERROR: format: " << out.status().message() << "\n";
+      return kExitExprFailure;
+    }
+    std::cout << *out;
+    if (!out->empty() && out->back() != '\n') std::cout << "\n";
+    return kExitOk;
+  }
+  auto out = FormatScalar(value);
+  if (!out.ok()) {
+    std::cerr << "ERROR: format: " << out.status().message() << "\n";
+    return kExitExprFailure;
+  }
+  std::cout << *out << "\n";
+  return kExitOk;
+}
+
 // --- Subcommands ------------------------------------------------------------
 
 int RunEval(absl::string_view expr) {
-  auto pool = BuildPool();
-  if (!pool.ok()) {
-    std::cerr << "ERROR: " << pool.status().message() << "\n";
-    return 2;
+  auto formats = ResolveFormats();
+  if (!formats.ok()) {
+    std::cerr << "ERROR: " << formats.status().message() << "\n";
+    return kExitUsage;
   }
-  google::protobuf::DynamicMessageFactory factory(pool->pool);
-  auto vars = ParseAllVars(*pool->pool, factory);
-  if (!vars.ok()) {
-    std::cerr << "ERROR: " << vars.status().message() << "\n";
-    return 2;
+  auto setup = PrepareCli("<cli>");
+  if (!setup.ok()) {
+    std::cerr << "ERROR: " << setup.status().message() << "\n";
+    return kExitUsage;
   }
-  auto opts = BuildCompileOptions("<cli>", *vars);
-  if (!opts.ok()) {
-    std::cerr << "ERROR: " << opts.status().message() << "\n";
-    return 2;
-  }
-  auto artifact = celwasm::Compile(expr, *opts);
+  auto artifact = celwasm::Compile(expr, setup->opts);
   if (!artifact.ok()) {
     std::cerr << "ERROR: " << artifact.status().message() << "\n";
-    return 1;
+    return kExitExprFailure;
   }
   Program program(std::move(artifact->wasm_bytes));
   auto engine = Engine::NewBuilder().Build();
   if (!engine.ok()) {
     std::cerr << "ERROR: engine: " << engine.status().message() << "\n";
-    return 2;
+    return kExitExprFailure;
   }
   auto instance = engine->Plan(program);
   if (!instance.ok()) {
     std::cerr << "ERROR: plan: " << instance.status().message() << "\n";
-    return 2;
+    return kExitExprFailure;
   }
   Activation act;
-  if (auto s = BindActivation(*vars, act); !s.ok()) {
+  if (auto s = BindActivation(setup->vars, act); !s.ok()) {
     std::cerr << "ERROR: " << s.message() << "\n";
-    return 2;
+    return kExitUsage;
   }
-  auto value = vars->empty() ? instance->Eval() : instance->Eval(act);
+  auto value = setup->vars.empty() ? instance->Eval() : instance->Eval(act);
   if (!value.ok()) {
     std::cerr << "ERROR: eval: " << value.status().message() << "\n";
-    return 1;
+    return kExitExprFailure;
   }
-
-  // Resolve --format.
-  std::vector<Format> formats;
-  for (const auto& name : FormatFlags()) {
-    auto f = ParseFormatName(name);
-    if (!f.ok()) {
-      std::cerr << "ERROR: " << f.status().message() << "\n";
-      return 2;
-    }
-    formats.push_back(*f);
-  }
-
-  if (value->kind() == Value::Kind::kMessage) {
-    auto out = FormatMessage(*value, formats);
-    if (!out.ok()) {
-      std::cerr << "ERROR: format: " << out.status().message() << "\n";
-      return 2;
-    }
-    std::cout << *out;
-    if (!out->empty() && out->back() != '\n') std::cout << "\n";
-  } else {
-    auto out = FormatScalar(*value);
-    if (!out.ok()) {
-      std::cerr << "ERROR: format: " << out.status().message() << "\n";
-      return 2;
-    }
-    std::cout << *out << "\n";
-  }
-  return 0;
+  return ReportResult(*value, *formats);
 }
 
 int RunCheck(absl::string_view expr) {
-  auto pool = BuildPool();
-  if (!pool.ok()) {
-    std::cerr << "ERROR: " << pool.status().message() << "\n";
-    return 2;
+  auto setup = PrepareCli("<cli>");
+  if (!setup.ok()) {
+    std::cerr << "ERROR: " << setup.status().message() << "\n";
+    return kExitUsage;
   }
-  google::protobuf::DynamicMessageFactory factory(pool->pool);
-  auto vars = ParseAllVars(*pool->pool, factory);
-  if (!vars.ok()) {
-    std::cerr << "ERROR: " << vars.status().message() << "\n";
-    return 2;
-  }
-  auto opts = BuildCompileOptions("<cli>", *vars);
-  if (!opts.ok()) {
-    std::cerr << "ERROR: " << opts.status().message() << "\n";
-    return 2;
-  }
-  auto ast = celwasm::ParseAndCheck(expr, opts->check);
+  auto ast = celwasm::ParseAndCheck(expr, setup->opts.check);
   if (!ast.ok()) {
     std::cerr << "ERROR: " << ast.status().message() << "\n";
-    return 1;
+    return kExitExprFailure;
   }
   std::cout << "OK\n";
-  return 0;
+  return kExitOk;
 }
 
 int RunCompile(absl::string_view expr) {
-  auto pool = BuildPool();
-  if (!pool.ok()) {
-    std::cerr << "ERROR: " << pool.status().message() << "\n";
-    return 2;
+  auto setup = PrepareCli("<cli>");
+  if (!setup.ok()) {
+    std::cerr << "ERROR: " << setup.status().message() << "\n";
+    return kExitUsage;
   }
-  google::protobuf::DynamicMessageFactory factory(pool->pool);
-  auto vars = ParseAllVars(*pool->pool, factory);
-  if (!vars.ok()) {
-    std::cerr << "ERROR: " << vars.status().message() << "\n";
-    return 2;
-  }
-  auto opts = BuildCompileOptions("<cli>", *vars);
-  if (!opts.ok()) {
-    std::cerr << "ERROR: " << opts.status().message() << "\n";
-    return 2;
-  }
-  auto artifact = celwasm::Compile(expr, *opts);
+  auto artifact = celwasm::Compile(expr, setup->opts);
   if (!artifact.ok()) {
     std::cerr << "ERROR: " << artifact.status().message() << "\n";
-    return 1;
+    return kExitExprFailure;
   }
   const auto& bytes = artifact->wasm_bytes;
   const std::string out_path = absl::GetFlag(FLAGS_output);
   if (out_path.empty()) {
     std::cout.write(reinterpret_cast<const char*>(bytes.data()),
                     static_cast<std::streamsize>(bytes.size()));
-  } else {
-    std::ofstream out(out_path, std::ios::binary);
-    if (!out) {
-      std::cerr << "ERROR: cannot open --output " << out_path << "\n";
-      return 2;
-    }
-    out.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    std::cerr << "wrote " << bytes.size() << " bytes to " << out_path << "\n";
+    return kExitOk;
   }
-  return 0;
+  std::ofstream out(out_path, std::ios::binary);
+  if (!out) {
+    std::cerr << "ERROR: cannot open --output " << out_path << "\n";
+    return kExitUsage;
+  }
+  out.write(reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+  std::cerr << "wrote " << bytes.size() << " bytes to " << out_path << "\n";
+  return kExitOk;
 }
 
 // Pull every `--<name>=VALUE` and `--<name> VALUE` occurrence out of
@@ -518,6 +553,51 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  --package PKG            WIT package name override\n";
 }
 
+// True when `--help` / `-h` / `help` appears anywhere in argv, so that
+// `cel eval --help` prints this tool's usage rather than absl's full
+// flag dump.
+bool WantsHelp(absl::Span<char* const> argv) {
+  for (std::size_t i = 1; i < argv.size(); ++i) {
+    const absl::string_view a = argv[i];
+    if (a == "-h" || a == "--help" || a == "help") return true;
+  }
+  return false;
+}
+
+bool IsKnownSubcommand(absl::string_view s) {
+  return s == "eval" || s == "check" || s == "compile" || s == "generate";
+}
+
+// Peel the subcommand out of argv, pull the repeatable `--var` /
+// `--format` values (whose values may contain commas or `=`, which
+// absl's parser would mangle), then parse the remaining flags.
+//
+// `ParseAbseilFlagsOnly` rather than `ParseCommandLine`: the latter
+// calls exit(1) on an unrecognized flag, colliding with the
+// "expression failed" code.  Reporting them here keeps flag errors
+// classified as usage.  Returns nullopt when a flag was unrecognized.
+std::optional<std::vector<char*>> ParseFlagsAfterSubcommand(
+    absl::Span<char* const> argv) {
+  std::vector<char*> rest;
+  rest.reserve(argv.size() - 1);
+  rest.push_back(argv[0]);
+  for (std::size_t i = 2; i < argv.size(); ++i) {
+    rest.push_back(argv[i]);
+  }
+  rest = ExtractRepeated(rest, "var", VarFlags());
+  rest = ExtractRepeated(rest, "format", FormatFlags());
+
+  std::vector<char*> positional;
+  std::vector<absl::UnrecognizedFlag> unrecognized;
+  absl::ParseAbseilFlagsOnly(static_cast<int>(rest.size()), rest.data(),
+                             positional, unrecognized);
+  if (!unrecognized.empty()) {
+    absl::ReportUnrecognizedFlags(unrecognized);
+    return std::nullopt;
+  }
+  return positional;
+}
+
 int RunGenerateSubcommand() {
   GenerateOptions opts;
   opts.idl_path = absl::GetFlag(FLAGS_idl);
@@ -528,67 +608,59 @@ int RunGenerateSubcommand() {
   return RunGenerate(opts);
 }
 
-}  // namespace
-}  // namespace celwasm::tools::cel
-
-int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
-  if (argc < 2) {
-    celwasm::tools::cel::PrintUsage(std::cerr, argv[0]);
-    return 2;
-  }
-  const std::string subcommand = argv[1];
-  if (subcommand == "-h" || subcommand == "--help" || subcommand == "help") {
-    celwasm::tools::cel::PrintUsage(std::cout, argv[0]);
-    return 0;
-  }
-  if (subcommand != "eval" && subcommand != "check" &&
-      subcommand != "compile" && subcommand != "generate") {
-    std::cerr << "ERROR: unknown subcommand `" << subcommand << "`\n";
-    celwasm::tools::cel::PrintUsage(std::cerr, argv[0]);
-    return 2;
-  }
-
-  // Peel the subcommand out of argv so absl::ParseCommandLine sees
-  // a conventional (program, flags..., positionals...) layout.
-  std::vector<char*> rest;
-  rest.reserve(argc - 1);
-  rest.push_back(argv[0]);
-  for (int i = 2; i < argc; ++i) {
-    rest.push_back(argv[i]);
-  }
-  // Extract repeatable flags BEFORE absl parses, so their values
-  // (which may contain commas or `=`) aren't mangled.
-  rest = celwasm::tools::cel::ExtractRepeated(rest, "var",
-                                              celwasm::tools::cel::VarFlags());
-  rest = celwasm::tools::cel::ExtractRepeated(
-      rest, "format", celwasm::tools::cel::FormatFlags());
-  std::vector<char*> positional =
-      absl::ParseCommandLine(static_cast<int>(rest.size()), rest.data());
-
-  // `generate` takes no positional <expr>; the input is --idl.
+// Validate the positional count for `subcommand` and dispatch.
+// `positional[0]` is argv[0]; expression-taking subcommands need
+// exactly one more.
+int Dispatch(absl::string_view subcommand, absl::Span<char* const> positional,
+             absl::string_view argv0) {
   if (subcommand == "generate") {
     if (positional.size() != 1) {
       std::cerr << "ERROR: `generate` takes no positional argument; "
                    "use --idl PATH instead.  Got "
                 << (positional.size() - 1) << " unexpected.\n";
-      celwasm::tools::cel::PrintUsage(std::cerr, argv[0]);
-      return 2;
+      PrintUsage(std::cerr, argv0);
+      return kExitUsage;
     }
-    return celwasm::tools::cel::RunGenerateSubcommand();
+    return RunGenerateSubcommand();
   }
-
   if (positional.size() != 2) {
     std::cerr << "ERROR: expected exactly one positional <expr>, got "
               << (positional.size() - 1) << "\n";
-    celwasm::tools::cel::PrintUsage(std::cerr, argv[0]);
-    return 2;
+    PrintUsage(std::cerr, argv0);
+    return kExitUsage;
   }
   const absl::string_view expr = positional[1];
-
-  if (subcommand == "eval") return celwasm::tools::cel::RunEval(expr);
-  if (subcommand == "check") return celwasm::tools::cel::RunCheck(expr);
-  if (subcommand == "compile") return celwasm::tools::cel::RunCompile(expr);
-  // Unreachable: the upfront subcommand check above rejects anything
-  // not in {eval, check, compile, generate}.
+  if (subcommand == "eval") return RunEval(expr);
+  if (subcommand == "check") return RunCheck(expr);
+  if (subcommand == "compile") return RunCompile(expr);
   ABSL_CHECK(false) << "subcommand `" << subcommand << "` slipped the gate";
+}
+
+}  // namespace
+}  // namespace celwasm::tools::cel
+
+int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
+  namespace cli = celwasm::tools::cel;
+  if (argc < 2) {
+    cli::PrintUsage(std::cerr, argv[0]);
+    return cli::kExitUsage;
+  }
+  const absl::Span<char* const> args(argv, static_cast<std::size_t>(argc));
+  if (cli::WantsHelp(args)) {
+    cli::PrintUsage(std::cout, argv[0]);
+    return cli::kExitOk;
+  }
+  const std::string subcommand = argv[1];
+  if (!cli::IsKnownSubcommand(subcommand)) {
+    std::cerr << "ERROR: unknown subcommand `" << subcommand << "`\n";
+    cli::PrintUsage(std::cerr, argv[0]);
+    return cli::kExitUsage;
+  }
+
+  auto positional = cli::ParseFlagsAfterSubcommand(args);
+  if (!positional.has_value()) {
+    cli::PrintUsage(std::cerr, argv[0]);
+    return cli::kExitUsage;
+  }
+  return cli::Dispatch(subcommand, *positional, argv[0]);
 }

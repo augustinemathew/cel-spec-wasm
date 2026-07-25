@@ -238,6 +238,31 @@ act.Bind("x", celwasm::Value::Int(42))
    .Bind("s", celwasm::Value::String("hi"));     // fluent; overwrites prior binds
 ```
 
+Bind a value **lazily** when producing it is expensive and you'd rather
+not pay unless the program actually declares the variable — a fetch, a
+decode, a database read:
+
+```cpp
+act.BindLazy("profile", [&]() -> absl::StatusOr<celwasm::Value> {
+  return LoadProfile(user_id);          // runs only if the program declares `profile`
+});
+```
+
+The callback runs **at most once per `Eval`**, and only for a variable
+the compiled program declares (and that no unknown pattern blanks during
+a `PartialEval`). Its result is memoized for that evaluation; the next
+`Eval` calls it again. If it returns a non-OK status, evaluation stops
+and you get that status back from `Eval` unchanged.
+
+One caveat worth being precise about: the binder fires when the program
+*declares* the variable, not when the expression first *reads* it.
+Variable slots are written into linear memory before the expression
+runs, so `BindLazy` saves the cost of a variable the program never
+declared — not one it declares but never reaches.
+
+`Activation` is **move-only** (a binder is not copyable) and not
+thread-safe; use one per evaluation.
+
 `Value` is the host-side counterpart to the 24-byte wire value. Build
 with named factories, inspect with `StatusOr<T> AsX()`:
 
@@ -336,9 +361,36 @@ Flags: `--var name:Type[=value]` (typed binding — the literal parser is
 type-directed), `--proto <file>` / `--descriptor_set <file>` (schema for
 message-typed vars), `--container`, `--O <0..3>` (optimize level),
 `--mem_size_bytes`, `--output` (compile target; stdout if omitted),
-`--format textproto|json|cel` (`eval` result rendering). Exit codes: `0`
-ok, `1` compile/eval failure, `2` usage; diagnostics on stderr, the
-`eval` result body on stdout.
+`--format textproto|json|cel` (`eval` result rendering).
+
+Message-typed variables take a textproto or JSON payload, inline or from
+a file (the extension picks the codec):
+
+```bash
+cel eval 'r.user' --proto req.proto \
+  --var 'r:acme.Request=txtpb:user:"alice" quantity:3'      # inline textproto
+cel eval 'r.quantity * 2' --proto req.proto \
+  --var 'r:acme.Request=json:{"user":"bob","quantity":21}'  # inline JSON
+cel eval 'r.user' --proto req.proto \
+  --var 'r:acme.Request=@/tmp/req.json'                     # @file (.json/.txtpb/.pb)
+```
+
+**Exit codes.** `0` success · `1` the expression or program failed ·
+`2` usage error. Diagnostics go to stderr; only a successful result body
+goes to stdout, so the CLI is safe to branch on:
+
+```bash
+if result=$(cel eval "$expr" --var "n:int=$n"); then
+  echo "ok: $result"
+else
+  echo "failed with $?" >&2      # 1 = CEL said no, 2 = bad invocation
+fi
+```
+
+A CEL error (`1/0`, a missing key, overflow) is a legitimate *value* in
+the C++ API — catchable with `||` or `?:` — but at the process boundary
+it means no result was produced, so `cel` reports it on stderr and exits
+`1` rather than printing it as if it were an answer.
 
 > **Missing: `.celfn` IDL input (`--celfn`) 🟡.** The CLI today
 > compiles/evaluates standalone expressions only — there is no way to

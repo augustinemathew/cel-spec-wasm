@@ -87,17 +87,67 @@ else
   fi
 fi
 
-# Unknown subcommand → non-zero, usage on stderr.
-if "${CEL}" wibble 2>/dev/null; then
-  echo "FAIL: unknown subcommand should exit nonzero"
-  fail=1
-fi
+# --- Exit-code contract -----------------------------------------------------
+# Pins the three codes declared by the kExit* constants in cel.cc and
+# documented in tools/cel/README.md:
+#   0  success
+#   1  the expression or program failed (diagnostics, or a CEL error /
+#      unknown result)
+#   2  usage (bad subcommand, flag, --var syntax, positional count)
+# A CEL error used to print on stdout and exit 0, which made the CLI
+# unsafe to branch on from a script; these cases lock that shut.
+expect_exit() {
+  local label="$1"; shift
+  local want="$1"; shift
+  local got rc
+  got="$("$@" 2>&1)" && rc=0 || rc=$?
+  if [[ "${rc}" != "${want}" ]]; then
+    echo "FAIL ${label}: want exit ${want}, got ${rc}"
+    echo "  cmd:    $*"
+    echo "  output: ${got}"
+    fail=1
+  fi
+}
 
-# Type mismatch in eval should produce an ERROR on stderr + nonzero exit.
-if out=$("${CEL}" eval "a + 1" --var "a:string=\"hi\"" 2>&1); then
-  echo "FAIL: type error should exit nonzero (got: ${out})"
+expect_exit "success"                0 "${CEL}" eval "1 + 1"
+expect_exit "help"                   0 "${CEL}" --help
+expect_exit "help after subcommand"  0 "${CEL}" eval --help
+
+expect_exit "divide by zero"         1 "${CEL}" eval "1 / 0"
+expect_exit "modulus by zero"        1 "${CEL}" eval "1 % 0"
+expect_exit "no such key"            1 "${CEL}" eval '{"a": 1}["b"]'
+expect_exit "index out of range"     1 "${CEL}" eval '[1, 2][5]'
+expect_exit "int overflow"           1 "${CEL}" eval "9223372036854775807 + 1"
+expect_exit "check type error"       1 "${CEL}" check "1 + \"s\""
+expect_exit "eval type error"        1 "${CEL}" eval "a + 1" --var 'a:string="hi"'
+expect_exit "compile type error"     1 "${CEL}" compile "1 + \"s\"" --output /dev/null
+
+expect_exit "unknown subcommand"     2 "${CEL}" wibble
+expect_exit "unknown flag"           2 "${CEL}" eval "1 + 1" --bogus_flag
+expect_exit "malformed --var"        2 "${CEL}" eval "a" --var "a=5"
+expect_exit "bad --var value"        2 "${CEL}" eval "a" --var "a:int=notanint"
+expect_exit "bad --format"           2 "${CEL}" eval "1 + 1" --format wibble
+expect_exit "missing positional"     2 "${CEL}" eval
+expect_exit "too many positionals"   2 "${CEL}" eval "1 + 1" "2 + 2"
+
+# A CEL error must go to stderr, leaving stdout empty — otherwise
+# `x=$(cel eval ...)` captures the error text as if it were a result.
+err_stdout="$("${CEL}" eval "1 / 0" 2>/dev/null || true)"
+if [[ -n "${err_stdout}" ]]; then
+  echo "FAIL: CEL error leaked to stdout: $(printf '%q' "${err_stdout}")"
   fail=1
 fi
+# Captured rather than piped: `set -o pipefail` would surface the
+# intentional exit 1 as a pipeline failure and mask the real assertion.
+err_stderr="$("${CEL}" eval "1 / 0" 2>&1 >/dev/null || true)"
+case "${err_stderr}" in
+  *divide_by_zero*) ;;
+  *)
+    echo "FAIL: CEL error not reported on stderr"
+    echo "  stderr: $(printf '%q' "${err_stderr}")"
+    fail=1
+    ;;
+esac
 
 if (( fail != 0 )); then
   exit 1

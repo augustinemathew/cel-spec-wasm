@@ -1117,11 +1117,14 @@ under `compiler/`) is tracked here.
 
 **Slice M2.A — `cel::Activation`**
 
-  - [x] `Bind` / `BindLazy` / `Find` per scalar kind —
+  - [x] `Bind` / `Resolve` per scalar kind —
         `eval/activation_test.cc`
-  - [x] `Find` on unbound → `NotFoundError`,
-        `BindLazy` memoises across `Find` —
+  - [x] `Resolve` on unbound → `nullptr` (not a status error) —
         `activation_test.cc`
+  - [x] `BindLazy` memoises within one evaluation and re-invokes after
+        `ClearLazyCache`; a failing binder propagates verbatim and is
+        not cached; `Bind`/`BindLazy` overwrite each other including a
+        live memo — `activation_test.cc` (m36)
 
 **Slice M2.B — `kIdent` lowering + `Eval(Activation)` +
 `cel.abi.variables[]`**
@@ -3353,6 +3356,48 @@ are staged into the native arena so the kernel reads their bytes).
   - [ ] m32.B — codegen emits `cel_map_index_build` as the terminal
         map-construction step + WAT trace; blocked on the const-map
         materializer (`StaticMemoryBuilder::MaterializeMap`).
+
+## Rewrite M36 — CLI exit-code contract + lazy variable binding (2026-07-25)
+
+See `rewrite/m36-cli-runtime-and-lazy-binding.md`.
+
+**Activation — lazy binding** (`eval/activation_test.cc`)
+
+  - [x] `BindLazy` round-trips; binder not invoked until `Resolve`.
+  - [x] Binder invoked at most once per evaluation across repeated
+        `Resolve` calls (the sizing pre-pass + marshal read the same
+        variable twice).
+  - [x] `ClearLazyCache` forces re-invocation on the next evaluation.
+  - [x] A failing binder propagates its status verbatim and is **not**
+        memoized (a retry re-runs it).
+  - [x] `Bind` and `BindLazy` overwrite one another, including
+        dropping an already-memoized lazy value.
+  - [x] Lazy binders are independent per name (resolving one does not
+        force another).
+  - [x] `Activation` is movable and statically not copy-constructible.
+  - [ ] Instance-level: a lazy binder is skipped for a variable a FULL
+        unknown pattern blanks during `PartialEval` (ordering invariant
+        in `MarshalOneVariable`); covered by construction today, needs
+        a direct `eval/instance_test.cc` case.
+
+**CLI — exit-code contract** (`tools/cel/cel_smoke_test.sh`)
+
+  - [x] `0` on success; `--help` in any argv position.
+  - [x] `1` for a CEL **error** result (divide-by-zero, modulus-by-zero,
+        no-such-key, index-out-of-range, overflow) — previously exit 0.
+  - [x] `1` for check / eval / compile type diagnostics.
+  - [x] `2` for unknown subcommand, unrecognized flag, malformed
+        `--var`, bad `--var` value, bad `--format`, wrong positional
+        count.
+  - [x] A CEL error goes to stderr and leaves stdout empty.
+  - [ ] `cel run` / `cel inspect` round trip — pending those
+        subcommands.
+
+**Value rendering** (`tools/cel/value_format_test.cc`)
+
+  - [x] An error whose message equals its code name renders once; an
+        empty message renders the code alone; a distinct message is
+        preserved.
 
 ## How to update
 

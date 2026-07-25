@@ -276,16 +276,17 @@ struck through or removed.
             the operand-nesting in `compiler/codegen/expr_lower.cc`.
 
 - [ ] **#44** — unimplemented-but-declared surfaces swept in the
-      2026-06-10 review: `Activation::BindLazy` and
-      `Activation::OverrideFunction` (cel-host-surface.md §2.6
-      signatures; bodies `ABSL_CHECK(false)`, no milestone owns
-      them); `CelfnTypeToCelType` has no `cel::Type` mapping for
-      `CelfnType::Kind` kType / kOptional although
+      2026-06-10 review.  **Partially cleared 2026-07-25 (m36):**
+      `Activation::BindLazy` is implemented and
+      `Activation::OverrideFunction` was removed from the public
+      header, so the two Activation-side API promises are gone
+      (see `m36-cli-runtime-and-lazy-binding.md` §4).
+      **Still open:** `CelfnTypeToCelType` has no `cel::Type`
+      mapping for `CelfnType::Kind` kType / kOptional although
       `AddForeignComponent` admits such decls; `cel_component`'s
       Lower rejects type-of-types return shapes with Unimplemented.
       Either implement, or remove the surfaces from the public
-      headers (`BindLazy` / `OverrideFunction` are API promises the
-      engine never honours).
+      headers.
       Surfaced: 2026-06-10 portfolio review (stub-message sweep —
       every production stub named an already-shipped milestone).
       Files: `eval/activation.{h,cc}`,
