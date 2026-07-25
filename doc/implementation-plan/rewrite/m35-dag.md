@@ -76,7 +76,7 @@ graph TD
 | 1 | R1–R4 code rename | agent-R | done (e9dd240; $PROJ 151/151, conformance 2035/2035 both modes) |
 | 1 | A1 wasm_binary + sha256 + migration | agent-A1 | done (eb2f0f7, 692e474, 5736b7a, bc1b485) |
 | 1→2 | R5 doc terminology sweep (after R names verified) | agent-R5 | done (e823a76; writing-plugins.md live, CLEANUP_PLAN/PROPOSALS updated as live registers) |
-| 2 | A0 + A2 + A3 (tool + macro chain) | agent-A | in flight |
+| 2 | A0 + A2 + A3 (tool + macro chain) | agent-A | done (d3265dd embed-decls tool; 2bdab21 macro embed step + package-override removal; gates: //tools + //abi:plugin_test + //e2e 70/70 incl. manual-tagged plugin/host/matrix targets, bazel build //... 303 targets; demo wit_interface cel:customfn/fns@0.1.0; demo_plugin_proto blocked by pre-existing absl-sync wasm32-wasip2 cross-compile break, unrelated) |
 | 2 | A4 probe + Plugin::Load (//abi:plugin) | agent-A4 | done (1c4e0fb probe: static export lookup EXISTS in pin — B1 goes static; 25b5bf4 Plugin::Load) |
 | 2 | V1 + V2 (wire + emission) | agent-V | in flight |
 | 3 | B0 + B2 (compile-side surface) | agent-Bc | pending |
