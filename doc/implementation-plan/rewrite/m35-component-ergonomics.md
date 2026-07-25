@@ -172,29 +172,18 @@ mapping).
 ```cpp
 class Component {
  public:
-  // Parse `component_bytes`' embedded `cel.fns` section.
+  // Parse `component_bytes`' embedded `cel.fns` section — the ONLY
+  // way to construct a Component; every Component is a
+  // self-describing artifact by construction.
   // InvalidArgument on: empty bytes; not a Component-Model binary
   // (message flags the core-module case); missing `cel.fns` section
-  // (message points at LoadWithDecls); malformed section framing;
+  // (message: "no cel.fns section — rebuild with cel_wasm_component
+  // or run `cel embed-decls`"); malformed section framing;
   // non-UTF-8 text; `.celfn` parse failure (line+col preserved);
   // any decl whose backend is not `@component.` (names the decl);
   // zero declarations.
   static absl::StatusOr<Component> Load(
       absl::Span<const uint8_t> component_bytes);
-
-  // Escape hatch for pre-section artifacts (incl. pure-WAT
-  // components).  Same validation applied to `celfn_source`.  If the
-  // bytes ALSO carry a `cel.fns` section, the explicit text must
-  // match it byte-for-byte — FailedPrecondition otherwise (two
-  // drifting sources of truth is the bug class this API ends).
-  // `wit_interface`: nullopt derives `cel:<module>/fns@0.1.0`
-  // (fallback module "customfn", mirroring `cel generate`); an
-  // explicit value is used verbatim — pass "" for components whose
-  // exports live at top level (the pure-WAT test path).
-  static absl::StatusOr<Component> LoadWithDecls(
-      absl::Span<const uint8_t> component_bytes,
-      absl::string_view celfn_source,
-      std::optional<absl::string_view> wit_interface = std::nullopt);
 
   const FunctionLibrary& library() const;     // decls + wit_interface
   absl::Span<const CelfnDecl> decls() const;  // = library().decls()
@@ -218,6 +207,18 @@ any number of compilers and engines.  Per-decl source/doc-comment
 introspection is NOT on this surface (the grammar skips comments and
 `CelfnDecl` keeps no source spans); the whole-text `celfn_source()`
 serves slices A–B, and a per-decl re-renderer is slice-D work (§10).
+
+**No pre-section escape hatch** (settled 2026-07-25): the draft's
+`LoadWithDecls(bytes, celfn_text)` is DROPPED.  A component without
+an embedded section is not a `Component` — re-embed it (`cel
+embed-decls` runs standalone on any existing artifact) or, for
+hand-built/pure-WAT test fixtures with top-level exports, use the
+legacy `Engine::AddComponent(bytes, lib)` escape, which keeps
+explicit-decls registration alive for exactly that audience.  Two
+constructors accepting drifting declaration sources was the bug
+class this milestone exists to end; one blessed path keeps it ended.
+(The draft C header's `cel_component_load_with_decls` is dropped
+with it when slice D is picked up — noted in §10.)
 
 Type-mapping contract (settles cleanup-backlog #44's m35 angle):
 `Load` is parse-level validation only — it admits whatever
@@ -298,8 +299,7 @@ in slice B1, and R36 marked resolved.
 | Phase | Checks | Failure |
 |---|---|---|
 | build macro (`cel embed-decls`) | input is a CM component; idl parses; every decl `@component.`; no pre-existing `cel.fns` section | build error, `cel embed-decls: <reason>` (+ line/col) |
-| `Component::Load` | CM preamble; section present, well-framed, unique, UTF-8; decls parse; all `@component.`; ≥1 decl | InvalidArgument (missing section → points at `LoadWithDecls`) |
-| `Component::LoadWithDecls` | as Load on the given text; byte-equality vs embedded section when both exist | FailedPrecondition on mismatch |
+| `Component::Load` | CM preamble; section present, well-framed, unique, UTF-8; decls parse; all `@component.`; ≥1 decl | InvalidArgument (missing section → points at `cel embed-decls` / the macro) |
 | `Compiler::Builder::Use` | none (Component pre-validated) | — |
 | `Compiler::Build()` | cross-library duplicate overload-ids; unmappable decl types (backlog #44) | InvalidArgument naming the id / type |
 | `Compile()` | call sites type-check against decls; emits `required_functions` from the post-optimize import surface | checker InvalidArgument |
@@ -659,9 +659,12 @@ depends on) has no design doc, `bindings/` has no build graph,
 `cel_common.h` / `cel_status` don't exist, the header's own usage
 example at line 19 contradicts its declaration at line 129
 (`cel_engine_builder_use_component` vs `cel_engine_use_component` —
-the declaration is authoritative), and `cel_component_fn_decl` /
-`_fn_doc` need per-decl source re-rendering / doc-comment capture
-that `CelfnDecl` doesn't store today.
+the declaration is authoritative), `cel_component_load_with_decls`
+must be DELETED from the header (the C++ `LoadWithDecls` it mirrored
+was dropped — §3.1; `cel_component_load` is the only constructor),
+and `cel_component_fn_decl` / `_fn_doc` need per-decl source
+re-rendering / doc-comment capture that `CelfnDecl` doesn't store
+today.
 
 ## 11. Out of scope / future work
 
@@ -717,6 +720,6 @@ Per-slice test matrices follow `feature-pipeline-checklist.md`
 (§2.6 for the ABI field, new §2.7 for the section; boundary tests:
 empty/missing/duplicate/truncated-LEB/non-UTF8 section; the
 signature-agreement matrix: missing fn, arity, param type, proto
-FQN, nested generic, return type, is_receiver; `LoadWithDecls`
-match/mismatch; hash stability/divergence; two components one Plan;
+FQN, nested generic, return type, is_receiver; hash
+stability/divergence; two components one Plan;
 selective-instantiation pins).
