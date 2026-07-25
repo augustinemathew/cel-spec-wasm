@@ -615,6 +615,86 @@ genuine harness/scope limitation, convert it to a reasoned
 `GTEST_SKIP` AND record it in `cleanup-backlog.md`.  Do not leave a
 bare FAIL with no test documenting it.
 
+## Docs ship with the change (public API + CLI)
+
+**A public-API or CLI change is not done until the user-facing docs
+say the new thing, in the same commit.**  Code and docs drifting apart
+is the single most common defect this repo produces: the readiness
+audit found `mem_size_bytes` documented as an arena knob in four
+places when it has no effect in the default configuration, and a
+`BindLazy` contract promising behaviour the eager marshal cannot
+deliver.  Both shipped because the code moved and the prose didn't.
+
+**What counts as triggering this rule:**
+
+  - Any change to a public header: `compiler/{compiler,program}.h`,
+    `eval/{engine,instance,activation,value,error,attribute,
+    host_call_context,typed_function}.h`, `shared/type.h`, `abi/*`,
+    `runtime/*.h`.  Signature, contract, status codes, defaults,
+    thread-safety — all of it.
+  - Any change to `tools/cel/` that a user can observe: a subcommand,
+    a flag, output shape, an exit code, an error message.
+
+**There are two separate tellings, and both must be updated.**
+`mkdocs.yml` sets `docs_dir: doc`, so **only `doc/**.md` is
+published to the site**.  `tools/cel/README.md`, the root
+`README.md`, `conformance/README.md` and `benchmark/README.md` live
+outside it and are GitHub-only.  Updating one is not updating the
+other — check both:
+
+  - **Site** — `doc/user-guide/` (the embedder how-to: `index.md`,
+    `getting-started.md`, `faq.md`) and `doc/design/` when the
+    architecture claim changes.
+  - **GitHub** — `tools/cel/README.md` for CLI surface; root
+    `README.md` when a headline capability or limitation changes.
+
+**Verify before you write.**  Every claim in a doc is checked against
+the code that implements it, not against a sibling doc or memory.  If
+two docs disagree, find the code path and fix both — a contradiction
+between published pages is worse than a gap, because the reader can't
+tell which one to trust.  Correct a promise you can't keep rather
+than restating it (see `m36-cli-runtime-and-lazy-binding.md` §4.2 for
+the pattern: the impossible contract was replaced with the achievable
+one and the reason recorded).
+
+**Keep them readable.**  These pages are read by someone deciding
+whether to adopt the project, not by someone auditing it:
+
+  - Lead with a runnable example; explain after.
+  - One telling per topic.  If a fact needs to appear twice, the
+    second place links to the first — never a second copy of the same
+    table that can drift.
+  - Prose in complete sentences, not fragments or arrow chains.
+  - State limitations plainly and in place.  An honest "not
+    implemented" beats a hedge the reader has to decode.
+  - No milestone numbers in user-facing docs — a reader doesn't know
+    what m21 is.  Those belong in `doc/implementation-plan/`.
+
+## Feature work is tracked in `PROPOSALS.md`
+
+`PROPOSALS.md` is the running list of **changes that need a decision
+before they can be made** — anything altering a public signature,
+observable behaviour, the ABI wire format, or repo infrastructure.
+It exists so that discovering "this API is wrong" during unrelated
+work doesn't force an unscoped detour, and doesn't get silently
+dropped either.
+
+Keep it live:
+
+  - **Add an entry** when you hit something that needs an owner
+    decision instead of a patch — a public method that can't be used
+    as designed, a missing surface an adopter will need, an ABI field
+    that would unblock a feature.  One entry: what's wrong, the
+    options with trade-offs, and the affected files.
+  - **Remove an entry when it ships**, in the commit that ships it,
+    and say so in the commit message.  A proposal that lingers after
+    it's built is exactly as misleading as a stale plan doc.
+  - **Re-check entries against HEAD before citing them.**  This file
+    has been wrong before: it claimed the repo had no CI and no module
+    version long after `.github/workflows/ci.yml` and
+    `MODULE.bazel`'s `version` landed.  If an entry no longer matches
+    the tree, fix the entry as part of whatever you were doing.
+
 ## Compilation limits
 
 Every fixed boundary on what the compiler accepts (rodata window,
