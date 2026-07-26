@@ -33,6 +33,9 @@ class CelType {
     kList = 7,
     kMap = 8,
     kMessage = 9,
+    // Value 10 is deliberately vacant: it belonged to the old wire
+    // CEL_TYPE tag before the type-of-types moved to 13 — never
+    // reuse it.
     kDuration = 11,
     kTimestamp = 12,
     // type-of-types declarable as a variable type
@@ -40,6 +43,13 @@ class CelType {
     // `celwasm::Value::Kind::kType = 13`.  See
     // `rewrite/m9-type-subsystem.md`.
     kType = 13,
+    // CEL `null` as a signature type (the celfn grammar's `null`).
+    // Not declarable as a variable type.
+    kNull = 14,
+    // CEL `optional<T>` (the plugin-author signature surface).
+    // Element type in optional_element().  Not declarable as a
+    // variable type.
+    kOptional = 15,
   };
 
   // ——— Scalar factories ———
@@ -54,6 +64,9 @@ class CelType {
   // Declare a variable typed as `type` (the type-of-types).
   // Bound values must be `Value::Type(name)`.
   static CelType Type();
+  // CEL `null` as a signature type.  Signature-only: not
+  // declarable as a variable type (see IsDeclarableAsVariable).
+  static CelType Null();
 
   // ——— Container factories ———
   // Message by fully-qualified name.  The FQN is resolved to a
@@ -67,6 +80,8 @@ class CelType {
   // so CelType stays value-semantic and cheap to pass by value.
   static CelType List(CelType element);
   static CelType Map(CelType key, CelType value);
+  // CEL `optional<T>` (signature-only, like Null()).
+  static CelType Optional(CelType element);
 
   // Accessors.
   Kind kind() const {
@@ -87,6 +102,16 @@ class CelType {
   const CelType& map_key() const;
   const CelType& map_value() const;
 
+  // Only valid when kind() == kOptional.
+  const CelType& optional_element() const;
+
+  // Whether this type may appear in a
+  // `Compiler::Builder::DeclareVariable` declaration.  False for
+  // kUnknown (default-constructed sentinel), kNull, and kOptional
+  // (signature-only kinds — the checker has no variable spelling
+  // for them); true for every other kind.
+  bool IsDeclarableAsVariable() const;
+
   // Default: Kind::kUnknown — used as a sentinel when the caller
   // hasn't populated the field yet.  Not a valid declaration.
   CelType() = default;
@@ -96,6 +121,7 @@ class CelType {
   std::string message_name_;                             // kMessage only
   std::shared_ptr<CelType> list_element_;                // kList only
   std::shared_ptr<std::pair<CelType, CelType>> map_kv_;  // kMap only
+  std::shared_ptr<CelType> optional_element_;            // kOptional only
 };
 
 absl::string_view CelTypeKindName(CelType::Kind k);

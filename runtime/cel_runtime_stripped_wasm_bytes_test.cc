@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "abi/runtime_catalogue.h"
+#include "abi/wasm_binary.h"
+#include "absl/types/span.h"
 #include "binaryen-c.h"
 #include "gtest/gtest.h"
 #include "runtime/cel_runtime_wasm_bytes.h"
@@ -39,12 +41,9 @@ BinaryenModuleRef ReadStrippedModule() {
 TEST(CelRuntimeStrippedWasmBytes, SymbolLinks) {
   EXPECT_GT(kCelRuntimeStrippedWasmBytesSize, 0u);
   EXPECT_NE(kCelRuntimeStrippedWasmBytes, nullptr);
-  // Wasm files start with `\0asm` magic followed by version 0x01000000.
-  ASSERT_GE(kCelRuntimeStrippedWasmBytesSize, 8u);
-  EXPECT_EQ(kCelRuntimeStrippedWasmBytes[0], 0x00);
-  EXPECT_EQ(kCelRuntimeStrippedWasmBytes[1], 0x61);  // 'a'
-  EXPECT_EQ(kCelRuntimeStrippedWasmBytes[2], 0x73);  // 's'
-  EXPECT_EQ(kCelRuntimeStrippedWasmBytes[3], 0x6d);  // 'm'
+  // `\0asm` magic + core-module version word.
+  EXPECT_TRUE(IsCoreModule(absl::MakeConstSpan(
+      kCelRuntimeStrippedWasmBytes, kCelRuntimeStrippedWasmBytesSize)));
 }
 
 TEST(CelRuntimeStrippedWasmBytes, NoCommandExportFunctions) {

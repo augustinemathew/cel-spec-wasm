@@ -9,6 +9,46 @@ surfaced). See [`README.md`](README.md) for how the rig works and
 
 ---
 
+### 2026-06-12/13 — the simplification (SIMPLIFY.md executed and retired)
+
+The folder was rebuilt around one rule — **everything is either a
+catalog data row or goes through `RunOne()`** — in five
+independently-landed steps, each proven pure by a byte-identical
+fixed-seed `RESULT` diff (13 targets × 300 seeds, depth 5) against
+the pre-refactor baseline:
+
+1. **`verdict.{h,cc}`** — the one judge.  The classify/compare/
+   render/pass-fail pipeline existed in 2.5 hand-rolled copies
+   (miner switch, property-test switch, six duplicate comparators);
+   now both drivers consume `RunOne` and cannot disagree about what
+   a failure is.
+2. **One comparator in the repo** — `compare.{h,cc}` (459 lines)
+   deleted; `RunOne` compares via `conformance::CompareValue`, the
+   same comparator the conformance gate scores 1973 rows with
+   (semantic parity verified: identical NaN/±0.0 double algorithm,
+   list/map recursion, kind-mismatch fails).
+3. **One grammar, one test suite** — `generator.{h,cc}` merged into
+   the engine (`grammar.{h,cc}`); `BuildScalarGrammar` deleted;
+   `grammar_test.cc` collapsed to a single L1/L2/L3 ladder whose L3
+   drives the REAL `GenerateExpr`.  Bonus: all 10 pre-existing
+   clang-tidy warnings in `grammar.{h,cc}` cleared.
+4. **Catalogs by family** — `grammar_scalars.cc` /
+   `grammar_aggregates.cc` (session-accretion order) became
+   `catalog_{leaves,ops,strings,temporal,aggregates}.cc` +
+   `catalog.{h,cc}`; bodies moved verbatim by scripted extraction.
+   `BuildGrammar` keeps the exact historical registration order
+   (order is generation-affecting — append at the end, never
+   re-sort).
+5. **Closeout** — all 13 targets (aggregates included) now have
+   CI-gated fuzztest properties (~13k iterations green);
+   `mine_divergences --list-targets` is the canonical list and
+   `fuzz.sh` derives its sweep from it (the last hand-synced copy
+   deleted); `fuzz.sh kill` is now checkout-scoped (multi-agent
+   safety).
+
+Deferred (tracked in m30 §5): intra-family table consolidation
+(comparison sextet ×3, math table) — the move stayed pure instead.
+
 ### 2026-06-11 — exact INT64_MIN leaf → found + FIXED a real modulo bug
 
 - Added the exact `INT64_MIN` leaf (`int_min` =

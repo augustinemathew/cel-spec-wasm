@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "abi/plugin.h"
 #include "absl/base/attributes.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -147,33 +148,61 @@ class Engine {
   // Conflict checks:
   //   - `overload_id` already registered → AlreadyExists
   //
+  // Plan-time verification is ARITY-ONLY for this path: a raw
+  // callback carries no declared parameter/return types, so the
+  // required-function check (`Engine::Plan`, m35-plugin-ergonomics.md
+  // §5.3) can only compare the wasm arity.  Register through
+  // `BindFunction` to get the full recursive signature compare.
+  //
   // **NOT thread-safe** — same contract as `AddModule`.
   ABSL_MUST_USE_RESULT absl::Status AddFunction(absl::string_view overload_id,
                                                 uint8_t num_args,
                                                 HostCallback impl);
 
-  // Register a Component-Model component as the backend for every
-  // `kForeignComponent` decl in `lib`.  Per m24 §3.5: instantiate the
-  // component with the wasmtime component API, validate each declared
-  // fn is exported with the matching `FuncType`, and bind a host
-  // callback (via the existing `AddFunction` path) whose body marshals
-  // args via the per-fn typed WIT codec → the component's typed export
-  // → marshals the result.
+  // Register a Plugin as the sandboxed backend for its
+  // declarations — the eval-side half of the one-noun flow.  Wraps
+  // the AddPlugin internals and adds:
+  //   - a STATIC export check: the interface
+  //     (`plugin.wit_interface()`) and every decl's kebab-case
+  //     export are resolved against the parsed component — a
+  //     missing interface/export fails HERE, FailedPrecondition,
+  //     naming it.  No instantiation.
+  //   - the plugin's content hash is retained for Plan-time
+  //     diagnostics (names which plugin mismatched).
+  // Collisions (vs AddFunction/BindFunction and prior plugins)
+  // -> AlreadyExists.  NOT thread-safe; startup-only, same contract
+  // as the rest of the registration family.
+  ABSL_MUST_USE_RESULT absl::Status Use(const Plugin& plugin);
+
+  // Register a plugin (a Component-Model wasm binary) as the backend
+  // for every `kPlugin` decl in `lib` — the explicit-decls escape
+  // hatch (pure-WAT tests, pre-`cel.fns` artifacts).  Prefer
+  // `Use(plugin)`, which derives `lib` from the artifact itself and
+  // adds a registration-time static export check.
   //
-  // Conflict checks (same shape as `AddFunction`):
-  //   - Any `overload_id` from `lib`'s kForeignComponent decls already
+  // Registration validates ONLY:
+  //   - Any `overload_id` from `lib`'s kPlugin decls already
   //     registered → AlreadyExists.
-  //   - `component_bytes` fail to parse as a Component-Model component
-  //     → InvalidArgument.
-  //   - A declared fn is not exported by the component, or its
-  //     exported `FuncType` does not match the decl's signature →
-  //     FailedPrecondition.
+  //   - `plugin_bytes` empty → InvalidArgument; failing to parse as
+  //     a Component-Model component → FailedPrecondition (the
+  //     wasmtime parse error, passed through).
+  //
+  // Export ↔ decl resolution is Plan-time-only on this path: each
+  // Plan instantiates the component and looks up every decl's
+  // kebab-case export, so a missing export surfaces as
+  // FailedPrecondition from `Plan`, not here (pinned by
+  // e2e/plugin_dispatch_test.cc MissingExportFailsAtPlanNotAddPlugin).
+  // No `FuncType`-vs-decl signature validation exists on either
+  // path — the wasmtime C API's component type introspection is too
+  // thin — so a wrong-arity export surfaces only as a call-time
+  // trap (`Use` narrows this to export *existence*, checked
+  // statically at registration).
   //
   // **NOT thread-safe** — same contract as `AddFunction` / `AddModule`.
   //
-  // See `examples/09_component_functions.cc` for an end-to-end embed.
-  ABSL_MUST_USE_RESULT absl::Status AddComponent(
-      absl::Span<const uint8_t> component_bytes, const FunctionLibrary& lib);
+  // See `examples/09_plugin_functions.cc` for an end-to-end embed.
+  ABSL_MUST_USE_RESULT absl::Status AddPlugin(
+      absl::Span<const uint8_t> plugin_bytes, const FunctionLibrary& lib);
 
   // Typed sugar over `AddFunction` (host-call adapter Layer 2,
   // eval/typed_function.h): adapts a plain typed lambda into a
@@ -184,7 +213,11 @@ class Engine {
   //   engine.AddTypedFunction("double_it_int",
   //       [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; });
   //
-  // Same conflict / thread-safety contract as AddFunction.
+  // Same conflict / thread-safety contract as AddFunction — and the
+  // same ARITY-ONLY Plan-time verification: without a parsed decl the
+  // required-function check cannot compare CEL types (the C++
+  // parameter kinds are canonical spellings, not CEL declarations).
+  // Use `BindFunction` for the full signature compare.
   template <typename Fn>
   ABSL_MUST_USE_RESULT absl::Status AddTypedFunction(
       absl::string_view overload_id, Fn fn) {
@@ -226,6 +259,13 @@ class Engine {
   // **NOT thread-safe** with concurrent calls to itself or the other
   // setup methods — configure once at startup, then `Plan` from many
   // threads.
+  //
+  // Because this path parses a full declaration, the registration
+  // captures the declared signature: `Engine::Plan`'s
+  // required-function check compares it recursively (param types,
+  // return type, receiver-ness — protos by FQN) against what the
+  // Program was compiled with, not just the wasm arity that raw
+  // `AddFunction` / `AddTypedFunction` registrations are limited to.
   template <typename Fn>
   ABSL_MUST_USE_RESULT absl::Status BindFunction(absl::string_view celfn_decl,
                                                  Fn fn) {

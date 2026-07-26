@@ -255,11 +255,16 @@ Surfaced by the 2026-06-11 subsystem review
   the `matches()` totality assumption and length-prefix paths.
 - **Multi-entry map literals** — constructors are 1-entry only; width
   >1 reaches map iteration-order / duplicate-key codegen.
-- **Code structure** — shared `targets.{h,cc}` registry (the mineable
-  target list is hand-synced across `mine_divergences.cc`,
-  `dump_samples.cc`, `fuzz.sh` and has drifted); `grammar_scalars.cc`
-  family split; comparison/math table helpers; L3 walker → real
-  generator; `%i` single-pass substitution.
+- **Code structure** — SHIPPED 2026-06-12/13 (the SIMPLIFY.md plan,
+  executed and retired; summary in `e2e/fuzz/SESSIONS.md`): verdict
+  unification (`verdict.cc::RunOne`, the one judge), comparator dedup
+  (fuzz `compare.{h,cc}` deleted; `conformance::CompareValue` is the
+  one comparator in the repo), one grammar + one test ladder,
+  catalogs regrouped by family (`catalog_*.cc`), all 13 targets
+  CI-gated in the property test, `fuzz.sh` derives its sweep from
+  `mine_divergences --list-targets`.  Still open from that plan:
+  intra-family table consolidation (comparison sextet ×3, math
+  table — names preserved when done); `%i` single-pass substitution.
 - **Proto field access (M30.C)** — the largest *generative* gap not
   blocked on a type-vocabulary change (`CelType::kMessage` already
   exists).  Needs: an adversarial test proto (large / deeply nested /

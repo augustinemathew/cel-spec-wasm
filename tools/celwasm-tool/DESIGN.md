@@ -155,7 +155,7 @@ to humans.  108 `.md` files total, distributed across six
 
   - `doc/implementation-plan/rewrite/modules-and-ffi.md` —
     custom-function modules + the foreign-FFI ABI (the
-    `@host.` vs `@component.` distinction).  Cited by m13/m22/m23.
+    `@host.` vs `@plugin.` distinction).  Cited by m13/m22/m23.
 
 ### 1.3 Layer L2 — Per-milestone planning
 
@@ -294,7 +294,7 @@ is a navigation aid the tool can surface.*
 
   - `README.md` (343 lines, 23 edits) — public face.  Carries the
     conformance headline, the benchmark table, the "language
-    bindings" plan, and the `@host.` vs `@component.` table.
+    bindings" plan, and the `@host.` vs `@plugin.` table.
 
   - `~/.claude/projects/.../MEMORY.md` (user-private; lives outside
     the repo but is part of the operating context).  Tagged
@@ -434,14 +434,14 @@ Mandated by CLAUDE.md:
 | `compiler/internal/` | private `compile.{h,cc}` pipeline facade | internal |
 | `eval/` | eval-time: `Program` + `Activation` → `Value` | yes: `engine.h`, `instance.h`, `activation.h`, `value.h`, `error.h`, `attribute.h` |
 | `eval/host/` | cel_log trampolines | internal |
-| `eval/internal/` | wasmtime glue, `abi_decode`, `cel_host`, `cel_component` | internal |
+| `eval/internal/` | wasmtime glue, `abi_decode`, `cel_host`, `cel_plugin` | internal |
 | `shared/` | `CelType`, the type vocabulary | yes: `type.h` |
 | `abi/` | the `cel.abi` wire contract (emit + parse) + runtime catalogue | yes: per-target |
 | `runtime/` | `cel_runtime.c` → `cel_runtime.wasm` (language-agnostic kernel) — split into ~30 `.c` files by topic (cel_arena, cel_arith, cel_compare, cel_make, cel_log, cel_map, cel_list, cel_3vl, cel_matches, cel_math_ext, cel_string_*, cel_time, cel_optional, cel_net_ext, cel_base64_ext, cel_convert) | yes |
 | `tools/` | `cel` CLI (`tools/cel/`), `wat_runner` (`tools/wat_runner/`) | binaries |
 | `conformance/` | harness (runner + binding marshal) | binary |
-| `e2e/` | per-milestone e2e tests (m2_test … m18_test, plus host_fn_*, foreign_component_*, fuzz/, known_bugs_test) | tests |
-| `benchmark/` | eval corpus + compiler / kernel / component bench tiers | binaries |
+| `e2e/` | per-milestone e2e tests (m2_test … m18_test, plus host_fn_*, plugin_*, fuzz/, known_bugs_test) | tests |
+| `benchmark/` | eval corpus + compiler / kernel / plugin bench tiers | binaries |
 | `testdata/` | shared proto fixtures + `cel_cpp_oracle_test.cc` | data |
 | `spec/tests/` | upstream conformance corpus (textproto) | data |
 | `bindings/` | language bindings — currently `ts/` only (TypeScript shim, in-design) | future |
@@ -482,7 +482,7 @@ event*.
     `e2e/m2_partial_eval_test.cc`.
   - **Cross-cutting e2e** — `e2e/host_fn_test.cc`,
     `e2e/host_fn_type_matrix_test.cc`,
-    `e2e/foreign_component_dispatch_test.cc`,
+    `e2e/plugin_dispatch_test.cc`,
     `e2e/foreign_fn_type_matrix_test.cc`,
     `e2e/known_bugs_test.cc`, `e2e/proto_arena_lazy_copy_test.cc`,
     `e2e/slot_aliasing_test.cc`, `e2e/wkt_field_set_test.cc`,
@@ -727,14 +727,14 @@ For each: **name** | **vocabulary site(s)** | **physical site(s)** |
   - Vocab: design.md and every milestone doc.
   - *"Show every delta callout; rank by recency."*
 
-#### A.19 Custom function backend (`@host` vs `@component`)
+#### A.19 Custom function backend (`@host` vs `@plugin`)
   - The two custom-fn backends, with the `@native` (CEL-defined,
     inline) variant as a third.
   - Vocab: `modules-and-ffi.md`, m13, m22, m23, m24, m26.
   - Physical: `compiler/celfn/` + `eval/typed_function.{h,cc}` +
-    `eval/internal/cel_component.{h,cc}` + `eval/engine.cc`'s
-    `AddTypedFunction` / `AddComponent` / `AddForeignComponent`.
-  - *"Walk a `@component` fn from `.celfn` IDL to wasm-component
+    `eval/internal/cel_plugin.{h,cc}` + `eval/engine.cc`'s
+    `AddTypedFunction` / `AddPlugin` (Engine + Builder).
+  - *"Walk a `@plugin` fn from `.celfn` IDL to wasm-component
     instance."*
 
 ### 5.B Organisational structure (physical units)
@@ -798,7 +798,7 @@ should make first-class.
   - **`eval/engine.cc`** — the two-phase Plan (linker setup,
     runtime instantiation, expr instantiation, ABI decode), plus
     every host-import binding site, plus `AddTypedFunction` /
-    `AddComponent` / `AddForeignComponent`.
+    `AddPlugin` (Engine + Builder).
 
 #### B.3 Abstractions with no clean physical home
 *Live in nobody's head until something breaks.*

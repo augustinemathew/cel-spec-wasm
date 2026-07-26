@@ -23,6 +23,24 @@ TEST(CelTypeTest, DefaultIsUnknown) {
   EXPECT_EQ(CelType().kind(), CelType::Kind::kUnknown);
 }
 
+TEST(CelTypeTest, SignatureOnlyFactoriesSetKind) {
+  EXPECT_EQ(CelType::Type().kind(), CelType::Kind::kType);
+  EXPECT_EQ(CelType::Null().kind(), CelType::Kind::kNull);
+  EXPECT_EQ(CelType::Optional(CelType::Int()).kind(), CelType::Kind::kOptional);
+}
+
+TEST(CelTypeTest, OptionalCarriesElementType) {
+  auto t = CelType::Optional(CelType::String());
+  EXPECT_EQ(t.kind(), CelType::Kind::kOptional);
+  EXPECT_EQ(t.optional_element().kind(), CelType::Kind::kString);
+}
+
+TEST(CelTypeTest, OptionalComposesWithContainers) {
+  auto t = CelType::Optional(CelType::List(CelType::Int()));
+  EXPECT_EQ(t.optional_element().kind(), CelType::Kind::kList);
+  EXPECT_EQ(t.optional_element().list_element().kind(), CelType::Kind::kInt);
+}
+
 TEST(CelTypeTest, MessageCarriesFullyQualifiedName) {
   auto t = CelType::Message("com.example.Customer");
   EXPECT_EQ(t.kind(), CelType::Kind::kMessage);
@@ -45,6 +63,19 @@ TEST(CelTypeTest, MapCarriesKeyAndValue) {
 TEST(CelTypeTest, ScalarEqualityIsKindOnly) {
   EXPECT_EQ(CelType::Int(), CelType::Int());
   EXPECT_NE(CelType::Int(), CelType::Uint());
+}
+
+TEST(CelTypeTest, NullEqualityIsKindOnly) {
+  EXPECT_EQ(CelType::Null(), CelType::Null());
+  EXPECT_NE(CelType::Null(), CelType::Int());
+}
+
+TEST(CelTypeTest, OptionalEqualityRecursesIntoElement) {
+  EXPECT_EQ(CelType::Optional(CelType::Int()),
+            CelType::Optional(CelType::Int()));
+  EXPECT_NE(CelType::Optional(CelType::Int()),
+            CelType::Optional(CelType::Uint()));
+  EXPECT_NE(CelType::Optional(CelType::Int()), CelType::Int());
 }
 
 TEST(CelTypeTest, MessageEqualityCheckesName) {
@@ -89,12 +120,42 @@ TEST(CelTypeDeathTest, MapKeyOnNonMapFires) {
   EXPECT_DEATH({ (void)CelType::Int().map_key(); }, "map_key on a int");
 }
 
+TEST(CelTypeDeathTest, OptionalElementOnNonOptionalFires) {
+  EXPECT_DEATH(
+      { (void)CelType::Int().optional_element(); },
+      "optional_element on a int");
+}
+
 TEST(CelTypeTest, KindNamesCoverAllKinds) {
   EXPECT_EQ(CelTypeKindName(CelType::Kind::kUnknown), "unknown");
   EXPECT_EQ(CelTypeKindName(CelType::Kind::kBool), "bool");
   EXPECT_EQ(CelTypeKindName(CelType::Kind::kList), "list");
   EXPECT_EQ(CelTypeKindName(CelType::Kind::kMessage), "message");
   EXPECT_EQ(CelTypeKindName(CelType::Kind::kTimestamp), "timestamp");
+  EXPECT_EQ(CelTypeKindName(CelType::Kind::kNull), "null");
+  EXPECT_EQ(CelTypeKindName(CelType::Kind::kOptional), "optional");
+}
+
+// The declarable-as-variable predicate: false for exactly the
+// signature-only kinds (kUnknown / kNull / kOptional), true for every
+// other member of the closed set.
+TEST(CelTypeTest, IsDeclarableAsVariableCoversAllKinds) {
+  EXPECT_TRUE(CelType::Bool().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::Int().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::Uint().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::Double().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::String().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::Bytes().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::Duration().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::Timestamp().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::Type().IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::Message("a.B").IsDeclarableAsVariable());
+  EXPECT_TRUE(CelType::List(CelType::Int()).IsDeclarableAsVariable());
+  EXPECT_TRUE(
+      CelType::Map(CelType::String(), CelType::Int()).IsDeclarableAsVariable());
+  EXPECT_FALSE(CelType().IsDeclarableAsVariable());  // kUnknown
+  EXPECT_FALSE(CelType::Null().IsDeclarableAsVariable());
+  EXPECT_FALSE(CelType::Optional(CelType::Int()).IsDeclarableAsVariable());
 }
 
 }  // namespace

@@ -3354,6 +3354,81 @@ are staged into the native arena so the kernel reads their bytes).
         map-construction step + WAT trace; blocked on the const-map
         materializer (`StaticMemoryBuilder::MaterializeMap`).
 
+## Rewrite M35 — plugin ergonomics: self-describing artifacts, Use, Plan verification (shipped 2026-07-25)
+
+Coverage shipped by m35 (design: `rewrite/m35-plugin-ergonomics.md`; every
+row below has both positive and negative cases):
+
+- [x] `//abi/internal:sha256` — FIPS 180-4 vectors (empty/"abc"/two-block/
+      million-a) + 55/56/63/64/65-byte padding cliffs (`sha256_test.cc`).
+- [x] `//abi:wasm_binary` — both preamble layers; truncated/overrun/
+      duplicate/missing/zero-length section framing; nested-section
+      no-recursion pin; Append→Find round-trip (`wasm_binary_test.cc`).
+- [x] `Plugin::Load` boundary matrix — empty bytes, core-module reject,
+      missing/duplicate section, non-UTF-8, parse error line+col,
+      non-`@plugin.` decl, zero decls, WIT derivation + fallback, hash
+      stability/divergence, macro-output round-trip (`abi/plugin_test.cc`).
+- [x] `cel embed-decls` — §3.4-row-1 validation order negatives +
+      determinism + Plugin::Load round-trip (`run_embed_decls_test.cc`).
+- [x] `cel.abi` field 8 — wire `Type` full kind matrix incl. KIND_NULL,
+      nested generics, open-set wire decode (kind 99 / backend 7);
+      emit→decode round-trip; O2-drops-unused-import pin in both link
+      modes (`celfn_wire_test.cc`, `abi_decode_test.cc`,
+      `compile_test.cc` required-functions cases).
+- [x] `Engine::Use` — static interface/export negatives, collision arms,
+      macro-fixture happy path (`engine_test.cc` EngineUseTest).
+- [x] `Compiler::Builder::Use` / `DeclareFunctions` — duplicate
+      overload-ids at Build, unmappable `type`/`optional<T>` decl types
+      named in error (`compiler_test.cc`).
+- [x] Plan-time verification — required_fn_check unit matrix (missing fn,
+      arity, param type, proto FQN, nested generic, return type,
+      is_receiver; host arity-only vs BindFunction typed); e2e frozen-
+      message negatives; two-plugins-one-Plan positive
+      (`required_fn_check_test.cc`, `e2e/plugin_dispatch_test.cc`).
+- [x] Selective instantiation §6.4 pins — broken-plugin-not-required
+      green (verified failing before the change), legacy empty-table
+      instantiate-all, zero-instantiation (`e2e/plugin_dispatch_test.cc`
+      SelectiveInstantiation.*).
+- [x] One-noun e2e — Load → Use → Compile → Use → Plan → Eval, both link
+      modes (`demo_plugin_e2e_test.cc` OneNounFlow*).
+- [ ] Proto-arg plugin e2e — `OneNounFlowProtoArg` + proto-FQN mismatch
+      e2e GTEST_SKIP'd on cleanup-backlog #51 (pre-existing
+      `demo_plugin_proto` wasip2/absl-sync build break).
+
+## C++ type-vocabulary unification — CelfnType folded into shared/CelType (cleanup-backlog #53, 2026-07-25)
+
+`struct CelfnType` (the celfn signature vocabulary) is deleted;
+`shared/CelType` is the ONE C++ type vocabulary (`kNull = 14`,
+`kOptional = 15` added; enum value 10 stays permanently vacant).
+References to `CelfnType` in earlier shipped-milestone sections above
+(M24, M35) are historical; the current spelling everywhere is
+`CelType`.
+
+- [x] `CelType` kNull/kOptional widening — factories, accessors
+      (CHECK on kind mismatch), equality recursion, kind names,
+      `IsDeclarableAsVariable` over the full closed kind set
+      (`shared/type_test.cc`).
+- [x] Wire mapping `TypeFromCelType` — every representable
+      CelType::Kind pinned to its FROZEN `abi.Type.Kind` numeric
+      (BOOL=1 … PROTO=9 LIST=10 MAP=11 TYPE=12 OPTIONAL=13 NULL=14);
+      composite recursion; kUnknown CHECK-death
+      (`abi/celfn_wire_test.cc` TypeFromCelType*).
+- [x] `ArgkindSlug` free fn — overload-id slug output byte-identical
+      to the deleted `CelfnType::Argkind` (overload-id literal set
+      across e2e/conformance/abi/celfn expectations greps identical
+      before vs after); kType/kOptional slugs pinned
+      (`e2e/foreign_fn_type_matrix_test.cc` ArgkindForNewKinds).
+- [x] `Compiler::Builder::DeclareVariable` non-declarable gate —
+      negative cases for `null` and `optional<T>` variable
+      declarations naming the variable + kind; kUnknown case kept
+      (`compiler/compiler_test.cc` RejectsNullType/RejectsOptionalType).
+- [x] Deleted defensive arms (shapes unrepresentable under CelType
+      factories, tests removed with them): `TypeFromCelfnDeathTest.
+      {ListWithoutElementChecks, MapWithoutKeyValueChecks,
+      OptionalWithoutElementChecks}`; the four cel_plugin
+      empty-witness InvalidArgument guards; the emitters'
+      empty-payload InternalErrors; Argkind's `"unknown"` fallbacks.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

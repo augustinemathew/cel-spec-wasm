@@ -74,7 +74,7 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done (commit hash).
 ### P1 — Misleading-now fixes (comment truth, smallest diffs first)
 
 - [ ] **U01 eval/engine.h truth pass.** Stale claims: "Plan() lands in
-  a later commit" (it shipped), AddComponent "Status: not yet
+  a later commit" (it shipped), AddPlugin (né AddComponent) "Status: not yet
   implemented — m24 is at design stage" (m24 shipped 2026-06-04; e2e
   exists), Plan-side caching claim. Read: engine.{h,cc},
   engine_test.cc, m24-foreign-fn-component-backend.md,
@@ -141,7 +141,7 @@ refs purged per Method §6.
   m24/m26 §-refs become doc-path citations.
 - [ ] **U20 compiler/internal/compile.h.**
 - [ ] **U21 eval/internal/** (cel_host.h, abi_decode.h,
-  cel_host_error.h, cel_component.h, wasmtime_engine_state.h,
+  cel_host_error.h, cel_plugin.h, wasmtime_engine_state.h,
   instance_impl.h) + eval/host/cel_log.h. Add per-Instance
   synchronization model note to HostMessageBacking.
 
@@ -209,7 +209,7 @@ refs purged per Method §6.
   (from `examples/`, already CI-gated), reproducible numbers
   (archived bench-tree-readme.md baselines + m28-bench-results, with
   exact commands),
-  honest status, anti-claims list (e.g. "string-returning @component
+  honest status, anti-claims list (e.g. "string-returning @plugin
   fns trap", "no `cel run` yet", "error messages don't cross the wasm
   boundary", "expression source is semi-trusted until backlog #16").
 - [ ] **U33 Final summary.** Public API inventory (documented), docs

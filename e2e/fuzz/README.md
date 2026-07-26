@@ -25,44 +25,50 @@ type-vocabulary extension.
 
 ## How it works
 
+Everything is either a **catalog data row** or goes through
+**`RunOne()`** — two extension points, nothing else.
+
 ```
- ActivationSchema()            Grammar (the production catalog)
- grammar_scalars.h             grammar_scalars.cc   — constants (incl. boundary/
- name → CelType for every      grammar_aggregates.cc  unicode leaves), idents,
- bound variable; the ONE       │                      arithmetic, comparisons,
- list both sides consume       │  validated by        logic, ternary, lists/maps,
-        │                      │  grammar_test.cc     size, _in_, comprehensions
-        │                      ▼  (L1+L2+L3, below)
-        │              GenerateExpr(target, seed, depth)     generator.cc
-        │                      │
-        │                      ▼
-        │              one CEL source string, e.g.
-        │              ([xs]).exists(v, (v + i_a) > 9007199254740992)
-        │                      │
-        ▼                      ▼
- oracle_harness.cc :: GenAndEvalFull(target, seed, depth)
+ catalog.h / catalog.cc          THE catalog (data rows, by family)
+ ActivationSchema() — name →     catalog_leaves.cc     adversarial values
+ CelType for every bound var;    catalog_ops.cc        arith/cmp/logic/conv
+ the ONE list both sides use     catalog_strings.cc    fns/format/split+join
+        │                        catalog_temporal.cc   ts/dur + tz accessors
+        │                        catalog_aggregates.cc lists/maps/comprehens.
+        │                               │ composed by BuildGrammar()
+        │                               │ validated by grammar_test.cc
+        │                               ▼ (L1+L2+L3, below)
+        │               GenerateExpr(target, seed, depth)    grammar.cc
+        │                               │
+        │                               ▼ one CEL source string, e.g.
+        │               ([xs]).exists(v, (v + i_a) > 9007199254740992)
+        ▼                               ▼
+ verdict.cc :: RunOne(target, seed, depth)        THE judge
         │                                   │
         ▼                                   ▼
  OURS: Compile → Plan → Eval     ORACLE: cel-cpp parse/check/eval
- (the production pipeline)       (testdata/cel_cpp_oracle.cc)
+ (oracle_harness.cc)             (testdata/cel_cpp_oracle.cc)
         │                                   │
         └───────────────┬───────────────────┘
                         ▼
-        compare.cc :: Compare(ours, oracle, target)
-        recursive, type-driven; NaN-agreement; map = key-set
-                        │
+        conformance::CompareValue — the conformance gate's own
+        comparator (NaN-agreement; map = key-set; recursion)
                         ▼
-   verdict: agreed · DIVERGE · ERROR-DIVERGE · both-errored ·
-            our-reject · oracle-reject · too-large
+   Verdict: agreed · DIVERGE · ERROR-DIVERGE · both-errored ·
+            capacity-reject · unexpected-reject · oracle-reject ·
+            too-large    (IsDivergence / IsFailure / Report)
 ```
 
-Two drivers share that harness:
+Two thin drivers consume `RunOne` — they cannot disagree about what
+a failure is:
 
 - **`mine_divergences`** — sequential-seed CLI; prints every anomaly
   with its seed + source, summary line at the end. The daily tool.
+  `--list-targets` prints the canonical target set.
 - **`cel_oracle_property_test`** — fuzztest properties (one per
-  target type, depth domain 0..8) with shrinking; `manual`-tagged
-  because finding a bug fails the test, which is its job.
+  target — ALL 13, aggregates included, depth domain 0..8) with
+  shrinking; `manual`-tagged because finding a bug fails the test,
+  which is its job.
 
 **Why a typed grammar?** Random bytes die in the lexer; shape-driven
 generation wastes half its budget on type-check rejects. Here every
@@ -102,10 +108,10 @@ bazel run //e2e/fuzz:mine_divergences -- list_int 1000 8 3 # target seeds depth 
 bazel test //e2e/fuzz:cel_oracle_property_test             # fuzztest mode (shrinking)
 ```
 
-Targets (13; the authoritative list is `ParseTarget` in
-`mine_divergences.cc`): `bool int uint double string bytes list_int
-list_bool list_double list_string map_string_int list_list_int
-map_string_list_int`.
+Targets (13; the authoritative list is `AllTargets()` in
+`targets.cc` — print it with `mine_divergences --list-targets`):
+`bool int uint double string bytes list_int list_bool list_double
+list_string map_string_int list_list_int map_string_list_int`.
 
 Reading the summary line:
 
@@ -134,18 +140,28 @@ Reading the summary line:
 
 ## Adding a surface (the extension contract)
 
-1. Productions/leaves go in `grammar_scalars.cc` (scalar families)
-   or `grammar_aggregates.cc` (container families) via the
-   `GrammarBuilder` shorthands (`Leaf`/`Unary`/`Binary`/`Ternary`/
-   `Repeated`/`Comprehension`).
+1. Productions/leaves are ONE data row each, in the matching
+   `catalog_<family>.cc`, via the `GrammarBuilder` shorthands
+   (`Leaf`/`Unary`/`Binary`/`Ternary`/`Repeated`/`Comprehension`).
+   A new family = a new `catalog_<family>.cc` + a Register fn
+   declared in `catalog.h` + ONE call appended at the END of
+   `BuildGrammar()` (registration order is generation-affecting —
+   never re-sort it).
 2. A new bound variable is TWO edits, enforced loudly:
-   `ActivationSchema()` (grammar side) and `MakeEntry()` in
+   `ActivationSchema()` (catalog side) and `MakeEntry()` in
    `oracle_harness.cc` (its value, both representations) — a schema
    entry without a value CHECK-fails at first use, so the lists
    cannot drift silently.
-3. `bazel test //e2e/fuzz:grammar_test` — L2 auto-covers every new
+3. A new mineable target is ONE row in `targets.cc` (+ its property
+   registration in `cel_oracle_property_test.cc`); `targets_test`
+   pins the canonical list and `fuzz.sh` derives its sweep from
+   `--list-targets`.
+4. `bazel test //e2e/fuzz:grammar_test` — L2 auto-covers every new
    production by construction; you write no new validation code.
-4. Mine. Record the session in [`SESSIONS.md`](SESSIONS.md).
+5. Mine. Record the session in [`SESSIONS.md`](SESSIONS.md).
+6. Withholding a production (cel-cpp disagrees / oracle can't judge
+   it): delete the row, leave `// WITHHELD: <PbtTest>` citing the
+   `known_bugs_test.cc` pin.  Grep `WITHHELD:` for the inventory.
 
 Error-producing productions (division, fallible conversions) are
 admissible: error-ness is a compared dimension, so "both error" is

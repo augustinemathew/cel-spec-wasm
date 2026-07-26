@@ -242,5 +242,133 @@ TEST(CelAbiEmitTest, UnknownFutureLinkModeValueParsesAndIsPreserved) {
   EXPECT_EQ(static_cast<int>(reparsed.link_mode()), 2);
 }
 
+// --- BuildRequiredFunctions ----------------------------------------
+//
+// Unit level: fabricated import lists + real FunctionLibrary decls.
+// The import-surface-equals-table invariant against a REAL compiled
+// module (including the O2 unused-import drop) is pinned at the
+// pipeline level in compiler/internal/compile_test.cc.
+
+FunctionLibrary HostDiscountLib() {
+  return *FunctionLibrary::Builder()
+              .AddHost(
+                  "discount_pct", CelType::Int(),
+                  {CelfnParam{/*is_receiver=*/false, CelType::String(), "s"}})
+              .Build();
+}
+
+TEST(BuildRequiredFunctionsTest, EmptyImportsYieldEmptyTable) {
+  const std::vector<FunctionLibrary> libs = {HostDiscountLib()};
+  EXPECT_TRUE(BuildRequiredFunctions({}, libs).empty());
+}
+
+TEST(BuildRequiredFunctionsTest, HostRowCarriesAllFields) {
+  const std::vector<WasmModule::FunctionImportName> imports = {
+      {"cel_fn", "discount_pct_string"}};
+  const std::vector<FunctionLibrary> libs = {HostDiscountLib()};
+  const auto rows = BuildRequiredFunctions(imports, libs);
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows[0].overload_id(), "discount_pct_string");
+  EXPECT_EQ(rows[0].fn_name(), "discount_pct");
+  EXPECT_EQ(rows[0].backend(), celwasm::abi::RequiredFunction::HOST);
+  ASSERT_EQ(rows[0].param_types_size(), 1);
+  EXPECT_EQ(rows[0].param_types(0).kind(), celwasm::abi::Type::KIND_STRING);
+  EXPECT_EQ(rows[0].return_type().kind(), celwasm::abi::Type::KIND_INT);
+  EXPECT_FALSE(rows[0].is_receiver());
+}
+
+TEST(BuildRequiredFunctionsTest, PluginRowWithProtoParamAndReceiver) {
+  const CelType user = CelType::Message("acme.User");
+  auto lib = *FunctionLibrary::Builder()
+                  .AddPlugin("is_adult", CelType::Bool(),
+                             {CelfnParam{/*is_receiver=*/true, user, "u"}})
+                  .Build();
+  const std::vector<WasmModule::FunctionImportName> imports = {
+      {"cel_fn", lib.decls()[0].overload_id}};
+  const std::vector<FunctionLibrary> libs = {std::move(lib)};
+  const auto rows = BuildRequiredFunctions(imports, libs);
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows[0].fn_name(), "is_adult");
+  EXPECT_EQ(rows[0].backend(), celwasm::abi::RequiredFunction::PLUGIN);
+  ASSERT_EQ(rows[0].param_types_size(), 1);
+  EXPECT_EQ(rows[0].param_types(0).kind(), celwasm::abi::Type::KIND_PROTO);
+  EXPECT_EQ(rows[0].param_types(0).proto_fqn(), "acme.User");
+  EXPECT_TRUE(rows[0].is_receiver());
+}
+
+TEST(BuildRequiredFunctionsTest, NestedGenericParamMapsRecursively) {
+  CelType list_t =
+      CelType::List(CelType::Map(CelType::String(), CelType::Int()));
+  auto lib = *FunctionLibrary::Builder()
+                  .AddHost("tally", CelType::Int(),
+                           {CelfnParam{false, std::move(list_t), "rows"}})
+                  .Build();
+  const std::vector<WasmModule::FunctionImportName> imports = {
+      {"cel_fn", lib.decls()[0].overload_id}};
+  const std::vector<FunctionLibrary> libs = {std::move(lib)};
+  const auto rows = BuildRequiredFunctions(imports, libs);
+  ASSERT_EQ(rows.size(), 1u);
+  const auto& param = rows[0].param_types(0);
+  ASSERT_EQ(param.kind(), celwasm::abi::Type::KIND_LIST);
+  ASSERT_EQ(param.params_size(), 1);
+  ASSERT_EQ(param.params(0).kind(), celwasm::abi::Type::KIND_MAP);
+  ASSERT_EQ(param.params(0).params_size(), 2);
+  EXPECT_EQ(param.params(0).params(0).kind(), celwasm::abi::Type::KIND_STRING);
+  EXPECT_EQ(param.params(0).params(1).kind(), celwasm::abi::Type::KIND_INT);
+}
+
+TEST(BuildRequiredFunctionsTest, NonCelFnImportsContributeNothing) {
+  const std::vector<WasmModule::FunctionImportName> imports = {
+      {"cel", "arena_reset"},
+      {"cel", "cel_int_add_at_vv"},
+      {"cel_host", "cel_get_field"},
+      {"scorer", "user_alias"},  // a kCelDefined per-module alias
+  };
+  const std::vector<FunctionLibrary> libs = {HostDiscountLib()};
+  EXPECT_TRUE(BuildRequiredFunctions(imports, libs).empty());
+}
+
+TEST(BuildRequiredFunctionsTest, RowsFollowImportOrderNotDeclOrder) {
+  auto lib = *FunctionLibrary::Builder()
+                  .AddHost("first", CelType::Bool(),
+                           {CelfnParam{false, CelType::String(), "s"}})
+                  .AddHost("second", CelType::Bool(),
+                           {CelfnParam{false, CelType::Int(), "i"}})
+                  .Build();
+  // Import order deliberately reversed vs decl order.
+  const std::vector<WasmModule::FunctionImportName> imports = {
+      {"cel_fn", "second_int"}, {"cel_fn", "first_string"}};
+  const std::vector<FunctionLibrary> libs = {std::move(lib)};
+  const auto rows = BuildRequiredFunctions(imports, libs);
+  ASSERT_EQ(rows.size(), 2u);
+  EXPECT_EQ(rows[0].overload_id(), "second_int");
+  EXPECT_EQ(rows[1].overload_id(), "first_string");
+}
+
+TEST(BuildRequiredFunctionsTest, DeclFoundAcrossMultipleLibraries) {
+  auto other = *FunctionLibrary::Builder()
+                    .AddHost("unrelated", CelType::Bool(),
+                             {CelfnParam{false, CelType::Bool(), "b"}})
+                    .Build();
+  const std::vector<WasmModule::FunctionImportName> imports = {
+      {"cel_fn", "discount_pct_string"}};
+  const std::vector<FunctionLibrary> libs = {std::move(other),
+                                             HostDiscountLib()};
+  const auto rows = BuildRequiredFunctions(imports, libs);
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows[0].fn_name(), "discount_pct");
+}
+
+// A `cel_fn` import that no registered library declares is an
+// invariant violation — codegen installed the import FROM those
+// libraries — and must crash at the emit site, not ship a
+// half-empty row.
+TEST(BuildRequiredFunctionsDeathTest, UnmatchedCelFnImportChecks) {
+  const std::vector<WasmModule::FunctionImportName> imports = {
+      {"cel_fn", "phantom_string"}};
+  const std::vector<FunctionLibrary> libs = {};
+  EXPECT_DEATH(BuildRequiredFunctions(imports, libs), "phantom_string");
+}
+
 }  // namespace
 }  // namespace celwasm

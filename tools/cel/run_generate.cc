@@ -46,19 +46,16 @@ absl::Status WriteFile(const std::string& path, const std::string& content) {
 
 absl::Status RunCppPath(const GenerateOptions& opts,
                         const FunctionLibrary& lib) {
-  // Default package: `cel:<module>` (with fallback `cel:customfn` when
-  // the IDL has no `Module foo;` directive).  This pairs with the
-  // hardcoded `world customfn` in wit_emitter.cc so exports come out
-  // as `exports_cel_<module>_fns_*` (m26 §7.5.1).
-  const std::string pkg =
-      opts.package_name.empty()
-          ? absl::StrCat(
-                "cel:",
-                lib.module_name().empty() ? "customfn" : lib.module_name())
-          : opts.package_name;
-  const std::string ver =
-      opts.package_version.empty() ? "0.1.0" : opts.package_version;
-  const std::string ns = lib.module_name();  // empty → global scope
+  // The package is always `cel:<module>` (with fallback `cel:customfn`
+  // when the IDL has no `Module foo;` directive), via the shared
+  // derivation helper — the same one `Plugin::Load` uses, so the
+  // generated WIT and the engine's interface lookup cannot drift
+  // (m35-plugin-ergonomics.md §4: no override exists).  This pairs
+  // with the hardcoded `world customfn` in wit_emitter.cc so exports
+  // come out as `exports_cel_<module>_fns_*` (m26 §7.5.1).
+  const std::string pkg = DeriveWitPackageName(lib.module_name());
+  const std::string ver = std::string(kWitPackageVersion);
+  const std::string& ns = lib.module_name();  // empty → global scope
 
   auto wit = celfnc_emit::EmitWit(lib, pkg, ver);
   if (!wit.ok()) return wit.status();

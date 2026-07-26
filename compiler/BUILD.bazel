@@ -60,10 +60,13 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":program",
+        "//abi:celfn_wire",
+        "//abi:plugin",
         "//shared:type",
         "//compiler/internal:compile",
         "//compiler/celfn:function_library",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
@@ -82,11 +85,14 @@ link_mode_cc_test(
     deps = [
         ":compiler",
         ":program",
+        "//abi:plugin",
+        "//abi:wasm_binary",
         "//bazel:link_mode_test_helpers",
         "//shared:type",
         "//testdata:e2e_fixture_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
     ],
 )

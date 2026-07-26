@@ -1,0 +1,44 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Plugin dispatch cost vs native host-fn dispatch cost.
+# Two shapes: scalar add (per-call overhead) and 256 KiB string len
+# (per-call + canonical-ABI copy throughput).  Each shape runs through
+# both backends so the delta isolates the plugin-call overhead.
+#
+# The plugin fixture is the macro-produced
+# //e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin
+# (a real wasm32-wasip2 Component-Model component, built via the
+# cel_wasm_plugin Starlark macro from fns.idl + user_fns.cc).
+# Loaded at bench-setup time via the bazel runfiles library.
+#
+# `manual`-tagged; run explicitly, always -c opt:
+#   bazel run -c opt //benchmark/plugin:plugin_bench
+cc_binary(
+    name = "plugin_bench",
+    srcs = ["plugin_bench.cc"],
+    copts = ["-std=c++17"],
+    data = [
+        "//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/celfn:function_library",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+

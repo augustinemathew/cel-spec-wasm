@@ -83,7 +83,7 @@ enum class HostParamKind : uint8_t {
 
 // The C++ spelling for diagnostics ("… but the callable's parameter
 // is `absl::Duration`").  The switch is closed; the trailing return
-// mirrors `CelfnType::Argkind`'s fall-off guard.
+// is the compiler-appeasing fall-off guard.
 inline absl::string_view HostParamKindName(HostParamKind kind) {
   switch (kind) {
     case HostParamKind::kBool:

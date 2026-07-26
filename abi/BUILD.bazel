@@ -3,6 +3,150 @@ load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 
 package(default_visibility = ["//visibility:public"])
 
+# The wasm binary-format layer: preamble classification, LEB128
+# codec, top-level custom-section read/write over raw bytes.  The
+# ONLY first-party code allowed to know wasm binary framing
+# (feature-pipeline-checklist §2.7).  Deliberately absl-only — no
+# Binaryen, no wasmtime, no proto — so it sits below both compiler/
+# and eval/.  First-party internal, not public API.
+cc_library(
+    name = "wasm_binary",
+    srcs = ["wasm_binary.cc"],
+    hdrs = ["wasm_binary.h"],
+    visibility = ["//:internal"],
+    deps = [
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "wasm_binary_test",
+    size = "small",
+    srcs = ["wasm_binary_test.cc"],
+    deps = [
+        ":wasm_binary",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Validation shared by the two plugin-vetting phases (`Plugin::Load`
+# and `cel embed-decls`): component-layer classification and the
+# all-decls-@plugin check.  Callers pass their own message text —
+# each phase owns its wording (see plugin_validate.h).  First-party
+# internal.
+cc_library(
+    name = "plugin_validate",
+    srcs = ["plugin_validate.cc"],
+    hdrs = ["plugin_validate.h"],
+    visibility = ["//:internal"],
+    deps = [
+        ":wasm_binary",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "plugin_validate_test",
+    size = "small",
+    srcs = ["plugin_validate_test.cc"],
+    deps = [
+        ":plugin_validate",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# `Plugin` — the self-describing wasm plugin artifact: Component-Model
+# bytes + the embedded `cel.fns` declaration text, parsed + validated
+# at Load.  Public API (part of the curated //abi surface — both
+# `Compiler::Builder::Use` and `Engine::Use` take `const Plugin&`).
+# The abi → //compiler/celfn edge is data-vocabulary only, sanctioned
+# by m35-plugin-ergonomics.md §3.1 (same class of edge eval already
+# holds on the compiler side).
+cc_library(
+    name = "plugin",
+    srcs = ["plugin.cc"],
+    hdrs = ["plugin.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":plugin_validate",
+        ":wasm_binary",
+        "//abi/internal:sha256",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "plugin_test",
+    size = "small",
+    srcs = ["plugin_test.cc"],
+    data = ["//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin"],
+    deps = [
+        ":plugin",
+        ":wasm_binary",
+        "//abi/internal:sha256",
+        "//compiler/celfn:function_library",
+        "@bazel_tools//tools/cpp/runfiles",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# celfn signature vocabulary <-> `cel.abi` wire mapping: CelfnType ->
+# Type (recursive), Type structural equality (proto-FQN-sensitive,
+# open-set on unknown kinds), and THE signature renderer shared by
+# emit tests and Engine::Plan diagnostics.  First-party internal.
+cc_library(
+    name = "celfn_wire",
+    srcs = ["celfn_wire.cc"],
+    hdrs = ["celfn_wire.h"],
+    visibility = ["//:internal"],
+    deps = [
+        ":cel_abi_cc_proto",
+        "//compiler/celfn:function_library",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "celfn_wire_test",
+    size = "small",
+    srcs = ["celfn_wire_test.cc"],
+    deps = [
+        ":cel_abi_cc_proto",
+        ":celfn_wire",
+        "//compiler/celfn:function_library",
+        "//shared:type",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Schema of the `cel.abi` custom section emitted by the compiler.
 # Fresh v2 schema — decoupled from v1's compiler/codegen/cel_abi.proto.
 # See cel_abi.proto for the rationale and field-by-field docs.
@@ -136,11 +280,16 @@ cc_library(
     hdrs = ["cel_abi_emit.h"],
     deps = [
         ":cel_abi_cc_proto",
+        ":celfn_wire",
         ":runtime_catalogue",
+        "//compiler/celfn:function_library",
         "//compiler/codegen:expr_lower",
         "//compiler/codegen:layout_pass",
+        "//compiler/codegen:module",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -152,8 +301,10 @@ cc_test(
     deps = [
         ":cel_abi_cc_proto",
         ":cel_abi_emit",
+        "//compiler/celfn:function_library",
         "//compiler/codegen:expr_lower",
         "//compiler/codegen:layout_pass",
+        "//compiler/codegen:module",
         "//compiler/codegen:resolve_pass",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:annotations",

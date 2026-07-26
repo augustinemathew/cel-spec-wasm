@@ -194,6 +194,7 @@ cc_test(
     srcs = ["module_test.cc"],
     deps = [
         ":module",
+        "//abi:wasm_binary",
         "@binaryen//:binaryen",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",

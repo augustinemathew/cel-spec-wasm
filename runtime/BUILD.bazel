@@ -911,7 +911,9 @@ cc_test(
         ":cel_runtime_stripped_wasm_bytes",
         ":cel_runtime_wasm_bytes",
         "//abi:runtime_catalogue",
+        "//abi:wasm_binary",
         "@binaryen//:binaryen",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )

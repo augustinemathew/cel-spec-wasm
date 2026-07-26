@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "abi/cel_abi.pb.h"
+#include "abi/wasm_binary.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
@@ -269,59 +270,21 @@ TEST(CompileStaticTest, ExportsEval) {
 
 namespace {
 
-// Reads a LEB128-encoded u32 at `pos`, advancing it past the
-// encoding.  Returns false on truncated / overlong input.
-bool ReadLebU32(const std::vector<uint8_t>& bytes, size_t& pos, uint32_t& out) {
-  out = 0;
-  for (int shift = 0; shift < 35; shift += 7) {
-    if (pos >= bytes.size()) return false;
-    const uint8_t byte = bytes[pos++];
-    out |= static_cast<uint32_t>(byte & 0x7f) << shift;
-    if ((byte & 0x80) == 0) return true;
-  }
-  return false;
-}
-
-// Returns true iff the custom-section body starting at `pos` (with
-// the section ending at `section_end`) is named "cel.abi"; advances
-// `pos` past the name field either way.
-bool IsCelAbiSection(const std::vector<uint8_t>& bytes, size_t& pos,
-                     size_t section_end) {
-  uint32_t name_len = 0;
-  if (!ReadLebU32(bytes, pos, name_len)) return false;
-  if (pos + name_len > section_end) return false;
-  const absl::string_view name(reinterpret_cast<const char*>(&bytes[pos]),
-                               name_len);
-  pos += name_len;
-  return name == "cel.abi";
-}
-
-// Minimal wasm-section walk: find the custom section named "cel.abi"
-// in `wasm_bytes` and proto-parse its payload as CelAbi.  Local to
-// the test on purpose — the production decoder lives on the eval
-// side (eval/internal/abi_decode), which the compiler tree must not
-// depend on.
+// Find the custom section named "cel.abi" in `wasm_bytes` (via the
+// shared //abi:wasm_binary walker) and proto-parse its payload as
+// CelAbi.  The production decoder (eval/internal/abi_decode) lives
+// on the eval side, which the compiler tree must not depend on.
 absl::StatusOr<celwasm::abi::CelAbi> ParseCelAbiSection(
     const std::vector<uint8_t>& wasm_bytes) {
-  size_t pos = 8;  // skip the 4-byte magic + 4-byte version header
-  while (pos < wasm_bytes.size()) {
-    const uint8_t section_id = wasm_bytes[pos++];
-    uint32_t section_size = 0;
-    if (!ReadLebU32(wasm_bytes, pos, section_size)) break;
-    const size_t section_end = pos + section_size;
-    if (section_end > wasm_bytes.size()) break;
-    if (section_id == 0 && IsCelAbiSection(wasm_bytes, pos, section_end)) {
-      celwasm::abi::CelAbi abi;
-      if (!abi.ParseFromArray(&wasm_bytes[pos],
-                              static_cast<int>(section_end - pos))) {
-        return absl::InvalidArgumentError(
-            "cel.abi payload failed CelAbi::ParseFromArray");
-      }
-      return abi;
-    }
-    pos = section_end;
+  auto payload_or = FindCustomSection(wasm_bytes, "cel.abi");
+  if (!payload_or.ok()) return payload_or.status();
+  celwasm::abi::CelAbi abi;
+  if (!abi.ParseFromArray(payload_or->data(),
+                          static_cast<int>(payload_or->size()))) {
+    return absl::InvalidArgumentError(
+        "cel.abi payload failed CelAbi::ParseFromArray");
   }
-  return absl::NotFoundError("no cel.abi custom section");
+  return abi;
 }
 
 }  // namespace
@@ -735,6 +698,166 @@ TEST(CompileProtoMapTest, ProtoMapEmittedModuleSerializesAndValidates) {
   EXPECT_EQ(art_or->wasm_bytes[1], 0x61);
   EXPECT_EQ(art_or->wasm_bytes[2], 0x73);
   EXPECT_EQ(art_or->wasm_bytes[3], 0x6D);
+}
+
+// ── required_functions in the `cel.abi` custom section ─────────────
+//
+// The table must equal the FINAL module's `cel_fn` import list — the
+// post-optimize surface, not the registered libraries: overload
+// imports are installed unconditionally for every declared custom
+// fn, Binaryen drops the unused ones at O1+, and wasmtime demands
+// every SURVIVING import at link time.  See
+// doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §5.2.
+
+namespace {
+
+// Two plugin decls — the O2 pin calls only `allow`, so `deny_string`
+// must survive at O0 and vanish at O2.
+std::vector<FunctionLibrary> TwoPluginFnLibs() {
+  auto lib =
+      *FunctionLibrary::Builder()
+           .AddPlugin(
+               "allow", CelType::Bool(),
+               {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
+           .AddPlugin(
+               "deny", CelType::Bool(),
+               {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
+           .Build();
+  return {std::move(lib)};
+}
+
+// The `cel_fn` import base names of the artifact's FINAL module, in
+// import order.
+std::vector<std::string> CelFnImportBases(const CompiledArtifact& art) {
+  std::vector<std::string> bases;
+  for (const auto& import : art.module.ListFunctionImports()) {
+    if (import.module == "cel_fn") bases.push_back(import.base);
+  }
+  return bases;
+}
+
+std::vector<std::string> RequiredFunctionIds(const celwasm::abi::CelAbi& abi) {
+  std::vector<std::string> ids;
+  ids.reserve(static_cast<size_t>(abi.required_functions_size()));
+  for (const auto& row : abi.required_functions()) {
+    ids.push_back(row.overload_id());
+  }
+  return ids;
+}
+
+CompileOptions RequiredFnOpts(CompileOptions::LinkMode link_mode,
+                              int optimize_level) {
+  CompileOptions opts;
+  opts.link_mode = link_mode;
+  opts.optimize_level = optimize_level;
+  opts.check.variable_specs = {"u:string"};
+  opts.function_libraries = TwoPluginFnLibs();
+  // Both hops need the decls: the checker resolves call sites from
+  // `check.function_libraries`; codegen + the required-functions
+  // emitter read `function_libraries`.
+  opts.check.function_libraries = opts.function_libraries;
+  return opts;
+}
+
+}  // namespace
+
+TEST(CompileRequiredFunctionsTest, EmptyWithoutCustomFnLibraries) {
+  for (auto mode : {CompileOptions::LinkMode::kDynamic,
+                    CompileOptions::LinkMode::kStatic}) {
+    CompileOptions opts;
+    opts.link_mode = mode;
+    auto art_or = Compile("1 + 2", opts);
+    ASSERT_THAT(art_or, IsOk());
+    auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+    ASSERT_THAT(abi_or, IsOk());
+    EXPECT_EQ(abi_or->required_functions_size(), 0);
+    EXPECT_TRUE(CelFnImportBases(*art_or).empty());
+  }
+}
+
+TEST(CompileRequiredFunctionsTest, TableEqualsImportListAtOptZero) {
+  // O0: no DCE — BOTH declared fns' imports survive even though only
+  // `allow` is called, and the table mirrors that.
+  for (auto mode : {CompileOptions::LinkMode::kDynamic,
+                    CompileOptions::LinkMode::kStatic}) {
+    auto art_or = Compile("allow(u)", RequiredFnOpts(mode, 0));
+    ASSERT_THAT(art_or, IsOk());
+    auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+    ASSERT_THAT(abi_or, IsOk());
+    const auto import_bases = CelFnImportBases(*art_or);
+    EXPECT_EQ(RequiredFunctionIds(*abi_or), import_bases);
+    EXPECT_EQ(import_bases,
+              (std::vector<std::string>{"allow_string", "deny_string"}));
+  }
+}
+
+// THE load-bearing pin of the post-optimize attach: at O2 Binaryen
+// drops the uncalled `deny_string` import, and the table must track
+// the SURVIVING import list — one row — or wasmtime link demands and
+// Plan verification desync per optimize level.
+TEST(CompileRequiredFunctionsTest, OptTwoDropsUnusedImportFromTable) {
+  for (auto mode : {CompileOptions::LinkMode::kDynamic,
+                    CompileOptions::LinkMode::kStatic}) {
+    auto art_or = Compile("allow(u)", RequiredFnOpts(mode, 2));
+    ASSERT_THAT(art_or, IsOk());
+    auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+    ASSERT_THAT(abi_or, IsOk());
+    const auto import_bases = CelFnImportBases(*art_or);
+    EXPECT_EQ(import_bases, (std::vector<std::string>{"allow_string"}));
+    ASSERT_EQ(abi_or->required_functions_size(), 1);
+    EXPECT_EQ(abi_or->required_functions(0).overload_id(), "allow_string");
+    EXPECT_EQ(RequiredFunctionIds(*abi_or), import_bases);
+  }
+}
+
+TEST(CompileRequiredFunctionsTest, MixedBackendsCarryBackendPerRow) {
+  CompileOptions opts;
+  opts.check.variable_specs = {"u:string"};
+  opts.function_libraries = {
+      *FunctionLibrary::Builder()
+           .AddHost("discount_pct", CelType::Int(),
+                    {CelfnParam{false, CelType::String(), "s"}})
+           .AddPlugin("allow", CelType::Bool(),
+                      {CelfnParam{false, CelType::String(), "u"}})
+           .Build()};
+  opts.check.function_libraries = opts.function_libraries;
+  auto art_or = Compile("allow(u) && discount_pct(u) > 0", opts);
+  ASSERT_THAT(art_or, IsOk()) << art_or.status();
+  auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+  ASSERT_THAT(abi_or, IsOk());
+  ASSERT_EQ(abi_or->required_functions_size(), 2);
+  for (const auto& row : abi_or->required_functions()) {
+    if (row.overload_id() == "discount_pct_string") {
+      EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::HOST);
+      EXPECT_EQ(row.fn_name(), "discount_pct");
+    } else {
+      EXPECT_EQ(row.overload_id(), "allow_string");
+      EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::PLUGIN);
+      EXPECT_EQ(row.fn_name(), "allow");
+    }
+  }
+}
+
+TEST(CompileRequiredFunctionsTest, ReceiverRowCarriesTypesAndReceiverBit) {
+  CompileOptions opts;
+  opts.check.variable_specs = {"name:string"};
+  opts.function_libraries = {
+      *FunctionLibrary::Builder()
+           .AddHost("is_number", CelType::Bool(),
+                    {CelfnParam{/*is_receiver=*/true, CelType::String(), "s"}})
+           .Build()};
+  opts.check.function_libraries = opts.function_libraries;
+  auto art_or = Compile("name.is_number()", opts);
+  ASSERT_THAT(art_or, IsOk()) << art_or.status();
+  auto abi_or = ParseCelAbiSection(art_or->wasm_bytes);
+  ASSERT_THAT(abi_or, IsOk());
+  ASSERT_EQ(abi_or->required_functions_size(), 1);
+  const auto& row = abi_or->required_functions(0);
+  EXPECT_EQ(row.overload_id(), "is_number_string");
+  EXPECT_TRUE(row.is_receiver());
+  ASSERT_EQ(row.param_types_size(), 1);
+  EXPECT_EQ(row.param_types(0).kind(), celwasm::abi::Type::KIND_STRING);
+  EXPECT_EQ(row.return_type().kind(), celwasm::abi::Type::KIND_BOOL);
 }
 
 TEST(CompileProtoMapTest, ProtoMapFieldLayoutReusesSelectAndCallSlot) {

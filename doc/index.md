@@ -25,7 +25,7 @@ code in a bounded, syscall-free sandbox.
     predicates (a fraud check, an entitlement rule, a transaction-limit policy)
     without the expression seeing more than you marshal in, escaping the
     sandbox, or being able to crash or hang your service. Even custom functions
-    can run as isolated WebAssembly components you don't have to trust.
+    can run as isolated WebAssembly plugins you don't have to trust.
 
     **⚡ Lightweight & at the edge** — Envoy / API-gateway filters, request
     routing, rate-limit decisions, feature flags. One tiny, deterministic
@@ -71,7 +71,7 @@ bazel-bin/tools/cel/cel eval 'age >= 18 && country in ["US","CA"]' \
   is structurally impossible.
 - **Sandboxed by construction.** Bounded linear memory, no syscalls, no I/O, no
   recursion. Even *custom functions* can come from code you don't fully trust
-  (sandboxed WebAssembly components with their own linear memory).
+  (sandboxed WebAssembly plugins with their own linear memory).
 - **A `Program` is pure bytes.** Compile it in one process, write it to disk,
   evaluate it in a process that never links the compiler.
 

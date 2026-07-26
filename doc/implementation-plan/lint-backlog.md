@@ -594,6 +594,33 @@ split treatment — `RunEval` into parse-flags / compile / eval-and-print
 helpers, `main` into a subcommand dispatch table — next time the CLI
 gains a feature (e.g. `cel run`).
 
+**2026-07-25 m35 gate update:** three more exceedances surfaced when
+the type unification pulled `tools/cel` files into the branch diff —
+`cel.cc` `BuildCompileOptions` (~L237) plus `var_parser.cc`
+`ParseQuotedString` (L154) and `ParseMessage` (~L480), all
+readability-function-size only (the var_parser braces warnings were
+fixed at the gate).  A split of `cel.cc` was drafted and deliberately
+REVERTED at the gate: a cel-executable revamp is in flight in another
+session and owns the restructuring — clearing all five entries in
+this section rides on that revamp.
+
+### lint.sh infra gaps (2026-07-25 m35 gate)
+
+Non-code findings the m35 `--branch` gate surfaced; each makes the
+gate exit non-zero without a first-party code defect:
+
+  - **wasm32-target TUs poison the PCH**: files compiled for
+    `wasm32-unknown-wasip2` (plugin-fixture `user_fns*.cc`) hit
+    "PCH compiled for arm64-apple-macosx" + exception-handling
+    mismatch.  lint.sh should skip cross-compiled TUs (or build a
+    per-target PCH).
+  - **aquery-fallback compile DB lacks gmock include paths** for
+    some test TUs (`gmock/gmock.h file not found` inside absl
+    status_matchers) — analysis of those TUs is partial.
+  - **vendored cel-cpp header skew**: `extensions/strings.h` trips
+    `CompilerLibrary` unknown-type under the lint clang — upstream
+    header vs pinned toolchain, not ours.
+
 ## benchmark/eval/celcpp_bench.cc — clang-tidy blocked by stale compile-DB execroot (2026-06-11)
 
 `compile_commands.json` entries carry `directory:` pointing at a bazel

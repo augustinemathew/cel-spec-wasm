@@ -1525,7 +1525,7 @@ TEST(HostFnTest, MultiDeclLibraryBothFire) {
 
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("x", CelType::Int());
-  b.AddLibrary(*std::move(lib));
+  b.DeclareFunctions(*std::move(lib));
   auto compiler = std::move(b).Build();
   ASSERT_TRUE(compiler.ok()) << compiler.status();
   auto program =

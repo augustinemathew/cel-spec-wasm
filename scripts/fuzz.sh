@@ -28,27 +28,30 @@ DUMP=//e2e/fuzz:dump_samples
 BIN_MINER=bazel-bin/e2e/fuzz/mine_divergences
 BIN_DUMP=bazel-bin/e2e/fuzz/dump_samples
 
-# Every mineable target.  Source of truth: AllTargets() in
-# e2e/fuzz/targets.cc (pinned by //e2e/fuzz:targets_test).  Keep this
-# list in sync with that test's canonical expectation.
-ALL_TARGETS=(
-  bool int uint double string bytes
-  list_int list_bool list_double list_string
-  map_string_int list_list_int map_string_list_int
-)
+# Every mineable target, derived from the binary itself (AllTargets()
+# in e2e/fuzz/targets.cc) — the shell carries no copy of the list.
+# Populated lazily by build_miner.
+ALL_TARGETS=()
 
-# Kill leftover miners — long sweeps from a previous run compete for
-# CPU and skew per-seed timings.  Always run before a fresh sweep.
+# Kill leftover miners FROM THIS CHECKOUT — long sweeps from a
+# previous run compete for CPU and skew per-seed timings.  Scoped to
+# the absolute binary path: multiple agents run sibling checkouts of
+# this repo on one machine, and a bare `pkill -f mine_divergences`
+# would kill THEIR miners too.
 kill_miners() {
-  pkill -9 -f mine_divergences 2>/dev/null || true
+  pkill -9 -f "$PWD/$BIN_MINER" 2>/dev/null || true
 }
 
-build_miner() { bazel build "$MINER" >/dev/null 2>&1; }
+build_miner() {
+  bazel build "$MINER" >/dev/null 2>&1
+  # Derive the sweep list from the binary (one source of truth).
+  ALL_TARGETS=($("$PWD/$BIN_MINER" --list-targets))
+}
 
 cmd_validate() {
   echo "fuzz.sh: L1/L2/L3 grammar validation…"
-  bazel test //e2e/fuzz:grammar_test //e2e/fuzz:generator_test \
-    //e2e/fuzz:compare_test
+  bazel test //e2e/fuzz:grammar_test //e2e/fuzz:verdict_test \
+    //e2e/fuzz:targets_test
 }
 
 cmd_mine() {
@@ -56,7 +59,7 @@ cmd_mine() {
   local seeds=${2:-500} depth=${3:-6} stop=${4:-10}
   build_miner
   kill_miners
-  "$BIN_MINER" "$target" "$seeds" "$depth" "$stop"
+  "$PWD/$BIN_MINER" "$target" "$seeds" "$depth" "$stop"
 }
 
 cmd_sweep() {
@@ -68,7 +71,7 @@ cmd_sweep() {
     echo "=== sweep: $t (seeds=$seeds depth=$depth) ==="
     # stop_after=1: a sweep wants a fast "is it clean" answer per
     # target, not an exhaustive divergence list.
-    if "$BIN_MINER" "$t" "$seeds" "$depth" 1; then :; else
+    if "$PWD/$BIN_MINER" "$t" "$seeds" "$depth" 1; then :; else
       rc=$?
       echo "  >> $t DIVERGED (exit $rc)"
       failures=$((failures + 1))
@@ -87,7 +90,7 @@ cmd_repro() {
   # early-stop.  The miner walks 1..max so we pass max=seed and rely on
   # the DIVERGE/summary print; for a precise single-seed view use the
   # property test's shrinker.  Here we re-run [1..seed] and grep the seed.
-  "$BIN_MINER" "$target" "$seed" "$depth" 999999 | \
+  "$PWD/$BIN_MINER" "$target" "$seed" "$depth" 999999 | \
     grep -A3 "seed=$seed\b" || echo "(no divergence at seed=$seed)"
 }
 

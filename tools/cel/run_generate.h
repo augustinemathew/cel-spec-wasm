@@ -16,11 +16,11 @@ struct GenerateOptions {
   std::string language;  // "cpp" only in v1; "go" arrives with H.4.
   std::string out_dir;
   std::vector<std::string> extra_includes;
-  // Optional override for the WIT package name (default:
-  // `<module>:fns`, where <module> comes from the IDL's
-  // `Module foo;` directive — m26 §2.1).
-  std::string package_name;
-  std::string package_version;  // default: "0.1.0"
+  // The WIT package name/version are NOT configurable: they are
+  // always derived from the IDL's `Module foo;` directive via
+  // DeriveWitPackageName/kWitPackageVersion (fallback module
+  // `customfn`), so the generated WIT and the engine's interface
+  // lookup cannot drift (m35-plugin-ergonomics.md §4).
 };
 
 // 0 on success, non-zero on error.  Diagnostics go to stderr.

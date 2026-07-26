@@ -21,6 +21,33 @@ struck through or removed.
 
 ## Open
 
+- [ ] **#52** — m35 dedupe items deliberately deferred at the
+      post-review cleanup: (a) **D6** — a third first-party UTF-8
+      validator (`IsValidUtf8` in `abi/plugin.cc`) alongside
+      `runtime/cel_string_ext_internal.h::Utf8Decode` (wasm-C-side;
+      layering makes reuse awkward) and vendored cel-cpp's
+      `internal/utf8.h` (rejected: internal-namespace, not a
+      sanctioned dep surface).  Swapping is conditional on a public
+      validator dep decision — `utf8_range` is the noted candidate
+      if one is taken; until then the local one stays (small,
+      NIST-grade tested via plugin_test).  (b) **D7** — the
+      `kComponentPreamble` / `kCorePreamble` test preamble byte
+      constants, now declared in four tests (`abi/plugin_test.cc`,
+      `abi/plugin_validate_test.cc`,
+      `tools/cel/run_embed_decls_test.cc`,
+      `compiler/compiler_test.cc`) — the review's "tiny
+      `abi/testing` util if a fourth copy ever appears" threshold
+      has been met; build it next time one of these is touched.
+      Surfaced: 2026-07-25 m35 closeout review
+      (rewrite/reviews/2026-07-25-m35-closeout.md, dedupe table
+      D6/D7).
+      Files: `abi/plugin.cc`, `abi/plugin_test.cc`,
+      `abi/plugin_validate_test.cc`,
+      `tools/cel/run_embed_decls_test.cc`,
+      `compiler/compiler_test.cc`.
+      Why P2: dedupe-only, no behavior gap; D6 is blocked on a dep
+      decision, D7 is test-fixture consolidation.
+
 - [ ] **#49** — native test/bench arena (64 KiB,
       `CELWASM_ARENA_CAPACITY_BYTES`) segfaults silently on oversized
       operands instead of failing loudly: `cel_make_string` of a
@@ -34,6 +61,59 @@ struck through or removed.
       `benchmark/kernel/kernel_bench.cc`.
       Why P2: native lib is test/bench-only; production (wasm) path
       errors gracefully.
+
+- [x] **#53** — RESOLVED 2026-07-25: `CelfnType` deleted;
+      `shared/CelType` widened with `kNull = 14` / `kOptional = 15`
+      (enum value 10 stays permanently vacant — old wire CEL_TYPE),
+      `Null()` / `Optional(elem)` factories, `optional_element()`,
+      `IsDeclarableAsVariable()` (false for kUnknown/kNull/kOptional;
+      enforced at `Compiler::Builder::DeclareVariable` validation).
+      The celfn grammar produces CelType directly; `CelfnTypeToCelType`
+      replaced by `DeclTypeToCheckerType` (parse_and_check.cc) over the
+      one vocabulary; overload-id slugs via the free
+      `ArgkindSlug(const CelType&)` (byte-identical output); wire
+      mapping via `TypeFromCelType` with every kind→numeric pair
+      pinned in `abi/celfn_wire_test.cc`.  Kind-name spellings
+      consolidated onto `CelTypeKindName` (`MapKeyKindName` and
+      `CelfnKindName` deleted; only delta: the former kProto arm
+      spelled "proto", now kMessage spells "message" — no pinned
+      message relied on it).  Original entry follows.
+      unify the C++ type vocabularies: `CelfnType`
+      (compiler/celfn, the celfn grammar's type AST — adds
+      `null`/`optional<T>`/`proto`-by-name/`type`) vs
+      `shared/CelType::Kind` (declared-variable vocabulary) are two
+      C++ spellings of one concept, glued by `CelfnTypeToCelType`
+      and mirrored by the wire `Type` proto (née FnType, generalized
+      2026-07-25 per user review).  Unification direction: widen
+      `shared/CelType` with the celfn-only shapes (flagged
+      non-declarable-as-variable), make the celfn grammar produce
+      it, delete `CelfnTypeToCelType`, mirror the ONE enum on the
+      wire.  Collapses the converter layer the m35 review measured
+      and the user flagged ("many representations of the type
+      across the repo").  Scope: public `shared/` vocabulary +
+      every converter + grammar glue — its own milestone slice,
+      not a drive-by.
+      Surfaced: 2026-07-25 m35 PR review (user comments on
+      cel_abi.proto + cel_abi_emit_test).
+      Why P1: every future declarable-type feature pays the
+      three-vocabulary tax until this lands.
+
+- [ ] **#51** — pre-existing wasm32-wasip2 cross-compile break:
+      `//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin_proto`
+      (manual) fails to build — `@abseil-cpp` `synchronization/
+      mutex.cc` doesn't compile for wasm32-wasip2 (`std::this_thread`
+      missing).  Byte-identical action inputs pre/post m35 (verified
+      during slice A3), so likely an absl-bump regression, not an
+      m35 effect.  Consequences while open: the proto-arg one-noun
+      e2e (`OneNounFlowProtoArg`) and the proto-FQN plan-mismatch
+      e2e are GTEST_SKIP'd naming this entry.  Fix: either pin/patch
+      absl's wasip2 build (`ABSL_INTERNAL_HAVE_*` config for wasip2)
+      or restructure the proto demo fixture to avoid pulling
+      absl/synchronization into the plugin sandbox.
+      Surfaced: 2026-07-25 m35 slice A3 (review m35-dag.md
+      carry-forwards).
+      Why P1: it holds two skipped e2e pins hostage; the scalar
+      plugin path is fully covered.
 
 - [ ] **#50** — policy decision: the PBT divergence miner
       (`//e2e/fuzz:cel_oracle_property_test`) gates CI via
@@ -294,6 +374,26 @@ struck through or removed.
       Why P2: all paths fail loudly (CHECK / Unimplemented), so
       nothing miscompiles; the gap is API honesty, not correctness.
 
+      2026-07-25 partial closure (m35 B2): the
+      `CelfnTypeToCelType` angle is settled — the type-mapping
+      contract is now "Compiler::Builder::Build() rejects" —
+      `Build()` walks every registered decl and surfaces a clean
+      InvalidArgument naming the decl and the type
+      (`ValidateDeclTypesMappable` in `compiler/compiler.cc`,
+      pinned by `compiler_test.cc
+      CompilerBuilderUnmappableTypeTest.*`: `type` return,
+      `optional<int>` param, nested `list<optional<string>>`,
+      positive twin).  The `ABSL_CHECK` in
+      `CelfnTypeToCelType` stays as the behind-the-gate tripwire.
+      Note the kPlugin decl surface already rejected `type` /
+      `optional<T>` at `FunctionLibrary::Builder::Build`
+      (m24 §14), so the reachable shape was programmatic
+      kHost/kCelDefined decls.  Engine-side registration needs no
+      mapping, so `Engine::Use` of such decls stays legal
+      (m35-plugin-ergonomics.md §3.1).  STILL OPEN: the
+      `BindLazy` / `OverrideFunction` API-honesty half and
+      `cel_component` Lower's type-of-types Unimplemented.
+
 - [ ] **#43** — true-e2e coverage gap for `cel_component.cc`'s
       malformed-`wasmtime_component_val_t` NULL guards (closes
       out gap left when #37 shipped).  Today's coverage:
@@ -369,6 +469,24 @@ struck through or removed.
       `DecodeSecondsNanosRecord` with duration so is covered
       transitively.  `StringEmptyWithNullDataOk` pins the
       benign-shape positive path.
+
+      2026-07-25 reconciliation (m35 B1/B2, per
+      m35-plugin-ergonomics.md §12 slice B2): the *public
+      negative-path seam* this entry kept circling — no public-API
+      shape through which plugin-boundary failures could be driven
+      and asserted — now exists as `Engine::Use` → `Plan`.
+      `Engine::Use` performs a registration-time STATIC export
+      check against the parsed component (missing WIT interface /
+      missing per-decl kebab export → FailedPrecondition naming
+      it, pinned by `eval/engine_test.cc EngineUseTest.*` with
+      hand-framed component fixtures), and the one-noun
+      Load→Use→Compile→Use→Plan→Eval flow is pinned e2e in
+      `e2e/plugin_fixtures/cel_wasm_plugin_demo/
+      demo_plugin_e2e_test.cc`.  The narrow residue — injecting a
+      malformed `wasmtime_component_val_t` between
+      `wasmtime_component_func_call` and `LowerComponentToCel` —
+      remains exactly as descoped above (unlock paths (a)-(c)
+      unchanged); the unit tests continue to pin the NULL guards.
 
       Surfaced: 2026-06-06 coverage-gap closeout for commit
       598c7f2b.
