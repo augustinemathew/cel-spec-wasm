@@ -551,9 +551,20 @@ TEST(WatRunnerMapTest, DispatcherWatAssemblesAndImportsResolve) {
   // with a poison map kind that the dispatcher returns from
   // immediately (CEL_ERROR absorbs); skip if that escape hatch
   // doesn't avoid the panic either.
-  GTEST_SKIP() << "dispatcher e2e covered by m3_test / instance_test "
-                  "(production wasmtime::Engine); c-api harness "
-                  "panics on tail-call → host import";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: the limitation is in THIS harness, not the product. wasmtime's
+  c-api panics on the `return_call`-from-runtime to imported-host-trampoline
+  path under our linker setup - symptom "wasm_trap_new message stringz
+  expected" from crates/c-api/src/trap.rs:101 - so running $eval here would
+  trip the panicking path rather than test anything. The lighter half still
+  runs above: the WAT assembles, the imports resolve against
+  `cel.cel_map_lookup`, and instantiation succeeds. End-to-end execution of
+  the dispatcher arms is exercised by the production e2e suite (m3_test /
+  instance_test), which drives the real wasmtime::Engine rather than the
+  c-api.
+citation: doc/implementation-plan/rewrite/wat/09_map_index_dynamic.wat; e2e/m3_test.cc + eval/instance_test.cc (production-engine dispatcher coverage)
+)CELSKIP";
 }
 
 // ─────────────────────────────────────────────────────────
@@ -704,9 +715,16 @@ TEST(WatRunnerListTest, DispatcherWatAssemblesAndImportsResolve) {
   // m4_test through the full wasmtime::Engine.
   auto wat = LoadWat("14_list_index_dynamic.wat");
   ASSERT_THAT(wat, IsOk());
-  GTEST_SKIP() << "dispatcher e2e covered by m4_test (production "
-                  "wasmtime::Engine); c-api harness panics on "
-                  "tail-call → host import";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: same wasmtime c-api panic on the tail-call to imported-host
+  path as WatRunnerMapTest::DispatcherWatAssemblesAndImportsResolve above - a
+  harness limitation, not a product gap. The assemble + imports-resolve half
+  still runs (LoadWat above this skip). The list dispatcher's arms are
+  exercised end-to-end by the production e2e suite (m4_test / instance_test)
+  through the real wasmtime::Engine.
+citation: doc/implementation-plan/rewrite/wat/14_list_index_dynamic.wat; e2e/m4_test.cc + eval/instance_test.cc (production-engine dispatcher coverage)
+)CELSKIP";
 }
 
 // ─────────────────────────────────────────────────────────

@@ -45,7 +45,8 @@ Companion documents (do not duplicate — link):
        `rewrite/m5-*.md`, `rewrite/m7-*.md`, `rewrite/m8-wrapper-types.md`,
        `rewrite/m9-type-subsystem.md`, `rewrite/m10-conversions.md`,
        `rewrite/m-custom-fns.md` — per-milestone plans / shipped notes.
-     - `rewrite/phase-c-{research,design,plan}.md` + `rewrite/phase-c-probes/`
+     - `rewrite/phase-c-{research,design,plan}.md` (probe artifacts
+       deleted per probe discipline; findings live in the docs)
        — the Phase C (compiled-expression + host runtime split) research
        and probe artefacts.
      - `rewrite/wasi/` — the WASI migration design (`DESIGN.md`),

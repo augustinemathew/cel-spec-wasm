@@ -301,21 +301,28 @@ TEST_F(DynamicStructFieldTest, FieldAssignProto3) {
 
 TEST_F(DynamicStructFieldTest, FieldAssignEmptyProto2) {
   // dynamic struct/field_assign_proto2_empty: `{single_struct: {}}`.
-  GTEST_SKIP()
-      << "Blocked on RejectDyn: the bare empty-map literal `{}` types as "
-         "`map(dyn, dyn)` and RejectDyn rejects it at compile "
-         "(static-subset-violation) before it can be coerced to the field's "
-         "`map(string, Value)` Struct shape. Verified: Compile returns "
-         "INVALID_ARGUMENT 'expression is not in the static subset'. The "
-         "non-empty struct literal (FieldAssignProto2/3) packs fine; only "
-         "the untyped empty `{}` trips the gate. Outside the field-set pack "
-         "work.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: the bare empty-map literal `{}` types as `map(dyn, dyn)`, and
+  the static subset rejects dyn at compile time - before the literal could be
+  coerced to the field's `map(string, Value)` Struct shape. Verified: Compile
+  returns INVALID_ARGUMENT "expression is not in the static subset". The
+  non-empty struct literal (FieldAssignProto2 / FieldAssignProto3, directly
+  above) packs correctly, so the WKT-pack path itself is covered; only the
+  UNTYPED empty `{}` trips the gate, which is the documented design.
+citation: doc/implementation-plan/rewrite/design.md (RejectDyn); conformance row dynamic struct/field_assign_proto2_empty
+)CELSKIP";
 }
 
 TEST_F(DynamicStructFieldTest, FieldAssignEmptyProto3) {
-  GTEST_SKIP() << "Same RejectDyn empty-`{}` blocker as "
-                  "FieldAssignEmptyProto2 (dynamic "
-                  "struct/field_assign_proto3_empty).";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: same RejectDyn empty-`{}` blocker as FieldAssignEmptyProto2
+  directly above - the bare `{}` literal types as `map(dyn, dyn)` and the
+  static subset rejects dyn before the Struct-field coercion can run. The
+  non-empty proto3 struct literal (FieldAssignProto3) packs correctly.
+citation: doc/implementation-plan/rewrite/design.md (RejectDyn); conformance row dynamic struct/field_assign_proto3_empty
+)CELSKIP";
 }
 
 // ── set_null: null pruning in repeated / map WKT fields ─────────
@@ -549,38 +556,51 @@ TEST_F(AnyFieldTest, AnyLiteralProto2) {
   // dynamic any/literal: a top-level google.protobuf.Any literal whose
   // payload is a serialised TestAllTypes.  The corpus expects the
   // RESULT to compare as the unwrapped inner message.
-  GTEST_SKIP()
-      << "Blocked on read-side top-level Any-unwrap-at-result: a top-level "
-         "`google.protobuf.Any{type_url, value}` evaluates to a CEL message "
-         "whose descriptor is google.protobuf.Any, but the corpus matcher "
-         "wants the UNWRAPPED inner message (TestAllTypes). Verified FAIL in "
-         "conformance: `message type mismatch: want=...TestAllTypes "
-         "got=google.protobuf.Any`. The field-READ path unwraps Any "
-         "correctly (see FieldReadProto2); the top-level result-decode "
-         "Any-unwrap is a separate read-side gap, outside the field-set "
-         "pack work.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: deferred-feature
+why-not-a-bug: this row is blocked on a named, separate read-side feature -
+  top-level Any-unwrap-at-result - not on the field-set pack path this fixture
+  exercises. A top-level `google.protobuf.Any{type_url, value}` evaluates to a
+  CEL message whose descriptor IS google.protobuf.Any, while the corpus
+  matcher wants the UNWRAPPED inner message. Verified FAIL in conformance:
+  "message type mismatch: want=...TestAllTypes got=google.protobuf.Any". The
+  field-READ path unwraps Any correctly (pinned by FieldReadProto2 in this
+  file), so what is missing is result-decode unwrapping, which was scoped out
+  of the field-set pack work.
+citation: conformance row dynamic any/literal; e2e/wkt_field_set_test.cc FieldReadProto2 (the working field-read unwrap)
+)CELSKIP";
 }
 
 TEST_F(AnyFieldTest, AnyVarProto2) {
   // dynamic any/var: an Any-typed bound variable read back, expecting
   // the unwrapped inner message.
-  GTEST_SKIP() << "Same top-level Any-unwrap-at-result blocker as "
-                  "AnyLiteralProto2, plus this row needs a type_env Any "
-                  "variable binding (Activation marshal of an Any value) "
-                  "which this harness does not set up. dynamic any/var.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: deferred-feature
+why-not-a-bug: two independent blockers, neither a defect in the field-set
+  pack path. (1) The same top-level Any-unwrap-at-result gap as
+  AnyLiteralProto2 above. (2) This row additionally needs a type_env Any
+  variable binding - an Activation marshal of an Any value - which this test
+  harness does not set up. Both would have to land before the row can assert
+  anything.
+citation: conformance row dynamic any/var; e2e/wkt_field_set_test.cc AnyLiteralProto2 (the shared unwrap blocker)
+)CELSKIP";
 }
 
 TEST_F(AnyFieldTest, AnyLiteralEmptyProto3) {
   // dynamic any/literal_empty: google.protobuf.Any{} with no type_url
   // is an error when unwrapped (no payload to decode).  The corpus
   // expects an eval error; our read path surfaces an error value.
-  GTEST_SKIP()
-      << "Verified: bare `google.protobuf.Any{}` construction reaches the "
-         "WKT-pack arm but the corpus row asserts an eval_error (empty Any "
-         "has no type_url to unwrap). Confirmed FAIL in conformance as "
-         "`want-kind=error got-kind=message` — the empty-Any error-value "
-         "path is a read-side Any-unwrap gap, outside the field-set pack "
-         "work; not addressed here.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: deferred-feature
+why-not-a-bug: verified that a bare `google.protobuf.Any{}` construction
+  reaches the WKT-pack arm correctly - the pack side, which is what this
+  fixture covers, works. The corpus row asserts an eval_error instead (an
+  empty Any has no type_url to unwrap), and we return a message: confirmed
+  FAIL in conformance as "want-kind=error got-kind=message". Producing that
+  error is part of the same read-side Any-unwrap feature as AnyLiteralProto2,
+  which was scoped out of the field-set pack work.
+citation: conformance row dynamic any/literal_empty; e2e/wkt_field_set_test.cc AnyLiteralProto2 (the shared unwrap blocker)
+)CELSKIP";
 }
 
 }  // namespace

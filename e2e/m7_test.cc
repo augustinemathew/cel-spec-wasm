@@ -823,9 +823,19 @@ TEST_F(ProtoLiteralNestedE2ETest, ExplicitWrapperAsNested) {
   // M7.E recursive-construction path is exercised indirectly via
   // the other Nested tests; explicit wrapper construction lights
   // up cleanly once M8 ships the peel.
-  GTEST_SKIP() << "wrapper-typed expression in scalar context "
-                  "(`Int32Value{value:5}.value`) is M8 "
-                  "(wrapper auto-peel) — see m8-wrapper-types.md";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: deferred-feature
+why-not-a-bug: cel-cpp's checker types `google.protobuf.Int32Value{value: 5}`
+  as the special `wrapper(int)` type and rejects it as the operand of a
+  select - BY DESIGN upstream, since a wrapper is meant to peel to its value
+  automatically at the consumer site. Re-confirmed 2026-07-25 through
+  tools/cel eval: "expression of type 'wrapper(int)' cannot be the operand of
+  a select operation". So the rejection is upstream-correct, and this row is
+  waiting on the wrapper auto-peel that makes wrapper-typed expressions usable
+  in scalar contexts. The recursive proto-construction path this fixture
+  exists to cover is exercised by the sibling Nested tests.
+citation: doc/implementation-plan/rewrite/m8-wrapper-types.md; doc/implementation-plan/rewrite/m7-proto-literals.md §6 (nested construction)
+)CELSKIP";
 }
 
 // ──────────────────────────────────────────────────────────────

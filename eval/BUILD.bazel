@@ -970,3 +970,46 @@ link_mode_cc_test(
 
 # Host-fn end-to-end coverage lives in //e2e:host_fn_test (the whole
 # flow through real wasmtime belongs with the other e2e suites).
+
+# Layer 2 trampoline body for cel_host.cel_list_in — the membership
+# scan over a host-backed list, across every element kind (scalar,
+# aggregate, message).
+cc_test(
+    name = "cel_list_in_impl_test",
+    size = "small",
+    srcs = ["internal/cel_list_in_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":value",
+        "//shared:type",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Layer 2 trampoline body for cel_host.cel_list_concat — mixed-origin
+# and both-host list `+`, which materialises the host operand(s) into
+# a fresh arena list.
+cc_test(
+    name = "cel_list_concat_impl_test",
+    size = "small",
+    srcs = ["internal/cel_list_concat_impl_test.cc"],
+    deps = [
+        ":cel_host",
+        ":cel_host_test_fakes",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)

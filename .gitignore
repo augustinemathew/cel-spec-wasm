@@ -34,3 +34,8 @@ bindings/ts/node_modules/
 # Raw Google Benchmark JSONs from benchmark runs — the committed
 # artifacts are the joined .md/.csv next to them (see benchmark/eval/run.sh).
 benchmark/eval/results/raw/
+
+# Build products never get committed — .wasm artifacts are outputs
+# (bazel-built or probe-compiled), not sources.  Committed probe
+# binaries once weighed ~19MB; deleted 2026-07-25.
+*.wasm

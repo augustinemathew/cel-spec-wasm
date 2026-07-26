@@ -13,12 +13,59 @@
 #include <cmath>
 #include <cstdint>
 
+#include <map>
+#include <vector>
+
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_internal.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_list.h"
-#include "gtest/gtest.h"
+#include "runtime/cel_memory.h"
+
+namespace {
+
+// ref_slot → the elements a host-backed list vends.  The scripted
+// `cel_list_iter_open` below materialises these into the arena
+// exactly as the production trampoline does
+// (eval/internal/cel_host.cc `SnapshotHostListToArena`).
+std::map<uint32_t, std::vector<CelValue>>& HostMinMaxTable() {
+  static auto* t = new std::map<uint32_t, std::vector<CelValue>>();
+  return *t;
+}
+int g_minmax_iter_open_calls = 0;
+
+}  // namespace
+
+extern "C" {
+// Strong override of the weak host-build stub in cel_runtime.c.
+void cel_host_cel_list_iter_open(uint32_t out_slot, uint32_t list_slot) {
+  ++g_minmax_iter_open_calls;
+  const std::vector<CelValue> elements =
+      HostMinMaxTable()[cel_value_at(list_slot)->payload.ref_slot];
+  const uint32_t hdr_off =
+      arena_alloc(static_cast<uint32_t>(sizeof(ArenaListHeader)));
+  uint32_t elements_off = 0;
+  if (!elements.empty()) {
+    elements_off = arena_alloc(static_cast<uint32_t>(
+        static_cast<size_t>(kCelListEntryStride) * elements.size()));
+  }
+  auto* hdr = reinterpret_cast<ArenaListHeader*>(cel_mem_base() + hdr_off);
+  hdr->count = static_cast<uint32_t>(elements.size());
+  hdr->capacity = hdr->count;
+  hdr->elements_offset = elements_off;
+  hdr->_pad = 0;
+  for (size_t k = 0; k < elements.size(); ++k) {
+    *reinterpret_cast<CelValue*>(
+        cel_mem_base() + elements_off +
+        (static_cast<size_t>(kCelListEntryStride) * k)) = elements[k];
+  }
+  CelValue* out = cel_value_at(out_slot);
+  out->kind = CEL_LIST_ARENA;
+  out->payload.arena_list.header_ptr = hdr_off;
+}
+}  // extern "C"
 
 namespace celwasm {
 namespace {
@@ -29,7 +76,9 @@ class MathExtTest : public ::testing::Test {
     arena_init(CELWASM_ARENA_CAPACITY_BYTES);
     arena_reset();
   }
-  uint32_t Slot() { return arena_alloc(static_cast<uint32_t>(sizeof(CelValue))); }
+  uint32_t Slot() {
+    return arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+  }
   uint32_t Int(int64_t v) {
     uint32_t s = Slot();
     CelValue* c = cel_value_at(s);
@@ -70,7 +119,9 @@ class MathExtTest : public ::testing::Test {
     cel_value_at(s)->kind = CEL_UNKNOWN;
     return s;
   }
-  const CelValue* At(uint32_t s) { return cel_value_at(s); }
+  const CelValue* At(uint32_t s) {
+    return cel_value_at(s);
+  }
 };
 
 // ── Rounding: ceil / floor / round / trunc ────────────────────────
@@ -462,6 +513,156 @@ TEST_F(MathExtTest, MinMaxListNonNumericElementPoisons) {
   cel_math_max_list_at_v(o, list);
   EXPECT_EQ(At(o)->kind, CEL_ERROR);
   EXPECT_EQ(At(o)->payload.err, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(MathExtTest, MinMaxEmptyArenaListIsInvalidArgument) {
+  // cel-cpp `extensions/math_ext.cc:106` / `:152`:
+  // "math.@min argument must not be empty".
+  uint32_t list = Slot();
+  cel_list_create(list, 0);
+  uint32_t o = Slot();
+  cel_math_min_list_at_v(o, list);
+  EXPECT_EQ(At(o)->kind, CEL_ERROR);
+  EXPECT_EQ(At(o)->payload.err, CEL_ERR_INVALID_ARGUMENT);
+  cel_math_max_list_at_v(o, list);
+  EXPECT_EQ(At(o)->kind, CEL_ERROR);
+  EXPECT_EQ(At(o)->payload.err, CEL_ERR_INVALID_ARGUMENT);
+}
+
+TEST_F(MathExtTest, MinMaxNonListOperandPoisons) {
+  uint32_t o = Slot();
+  cel_math_min_list_at_v(o, Int(1));
+  EXPECT_EQ(At(o)->kind, CEL_ERROR);
+  EXPECT_EQ(At(o)->payload.err, CEL_ERR_TYPE_MISMATCH);
+}
+
+// ── min / max over a HOST-BACKED list ─────────────────────────────
+//
+// `math.least(boundList)` reaches the kernel with a CEL_LIST_HOST
+// operand — its elements exist only on the host side until
+// `cel_list_arena_view` snapshots them.  Before that lift was wired
+// every case here returned CEL_ERR_TYPE_MISMATCH, indistinguishable
+// from a genuine type error.  The 3-arg macro form is always
+// rewritten by cel-cpp into an arena literal, which is why only the
+// single-list-argument form over a bound variable reaches this arm.
+
+class HostListMinMaxFixture : public MathExtTest {
+ protected:
+  void SetUp() override {
+    MathExtTest::SetUp();
+    HostMinMaxTable().clear();
+    g_minmax_iter_open_calls = 0;
+  }
+
+  // A CEL_LIST_HOST slot whose scripted backing vends `elements`.
+  uint32_t HostList(uint32_t ref_slot, const std::vector<CelValue>& elements) {
+    HostMinMaxTable()[ref_slot] = elements;
+    uint32_t s = Slot();
+    CelValue* c = cel_value_at(s);
+    c->kind = CEL_LIST_HOST;
+    c->payload.ref_slot = ref_slot;
+    return s;
+  }
+  CelValue IntVal(int64_t v) {
+    CelValue c{};
+    c.kind = CEL_INT;
+    c.payload.i = v;
+    return c;
+  }
+  CelValue UintVal(uint64_t v) {
+    CelValue c{};
+    c.kind = CEL_UINT;
+    c.payload.u = v;
+    return c;
+  }
+  CelValue DoubleVal(double v) {
+    CelValue c{};
+    c.kind = CEL_DOUBLE;
+    c.payload.d = v;
+    return c;
+  }
+  CelValue BoolVal(int b) {
+    CelValue c{};
+    c.kind = CEL_BOOL;
+    c.payload.b = b;
+    return c;
+  }
+};
+
+TEST_F(HostListMinMaxFixture, MinMaxHostIntList) {
+  uint32_t list = HostList(1, {IntVal(3), IntVal(1), IntVal(2)});
+  uint32_t o = Slot();
+  cel_math_min_list_at_v(o, list);
+  EXPECT_EQ(At(o)->kind, CEL_INT);
+  EXPECT_EQ(At(o)->payload.i, 1);
+  cel_math_max_list_at_v(o, list);
+  EXPECT_EQ(At(o)->payload.i, 3);
+  EXPECT_EQ(g_minmax_iter_open_calls, 2);
+}
+
+TEST_F(HostListMinMaxFixture, MinMaxHostUintAndDoubleLists) {
+  uint32_t o = Slot();
+  cel_math_max_list_at_v(o, HostList(1, {UintVal(1), UintVal(2)}));
+  EXPECT_EQ(At(o)->kind, CEL_UINT);
+  EXPECT_EQ(At(o)->payload.u, 2u);
+  cel_math_min_list_at_v(o, HostList(2, {DoubleVal(1.5), DoubleVal(0.5)}));
+  EXPECT_EQ(At(o)->kind, CEL_DOUBLE);
+  EXPECT_EQ(At(o)->payload.d, 0.5);
+}
+
+TEST_F(HostListMinMaxFixture, MinMaxHostListBoundaryIntegers) {
+  constexpr int64_t kMin = -9223372036854775807LL - 1;
+  constexpr int64_t kMax = 9223372036854775807LL;
+  uint32_t list = HostList(1, {IntVal(kMax), IntVal(kMin)});
+  uint32_t o = Slot();
+  cel_math_min_list_at_v(o, list);
+  EXPECT_EQ(At(o)->payload.i, kMin);
+  cel_math_max_list_at_v(o, list);
+  EXPECT_EQ(At(o)->payload.i, kMax);
+}
+
+TEST_F(HostListMinMaxFixture, MinMaxHostSingleElementList) {
+  uint32_t o = Slot();
+  cel_math_min_list_at_v(o, HostList(1, {IntVal(42)}));
+  EXPECT_EQ(At(o)->kind, CEL_INT);
+  EXPECT_EQ(At(o)->payload.i, 42);
+}
+
+TEST_F(HostListMinMaxFixture, MinMaxEmptyHostListIsInvalidArgument) {
+  uint32_t o = Slot();
+  cel_math_min_list_at_v(o, HostList(1, {}));
+  EXPECT_EQ(At(o)->kind, CEL_ERROR);
+  EXPECT_EQ(At(o)->payload.err, CEL_ERR_INVALID_ARGUMENT);
+}
+
+TEST_F(HostListMinMaxFixture, MinMaxHostListNonNumericElementPoisons) {
+  uint32_t o = Slot();
+  cel_math_max_list_at_v(o, HostList(1, {IntVal(1), BoolVal(1)}));
+  EXPECT_EQ(At(o)->kind, CEL_ERROR);
+  EXPECT_EQ(At(o)->payload.err, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(HostListMinMaxFixture, MinMaxHostListPoisonedElementPropagates) {
+  CelValue poisoned{};
+  poisoned.kind = CEL_ERROR;
+  poisoned.payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  uint32_t o = Slot();
+  cel_math_min_list_at_v(o, HostList(1, {IntVal(1), poisoned}));
+  EXPECT_EQ(At(o)->kind, CEL_ERROR);
+  EXPECT_EQ(At(o)->payload.err, CEL_ERR_DIVIDE_BY_ZERO);
+}
+
+TEST_F(HostListMinMaxFixture, ArenaListDoesNotTripTheHostArm) {
+  // Arena operands pass through `cel_list_arena_view` as identity —
+  // no host trip, same answer as before the lift was wired.
+  uint32_t list = Slot();
+  cel_list_create(list, 2);
+  cel_list_append_at(list, Int(5));
+  cel_list_append_at(list, Int(4));
+  uint32_t o = Slot();
+  cel_math_min_list_at_v(o, list);
+  EXPECT_EQ(At(o)->payload.i, 4);
+  EXPECT_EQ(g_minmax_iter_open_calls, 0);
 }
 
 // ── 3VL absorption (representative across the family) ─────────────

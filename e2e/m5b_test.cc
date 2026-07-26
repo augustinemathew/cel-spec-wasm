@@ -478,9 +478,18 @@ TEST_F(ComprehensionMapIterE2ETest, ExistsEmptyMapIsFalse) {
   // `cel_map_test.cc::MapIterTest::Empty` (handle=0 → no iters).
   // The bound-map variant ships when bound-map iter_range support
   // does (separate post-milestone slice).
-  GTEST_SKIP() << "empty map literal types as map(dyn,dyn) — "
-                  "RejectDyn fires before the empty-iter codegen "
-                  "runs; runtime equivalent covered by cel_map_test.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: CEL has no syntactic way to write an EMPTY typed map: the bare
+  `{}` literal types as map(dyn, dyn), and the static subset rejects dyn at
+  compile time, so RejectDyn fires before the comprehension's empty-iter
+  codegen can run. That is the documented design, not a gap in the empty-range
+  path - the equivalent invariant is asserted at the runtime level by
+  runtime/cel_map_test.cc MapIterTest::Empty (cel_map_iter_init on an empty
+  map yields handle=0, hence no iterations). The bound-map variant becomes
+  writable when bound-map iter_range support lands.
+citation: doc/implementation-plan/rewrite/design.md (RejectDyn); doc/implementation-plan/rewrite/m5b-comprehensions-simplification.md §3.1 (empty range -> accu_init); runtime/cel_map_test.cc MapIterTest::Empty
+)CELSKIP";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "{}.exists(k, true)");
@@ -489,9 +498,18 @@ TEST_F(ComprehensionMapIterE2ETest, ExistsEmptyMapIsFalse) {
 }
 
 TEST_F(ComprehensionMapIterE2ETest, AllEmptyMapIsTrue) {
-  GTEST_SKIP() << "empty map literal types as map(dyn,dyn) — "
-                  "RejectDyn fires before the empty-iter codegen "
-                  "runs; runtime equivalent covered by cel_map_test.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: CEL has no syntactic way to write an EMPTY typed map: the bare
+  `{}` literal types as map(dyn, dyn), and the static subset rejects dyn at
+  compile time, so RejectDyn fires before the comprehension's empty-iter
+  codegen can run. That is the documented design, not a gap in the empty-range
+  path - the equivalent invariant is asserted at the runtime level by
+  runtime/cel_map_test.cc MapIterTest::Empty (cel_map_iter_init on an empty
+  map yields handle=0, hence no iterations). The bound-map variant becomes
+  writable when bound-map iter_range support lands.
+citation: doc/implementation-plan/rewrite/design.md (RejectDyn); doc/implementation-plan/rewrite/m5b-comprehensions-simplification.md §3.1 (empty range -> accu_init); runtime/cel_map_test.cc MapIterTest::Empty
+)CELSKIP";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "{}.all(k, false)");
@@ -681,9 +699,18 @@ TEST_F(ComprehensionTransformMapE2ETest, TransformMapEmptySource) {
   // before the comprehension's iter-empty fast path can be taken.
   // Equivalent assertion lives in cel_map_test.cc::MapIterTest
   // (cel_map_iter_init on an empty map → handle=0 → no iters).
-  GTEST_SKIP() << "empty map literal types as map(dyn,?) — "
-                  "RejectDyn fires; runtime equivalent covered by "
-                  "cel_map_test.cc.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: CEL has no syntactic way to write an EMPTY typed map: the bare
+  `{}` literal types as map(dyn, dyn), and the static subset rejects dyn at
+  compile time, so RejectDyn fires before the comprehension's empty-iter
+  codegen can run. That is the documented design, not a gap in the empty-range
+  path - the equivalent invariant is asserted at the runtime level by
+  runtime/cel_map_test.cc MapIterTest::Empty (cel_map_iter_init on an empty
+  map yields handle=0, hence no iterations). The bound-map variant becomes
+  writable when bound-map iter_range support lands.
+citation: doc/implementation-plan/rewrite/design.md (RejectDyn); doc/implementation-plan/rewrite/m5b-comprehensions-simplification.md §3.1 (empty range -> accu_init); runtime/cel_map_test.cc MapIterTest::Empty
+)CELSKIP";
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, "{}.transformMap(k, v, v + 1) == {}");
@@ -708,9 +735,21 @@ TEST_F(ComprehensionTransformMapE2ETest,
   // `cel_map_test.cc::MapInsertCollision`.  See
   // m5-comprehensions-followon.md §10 "future work" bullet
   // "TransformMapKeyCollisionLastWriteWins is malformed".
-  GTEST_SKIP() << "test mis-uses transformMap as a key-remapper; "
-                  "rewritten under Slice H transformMapEntry. "
-                  "See m5-comprehensions-followon.md §10.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: the TEST is malformed, not the product. It mis-uses
+  `transformMap(k, v, p, t)` as a key-remapper, but cel-cpp's 4-arg signature
+  is (key, value, predicate, value-transform): transformMap never remaps the
+  key, so no collision is reachable through this surface at all, and cel-cpp's
+  type checker correctly rejects the 4-arg form as written because "x" is not
+  a bool predicate. Key remapping is the contract of `transformMapEntry`,
+  where the loop_step inserts a whole {k': t} map and the caller controls k'.
+  The runtime invariant this row meant to assert (last-write-wins on a
+  duplicate key) is covered by runtime/cel_map_test.cc MapInsertCollision. The
+  row should be REWRITTEN as
+  `transformMapEntry(k, v, {"x": v}).size() == 1`, not un-skipped as-is.
+citation: doc/implementation-plan/rewrite/m5-comprehensions-followon.md §10 "future work" ("TransformMapKeyCollisionLastWriteWins is malformed"); runtime/cel_map_test.cc MapInsertCollision
+)CELSKIP";
 }
 
 TEST_F(ComprehensionTransformMapE2ETest, TransformMapValuePredicateError) {
@@ -775,9 +814,17 @@ TEST_F(ComprehensionTransformMapEntryE2ETest, EmptyEntrySkipsIter) {
   // map-literal pattern as Slice E.  Equivalent codegen invariant
   // (entries.empty() → BinaryenNop) is locked by code inspection
   // + the ConditionalForm path that DOES type-check.
-  GTEST_SKIP() << "empty entry literal types as map(dyn,?); "
-                  "RejectDyn fires.  Codegen no-op path is "
-                  "covered structurally.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: the empty entry literal `{}` types as map(dyn, dyn) and the
+  static subset rejects dyn, so RejectDyn fires before codegen runs - the same
+  documented empty-map-literal design as the Slice E rows above, not a gap in
+  the empty-entry path. The codegen invariant this row targets (entries
+  empty -> BinaryenNop) is locked by the ConditionalForm test below, whose
+  entry is single-keyed and DOES type-check, plus code inspection of the
+  empty-entry arm.
+citation: doc/implementation-plan/rewrite/design.md (RejectDyn); doc/implementation-plan/rewrite/m5b-comprehensions-simplification.md §9.7 (empty-entry literal contributes nothing)
+)CELSKIP";
 }
 
 TEST_F(ComprehensionTransformMapEntryE2ETest, ConditionalForm) {
@@ -798,9 +845,18 @@ TEST_F(ComprehensionTransformMapEntryE2ETest, EmptySource) {
   // before the comprehension's iter-empty fast path can be taken.
   // Same pattern as Slice E's empty-map literal SKIPs; equivalent
   // runtime invariant covered by cel_map_test::MapIterTest::Empty.
-  GTEST_SKIP() << "empty map literal types as map(dyn,?) — "
-                  "RejectDyn fires; runtime equivalent covered by "
-                  "cel_map_test.cc.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: CEL has no syntactic way to write an EMPTY typed map: the bare
+  `{}` literal types as map(dyn, dyn), and the static subset rejects dyn at
+  compile time, so RejectDyn fires before the comprehension's empty-iter
+  codegen can run. That is the documented design, not a gap in the empty-range
+  path - the equivalent invariant is asserted at the runtime level by
+  runtime/cel_map_test.cc MapIterTest::Empty (cel_map_iter_init on an empty
+  map yields handle=0, hence no iterations). The bound-map variant becomes
+  writable when bound-map iter_range support lands.
+citation: doc/implementation-plan/rewrite/design.md (RejectDyn); doc/implementation-plan/rewrite/m5b-comprehensions-simplification.md §3.1 (empty range -> accu_init); runtime/cel_map_test.cc MapIterTest::Empty
+)CELSKIP";
 }
 
 // ──────────────────────────────────────────────────────────────
