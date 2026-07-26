@@ -1,9 +1,9 @@
-// First-party SHA-256 (FIPS 180-4).  Exists because the repo has no
-// crypto dependency and deliberately does not add one for the single
-// digest the plugin surface needs (content-hashing plugin binaries;
-// see doc/implementation-plan/rewrite/m35-plugin-ergonomics.md).
-// Not a general crypto library: one-shot digest over a byte span,
-// nothing else.
+// SHA-256 (FIPS 180-4) — a thin wrapper over BoringSSL's one-shot
+// SHA256, exposing only the digest the plugin surface needs
+// (content-hashing plugin binaries; see
+// doc/implementation-plan/rewrite/m35-plugin-ergonomics.md).  Not a
+// general crypto surface: one-shot digest over a byte span, nothing
+// else.  Host-native only — never on the wasm32 cross-compile path.
 
 #ifndef CELWASM_ABI_INTERNAL_SHA256_H_
 #define CELWASM_ABI_INTERNAL_SHA256_H_

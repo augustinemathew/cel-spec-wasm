@@ -31,6 +31,20 @@ bazel_dep(
     version = "0.15.1",
 )
 
+# SHA-256 for plugin content hashing (//abi/internal:sha256 wraps
+# it).  Native/host-side only — never on the wasm32 cross-compile
+# path.  Chosen over a first-party implementation by user call
+# (2026-07-25 m35 review): don't hand-roll crypto.
+#
+# 0.20251110.0 is the newest BCR version buildable under the pinned
+# Bazel 7.3.2: 0.20251124.0+ pass `conlyopts`/`cxxopts` to cc_library
+# (util/util.bzl), attributes Bazel only grew in 7.4.  Revisit when
+# the Bazel pin moves.
+bazel_dep(
+    name = "boringssl",
+    version = "0.20251110.0",
+)
+
 # Phase C probe E3 — required for the wasm32-wasi cc_toolchain
 # (//doc/implementation-plan/rewrite/phase-c-probes/E3) to reference
 # @platforms//cpu:wasm32 + @platforms//os:wasi as constraint values.
