@@ -18,9 +18,11 @@ and §9; cited, not repeated.
 ## 1. The decl model & three backends
 
 One struct describes every custom function: `CelfnDecl`
-(`compiler/celfn/function_library.h:96-126`) — name, return `CelfnType`, params
-(each `{is_this, type, name}`), synthesized `overload_id`, `num_args`, and a
-`Backend` discriminator (h:97-108):
+(`compiler/celfn/function_library.h`) — name, return type (a
+`shared/CelType`, the one C++ type vocabulary since the 2026-07-25
+unification, cleanup-backlog #53), params (each `{is_this, type,
+name}`), synthesized `overload_id`, `num_args`, and a `Backend`
+discriminator:
 
 | Backend | Prefix | Body | Bound by |
 |---|---|---|---|
@@ -150,8 +152,9 @@ The long-claimed 254/255 cap test does not exist.
 libraries (compiler.cc:114-133); `Compile()` forwards them to *both* the
 checker (`CheckOptions.function_libraries`, §2 station 1) and codegen
 (`CompileOptions.function_libraries`, stations 2-3) (compiler.cc:191-192).
-`CelfnTypeToCelType` (parse_and_check.cc) maps decl types to `cel::Type`;
-kType/kOptional hit an `ABSL_CHECK` stub (§7).
+`DeclTypeToCheckerType` (parse_and_check.cc) maps decl `CelType`s to
+`cel::Type`; kType/kOptional hit an `ABSL_CHECK` stub (§7) behind the
+`ValidateDeclTypesMappable` gate in compiler.cc.
 
 ## 4. `@host` end-to-end
 
@@ -393,9 +396,10 @@ between 1 and 2. A reachable not-done path fails loudly at the edge.
 - **Map keys are bool|int|uint|string, every backend, any nesting depth** (§3.2
   gate 4) — matching the kernel's map-key contract.
 - **The gate asymmetry is a live crash bug**: gate 5 is foreign-only, so a
-  programmatic `AddHost("f", Prim(kType), ...)` passes `Build()` and crashes at
-  the `ABSL_CHECK` stub in `CelfnTypeToCelType` (parse_and_check.cc:770) —
-  embedder input must never crash the process. The fix rides V9 (§3.3).
+  programmatic `AddHost("f", CelType::Type(), ...)` passes `Build()` and
+  crashes at the `ABSL_CHECK` stub in `DeclTypeToCheckerType`
+  (parse_and_check.cc) — embedder input must never crash the process. The fix
+  rides V9 (§3.3).
 - **Protos cross every boundary as serialized bytes** — `list<u8>` over the
   plugin boundary, `SerializePartialToString` / ParseFromArray at the codec
   layer — with the fqn kept host-side; neither the WIT nor the generator ever

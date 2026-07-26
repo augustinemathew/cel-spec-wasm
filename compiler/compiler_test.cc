@@ -190,6 +190,32 @@ TEST(CompilerBuilderDeclareVariableTest, RejectsUnknownType) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+// kNull / kOptional are signature-only kinds
+// (CelType::IsDeclarableAsVariable is false): representable in
+// custom-fn signatures, never as a declared variable type.  The
+// rejection names the variable and the kind.
+TEST(CompilerBuilderDeclareVariableTest, RejectsNullType) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("n", CelType::Null());
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`n`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`null`"));
+}
+
+TEST(CompilerBuilderDeclareVariableTest, RejectsOptionalType) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("o", CelType::Optional(CelType::Int()));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`o`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`optional`"));
+}
+
 // Compile with a declared variable — M2.B.1 lights the kIdent arm
 // of expr_lower.  The declaration flows through the checker, the
 // resolver assigns the variable a slot, expr_lower emits the

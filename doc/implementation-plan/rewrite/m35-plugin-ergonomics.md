@@ -315,6 +315,27 @@ InvalidArgument naming the decl and type (test pinned in slice B2)
 rather than crashing.  The engine side needs no mapping, so
 `Engine::Use` of such a plugin stays legal.
 
+> As-built delta (2026-07-25, cleanup-backlog #53 — C++
+> type-vocabulary unification): `struct CelfnType` is deleted;
+> `shared/CelType` is the one C++ type vocabulary (widened with
+> `kNull = 14` / `kOptional = 15`, both flagged non-declarable-as-
+> variable), the celfn grammar produces it directly, and
+> `CelfnTypeToCelType` is replaced by `DeclTypeToCheckerType`
+> (compiler/frontend/parse_and_check.cc).  The B2 gate above keeps
+> its meaning under the one vocabulary: `type` / `optional<T>` are
+> now *representable* in any decl, but the checker still has no
+> `cel::TypeType` / `cel::OptionalType` wiring for custom-fn
+> CALL-SITE typing (cleanup-backlog #44), so
+> `ValidateDeclTypesMappable` still rejects them at
+> `Compiler::Build()` with the same pinned InvalidArgument.
+> Variable declarations gained their own gate:
+> `CelType::IsDeclarableAsVariable()` is false for
+> kUnknown/kNull/kOptional and `DeclareVariable` validation rejects
+> those kinds naming the variable + kind.  Overload-id slugs come
+> from the free `ArgkindSlug(const CelType&)` (byte-identical
+> output); the wire mapping is `TypeFromCelType` with every
+> kind→numeric pair pinned in `abi/celfn_wire_test.cc`.
+
 ### 3.2 Compile side: `Use` + the `DeclareFunctions` rename
 
 ```cpp
@@ -571,6 +592,11 @@ existence + full signature match, hash NOT enforced.
 > with it: `FnTypeFromCelfn` → `TypeFromCelfn`, `FnTypeEquals` →
 > `TypeEquals`, `RenderFnType` → `RenderType`.  See
 > `doc/design/08-abi-wire-format.md` §1.4 for the as-shipped shape.
+> Second delta (2026-07-25, cleanup-backlog #53): the C++ mirror is
+> now `shared/CelType` — `struct CelfnType` is deleted and the
+> converter is `TypeFromCelType(const CelType&)`, with every
+> kind→numeric pair pinned in `abi/celfn_wire_test.cc`
+> (`KIND_PROTO = 9` carries `CelType::Kind::kMessage`'s FQN).
 
 ```proto
 // Recursive type spelling for a custom-function signature.  Mirrors

@@ -48,9 +48,10 @@ anything but the final module would desync per optimize level. (This is
 why `cel.abi` attachment happens *after* the optimize pass.)
 
 Signature types use the recursive `Type` message — THE wire spelling
-of a CEL type, a 1:1 mirror of the celfn type grammar
-(`abi/celfn_wire.{h,cc}`: `TypeFromCelfn`, `TypeEquals`,
-`RenderSignature`). `Type` is the section's *general* type
+of a CEL type, a 1:1 mirror of `shared/CelType` (the one C++ type
+vocabulary; `abi/celfn_wire.{h,cc}`: `TypeFromCelType`, `TypeEquals`,
+`RenderSignature`; `KIND_PROTO` carries `CelType::Kind::kMessage`'s
+FQN). `Type` is the section's *general* type
 vocabulary, not a function-specific one: `RequiredFunction` carries
 it today, and `VariableEntry`'s reserved slot 5 adopts the same
 message when variable introspection lands.

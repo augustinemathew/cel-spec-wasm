@@ -3395,6 +3395,40 @@ row below has both positive and negative cases):
       e2e GTEST_SKIP'd on cleanup-backlog #51 (pre-existing
       `demo_plugin_proto` wasip2/absl-sync build break).
 
+## C++ type-vocabulary unification — CelfnType folded into shared/CelType (cleanup-backlog #53, 2026-07-25)
+
+`struct CelfnType` (the celfn signature vocabulary) is deleted;
+`shared/CelType` is the ONE C++ type vocabulary (`kNull = 14`,
+`kOptional = 15` added; enum value 10 stays permanently vacant).
+References to `CelfnType` in earlier shipped-milestone sections above
+(M24, M35) are historical; the current spelling everywhere is
+`CelType`.
+
+- [x] `CelType` kNull/kOptional widening — factories, accessors
+      (CHECK on kind mismatch), equality recursion, kind names,
+      `IsDeclarableAsVariable` over the full closed kind set
+      (`shared/type_test.cc`).
+- [x] Wire mapping `TypeFromCelType` — every representable
+      CelType::Kind pinned to its FROZEN `abi.Type.Kind` numeric
+      (BOOL=1 … PROTO=9 LIST=10 MAP=11 TYPE=12 OPTIONAL=13 NULL=14);
+      composite recursion; kUnknown CHECK-death
+      (`abi/celfn_wire_test.cc` TypeFromCelType*).
+- [x] `ArgkindSlug` free fn — overload-id slug output byte-identical
+      to the deleted `CelfnType::Argkind` (overload-id literal set
+      across e2e/conformance/abi/celfn expectations greps identical
+      before vs after); kType/kOptional slugs pinned
+      (`e2e/foreign_fn_type_matrix_test.cc` ArgkindForNewKinds).
+- [x] `Compiler::Builder::DeclareVariable` non-declarable gate —
+      negative cases for `null` and `optional<T>` variable
+      declarations naming the variable + kind; kUnknown case kept
+      (`compiler/compiler_test.cc` RejectsNullType/RejectsOptionalType).
+- [x] Deleted defensive arms (shapes unrepresentable under CelType
+      factories, tests removed with them): `TypeFromCelfnDeathTest.
+      {ListWithoutElementChecks, MapWithoutKeyValueChecks,
+      OptionalWithoutElementChecks}`; the four cel_plugin
+      empty-witness InvalidArgument guards; the emitters'
+      empty-payload InternalErrors; Argkind's `"unknown"` fallbacks.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

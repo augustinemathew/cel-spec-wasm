@@ -282,7 +282,9 @@ class Compiler::Builder {
   //
   // Returns InvalidArgument on:
   //   - duplicate variable names declared on this Builder
-  //   - a variable declared with CelType::Kind::kUnknown
+  //   - a variable declared with a non-declarable type kind
+  //     (kUnknown, or the signature-only kNull / kOptional — see
+  //     CelType::IsDeclarableAsVariable)
   //   - a variable of Message type whose FQN is empty
   //   - the same overload-id declared by more than one library
   //   - a function declaration whose type the type-checker cannot

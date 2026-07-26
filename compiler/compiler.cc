@@ -157,8 +157,9 @@ absl::Status ValidateDeclTypesMappable(const CelfnDecl& d) {
 }
 
 // Validate one variable declaration.  Reject:
-//   - kUnknown type (default-constructed CelType — caller forgot to
-//     pick a kind)
+//   - any non-declarable kind (IsDeclarableAsVariable is false for
+//     kUnknown — the default-constructed sentinel — and for the
+//     signature-only kNull / kOptional kinds)
 //   - empty message FQN (CelType::Message("") slipped through)
 absl::Status ValidateDecl(const VariableDeclaration& decl) {
   if (decl.name.empty()) {
@@ -170,6 +171,13 @@ absl::Status ValidateDecl(const VariableDeclaration& decl) {
         "Compiler::Builder::DeclareVariable: variable `", decl.name,
         "` has CelType::Kind::kUnknown (default-constructed CelType "
         "— pick an explicit kind)"));
+  }
+  if (!decl.type.IsDeclarableAsVariable()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Compiler::Builder::DeclareVariable: variable `",
+                     decl.name, "` has non-declarable CelType kind `",
+                     CelTypeKindName(decl.type.kind()),
+                     "` — `null` and `optional<T>` are signature-only kinds"));
   }
   if (decl.type.kind() == CelType::Kind::kMessage &&
       decl.type.message_fully_qualified_name().empty()) {

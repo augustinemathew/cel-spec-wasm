@@ -62,7 +62,23 @@ struck through or removed.
       Why P2: native lib is test/bench-only; production (wasm) path
       errors gracefully.
 
-- [ ] **#53** — unify the C++ type vocabularies: `CelfnType`
+- [x] **#53** — RESOLVED 2026-07-25: `CelfnType` deleted;
+      `shared/CelType` widened with `kNull = 14` / `kOptional = 15`
+      (enum value 10 stays permanently vacant — old wire CEL_TYPE),
+      `Null()` / `Optional(elem)` factories, `optional_element()`,
+      `IsDeclarableAsVariable()` (false for kUnknown/kNull/kOptional;
+      enforced at `Compiler::Builder::DeclareVariable` validation).
+      The celfn grammar produces CelType directly; `CelfnTypeToCelType`
+      replaced by `DeclTypeToCheckerType` (parse_and_check.cc) over the
+      one vocabulary; overload-id slugs via the free
+      `ArgkindSlug(const CelType&)` (byte-identical output); wire
+      mapping via `TypeFromCelType` with every kind→numeric pair
+      pinned in `abi/celfn_wire_test.cc`.  Kind-name spellings
+      consolidated onto `CelTypeKindName` (`MapKeyKindName` and
+      `CelfnKindName` deleted; only delta: the former kProto arm
+      spelled "proto", now kMessage spells "message" — no pinned
+      message relied on it).  Original entry follows.
+      unify the C++ type vocabularies: `CelfnType`
       (compiler/celfn, the celfn grammar's type AST — adds
       `null`/`optional<T>`/`proto`-by-name/`type`) vs
       `shared/CelType::Kind` (declared-variable vocabulary) are two
