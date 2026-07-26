@@ -47,7 +47,7 @@
 // "typedef redefinition with different types" at TUs that include
 // both headers.
 extern "C" {
-typedef struct wasmtime_component_t wasmtime_component_t;
+using wasmtime_component_t = struct wasmtime_component_t;
 }
 
 namespace celwasm {

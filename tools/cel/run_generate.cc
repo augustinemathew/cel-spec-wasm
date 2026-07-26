@@ -55,7 +55,7 @@ absl::Status RunCppPath(const GenerateOptions& opts,
   // come out as `exports_cel_<module>_fns_*` (m26 §7.5.1).
   const std::string pkg = DeriveWitPackageName(lib.module_name());
   const std::string ver = std::string(kWitPackageVersion);
-  const std::string ns = lib.module_name();  // empty → global scope
+  const std::string& ns = lib.module_name();  // empty → global scope
 
   auto wit = celfnc_emit::EmitWit(lib, pkg, ver);
   if (!wit.ok()) return wit.status();

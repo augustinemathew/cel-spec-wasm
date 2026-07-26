@@ -36,11 +36,11 @@ using ::testing::AllOf;
 using ::testing::HasSubstr;
 
 // `\0asm` + version/layer word 0x0001000d — a minimal CM component.
-const std::vector<uint8_t> kComponentPreamble = {0x00, 0x61, 0x73, 0x6d,
-                                                 0x0d, 0x00, 0x01, 0x00};
+constexpr std::array<uint8_t, 8> kComponentPreamble = {0x00, 0x61, 0x73, 0x6d,
+                                                       0x0d, 0x00, 0x01, 0x00};
 // `\0asm` + version 0x00000001 — a minimal (empty) core module.
-const std::vector<uint8_t> kCorePreamble = {0x00, 0x61, 0x73, 0x6d,
-                                            0x01, 0x00, 0x00, 0x00};
+constexpr std::array<uint8_t, 8> kCorePreamble = {0x00, 0x61, 0x73, 0x6d,
+                                                  0x01, 0x00, 0x00, 0x00};
 
 constexpr absl::string_view kScorerIdl =
     "Module scorer;\n"
@@ -53,7 +53,7 @@ absl::Span<const uint8_t> AsBytes(absl::string_view s) {
 }
 
 std::string WriteTempFile(absl::string_view name, absl::string_view content) {
-  const std::string path = absl::StrCat(::testing::TempDir(), "/", name);
+  std::string path = absl::StrCat(::testing::TempDir(), "/", name);
   std::ofstream out(path, std::ios::binary);
   out.write(content.data(), static_cast<std::streamsize>(content.size()));
   return path;
@@ -100,20 +100,20 @@ TEST(EmbedDeclsTest, DeterministicByteIdenticalOutput) {
 // --- EmbedDecls: input-binary rejections ---------------------------
 
 TEST(EmbedDeclsTest, CoreModuleRejectedWithDistinctMessage) {
-  EXPECT_THAT(EmbedDecls(kCorePreamble, kScorerIdl),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       AllOf(HasSubstr("cel embed-decls: "),
-                             HasSubstr("core wasm module"),
-                             HasSubstr("component"))));
+  EXPECT_THAT(
+      EmbedDecls(kCorePreamble, kScorerIdl),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               AllOf(HasSubstr("cel embed-decls: "),
+                     HasSubstr("core wasm module"), HasSubstr("component"))));
 }
 
 TEST(EmbedDeclsTest, NonWasmBytesRejected) {
   const std::vector<uint8_t> garbage = {0xde, 0xad, 0xbe, 0xef,
                                         0x00, 0x00, 0x00, 0x00};
-  EXPECT_THAT(EmbedDecls(garbage, kScorerIdl),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       AllOf(HasSubstr("cel embed-decls: "),
-                             HasSubstr("not a wasm"))));
+  EXPECT_THAT(
+      EmbedDecls(garbage, kScorerIdl),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               AllOf(HasSubstr("cel embed-decls: "), HasSubstr("not a wasm"))));
 }
 
 TEST(EmbedDeclsTest, EmptyBytesRejected) {
@@ -125,10 +125,10 @@ TEST(EmbedDeclsTest, EmptyBytesRejected) {
 // --- EmbedDecls: idl rejections ------------------------------------
 
 TEST(EmbedDeclsTest, IdlParseErrorPreservesLineAndColumn) {
-  EXPECT_THAT(EmbedDecls(kComponentPreamble, "int @plugin.broken("),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       AllOf(HasSubstr("cel embed-decls: "),
-                             HasSubstr("line 1:"))));
+  EXPECT_THAT(
+      EmbedDecls(kComponentPreamble, "int @plugin.broken("),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               AllOf(HasSubstr("cel embed-decls: "), HasSubstr("line 1:"))));
 }
 
 TEST(EmbedDeclsTest, HostBackendDeclRejectedNamingDecl) {
@@ -137,8 +137,8 @@ TEST(EmbedDeclsTest, HostBackendDeclRejectedNamingDecl) {
       "bool @host.check(int a);\n";
   EXPECT_THAT(EmbedDecls(kComponentPreamble, kIdl),
               StatusIs(absl::StatusCode::kInvalidArgument,
-                       AllOf(HasSubstr("cel embed-decls: "),
-                             HasSubstr("check"), HasSubstr("@plugin."))));
+                       AllOf(HasSubstr("cel embed-decls: "), HasSubstr("check"),
+                             HasSubstr("@plugin."))));
 }
 
 TEST(EmbedDeclsTest, NativeBackendDeclRejectedNamingDecl) {
@@ -156,10 +156,10 @@ TEST(EmbedDeclsTest, NativeBackendDeclRejectedNamingDecl) {
 TEST(EmbedDeclsTest, PreExistingCelFnsSectionRejected) {
   auto once = EmbedDecls(kComponentPreamble, kScorerIdl);
   ASSERT_TRUE(once.ok()) << once.status();
-  EXPECT_THAT(EmbedDecls(*once, kScorerIdl),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       AllOf(HasSubstr("cel embed-decls: "),
-                             HasSubstr("cel.fns"))));
+  EXPECT_THAT(
+      EmbedDecls(*once, kScorerIdl),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               AllOf(HasSubstr("cel embed-decls: "), HasSubstr("cel.fns"))));
 }
 
 // --- EmbedDecls: contract seam vs Plugin::Load ---------------------
@@ -169,9 +169,8 @@ TEST(EmbedDeclsTest, ZeroDeclIdlEmbedsButFailsPluginLoad) {
   // zero-decl reject is Plugin::Load's row.  Pin the seam.
   auto out = EmbedDecls(kComponentPreamble, "Module m;\n");
   ASSERT_TRUE(out.ok()) << out.status();
-  EXPECT_THAT(Plugin::Load(*out),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("no functions")));
+  EXPECT_THAT(Plugin::Load(*out), StatusIs(absl::StatusCode::kInvalidArgument,
+                                           HasSubstr("no functions")));
 }
 
 // --- RunEmbedDecls: CLI wrapper ------------------------------------
