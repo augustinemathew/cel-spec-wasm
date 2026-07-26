@@ -411,6 +411,53 @@ input first.  So:
     the pattern: comprehension-over-unknown-range confirmed against
     `eval/eval/comprehension_step.cc`).
 
+### Probe our own surfaces too — and delete the ones with no working setting
+
+The two sections above are about *cel-cpp's* behaviour.  The same
+discipline applies to **our own** options, flags, and public fields,
+where the failure mode is quieter: nobody questions a knob that has
+been in the header for a year.
+
+**A hedge in a doc is an unrun experiment.**  When a design note says
+"plausibly fails", "may be a no-op", "probe pending", or "the knob may
+be deleted" — that is not a finding, it is a five-minute experiment
+somebody deferred.  Run it before you write another word of prose
+around it.  `mem_size_bytes` was diagnosed correctly in four separate
+findings (R6, R8, R72, V8), each with the probe recipe spelled out,
+and survived for months because the probe was never run; every pass
+over the docs added more careful hedging instead.
+
+**Probing our own code is usually cheaper than reading it.**  The
+whole experiment is a `cc_test` that exercises the surface two ways
+and prints the difference:
+
+  - "Does this option affect the output?" — compile the same
+    expression at two settings and compare `wasm_bytes()`.  Identical
+    bytes is proof, not evidence.
+  - "Does this option work at all?" — carry it through to
+    `Engine::Plan` / `Instance::Eval`, not just `Compile`.  The
+    `mem_size_bytes` failure was invisible at compile time and only
+    appeared as `incompatible import type` at Plan.
+
+Same rules as any probe: it lives under `compiler/probes/<milestone>/`,
+it is deleted at closeout, and what it proved is recorded in the
+milestone doc.
+
+**Deletion is a legitimate — often the correct — outcome.**  When a
+probe shows a surface has *no working configuration*, delete it; do
+not document the caveat.  Documenting is the tempting move because it
+is smaller, and it is how a dead knob acquires four accurate
+paragraphs across four pages and stays dead.  The test to apply: *is
+there any value a user could set here that does something useful?*  If
+no, the option, its plumbing, its flag, and its prose all go in one
+commit.  If yes, document the real envelope.
+
+The same test retires unimplemented surfaces.  A public method whose
+body is `ABSL_CHECK(false)` with no milestone that owns it is not a
+promise, it is a crash with documentation — implement it or delete it
+(`Activation::OverrideFunction` sat declared for months after the plan
+doc had already sanctioned removing it).
+
 ## WAT-first for ABI and codegen design
 
 Before implementing any new codegen arm (kSelect, kCall, kComprehension,
@@ -797,6 +844,111 @@ A follow-up sweep found four more of the same family — including
 `xss == xss` returning `false`, a reflexivity violation.  All were
 P0 by the rule above.
 
+## Breaking public APIs is allowed — this is pre-1.0
+
+**There are no pinned external consumers.**  No release tags, no
+published package, no downstream repo builds against these headers.
+The entire cost of a breaking change is fixing the in-tree call sites,
+and the build finds every one of them for you.  So:
+
+  - **Change the signature; fix the callers in the same commit.**  Do
+    not add an overload beside the old one, a `*_v2`, a deprecation
+    shim, a compat alias, or a "legacy path kept for existing
+    callers".  There are no existing callers but us.
+  - **Two APIs that do the same thing is a defect, not a migration
+    step.**  When verification shows a surface is wrong, *replace* it.
+    Adding a second, correct API next to the wrong one doubles the
+    surface, doubles the docs, and guarantees somebody picks the wrong
+    one.
+  - **Delete rather than deprecate.**  A method nobody should call is
+    removed, not annotated.  If it turns out to be needed, git has it.
+
+This is the posture that let `Find` become `Resolve` (a lazy binder
+needs a status channel and the old signature had none — two call
+sites, both fixed in the same commit), `OverrideFunction` be deleted
+outright, and `mem_size_bytes` be removed from a public struct rather
+than documented around.  Each of those had been sitting behind an
+implicit "but it's public API" hesitation that was never real.
+
+**What this does NOT license:**
+
+  - **Silent behaviour changes.**  A break must be *loud* — a compile
+    error, not a runtime surprise.  Changing what a function returns
+    while keeping its signature is the one thing worse than changing
+    the signature.
+  - **Skipping the docs.**  A break lands with its doc update in the
+    same commit (next section), and with the reasoning recorded if the
+    old shape was ever documented as correct.
+  - **Skipping the tests.**  Callers you fix include test callers; a
+    test that no longer compiles gets rewritten, never deleted to make
+    the build pass.
+  - **Unilateral design changes.**  `PROPOSALS.md` still exists for
+    decisions that are genuinely contentious (what *should* the API
+    be).  "This would be a breaking change" is not by itself a reason
+    to defer something to that file.
+
+Revisit this section the moment a semver tag or an external consumer
+exists — at that point the cost model inverts.
+
+## Docs ship with the change (public API + CLI)
+
+**A public-API or CLI change is not done until the user-facing docs
+say the new thing, in the same commit.**  Triggering changes: any
+public header (`compiler/{compiler,program}.h`, the `eval/` public
+leaves, `shared/type.h`, `abi/*`, `runtime/*.h`) — signature,
+contract, status codes, defaults, thread-safety; and anything in
+`tools/cel/` a user can observe — subcommand, flag, output shape,
+exit code, error message.
+
+**There are two separate tellings, and both must be updated.**
+`mkdocs.yml` sets `docs_dir: doc`, so **only `doc/**.md` reaches the
+site** — `doc/user-guide/` for embedder how-to, `doc/design/` for
+architecture claims.  `tools/cel/README.md` and the root `README.md`
+live outside it and are GitHub-only.  Updating one is not updating
+the other.
+
+**Verify before you write.**  Check every claim against the code that
+implements it, never against a sibling doc or memory.  Two docs
+disagreeing is worse than a gap — the reader can't tell which to
+trust — so find the code path and fix both.  And correct a promise
+you can't keep rather than restating it: `BindLazy` documented a
+trigger the eager marshal cannot deliver, so the contract was
+replaced with the achievable one and the reason recorded
+(`m36-cli-runtime-and-lazy-binding.md` §4.2).
+
+**Keep them readable** — these pages are read by someone deciding
+whether to adopt the project, not by someone auditing it.  Lead with
+a runnable example.  One telling per topic; a fact needed twice gets
+a link, never a second copy of a table that can drift.  Complete
+sentences, not fragments or arrow chains.  State limitations plainly
+and in place — an honest "not implemented" beats a hedge.  No
+milestone numbers: a reader doesn't know what m21 is.
+
+## Feature work is tracked in `PROPOSALS.md`
+
+`PROPOSALS.md` is the running list of **changes that need a decision
+before they can be made** — anything altering a public signature,
+observable behaviour, the ABI wire format, or repo infrastructure.
+It exists so that discovering "this API is wrong" during unrelated
+work doesn't force an unscoped detour, and doesn't get silently
+dropped either.
+
+Keep it live:
+
+  - **Add an entry** when you hit something that needs an owner
+    decision instead of a patch — a public method that can't be used
+    as designed, a missing surface an adopter will need, an ABI field
+    that would unblock a feature.  One entry: what's wrong, the
+    options with trade-offs, and the affected files.
+  - **Remove an entry when it ships**, in the commit that ships it,
+    and say so in the commit message.  A proposal that lingers after
+    it's built is exactly as misleading as a stale plan doc.
+  - **Re-check entries against HEAD before citing them.**  This file
+    has been wrong before: it claimed the repo had no CI and no module
+    version long after `.github/workflows/ci.yml` and
+    `MODULE.bazel`'s `version` landed.  If an entry no longer matches
+    the tree, fix the entry as part of whatever you were doing.
+
 ## Compilation limits
 
 Every fixed boundary on what the compiler accepts (rodata window,
@@ -995,6 +1147,15 @@ invisible.
     expected to merge in >1 week) is about to merge to master.
   - A planning doc closed out (per "Closing out a planning doc"
     above) — the review verifies the closeout is honest.
+
+**`git fetch` first — always.**  A review or audit run against a
+stale checkout produces confident findings that were fixed weeks ago,
+and the stale ones are indistinguishable from the live ones in the
+report.  Sync (or at minimum `git fetch` and read via
+`git show origin/master:<path>`) before reading a single file, and
+state the SHA the review was run against at the top of the report.  A
+2026-07-25 readiness audit ran 45 commits behind and had to have every
+finding re-verified; roughly a third had already been fixed upstream.
 
 **Scope of each pass.**  The reviewer agent reads:
 

@@ -76,10 +76,9 @@ OverloadTable DefaultOverloadTable() {
 // table contents past "the built-ins resolve".
 absl::StatusOr<LoweredFunction> LowerWithDefaultOverloads(
     const TypedAst& ast, const StaticLayout& layout,
-    absl::string_view func_name, WasmModule& mod,
-    const LoweringOptions& opts = {}) {
+    absl::string_view func_name, WasmModule& mod) {
   static const auto* const kTable = new OverloadTable(DefaultOverloadTable());
-  return LowerToEvalFunction(ast, layout, func_name, mod, *kTable, opts);
+  return LowerToEvalFunction(ast, layout, func_name, mod, *kTable);
 }
 
 // Install one wasm import per built-in `cel_*` helper in the
@@ -348,12 +347,9 @@ TEST(ExprLowerTest, EmittedModuleSerializesSuccessfully) {
   EXPECT_GE(bytes_or->size(), 8u);
 }
 
-// Post-M5: the eval prologue is `(call $arena_reset)` with zero
-// arguments — LoweringOptions::mem_size_bytes no longer threads
-// into codegen (the bump cursor lives in BSS, not linear memory).
-// CompileOptions::mem_size_bytes still controls the host's memory
-// import; see `MemSizeBytesLargerThanOnePageGrowsPageCount` in
-// compile_test.cc.
+// The eval prologue is `(call $arena_reset)` with zero arguments —
+// the bump cursor lives in BSS, not linear memory, so codegen has no
+// memory-size input at all.
 TEST(ExprLowerTest, EvalPrologueIsZeroArgArenaReset) {
   Pipeline p = RunPipeline("42");
   WasmModule m;

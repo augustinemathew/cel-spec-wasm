@@ -203,13 +203,6 @@ struct FieldRefRow {
   std::string owner_fqn;      // FQN of the owning message type, or ""
 };
 
-struct LoweringOptions {
-  // Vestigial knob retained for source compatibility — the arena
-  // lives in the wasi-libc dlmalloc heap and is sized at runtime,
-  // not from this field.  See `rewrite/wasi/DESIGN.md` §4.
-  uint32_t mem_size_bytes = MemoryLayout::kWasmPageSize;
-};
-
 struct LoweredFunction {
   // Binaryen-owned handle; callers can look the function up later via
   // `BinaryenGetFunction(mod.raw(), name)`.  The function's signature
@@ -241,7 +234,7 @@ struct LoweredFunction {
 ABSL_MUST_USE_RESULT absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view func_name, WasmModule& mod,
-    const OverloadTable& overload_table, const LoweringOptions& opts = {});
+    const OverloadTable& overload_table);
 
 // One declared parameter on a CEL-defined custom function — name
 // + wasm-param position (1..N; wasm param 0 is the out_slot

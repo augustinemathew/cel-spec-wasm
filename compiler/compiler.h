@@ -67,14 +67,6 @@ struct VariableDeclaration {
 // `eval_export_name`, `validate`, `serialize`) that public callers
 // can't and shouldn't tune.
 struct CompilerOptions {
-  // Total linear-memory size in bytes, forwarded to the underlying
-  // pipeline's `mem_size_bytes`.  Default is two wasm pages
-  // (128 KiB) — matches cel_runtime.wasm's `--import-memory` min=2.
-  // Raise this when an expression needs a larger arena (e.g. heavy
-  // string concatenation or list construction inside a single Eval).
-  // Rounded up to the next wasm page (64 KiB) at module-emit time.
-  uint32_t mem_size_bytes = 128u * 1024u;
-
   // Package container used for name resolution (CEL-Go `container` /
   // CEL-Java `container`).  Forwarded verbatim to
   // `CheckOptions::container`.  Empty (the default) means "no

@@ -20,7 +20,6 @@ namespace {
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
 using ::cel::expr::Decl;
-using ::cel::expr::ExprValue;
 using ::cel::expr::Value;
 using ::cel::expr::conformance::test::SimpleTest;
 
@@ -236,12 +235,18 @@ TEST(PopulateActivation, ScalarsBoundCorrectly) {
       &t));
   celwasm::Activation act;
   ASSERT_THAT(PopulateActivation(t, act), IsOk());
-  ASSERT_NE(act.Find("b"), nullptr);
-  EXPECT_EQ(*act.Find("b")->AsBool(), true);
-  ASSERT_NE(act.Find("i"), nullptr);
-  EXPECT_EQ(*act.Find("i")->AsInt(), 7);
-  ASSERT_NE(act.Find("s"), nullptr);
-  EXPECT_EQ(*act.Find("s")->AsString(), "hi");
+  auto b = act.Resolve("b");
+  ASSERT_THAT(b, IsOk());
+  ASSERT_NE(*b, nullptr);
+  EXPECT_EQ(*(*b)->AsBool(), true);
+  auto i = act.Resolve("i");
+  ASSERT_THAT(i, IsOk());
+  ASSERT_NE(*i, nullptr);
+  EXPECT_EQ(*(*i)->AsInt(), 7);
+  auto s = act.Resolve("s");
+  ASSERT_THAT(s, IsOk());
+  ASSERT_NE(*s, nullptr);
+  EXPECT_EQ(*(*s)->AsString(), "hi");
 }
 
 TEST(PopulateActivation, UnknownBindingIsUnimplemented) {

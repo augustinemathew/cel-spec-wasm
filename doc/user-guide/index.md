@@ -127,7 +127,6 @@ auto compiler = std::move(b).Build();
 
 ```cpp
 celwasm::CompilerOptions opts;
-opts.mem_size_bytes = 128 * 1024;   // linear-memory size (default: 2 wasm pages)
 opts.container      = "acme";       // optional namespace for short-form idents
 opts.optimize_level = 2;            // wasm-opt -O level: 0 (default) … 3
 
@@ -239,6 +238,31 @@ act.Bind("x", celwasm::Value::Int(42))
    .Bind("s", celwasm::Value::String("hi"));     // fluent; overwrites prior binds
 ```
 
+Bind a value **lazily** when producing it is expensive and you'd rather
+not pay unless the program actually declares the variable — a fetch, a
+decode, a database read:
+
+```cpp
+act.BindLazy("profile", [&]() -> absl::StatusOr<celwasm::Value> {
+  return LoadProfile(user_id);          // runs only if the program declares `profile`
+});
+```
+
+The callback runs **at most once per `Eval`**, and only for a variable
+the compiled program declares (and that no unknown pattern blanks during
+a `PartialEval`). Its result is memoized for that evaluation; the next
+`Eval` calls it again. If it returns a non-OK status, evaluation stops
+and you get that status back from `Eval` unchanged.
+
+One caveat worth being precise about: the binder fires when the program
+*declares* the variable, not when the expression first *reads* it.
+Variable slots are written into linear memory before the expression
+runs, so `BindLazy` saves the cost of a variable the program never
+declared — not one it declares but never reaches.
+
+`Activation` is **move-only** (a binder is not copyable) and not
+thread-safe; use one per evaluation.
+
 `Value` is the host-side counterpart to the 24-byte wire value. Build
 with named factories, inspect with `StatusOr<T> AsX()`:
 
@@ -300,6 +324,8 @@ CLI (`tools/cel/`, built via
 | `cel check <expr>` | parse + type-check; print `OK` or the error | compile only |
 | `cel compile <expr>` | compile to wasm bytes (`--output PATH`, else stdout) | compile only |
 | `cel eval <expr>` | **compile *and* evaluate** in one shot; print the result | compile + run |
+| `cel run <prog.wasm>` | evaluate a **precompiled** program — no recompile | run only |
+| `cel inspect <prog.wasm>` | print what a program declares (vars, link mode, ABI versions) | neither |
 | `cel generate` | emit plugin-function bindings (`fns.wit`, `codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl` file — the front half of the `cel_wasm_plugin` macro ([plugin functions](writing-plugins.md)) | codegen only |
 | `cel embed-decls` | stamp a `.idl`'s declaration text into an existing plugin `.wasm` as its `cel.fns` custom section (`--plugin` / `--idl` / `--out`) — for plugin artifacts built outside the `cel_wasm_plugin` macro ([writing plugins](writing-plugins.md)) | build tooling |
 
@@ -322,32 +348,81 @@ drives it (and finishes by running `cel embed-decls`, which stamps the
 verbatim `.idl` text into the plugin as its `cel.fns` custom section).
 
 Note the split: `eval` is the *whole* pipeline (it compiles the
-expression in-process, then runs it — `cel.cc:RunEval`), while `compile`
-stops at wasm bytes. **There is no subcommand today that evaluates an
-*already-compiled* `.wasm`** — so `compile` currently produces an
-artifact the CLI itself can't consume back.
+expression in-process, then runs it), while `compile` stops at wasm
+bytes and `run` picks them back up:
 
-> **Missing: evaluate a precompiled program (`cel run`) ⛔.** The
-> portable `Program` (§3.3) is meant to be compiled once and run many
-> times — possibly in another process — but the CLI has no
-> `cel run expr.wasm --var …` to close that loop. The planned command
-> instantiates the wasm under an `Engine`, reads the variable schema from
-> the program's `cel.abi` section (so it binds `--var` without
-> re-declaring types), and evaluates:
-> ```bash
-> cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm  # ✅ today
-> cel run     expr.wasm   --var "a:int=6"  --var "b:int=7"                 # ⛔ planned → 43
-> ```
-> Until it lands, use `cel eval` (which recompiles each time) or the C++
-> `Engine::Plan(Program)` path (§4) to run a precompiled program.
+```bash
+cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm
+cel inspect expr.wasm                        # vars, required fns, link mode
+cel run     expr.wasm --var "a=6" --var "b=7"    # → 43
+```
+
+On `run`, `--var` supplies **values only** — each variable's full
+declared type travels with the program in its `cel.abi` section, so
+declarations are never repeated, and aggregates and messages bind the
+same way as scalars. `inspect` prints those types in the `--var`
+grammar, so a line of its output pastes straight into a binding:
+`xs:list<int>`, `m:map<string,int>`, `r:acme.Request`.
+
+**Calling plugin functions from the CLI.** Pass the artifact with
+`--plugin` and it serves both halves — its declarations let the checker
+resolve the call site, and the artifact satisfies the import at
+evaluation. It is needed at *both* compile and run:
+
+```bash
+cel eval 'add(2, 3)' --plugin demo_plugin.wasm            # → 5
+
+cel compile 'add(a, b)' --plugin demo_plugin.wasm \
+    --var a:int --var b:int --output prog.wasm
+cel run prog.wasm --plugin demo_plugin.wasm --var a=20 --var b=22   # → 42
+```
+
+`--plugin` is repeatable. Names are used bare (`add`, not
+`customfn.add`) — a `Module` directive names the wasm module, not a CEL
+namespace. At the default `--O 0` every declared plugin function is
+imported whether the expression calls it or not, so `inspect` lists all
+of them; `--O 1` and above drop the unused ones.
+
+A program that calls `@host` functions cannot be run by the stock CLI —
+those implementations are C++ in your process. The program records its
+own requirements in `cel.abi` (`required_functions`), so `run` refuses
+up front and names them, and `inspect` shows the split ahead of time:
+`plugin fns:` travel with the artifact, `host fns:` do not.
 
 Flags: `--var name:Type[=value]` (typed binding — the literal parser is
 type-directed), `--proto <file>` / `--descriptor_set <file>` (schema for
 message-typed vars), `--container`, `--O <0..3>` (optimize level),
-`--mem_size_bytes`, `--output` (compile target; stdout if omitted),
-`--format textproto|json|cel` (`eval` result rendering). Exit codes: `0`
-ok, `1` compile/eval failure, `2` usage; diagnostics on stderr, the
-`eval` result body on stdout.
+`--output` (compile target; stdout if omitted),
+`--format textproto|json|cel` (`eval` result rendering).
+
+Message-typed variables take a textproto or JSON payload, inline or from
+a file (the extension picks the codec):
+
+```bash
+cel eval 'r.user' --proto req.proto \
+  --var 'r:acme.Request=txtpb:user:"alice" quantity:3'      # inline textproto
+cel eval 'r.quantity * 2' --proto req.proto \
+  --var 'r:acme.Request=json:{"user":"bob","quantity":21}'  # inline JSON
+cel eval 'r.user' --proto req.proto \
+  --var 'r:acme.Request=@/tmp/req.json'                     # @file (.json/.txtpb/.pb)
+```
+
+**Exit codes.** `0` success · `1` the expression or program failed ·
+`2` usage error. Diagnostics go to stderr; only a successful result body
+goes to stdout, so the CLI is safe to branch on:
+
+```bash
+if result=$(cel eval "$expr" --var "n:int=$n"); then
+  echo "ok: $result"
+else
+  echo "failed with $?" >&2      # 1 = CEL said no, 2 = bad invocation
+fi
+```
+
+A CEL error (`1/0`, a missing key, overflow) is a legitimate *value* in
+the C++ API — catchable with `||` or `?:` — but at the process boundary
+it means no result was produced, so `cel` reports it on stderr and exits
+`1` rather than printing it as if it were an answer.
 
 > **Missing: `.celfn` IDL input (`--celfn`) 🟡.** The CLI today
 > compiles/evaluates standalone expressions only — there is no way to
@@ -405,7 +480,8 @@ self-describing for variables too (§3.3).
 | **Plan-time verification** — every custom function the program calls is checked against the registry (existence + full signature) at `Plan`; only the required plugins are instantiated | ✅ |
 | **Plugin fns** — Go authoring (TinyGo wasip2) | ⛔ designed; `cel generate --language=go` arm pending |
 | `cel` CLI — `eval` / `check` / `compile` standalone expressions | ✅ |
-| `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ⛔ no subcommand today; `eval` recompiles each time (§9) |
+| `cel run <file.wasm>` — evaluate a *precompiled* program (no recompile) | ✅ |
+| `cel inspect <file.wasm>` — print a program's declared variables + link mode | ✅ |
 | `.celfn` IDL accepted as a whole-file string (`ParseCelfnSource`); caller does the file read | ✅ |
 | `.celfn` grammar v2 (`@native`, prefix-module) + doc-comment capture; the `Module foo;` directive remains current (it names `@native` wasm modules and seeds the WIT package name for `@plugin` builds) | ✅ shipped (`m13-custom-fns.md` §3.0) |
 | Doc-comment → `cel.abi` (cross-process introspection) / `--celfn` CLI flag | 🟡 description on `CelfnDecl` only; ABI carriage + CLI flag pending |

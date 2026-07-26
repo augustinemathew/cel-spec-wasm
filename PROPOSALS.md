@@ -1,9 +1,20 @@
-# PROPOSALS — changes requiring API/ABI/infrastructure decisions
+# PROPOSALS — feature work needing an owner decision
 
-Status: live — created 2026-06-09 by the professionalization pass.
-Each entry is logged here instead of being made, because it changes a
-public signature, observable behavior, or repo infrastructure. Owner
-decides; nothing here blocks the cleanup queue in CLEANUP_PLAN.md.
+Status: live — created 2026-06-09; reconciled against HEAD 2026-07-25.
+
+This is the running list of **changes that need a decision before they
+can be made**: anything that alters a public signature, observable
+behaviour, the ABI wire format, or repo infrastructure. An entry is
+logged here instead of being made, so that finding "this API is wrong"
+during unrelated work neither forces an unscoped detour nor gets
+silently dropped.
+
+Maintenance rules (also in `CLAUDE.md`, "Feature work is tracked in
+`PROPOSALS.md`"): add an entry when you hit something needing an owner
+call; **delete the entry in the commit that ships it**, citing this
+file in the commit message; and re-check entries against HEAD before
+citing them — items 6 and 7 below sat here claiming the repo had no CI
+and no module version for weeks after both landed.
 
 ## API changes
 
@@ -27,31 +38,56 @@ decides; nothing here blocks the cleanup queue in CLEANUP_PLAN.md.
 4. **No `Value::AsProto<T>()`** — typed proto extraction requires
    `MessageBacking()` + an internal header. Add a public typed
    accessor. Affected: `eval/value.h`.
-5. **Graceful arena OOM** (cleanup-backlog #16, P0). `arena_alloc`
-   exhaustion panics the wasmtime store (host-visible crash) instead
-   of returning a resource-exhausted error. Behavioral fix + Compile/
-   Plan-time capacity pre-flight. Affected: `runtime/cel_arena.c`, all
-   arena consumers, `eval/instance.cc` trap mapping.
+5. **Execution cost limit.** `Engine` configures wasmtime with no
+   fuel, no epoch interruption, and no `max_wasm_stack`, and
+   `Instance::Eval` takes no deadline or budget. CEL totality bounds
+   non-termination but not *cost*: nested comprehensions over
+   host-backed collections are polynomial with no ceiling and no way
+   for the host to interrupt. Options: epoch interruption plus an
+   `Eval(deadline)` overload (preferred — cheap, cancellable), or
+   fuel metering (deterministic, higher overhead). Affected:
+   `eval/engine.cc`, `eval/instance.{h,cc}`,
+   `doc/user-guide/security-model.md`. **P0 for accepting
+   semi-trusted expressions.**
 
 ## Infrastructure
 
-6. **CI**: no `.github/workflows/`; `cloudbuild.yaml` builds only (no
-   tests, no `fetch_cel_cpp.sh` documentation of the pre-fetch
-   assumption). Add: build + `bazel test //...` + manual-target list +
-   conformance monotonic gate + `examples_smoke_test` +
-   `check_doc_drift.sh`, Linux + macOS, badge in README.
-7. **Versioning**: `MODULE.bazel` `module()` has no `version`; no git
-   tags; no CHANGELOG.md. Adopters cannot pin. Propose `0.x` semver +
-   CHANGELOG seeded from the milestone history.
-8. **Root governance files**: CONTRIBUTING.md (re-home or stub-link
-   doc/contributing.md), SECURITY.md (link
-   doc/user-guide/security-model.md + a disclosure contact).
-9. **Generated API reference**: no Doxygen config. After the Phase 2
-   header pass the comments will be reference-grade; wire
-   Doxygen (or standardese-lite) into CI.
-10. **`cel run` subcommand** — the CLI can compile a `.wasm` it cannot
-    execute; design exists (cel-cli-design.md). Closes the
-    compile-once-run-anywhere proof loop.
+6. **Root governance files**: no `CONTRIBUTING.md` (re-home or
+   stub-link `doc/contributing.md`), no `SECURITY.md` (link
+   `doc/user-guide/security-model.md` + a disclosure contact).
+   GitHub surfaces neither today.
+7. **Release contract**: `MODULE.bazel` carries `version = "0.1.0"`
+   but there are no git tags, no `CHANGELOG.md`, and no
+   `cel --version`. Adopters cannot pin a version, see what changed,
+   or tell which compiler produced a given `.wasm` — and AOT
+   artifacts are compiler-version sensitive. Propose `0.x` semver
+   tags + a CHANGELOG seeded from the milestone history + a version
+   stamp readable from both the CLI and the `cel.abi` section.
+8. **Generated API reference**: no Doxygen config, and the headers
+   (the best API prose in the repo) sit outside `docs_dir`, so a site
+   reader never sees them. Wire Doxygen (or standardese-lite) into
+   the pages workflow.
+9. **CEL language-support matrix**: nothing enumerates supported vs
+   rejected operators, macros, stdlib overloads, and extensions.
+   `README.md` §Limitations is prose and `conformance/README.md` is
+   per-fixture pass/skip; neither answers "does `getFullYear` work?".
+   This is the most common adopter question.
+10. **Documented capacity envelope**: limit values live only in
+    `e2e/limits_test.cc` and `runtime/cel_layout.h`, and the policy
+    lives in `CLAUDE.md`, which is not published. No user-facing page
+    states a single numeric limit, so an embedder accepting untrusted
+    expressions cannot size their risk.
+
+## Shipped (kept briefly for traceability, then deleted)
+
+- ~~**CI**~~ — landed: `.github/workflows/ci.yml` runs build +
+  `bazel test //...` + `run_full_suite.sh` (manual targets +
+  dual-mode conformance gate) on Ubuntu, macOS on demand.
+- ~~**Graceful arena OOM**~~ (was #5) — the crash class closed with
+  cleanup-backlog #16/#47; the expression static region is bounded
+  and parser-depth overflow is a catchable trap, not a host SIGSEGV.
+- ~~**`Activation::BindLazy` / `OverrideFunction`**~~ — resolved in
+  m36: `BindLazy` implemented, `OverrideFunction` removed.
 
 ## Style-guide conflicts requiring signature changes
 

@@ -95,6 +95,17 @@ cc_library(
 )
 
 cc_library(
+    name = "program_report",
+    srcs = ["program_report.cc"],
+    hdrs = ["program_report.h"],
+    visibility = ["//:internal"],
+    deps = [
+        "//abi:program_facts",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
     name = "run_embed_decls",
     srcs = ["run_embed_decls.cc"],
     hdrs = ["run_embed_decls.h"],
@@ -131,6 +142,7 @@ cc_binary(
     srcs = ["cel.cc"],
     visibility = ["//visibility:public"],
     deps = [
+        ":program_report",
         ":run_embed_decls",
         ":run_generate",
         ":value_format",
@@ -162,7 +174,10 @@ sh_test(
     name = "cel_smoke_test",
     size = "large",
     srcs = ["cel_smoke_test.sh"],
-    data = [":cel"],
+    data = [
+        ":cel",
+        "//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin.wasm",
+    ],
 )
 
 # Activation-marshal coverage matrix — every aggregate kind passed

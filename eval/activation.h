@@ -3,17 +3,21 @@
 // caller.  One Activation per `Instance::Eval` call; safe to reuse
 // across back-to-back evals.
 //
-// M1 scope: direct `Bind(name, value)` + `Find(name)`.  `BindLazy`
-// (deferred-evaluation binding) and `OverrideFunction` (per-call
-// function-impl override) are signature-final stubs — declared so
-// the surface shape doesn't change later, bodies `ABSL_CHECK`
-// until the milestone that lights them up.
+// Two ways to supply a value: `Bind` hands over a `Value` directly,
+// and `BindLazy` registers a callback that produces one on demand.
+// `Resolve` is the single lookup entry point and handles both.
+//
+// Thread-safety: NOT thread-safe.  `Resolve` memoizes lazy values
+// through a mutable cache, so an Activation must not be shared across
+// concurrent evaluations.  This matches `Instance`, which is
+// thread-owned — bind one Activation per worker.
 
 #ifndef CELWASM_EVAL_ACTIVATION_H_
 #define CELWASM_EVAL_ACTIVATION_H_
 
 #include <string>
 
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/statusor.h"
@@ -22,42 +26,66 @@
 
 namespace celwasm {
 
-// Forward: `FunctionImpl` lives in `api/function.h`.  Declared via
-// duplicate `using` so this header doesn't pull function.h into its
-// transitive set (tests exercise activation without caring about
-// custom fns).
-using FunctionImpl =
-    absl::AnyInvocable<Value(absl::Span<const Value> args) const>;
-
 class Activation {
  public:
+  // Produces a variable's value on demand.  Invoked at most once per
+  // evaluation; see `BindLazy`.
+  using LazyBinder = absl::AnyInvocable<absl::StatusOr<Value>() const>;
+
   Activation() = default;
 
+  // Move-only: a lazy binder is move-only, so an Activation cannot be
+  // copied once one is registered.  Declared uniformly rather than
+  // conditionally so the API shape doesn't depend on what you bound.
+  Activation(Activation&&) = default;
+  Activation& operator=(Activation&&) = default;
+  Activation(const Activation&) = delete;
+  Activation& operator=(const Activation&) = delete;
+
   // ——— Direct binding ———
-  // Overwrites any prior binding of `name` in this Activation.
-  // Returns *this for fluent construction at Eval sites.
+  // Overwrites any prior binding of `name` — eager or lazy — in this
+  // Activation.  Returns *this for fluent construction at Eval sites.
   Activation& Bind(std::string name, Value value);
 
-  // ——— Deferred binding (M2+; stub at M1) ———
-  // Binder is invoked at most once per Eval, the first time the
-  // expression references `name`.  Result is cached for the rest of
-  // that Eval; cleared on Instance::Reset.  Stub body CHECKs.
-  Activation& BindLazy(
-      std::string name,
-      absl::AnyInvocable<absl::StatusOr<Value>() const> binder);
+  // ——— Deferred binding ———
+  // Registers a callback that produces `name`'s value on demand,
+  // overwriting any prior binding of `name`.
+  //
+  // `binder` is invoked **at most once per `Eval`**, and only if the
+  // compiled program declares `name` and the variable is not blanked
+  // by an unknown pattern during a `PartialEval`.  Its result is
+  // memoized for the remainder of that evaluation; the next `Eval`
+  // invokes it again.  A binder returning a non-OK status aborts the
+  // evaluation and that status is propagated verbatim.
+  //
+  // Note the binder fires on *declaration*, not on first reference:
+  // variable slots are marshalled into linear memory before the
+  // expression runs, so the runtime never asks for a variable it
+  // didn't already receive.  Binding lazily therefore saves the cost
+  // of materializing a variable the program never declared — not the
+  // cost of one it declares but doesn't reach.
+  Activation& BindLazy(std::string name, LazyBinder binder);
 
-  // ——— Per-call function override (M5+; stub at M1) ———
-  // Allows a single Eval to use a different impl for a declared
-  // overload_id without rebuilding RuntimeBindings.  Stub body CHECKs.
-  Activation& OverrideFunction(std::string overload_id, FunctionImpl impl);
+  // Lookup.  Returns nullptr when `name` has no binding of either
+  // kind, and a non-OK status only when a lazy binder failed.  Used by
+  // `Instance::Eval` to populate root-variable slots; callers rarely
+  // invoke it directly.
+  //
+  // The returned pointer is owned by this Activation and is
+  // invalidated by `Bind`, `BindLazy`, or `ClearLazyCache`.
+  absl::StatusOr<const Value* absl_nullable> Resolve(
+      absl::string_view name) const;
 
-  // Lookup.  Returns nullptr if not bound.  Used internally by
-  // `Instance::Eval` to populate root-variable slots; users rarely
-  // call this directly.
-  const Value* absl_nullable Find(absl::string_view name) const;
+  // Drops memoized lazy values so the next evaluation re-invokes its
+  // binders.  Called by `Instance` at the start of each evaluation;
+  // `const` because evaluation only ever holds a `const Activation&`.
+  void ClearLazyCache() const;
 
  private:
   absl::flat_hash_map<std::string, Value> bindings_;
+  absl::flat_hash_map<std::string, LazyBinder> lazy_;
+  // Values produced by `lazy_` binders during the current evaluation.
+  mutable absl::flat_hash_map<std::string, Value> lazy_cache_;
 };
 
 }  // namespace celwasm

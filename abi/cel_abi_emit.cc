@@ -27,7 +27,9 @@ constexpr uint32_t kCelAbiVersion = 1;
 // entries.  Comprehension-scope locals (iter / accu / index) are
 // excluded — they're bound by the comprehension's loop prologue
 // at comprehension entry, not by `Activation::Bind`.
-void EmitVariables(const StaticLayout& layout, celwasm::abi::CelAbi& abi) {
+void EmitVariables(const StaticLayout& layout,
+                   absl::Span<const celwasm::Variable> declared,
+                   celwasm::abi::CelAbi& abi) {
   abi.mutable_variables()->Reserve(static_cast<int>(layout.variables.size()));
   for (const LaidOutVariable& v : layout.variables) {
     if (v.kind != ResolvedVariableKind::kFreeVariable) continue;
@@ -36,6 +38,17 @@ void EmitVariables(const StaticLayout& layout, celwasm::abi::CelAbi& abi) {
     entry->set_local_index(v.local_index);
     entry->set_slot_offset(v.slot_offset);
     entry->set_repr(static_cast<uint32_t>(v.repr));
+    // The declared type, matched by name.  A variable the expression
+    // references but no declaration covers cannot type-check, so a
+    // miss here means `declared` was not supplied — leave `type`
+    // unset rather than guessing one from `repr`.
+    for (const celwasm::Variable& d : declared) {
+      if (d.name != v.name) continue;
+      if (d.type.kind() != CelType::Kind::kUnknown) {
+        *entry->mutable_type() = TypeFromCelType(d.type);
+      }
+      break;
+    }
   }
 }
 
@@ -47,7 +60,8 @@ void EmitVariables(const StaticLayout& layout, celwasm::abi::CelAbi& abi) {
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs,
-    celwasm::abi::LinkMode link_mode) {
+    celwasm::abi::LinkMode link_mode,
+    absl::Span<const celwasm::Variable> declared) {
   celwasm::abi::CelAbi abi;
   abi.set_version(kCelAbiVersion);
   // Link-mode marker for embedder tooling; the engine routes on
@@ -60,7 +74,7 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
   // doc/implementation-plan/rewrite/abi-refactor.md §5 (Slice E).
   abi.set_runtime_abi_version(celwasm::abi::kRuntimeAbiVersion);
 
-  EmitVariables(layout, abi);
+  EmitVariables(layout, declared, abi);
 
   // fields[]: one row per kSelect.  Index 0 is the sentinel
   // (zero-initialised FieldRefRow); emit it too so the host-side

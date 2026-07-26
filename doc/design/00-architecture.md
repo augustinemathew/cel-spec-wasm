@@ -77,10 +77,10 @@ Static is the default because it measured as the performance-dominant shape (no 
 
 **Routing is by import introspection, not label.** `Engine::Plan` compiles the expr module before instantiation and decides `is_static = !ModuleImportsCelNamespace(module)` (`eval/engine.cc`). The `link_mode` label in `cel.abi` is metadata and a corruption **tripwire only**: when present it is cross-checked against the import-derived answer; unknown future values are tolerated. A stale label can never misroute a Program, and label-less synthetic modules still plan (`EnginePlanLinkModeTripwireTest`, 4 cases).
 
-`CompilerOptions::mem_size_bytes` sizes the imported `cel.memory` in `kDynamic`; under `kStatic` it is a no-op (the adopted runtime defines its own memory; the arena is sized at runtime).
+The expr module's `cel.memory` import declares exactly `MemoryLayout::kInitialMemoryPages`, the runtime's own exported size — held in lockstep by a `static_assert`. There is no embedder knob for it: a `mem_size_bytes` option existed until 2026-07-25 but was inert under `kStatic` and broke instantiation under `kDynamic` whenever it was raised, so it was deleted.
 
 !!! note "Open questions"
-    **V8/R72:** in `kDynamic`, `mem_size_bytes` above 256 KiB stamps an import minimum larger than the runtime's exported memory and plausibly fails instantiation at Plan. Probe pending; the knob may be deleted.
+    **V8/R72 — resolved 2026-07-25.** Probed: under `kStatic` the knob was byte-for-byte a no-op; under `kDynamic`, any value above the runtime's 5 exported pages failed Plan with `incompatible import type for cel::memory`. Having no useful setting, the option, the CLI flag, and the vestigial `LoweringOptions` field were deleted.
 
     **V25:** the three LinkMode enums (public option, internal option, `cel.abi` proto label) are forwarded by blind `static_cast` with nothing locking their values together. A `static_assert` pin is pending.
 

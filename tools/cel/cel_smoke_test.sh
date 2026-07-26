@@ -31,6 +31,20 @@ expect() {
   fi
 }
 
+# Assert a command's exit status.  See the exit-code contract below.
+expect_exit() {
+  local label="$1"; shift
+  local want="$1"; shift
+  local got rc
+  got="$("$@" 2>&1)" && rc=0 || rc=$?
+  if [[ "${rc}" != "${want}" ]]; then
+    echo "FAIL ${label}: want exit ${want}, got ${rc}"
+    echo "  cmd:    $*"
+    echo "  output: ${got}"
+    fail=1
+  fi
+}
+
 expect "scalar literal" "6" \
   "${CEL}" eval "1 + 2 + 3"
 
@@ -87,17 +101,144 @@ else
   fi
 fi
 
-# Unknown subcommand → non-zero, usage on stderr.
-if "${CEL}" wibble 2>/dev/null; then
-  echo "FAIL: unknown subcommand should exit nonzero"
-  fail=1
+# --- compile -> inspect -> run round trip ---------------------------------
+# The loop the whole AOT design exists for: compile once, describe the
+# artifact, evaluate it later with no recompile.
+rt_wasm="${TEST_TMPDIR:-/tmp}/roundtrip.wasm"
+"${CEL}" compile "a * b + 1" --var "a:int" --var "b:int" \
+    --output "${rt_wasm}" >/dev/null 2>&1
+
+expect "inspect reports declared vars" \
+  "vars:       a:int, b:int" \
+  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | head -1"
+
+# A plain expression requires no custom functions; both rows read
+# `none` and nothing warns about runnability.
+expect "inspect reports no required fns" "plugin fns: none" \
+  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | sed -n 2p"
+expect "inspect reports no host fns" "host fns:   none" \
+  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | sed -n 3p"
+
+expect "run evaluates a precompiled program" "43" \
+  "${CEL}" run "${rt_wasm}" --var "a=6" --var "b=7"
+
+expect "run accepts the explicit typed form too" "43" \
+  "${CEL}" run "${rt_wasm}" --var "a:int=6" --var "b:int=7"
+
+# Aggregates bind by value now that cel.abi carries the full type —
+# no `name:Type=value` re-declaration needed.
+agg_wasm="${TEST_TMPDIR:-/tmp}/agg.wasm"
+"${CEL}" compile "size(xs)" --var "xs:list<int>" \
+    --output "${agg_wasm}" >/dev/null 2>&1
+expect "inspect shows the full element type" "vars:       xs:list<int>" \
+  bash -c "\"${CEL}\" inspect \"${agg_wasm}\" | head -1"
+expect "run binds an aggregate by value alone" "3" \
+  "${CEL}" run "${agg_wasm}" --var "xs=[1, 2, 3]"
+
+expect_exit "run: undeclared --var"        2 \
+  "${CEL}" run "${rt_wasm}" --var "a=6" --var "b=7" --var "nope=1"
+expect_exit "run: unbound declared var"    2 "${CEL}" run "${rt_wasm}" --var "a=6"
+expect_exit "run: bad value for repr"      2 \
+  "${CEL}" run "${rt_wasm}" --var "a=notanint" --var "b=7"
+expect_exit "run: missing file"            2 "${CEL}" run /nonexistent.wasm
+expect_exit "inspect: missing file"        2 "${CEL}" inspect /nonexistent.wasm
+expect_exit "inspect: not a wasm module"   2 "${CEL}" inspect "$0"
+
+# `--plugin` is repeatable on `run` but a single absl flag on
+# `embed-decls`.  Peeling it out of argv for every subcommand would
+# consume embed-decls' value before absl saw it — this pins that the
+# extraction stays scoped to `run`.
+embed_out="$("${CEL}" embed-decls --plugin "${rt_wasm}" \
+  --idl /nonexistent.idl --out /tmp/ignored.wasm 2>&1 || true)"
+case "${embed_out}" in
+  *"--plugin is required"*)
+    echo "FAIL: embed-decls lost its --plugin value to run's extractor"
+    fail=1
+    ;;
+esac
+
+# A CEL error from a precompiled program follows the same contract as
+# `eval`: stderr, exit 1.
+dz_wasm="${TEST_TMPDIR:-/tmp}/divzero.wasm"
+"${CEL}" compile "1 / 0" --output "${dz_wasm}" >/dev/null 2>&1
+expect_exit "run: CEL error exits 1"       1 "${CEL}" run "${dz_wasm}"
+
+# --- Plugin flow ------------------------------------------------------------
+# A plugin is needed at BOTH compile (its decls resolve the call site)
+# and run (its artifact satisfies the import).  Skipped when the demo
+# fixture is not in the runfiles — the smoke test must stay runnable
+# without building the plugin toolchain.
+demo_plugin="${TEST_SRCDIR}/_main/e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin.wasm"
+if [[ -f "${demo_plugin}" ]]; then
+  expect "eval calls a plugin function" "5" \
+    "${CEL}" eval "add(2, 3)" --plugin "${demo_plugin}"
+
+  pl_wasm="${TEST_TMPDIR:-/tmp}/plugin_prog.wasm"
+  "${CEL}" compile "add(a, b)" --plugin "${demo_plugin}" \
+      --var "a:int" --var "b:int" --output "${pl_wasm}" >/dev/null 2>&1
+  expect "run a plugin-backed program" "42" \
+    "${CEL}" run "${pl_wasm}" --plugin "${demo_plugin}" \
+      --var "a=20" --var "b=22"
+
+  # Omitting --plugin is a usage error that names what is missing,
+  # not a wasm link failure.
+  expect_exit "run without --plugin" 2 \
+    "${CEL}" run "${pl_wasm}" --var "a=1" --var "b=2"
+else
+  # Loud, not silent: a runfiles change that drops the fixture would
+  # otherwise remove this coverage without anyone noticing.
+  echo "WARN: demo plugin fixture absent — plugin flow NOT covered" >&2
 fi
 
-# Type mismatch in eval should produce an ERROR on stderr + nonzero exit.
-if out=$("${CEL}" eval "a + 1" --var "a:string=\"hi\"" 2>&1); then
-  echo "FAIL: type error should exit nonzero (got: ${out})"
+# --- Exit-code contract -----------------------------------------------------
+# Pins the three codes declared by the kExit* constants in cel.cc and
+# documented in tools/cel/README.md:
+#   0  success
+#   1  the expression or program failed (diagnostics, or a CEL error /
+#      unknown result)
+#   2  usage (bad subcommand, flag, --var syntax, positional count)
+# A CEL error used to print on stdout and exit 0, which made the CLI
+# unsafe to branch on from a script; these cases lock that shut.
+
+expect_exit "success"                0 "${CEL}" eval "1 + 1"
+expect_exit "help"                   0 "${CEL}" --help
+expect_exit "help after subcommand"  0 "${CEL}" eval --help
+
+expect_exit "divide by zero"         1 "${CEL}" eval "1 / 0"
+expect_exit "modulus by zero"        1 "${CEL}" eval "1 % 0"
+expect_exit "no such key"            1 "${CEL}" eval '{"a": 1}["b"]'
+expect_exit "index out of range"     1 "${CEL}" eval '[1, 2][5]'
+expect_exit "int overflow"           1 "${CEL}" eval "9223372036854775807 + 1"
+expect_exit "check type error"       1 "${CEL}" check "1 + \"s\""
+expect_exit "eval type error"        1 "${CEL}" eval "a + 1" --var 'a:string="hi"'
+expect_exit "compile type error"     1 "${CEL}" compile "1 + \"s\"" --output /dev/null
+
+expect_exit "unknown subcommand"     2 "${CEL}" wibble
+expect_exit "unknown flag"           2 "${CEL}" eval "1 + 1" --bogus_flag
+expect_exit "malformed --var"        2 "${CEL}" eval "a" --var "a=5"
+expect_exit "bad --var value"        2 "${CEL}" eval "a" --var "a:int=notanint"
+expect_exit "bad --format"           2 "${CEL}" eval "1 + 1" --format wibble
+expect_exit "missing positional"     2 "${CEL}" eval
+expect_exit "too many positionals"   2 "${CEL}" eval "1 + 1" "2 + 2"
+
+# A CEL error must go to stderr, leaving stdout empty — otherwise
+# `x=$(cel eval ...)` captures the error text as if it were a result.
+err_stdout="$("${CEL}" eval "1 / 0" 2>/dev/null || true)"
+if [[ -n "${err_stdout}" ]]; then
+  echo "FAIL: CEL error leaked to stdout: $(printf '%q' "${err_stdout}")"
   fail=1
 fi
+# Captured rather than piped: `set -o pipefail` would surface the
+# intentional exit 1 as a pipeline failure and mask the real assertion.
+err_stderr="$("${CEL}" eval "1 / 0" 2>&1 >/dev/null || true)"
+case "${err_stderr}" in
+  *divide_by_zero*) ;;
+  *)
+    echo "FAIL: CEL error not reported on stderr"
+    echo "  stderr: $(printf '%q' "${err_stderr}")"
+    fail=1
+    ;;
+esac
 
 if (( fail != 0 )); then
   exit 1

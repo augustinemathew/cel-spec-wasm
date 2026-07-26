@@ -202,25 +202,50 @@ absl::StatusOr<DescriptorPoolBundle> LoadDescriptorPool(
 // Returns a non-empty `cel::Type` iff `name` is one of the CEL spec's
 // primitive or well-known type keywords.  Kept separate from
 // `TypeParser` so the parser's per-method line count stays small.
-std::optional<cel::Type> ParsePrimitiveType(absl::string_view name) {
-  if (name == "bool") return cel::Type(cel::BoolType{});
-  if (name == "int") return cel::Type(cel::IntType{});
-  if (name == "uint") return cel::Type(cel::UintType{});
-  if (name == "double") return cel::Type(cel::DoubleType{});
-  if (name == "string") return cel::Type(cel::StringType{});
-  if (name == "bytes") return cel::Type(cel::BytesType{});
-  if (name == "null_type") return cel::Type(cel::NullType{});
-  if (name == "timestamp") return cel::Type(cel::TimestampType{});
-  if (name == "duration") return cel::Type(cel::DurationType{});
-  if (name == "any") return cel::Type(cel::AnyType{});
-  if (name == "dyn") return cel::Type(cel::DynType{});
-  // `type` declarable as a variable type (the type-of-types; see
-  // `rewrite/m9-type-subsystem.md`).
-  // The cel-cpp `TypeType` constructor takes an optional inner type;
-  // a default-constructed TypeType corresponds to "untyped type" —
-  // sufficient for variable declarations whose values are arbitrary
-  // CEL_TYPE Values.
-  if (name == "type") return cel::Type(cel::TypeType{});
+// A parsed type spec, in both vocabularies: the checker's `cel::Type`
+// (what the type-checker needs) and our `CelType` (what `cel.abi`
+// carries so a consumer can describe or bind the variable).  Produced
+// together because the parser already knows exactly what it matched;
+// deriving one from the other afterwards would need a reverse mapper
+// that does not exist.
+struct ParsedType {
+  cel::Type checker;
+  CelType ours;
+};
+
+std::optional<ParsedType> ParsePrimitiveType(absl::string_view name) {
+  // One row per keyword, in both vocabularies.  A table rather than a
+  // chain of returns so the two spellings of each type stay visibly
+  // paired — a mismatch here would put a wrong type on the wire.
+  struct Row {
+    absl::string_view keyword;
+    cel::Type checker;
+    CelType ours;
+  };
+  const Row rows[] = {
+      {"bool", cel::Type(cel::BoolType{}), CelType::Bool()},
+      {"int", cel::Type(cel::IntType{}), CelType::Int()},
+      {"uint", cel::Type(cel::UintType{}), CelType::Uint()},
+      {"double", cel::Type(cel::DoubleType{}), CelType::Double()},
+      {"string", cel::Type(cel::StringType{}), CelType::String()},
+      {"bytes", cel::Type(cel::BytesType{}), CelType::Bytes()},
+      {"null_type", cel::Type(cel::NullType{}), CelType::Null()},
+      {"timestamp", cel::Type(cel::TimestampType{}), CelType::Timestamp()},
+      {"duration", cel::Type(cel::DurationType{}), CelType::Duration()},
+      // `type` is declarable as a variable type (the type-of-types).
+      // A default-constructed TypeType is "untyped type", which is
+      // what a variable holding arbitrary CEL_TYPE values needs.
+      {"type", cel::Type(cel::TypeType{}), CelType::Type()},
+      // `any` and `dyn` have no CelType spelling: RejectDyn refuses
+      // them downstream, so they never reach cel.abi.
+      {"any", cel::Type(cel::AnyType{}), CelType{}},
+      {"dyn", cel::Type(cel::DynType{}), CelType{}},
+  };
+  for (const Row& row : rows) {
+    if (row.keyword == name) {
+      return ParsedType{row.checker, row.ours};
+    }
+  }
   return std::nullopt;
 }
 
@@ -259,7 +284,7 @@ struct TypeParser {
     return std::string(src.substr(start, pos - start));
   }
 
-  absl::StatusOr<cel::Type> ParseListType() {
+  absl::StatusOr<ParsedType> ParseListType() {
     if (!Consume('<')) {
       return absl::InvalidArgumentError("expected '<' after 'list'");
     }
@@ -268,10 +293,11 @@ struct TypeParser {
     if (!Consume('>')) {
       return absl::InvalidArgumentError("expected '>' to close 'list<...>'");
     }
-    return cel::Type(cel::ListType(arena, *elem));
+    return ParsedType{cel::Type(cel::ListType(arena, elem->checker)),
+                      CelType::List(elem->ours)};
   }
 
-  absl::StatusOr<cel::Type> ParseMapType() {
+  absl::StatusOr<ParsedType> ParseMapType() {
     if (!Consume('<')) {
       return absl::InvalidArgumentError("expected '<' after 'map'");
     }
@@ -285,20 +311,23 @@ struct TypeParser {
     if (!Consume('>')) {
       return absl::InvalidArgumentError("expected '>' to close 'map<...>'");
     }
-    return cel::Type(cel::MapType(arena, *key, *val));
+    return ParsedType{
+        cel::Type(cel::MapType(arena, key->checker, val->checker)),
+        CelType::Map(key->ours, val->ours)};
   }
 
-  absl::StatusOr<cel::Type> ParseMessageType(absl::string_view name) const {
+  absl::StatusOr<ParsedType> ParseMessageType(absl::string_view name) const {
     const auto* descriptor = pool->FindMessageTypeByName(std::string(name));
     if (descriptor == nullptr) {
       return absl::InvalidArgumentError(absl::StrCat(
           "unknown type in spec: '", name,
           "' (not a primitive, list<>, map<>, or known message type)"));
     }
-    return cel::Type::Message(descriptor);
+    return ParsedType{cel::Type::Message(descriptor),
+                      CelType::Message(std::string(name))};
   }
 
-  absl::StatusOr<cel::Type> ParseType() {
+  absl::StatusOr<ParsedType> ParseType() {
     SkipWhitespace();
     auto name = ParseIdent();
     if (!name.ok()) return name.status();
@@ -314,6 +343,9 @@ struct TypeParser {
 struct ParsedSpec {
   cel::VariableDecl decl{};
   Repr repr = Repr::kUnknown;
+  // The declared type in our own vocabulary, carried to `cel.abi` so
+  // consumers see `list<int>` rather than just `list`.
+  CelType type;
 };
 
 absl::StatusOr<ParsedSpec> ParseVariableSpec(
@@ -340,8 +372,9 @@ absl::StatusOr<ParsedSpec> ParseVariableSpec(
     return absl::InvalidArgumentError(absl::StrCat(
         "trailing garbage in type spec: '", type_src.substr(parser.pos), "'"));
   }
-  Repr repr = ReprOf(*type);
-  return ParsedSpec{cel::MakeVariableDecl(name, *type), repr};
+  Repr repr = ReprOf(type->checker);
+  return ParsedSpec{cel::MakeVariableDecl(name, type->checker), repr,
+                    type->ours};
 }
 
 // --- Static-subset enforcement (folded from v1's ir/static_subset) ---------
@@ -1201,7 +1234,8 @@ absl::Status ConfigureCheckerBuilder(
     if (!parsed.ok()) return parsed.status();
     std::string name = parsed->decl.name();
     if (auto s = builder.AddVariable(parsed->decl); !s.ok()) return s;
-    variables_out.push_back(Variable{std::move(name), parsed->repr});
+    variables_out.push_back(
+        Variable{std::move(name), parsed->repr, parsed->type});
   }
   // M13 Slice C.3 — register embedder-supplied custom-fn decls.
   if (auto s = RegisterCustomFunctionsOnChecker(

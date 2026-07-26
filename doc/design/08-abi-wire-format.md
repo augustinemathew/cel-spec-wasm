@@ -237,3 +237,25 @@ Known un-tied seams (gaps a wire change can fall through): codegen hand-copies a
 Byte-compat pins that must keep passing: dynamic-mode `cel.abi` sections serialize with no field-7 tag; legacy bytes decode as DYNAMIC; unknown `LinkMode` values parse and survive re-serialization (`cel_abi_emit_test.cc`); the empty-surface carve-out keeps versionless synthetic fixtures loading.
 
 The §3.2 unknown wire is settled contract: any new unknown producer/consumer MUST speak the descriptor shape; a raw id in `payload.unk` re-opens the fork. The §3.1 error wire and both §3.3 precedence rules are likewise settled contract.
+
+### `VariableEntry.type` (field 5)
+
+Each declared free variable carries its **full declared type**
+alongside `repr`.
+
+`repr` is the wire *kind* the marshal encodes against — `kList`,
+`kMap`, `kMessage` — and deliberately says nothing about a list's
+element type, a map's key/value types, or a message's fully-qualified
+name. `type` carries the rest, using the same `Type` message as
+`RequiredFunction.param_types`, so a consumer can describe or bind a
+variable without the source declaration in hand.
+
+That is what lets `cel inspect` print `xs:list<int>` rather than
+`xs:list`, and `cel run --var xs=[1,2,3]` parse the literal against the
+real element type instead of demanding a re-declaration.
+
+**Additive, no `runtime_abi_version` bump.** Programs emitted before
+this field carry no `type`; consumers fall back to the bare `repr`
+rather than inventing one, since a guessed element type would parse a
+literal wrongly. The marshal path never reads it — `repr` still drives
+encoding — so the runtime contract is unchanged.

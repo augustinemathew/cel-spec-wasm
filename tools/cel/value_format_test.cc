@@ -7,6 +7,7 @@
 
 #include "absl/status/status_matchers.h"
 #include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
 #include "eval/error.h"
 #include "eval/value.h"
 #include "gtest/gtest.h"
@@ -72,6 +73,29 @@ TEST(ValueFormatTest, ScalarError) {
   ASSERT_THAT(s, IsOk());
   EXPECT_TRUE(absl::StrContains(*s, "error:"));
   EXPECT_TRUE(absl::StrContains(*s, "div by zero"));
+}
+
+// Runtime-raised errors carry the code name as their message, so the
+// naive `<code> <message>` render read `divide_by_zero divide_by_zero`.
+// A message that adds nothing is dropped; a distinct one is kept (the
+// case above).
+TEST(ValueFormatTest, ScalarErrorMessageEqualToCodeNameIsNotRepeated) {
+  ::celwasm::ErrorPayload p{::celwasm::ErrorCode::kDivideByZero,
+                            std::string(::celwasm::ErrorCodeName(
+                                ::celwasm::ErrorCode::kDivideByZero)),
+                            0};
+  auto s = FormatScalar(Value::Error(p));
+  ASSERT_THAT(s, IsOk());
+  EXPECT_EQ(*s, "error: divide_by_zero");
+}
+
+TEST(ValueFormatTest, ScalarErrorWithEmptyMessageRendersCodeOnly) {
+  ::celwasm::ErrorPayload p{::celwasm::ErrorCode::kKeyNotFound, "", 0};
+  auto s = FormatScalar(Value::Error(p));
+  ASSERT_THAT(s, IsOk());
+  EXPECT_EQ(*s,
+            absl::StrCat("error: ", ::celwasm::ErrorCodeName(
+                                        ::celwasm::ErrorCode::kKeyNotFound)));
 }
 
 TEST(ValueFormatTest, ScalarUnknown) {

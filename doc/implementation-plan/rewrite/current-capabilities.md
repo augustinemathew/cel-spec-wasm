@@ -115,10 +115,13 @@ Source of truth: trampoline registrations in
    Either these static-layout arms are dead (aggregates flow through a
    different builder) or there's unfinished work behind a "shipped"
    label. **Resolve.**
-2. **`activation.cc:29,37`** — `BindLazy` (stub until M2) and
-   `OverrideFunction` (stub until M5) still `ABSL_CHECK(false)`. M2 and
-   M5 are marked shipped. Confirm these are intentionally-deferred
-   sub-features vs. drift.
+2. ~~**`activation.cc:29,37`** — `BindLazy` and `OverrideFunction`
+   still `ABSL_CHECK(false)`.~~ **Resolved 2026-07-25** (m36):
+   `BindLazy` is implemented (per-evaluation memoization; binder fires
+   for declared, non-unknown variables), `OverrideFunction` was removed
+   from the public header, and `Find` became `Resolve` so a failing
+   binder has a status channel. See
+   `m36-cli-runtime-and-lazy-binding.md` §4.
 3. **m22-foreign-fn** status line says *"not yet started"* but
    foreign-fn / Component-Model work shipped on a sibling branch —
    the ledger must record the true cross-branch state.

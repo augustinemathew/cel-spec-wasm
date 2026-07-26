@@ -11,6 +11,7 @@
 #include "common/type.h"
 #include "compiler/ir/annotations.h"
 #include "google/protobuf/descriptor.h"
+#include "shared/type.h"
 
 namespace celwasm {
 
@@ -33,6 +34,13 @@ Repr ReprOf(const cel::Type& type);
 struct Variable {
   std::string name;
   Repr repr = Repr::kUnknown;
+  // The declared type in full.  `repr` is the wire kind the marshal
+  // encodes against and says nothing about a list's element type, a
+  // map's key/value types, or a message's FQN; this carries the rest
+  // through to `cel.abi` for consumers that describe or bind the
+  // variable.  Default-constructed (kUnknown) for variables that
+  // never came from a declaration.
+  CelType type;
 };
 
 // Owned bundle of a type-checked `cel::Ast` plus a side-map of per-node

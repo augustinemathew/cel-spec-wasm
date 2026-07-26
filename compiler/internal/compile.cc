@@ -32,12 +32,6 @@ namespace celwasm {
 
 namespace {
 
-// Wasm page count large enough to hold `mem_size_bytes`.
-uint32_t PagesForBytes(uint32_t mem_size_bytes) {
-  constexpr uint32_t kPageBytes = MemoryLayout::kWasmPageSize;
-  return (mem_size_bytes + kPageBytes - 1) / kPageBytes;
-}
-
 // Reject an expression whose static region — rodata plus the
 // workspace slots the host marshal and `$eval` write — ends past the
 // reserved low-memory window.  BOTH link modes share one linear
@@ -400,8 +394,7 @@ namespace {
 }  // namespace
 
 absl::Status InstallExprModuleImports(WasmModule& mod,
-                                      const StaticLayout& layout,
-                                      uint32_t mem_size_bytes) {
+                                      const StaticLayout& layout) {
   WasmModule::DataSegment seg{layout.rodata_base, layout.rodata};
   // Phase C: the runtime (cel_runtime.wasm) is built on
   // wasm32-wasi-threads and exports its memory as shared.  The expr
@@ -411,10 +404,10 @@ absl::Status InstallExprModuleImports(WasmModule& mod,
   // `MemoryLayout::kMaxMemoryBytes`).
   constexpr uint32_t kSharedMaxPages =
       MemoryLayout::kMaxMemoryBytes / MemoryLayout::kWasmPageSize;
-  auto s = mod.AddMemoryImport("cel", "memory", PagesForBytes(mem_size_bytes),
-                               /*max_pages=*/kSharedMaxPages,
-                               absl::MakeConstSpan(&seg, 1),
-                               /*shared=*/true);
+  auto s = mod.AddMemoryImport(
+      "cel", "memory", MemoryLayout::kInitialMemoryPages,
+      /*max_pages=*/kSharedMaxPages, absl::MakeConstSpan(&seg, 1),
+      /*shared=*/true);
   if (!s.ok()) return s;
 
   const BinaryenType i32 = BinaryenTypeInt32();
@@ -444,8 +437,9 @@ namespace {
 absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
                                  absl::Span<const FieldRefRow> field_refs,
                                  celwasm::abi::LinkMode link_mode,
-                                 absl::Span<const FunctionLibrary> libraries) {
-  auto abi_or = BuildCelAbi(layout, field_refs, link_mode);
+                                 absl::Span<const FunctionLibrary> libraries,
+                                 absl::Span<const celwasm::Variable> declared) {
+  auto abi_or = BuildCelAbi(layout, field_refs, link_mode, declared);
   if (!abi_or.ok()) return abi_or.status();
   for (celwasm::abi::RequiredFunction& row :
        BuildRequiredFunctions(module.ListFunctionImports(), libraries)) {
@@ -633,11 +627,8 @@ absl::StatusOr<CompiledArtifact> LowerExportAndFinalise(
   OverloadTable overload_table = *std::move(overload_table_or);
   InstallOverloadImportsExport(out.module, overload_table);
 
-  LoweringOptions lower_opts;
-  lower_opts.mem_size_bytes = opts.mem_size_bytes;
-  auto lowered_or =
-      LowerToEvalFunction(out.ast, out.layout, opts.eval_internal_name,
-                          out.module, overload_table, lower_opts);
+  auto lowered_or = LowerToEvalFunction(
+      out.ast, out.layout, opts.eval_internal_name, out.module, overload_table);
   if (!lowered_or.ok()) return lowered_or.status();
   out.eval_fn = *std::move(lowered_or);
 
@@ -653,7 +644,8 @@ absl::StatusOr<CompiledArtifact> LowerExportAndFinalise(
   if (auto s = ValidateAndOptimize(out, opts); !s.ok()) return s;
   if (auto s = AttachCelAbiSection(out.module, out.layout,
                                    absl::MakeConstSpan(out.eval_fn.field_refs),
-                                   link_mode, opts.function_libraries);
+                                   link_mode, opts.function_libraries,
+                                   absl::MakeConstSpan(out.ast.variables()));
       !s.ok()) {
     return s;
   }
@@ -705,9 +697,7 @@ absl::StatusOr<CompiledArtifact> Compile(absl::string_view expression,
   if (!out_or.ok()) return out_or.status();
   CompiledArtifact out = *std::move(out_or);
 
-  if (auto s =
-          InstallExprModuleImports(out.module, out.layout, opts.mem_size_bytes);
-      !s.ok()) {
+  if (auto s = InstallExprModuleImports(out.module, out.layout); !s.ok()) {
     return s;
   }
 

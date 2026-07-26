@@ -1343,7 +1343,7 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
 absl::StatusOr<LoweredFunction> LowerToEvalFunction(
     const TypedAst& ast, const StaticLayout& layout,
     absl::string_view func_name, WasmModule& mod,
-    const OverloadTable& overload_table, const LoweringOptions& /*opts*/) {
+    const OverloadTable& overload_table) {
   ABSL_CHECK(ast.has_ast())
       << "LowerToEvalFunction: TypedAst has no checked cel::Ast";
 

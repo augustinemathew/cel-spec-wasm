@@ -105,9 +105,9 @@ The remaining visitors audit constant reprs, intern attribute paths and struct-l
 ![Linear memory](diagrams/memory-map-light.svg#only-light)
 ![Linear memory](diagrams/memory-map-dark.svg#only-dark)
 
-The expression module and the runtime kernel share one linear memory. The runtime's own world — wasi-libc statics, its stack, the dlmalloc heap holding the per-Instance arena — is pinned above byte 8192 (`--global-base=8192`). Below is the window the expression owns: a null sentinel, rodata, workspace scratch slots, a guard band.
+The expression module and the runtime kernel share one linear memory. The runtime's own world — wasi-libc statics, its stack, the dlmalloc heap holding the per-Instance arena — is pinned above byte 262144 (`--global-base=262144`, `runtime/BUILD.bazel`). Below is the window the expression owns: a null sentinel, rodata, workspace scratch slots, a guard band.
 
-**The first 8 KiB is the only memory the expression may write.** There is no hardware fence at 8192: a stray write silently corrupts libc state and traps later, elsewhere, with an inscrutable message. That failure mode is why the §6.4 gates exist. `memory_layout.h` is the single source of truth for the constants, tied to the runtime's header by `static_assert` — a drifted constant fails the build.
+**The first 256 KiB is the only memory the expression may write.** There is no hardware fence at that boundary: a stray write silently corrupts libc state and traps later, elsewhere, with an inscrutable message. That failure mode is why the §6.4 gates exist. `CELWASM_RESERVED_LOW_MEMORY_BYTES` (`runtime/cel_layout.h`) is the single source of truth, tied to the compiler's `memory_layout.h` by `static_assert` — a drifted constant fails the build.
 
 ### 6.2 Five sub-passes
 
@@ -148,7 +148,6 @@ A `Compiler` is built through `Compiler::Builder` (consumes itself on `Build()`)
 
 | Knob | What it actually does |
 |---|---|
-| `mem_size_bytes` (default 128 KiB) | Dynamic mode: the initial page count of the imported memory. **Static mode: no effect** (the adopted runtime owns its memory; the arena is dlmalloc-sized at runtime). |
 | `container` | Forwarded to cel-cpp's name-resolution container. Checker-only; no codegen effect. |
 | `optimize_level` (default 0) | Gates Binaryen optimization. Level 0 is a byte-identical no-op. Negative levels behave as 0; only `> 3` is rejected. Binaryen's optimizer is process-global state — serialize concurrent Compiles when `> 0`. |
 | `link_mode` (default static) | Picks the bootstrap ([09 §2](09-lowering.md#2-finalization-and-link-modes)). |

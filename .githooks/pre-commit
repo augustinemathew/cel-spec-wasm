@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit — keep the repo's claims true as the code moves.
+#
+# Two layers, because they cost very different amounts:
+#
+#   1. scripts/check_commit_hygiene.sh — greps over the staged diff.
+#      Sub-second, offline, always runs.  Catches the mechanical rules
+#      (public header touched without a doc, CLI touched without both
+#      tellings, a new milestone reference in a comment, …).
+#
+#   2. scripts/review_staged_change.sh — asks an agent whether the
+#      change leaves the repo's own claims true.  Needs network and a
+#      model, so it is advisory and time-bounded.
+#
+# NEITHER BLOCKS BY DEFAULT.  This gate exists to catch doc/code drift,
+# and drift findings are inherently fuzzy: a blocking gate with false
+# positives is bypassed with --no-verify on its third bad call, after
+# which it catches nothing.  Advisory findings you actually read beat a
+# hard gate you have trained yourself to skip.
+#
+#   CEL_HOOK_SKIP=1        skip both layers
+#   CEL_HOOK_STRICT=1      make layer 1 blocking
+#   CEL_COMMIT_REVIEW=0    skip layer 2 only (keep the fast greps)
+#   CEL_REVIEW_TIMEOUT=N   seconds to allow layer 2 (default 120)
+#
+# Bypass everything once with `git commit --no-verify`.
+#
+# Installed by scripts/install-hooks.sh (sets core.hooksPath=.githooks).
+
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+[[ "${CEL_HOOK_SKIP:-0}" == "1" ]] && exit 0
+
+# Nothing staged (e.g. `git commit --amend --no-edit` with no changes).
+git diff --cached --quiet && exit 0
+
+rc=0
+if [[ -x scripts/check_commit_hygiene.sh ]]; then
+  scripts/check_commit_hygiene.sh || rc=$?
+fi
+
+# Layer 1 blocked (strict mode) — don't spend a model call on a commit
+# that is not going to happen.
+if (( rc != 0 )); then
+  exit "${rc}"
+fi
+
+if [[ -x scripts/review_staged_change.sh ]]; then
+  scripts/review_staged_change.sh || true
+fi
+
+exit 0

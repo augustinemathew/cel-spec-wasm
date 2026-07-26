@@ -154,16 +154,70 @@ absl::StatusOr<std::string> MessageToJson(const google::protobuf::Message& m) {
 }
 
 absl::StatusOr<std::string> MessageToCelLiteral(
+    const google::protobuf::Message& m);
+
+// Render one *singular* field's value onto `out`.  Split from
+// MessageToCelLiteral so each stays reviewable; the message arm
+// recurses back into the caller.
+absl::Status AppendSingularField(const google::protobuf::Message& m,
+                                 const google::protobuf::FieldDescriptor* f,
+                                 std::string& out) {
+  const auto* refl = m.GetReflection();
+  switch (f->cpp_type()) {
+    case google::protobuf::FieldDescriptor::CPPTYPE_INT32:
+      absl::StrAppend(&out, refl->GetInt32(m, f));
+      return absl::OkStatus();
+    case google::protobuf::FieldDescriptor::CPPTYPE_INT64:
+      absl::StrAppend(&out, refl->GetInt64(m, f));
+      return absl::OkStatus();
+    case google::protobuf::FieldDescriptor::CPPTYPE_UINT32:
+      absl::StrAppend(&out, refl->GetUInt32(m, f), "u");
+      return absl::OkStatus();
+    case google::protobuf::FieldDescriptor::CPPTYPE_UINT64:
+      absl::StrAppend(&out, refl->GetUInt64(m, f), "u");
+      return absl::OkStatus();
+    case google::protobuf::FieldDescriptor::CPPTYPE_DOUBLE:
+      absl::StrAppend(&out, refl->GetDouble(m, f));
+      return absl::OkStatus();
+    case google::protobuf::FieldDescriptor::CPPTYPE_FLOAT:
+      absl::StrAppend(&out, refl->GetFloat(m, f));
+      return absl::OkStatus();
+    case google::protobuf::FieldDescriptor::CPPTYPE_BOOL:
+      absl::StrAppend(&out, refl->GetBool(m, f) ? "true" : "false");
+      return absl::OkStatus();
+    case google::protobuf::FieldDescriptor::CPPTYPE_STRING: {
+      std::string scratch;
+      const std::string& s = refl->GetStringReference(m, f, &scratch);
+      absl::StrAppend(&out,
+                      f->type() == google::protobuf::FieldDescriptor::TYPE_BYTES
+                          ? QuoteBytes(s)
+                          : QuoteString(s));
+      return absl::OkStatus();
+    }
+    case google::protobuf::FieldDescriptor::CPPTYPE_ENUM:
+      absl::StrAppend(&out, refl->GetEnum(m, f)->name());
+      return absl::OkStatus();
+    case google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE: {
+      auto inner = MessageToCelLiteral(refl->GetMessage(m, f));
+      if (!inner.ok()) return inner.status();
+      out += *inner;
+      return absl::OkStatus();
+    }
+  }
+  ABSL_CHECK(false) << "AppendSingularField: unhandled cpp_type = "
+                    << static_cast<int>(f->cpp_type());
+}
+
+absl::StatusOr<std::string> MessageToCelLiteral(
     const google::protobuf::Message& m) {
   // No canonical CEL-literal renderer exists in the repo (see
   // `acme.User{...}` example in cel-spec); compose one shallowly
   // from set fields.  Sufficient for the CLI's --format=cel output
   // on simple shapes; nested messages recurse.
-  const auto* desc = m.GetDescriptor();
   const auto* refl = m.GetReflection();
   std::vector<const google::protobuf::FieldDescriptor*> fields;
   refl->ListFields(m, &fields);
-  std::string out = absl::StrCat(desc->full_name(), "{");
+  std::string out = absl::StrCat(m.GetDescriptor()->full_name(), "{");
   bool first = true;
   for (const auto* f : fields) {
     if (!first) out += ", ";
@@ -173,47 +227,7 @@ absl::StatusOr<std::string> MessageToCelLiteral(
       out += "[...]";  // Aggregate rendering left to textproto / json.
       continue;
     }
-    switch (f->cpp_type()) {
-      case google::protobuf::FieldDescriptor::CPPTYPE_INT32:
-        absl::StrAppend(&out, refl->GetInt32(m, f));
-        break;
-      case google::protobuf::FieldDescriptor::CPPTYPE_INT64:
-        absl::StrAppend(&out, refl->GetInt64(m, f));
-        break;
-      case google::protobuf::FieldDescriptor::CPPTYPE_UINT32:
-        absl::StrAppend(&out, refl->GetUInt32(m, f), "u");
-        break;
-      case google::protobuf::FieldDescriptor::CPPTYPE_UINT64:
-        absl::StrAppend(&out, refl->GetUInt64(m, f), "u");
-        break;
-      case google::protobuf::FieldDescriptor::CPPTYPE_DOUBLE:
-        absl::StrAppend(&out, refl->GetDouble(m, f));
-        break;
-      case google::protobuf::FieldDescriptor::CPPTYPE_FLOAT:
-        absl::StrAppend(&out, refl->GetFloat(m, f));
-        break;
-      case google::protobuf::FieldDescriptor::CPPTYPE_BOOL:
-        absl::StrAppend(&out, refl->GetBool(m, f) ? "true" : "false");
-        break;
-      case google::protobuf::FieldDescriptor::CPPTYPE_STRING: {
-        std::string scratch;
-        const std::string& s = refl->GetStringReference(m, f, &scratch);
-        absl::StrAppend(
-            &out, f->type() == google::protobuf::FieldDescriptor::TYPE_BYTES
-                      ? QuoteBytes(s)
-                      : QuoteString(s));
-        break;
-      }
-      case google::protobuf::FieldDescriptor::CPPTYPE_ENUM:
-        absl::StrAppend(&out, refl->GetEnum(m, f)->name());
-        break;
-      case google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE: {
-        auto inner = MessageToCelLiteral(refl->GetMessage(m, f));
-        if (!inner.ok()) return inner.status();
-        out += *inner;
-        break;
-      }
-    }
+    if (auto s = AppendSingularField(m, f, out); !s.ok()) return s;
   }
   out += "}";
   return out;
@@ -230,6 +244,50 @@ std::string FormatUnknown(const Value& v) {
     absl::StrAppend(&ids, ids.empty() ? "" : ",", a.id);
   }
   return absl::StrCat("<unknown:", ids, ">");
+}
+
+// kError arm of ToCelLiteral.
+std::string FormatError(const Value& v) {
+  auto e = v.ErrorInfo();
+  if (!e.ok()) return "error: <opaque>";
+  const absl::string_view name = ::celwasm::ErrorCodeName((*e)->code);
+  // Runtime-raised errors carry the code name as their message; only
+  // append when it adds something a reader doesn't already have.
+  if ((*e)->message.empty() || (*e)->message == name) {
+    return absl::StrCat("error: ", name);
+  }
+  return absl::StrCat("error: ", name, " ", (*e)->message);
+}
+
+// The aggregate arms of ToCelLiteral (list / map / message), each of
+// which has to go through a fallible backing accessor.
+absl::StatusOr<std::string> AggregateToCelLiteral(const Value& v) {
+  switch (v.kind()) {
+    case Value::Kind::kList: {
+      auto backing = v.ListBacking();
+      if (!backing.ok()) return backing.status();
+      return FormatListBacking(**backing);
+    }
+    case Value::Kind::kMap: {
+      auto backing = v.MapBacking();
+      if (!backing.ok()) return backing.status();
+      return FormatMapBacking(**backing);
+    }
+    case Value::Kind::kMessage: {
+      auto backing = v.MessageBacking();
+      if (!backing.ok()) return backing.status();
+      const google::protobuf::Message* m = (*backing)->message();
+      if (m == nullptr) {
+        return absl::InvalidArgumentError(
+            "kMessage Value without a proto::Message backing");
+      }
+      return MessageToCelLiteral(*m);
+    }
+    default:
+      break;
+  }
+  ABSL_CHECK(false) << "AggregateToCelLiteral: not an aggregate kind = "
+                    << static_cast<int>(v.kind());
 }
 
 absl::StatusOr<std::string> ToCelLiteral(const Value& v) {
@@ -259,34 +317,14 @@ absl::StatusOr<std::string> ToCelLiteral(const Value& v) {
                           "\")");
     case Value::Kind::kType:
       return absl::StrCat("type(", *v.AsType(), ")");
-    case Value::Kind::kList: {
-      auto backing = v.ListBacking();
-      if (!backing.ok()) return backing.status();
-      return FormatListBacking(**backing);
-    }
-    case Value::Kind::kMap: {
-      auto backing = v.MapBacking();
-      if (!backing.ok()) return backing.status();
-      return FormatMapBacking(**backing);
-    }
-    case Value::Kind::kMessage: {
-      auto backing = v.MessageBacking();
-      if (!backing.ok()) return backing.status();
-      const google::protobuf::Message* m = (*backing)->message();
-      if (m == nullptr) {
-        return absl::InvalidArgumentError(
-            "kMessage Value without a proto::Message backing");
-      }
-      return MessageToCelLiteral(*m);
-    }
+    case Value::Kind::kList:
+    case Value::Kind::kMap:
+    case Value::Kind::kMessage:
+      return AggregateToCelLiteral(v);
     case Value::Kind::kUnknown:
       return FormatUnknown(v);
-    case Value::Kind::kError: {
-      auto e = v.ErrorInfo();
-      if (!e.ok()) return absl::StrCat("error: <opaque>");
-      return absl::StrCat("error: ", ::celwasm::ErrorCodeName((*e)->code), " ",
-                          (*e)->message);
-    }
+    case Value::Kind::kError:
+      return FormatError(v);
   }
   ABSL_CHECK(false) << "ToCelLiteral: unhandled Value::Kind = "
                     << static_cast<int>(v.kind());
@@ -320,6 +358,23 @@ absl::StatusOr<std::string> FormatScalar(const Value& v) {
   return ToCelLiteral(v);
 }
 
+namespace {
+
+absl::StatusOr<std::string> RenderOne(const google::protobuf::Message& m,
+                                      Format f) {
+  switch (f) {
+    case Format::kTextproto:
+      return MessageToTextproto(m);
+    case Format::kJson:
+      return MessageToJson(m);
+    case Format::kCel:
+      return MessageToCelLiteral(m);
+  }
+  ABSL_CHECK(false) << "RenderOne: unhandled Format = " << static_cast<int>(f);
+}
+
+}  // namespace
+
 absl::StatusOr<std::string> FormatMessage(const Value& v,
                                           const std::vector<Format>& formats) {
   if (v.kind() != Value::Kind::kMessage) {
@@ -343,18 +398,7 @@ absl::StatusOr<std::string> FormatMessage(const Value& v,
       if (i > 0) out += "\n";
       absl::StrAppend(&out, "--- ", FormatName(effective[i]), " ---\n");
     }
-    absl::StatusOr<std::string> body;
-    switch (effective[i]) {
-      case Format::kTextproto:
-        body = MessageToTextproto(*m);
-        break;
-      case Format::kJson:
-        body = MessageToJson(*m);
-        break;
-      case Format::kCel:
-        body = MessageToCelLiteral(*m);
-        break;
-    }
+    auto body = RenderOne(*m, effective[i]);
     if (!body.ok()) return body.status();
     out += *body;
     // TextFormat appends a trailing newline; JSON / CEL do not.

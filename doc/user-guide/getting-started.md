@@ -41,12 +41,25 @@ bazel-bin/tools/cel/cel eval "[1, 3, 5, 7].exists(x, x > 5)"
 The first build compiles the vendored cel-cpp front end (several
 minutes, once). After that, the loop is seconds.
 
-To produce a portable artifact, use `compile`:
+To produce a portable artifact, use `compile` — then `inspect` it and
+`run` it later, with no recompile:
 
 ```bash
 bazel-bin/tools/cel/cel compile 'a * b + 1' \
     --var a:int --var b:int --output /tmp/expr.wasm
+
+bazel-bin/tools/cel/cel inspect /tmp/expr.wasm
+# vars:       a:int, b:int
+# plugin fns: none
+# host fns:   none
+# link:       static (cel.abi v1, runtime abi v4)
+
+bazel-bin/tools/cel/cel run /tmp/expr.wasm --var a=6 --var b=7
+# => 43
 ```
+
+On `run` you bind values only — the types travel with the program in
+its `cel.abi` section.
 
 ## 4. First embed — C++
 
@@ -144,7 +157,6 @@ expression is lowered:
 | --- | --- | --- |
 | `link_mode` | `kStatic` | `kStatic`: runtime merged in — self-contained ~2.4 MB Program, fastest eval, ~60 ms compile. `kDynamic`: ~6.5 KB Program importing a shared runtime — ~0.5 ms compile, better for many cached expressions. `Engine::Plan` handles both transparently. |
 | `optimize_level` | `0` | Binaryen `-O0..3` on the emitted wasm. Use `2` in production (compile cost ~2-3×, eval up to 2× faster on long bodies); `0` when compile latency dominates. |
-| `mem_size_bytes` | 128 KiB | Linear memory (the per-eval arena lives here). Raise it for heavy string/list construction within a single eval. |
 | `container` | `""` | CEL namespace container for name resolution, as in cel-go. |
 
 ```cpp

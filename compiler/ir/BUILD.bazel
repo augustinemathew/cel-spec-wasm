@@ -34,6 +34,7 @@ cc_library(
     srcs = ["typed_ast.cc"],
     hdrs = ["typed_ast.h"],
     deps = [
+        "//shared:type",
         ":annotations",
         "@cel-cpp//common:ast",
         "@cel-cpp//common:ast_traverse",

@@ -154,11 +154,9 @@ TEST(CompileTest, SerializeFalseLeavesWasmBytesEmpty) {
   EXPECT_TRUE(art_or->wasm_bytes.empty());
 }
 
-// Post-M5: arena_reset takes no arguments — the runtime's bump cursor
-// lives in BSS, not linear memory, so codegen no longer threads
-// (arena_base, arena_limit) into the prologue.  CompileOptions::
-// mem_size_bytes still controls the memory import's initial page
-// count via `MemSizeBytesLargerThanOnePageGrowsPageCount` below.
+// arena_reset takes no arguments — the runtime's bump cursor lives in
+// BSS, not linear memory, so codegen never threads
+// (arena_base, arena_limit) into the prologue.
 TEST(CompileTest, EvalPrologueIsZeroArgArenaReset) {
   auto art_or = Compile("42");
   ASSERT_THAT(art_or, IsOk());
@@ -428,16 +426,18 @@ TEST(CompileTest, WorkspaceOverBudgetReturnsResourceExhaustedBothModes) {
   }
 }
 
-TEST(CompileTest, MemSizeBytesLargerThanOnePageGrowsPageCount) {
-  // Ask for 3 * 64 KiB; memory should be declared with at least 3 pages.
+// The dynamic-mode expr module declares its `cel.memory` import with
+// exactly `MemoryLayout::kInitialMemoryPages` — the runtime's own
+// exported size.  Declaring more would stamp an import minimum the
+// runtime cannot satisfy and fail instantiation at Plan; the constant
+// is held in lockstep with the runtime by the static_assert in
+// `compiler/memory_layout.h`.
+TEST(CompileTest, DynamicModuleDeclaresAMemoryImportThatValidates) {
   CompileOptions opts;
-  opts.mem_size_bytes = 3u * 64u * 1024u;
+  opts.link_mode = CompileOptions::LinkMode::kDynamic;
   auto art_or = Compile("42", opts);
   ASSERT_THAT(art_or, IsOk());
-  BinaryenModuleRef raw = art_or->module.raw();
-  ASSERT_TRUE(BinaryenHasMemory(raw));
-  // Serialize and validate that it's a legal module — the page-count
-  // arithmetic is validated transitively by Binaryen's validator.
+  ASSERT_TRUE(BinaryenHasMemory(art_or->module.raw()));
   EXPECT_THAT(art_or->module.Validate(), IsOk());
 }
 

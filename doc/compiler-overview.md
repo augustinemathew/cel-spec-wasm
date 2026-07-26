@@ -283,8 +283,6 @@ Set via `celwasm::CompilerOptions` (`compiler/compiler.h`):
   ~2-3× the Compile cost, but roughly half the Eval time on
   chain-heavy bodies. Compile cost amortises across many Evals.
 - **`link_mode`** (default `kStatic`) — see [Link modes](#link-modes).
-- **`mem_size_bytes`** (default 128 KiB) — linear-memory size in
-  dynamic mode; no effect in static mode.
 - **`container`** — ident-resolution prefix, forwarded to the cel-cpp
   checker. Equivalent to cel-go's `container` option.
 
