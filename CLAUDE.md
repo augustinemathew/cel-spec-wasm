@@ -878,6 +878,14 @@ architectural drift before it calcifies into a rewrite.
 
 ## What not to do
 
+  - Don't commit build products.  `.wasm` binaries are outputs
+    (bazel-built fixtures, probe compiles), never sources —
+    `.gitignore` enforces this repo-wide.  Committed probe binaries
+    once weighed ~19MB; they were deleted 2026-07-25 with the probe
+    trees that produced them.  A test that needs wasm bytes builds
+    them (genrule / cc_binary with the wasm toolchain) or frames
+    them in-test via `//abi:wasm_binary`.
+
   - Don't reimplement the CEL parser or type checker.  Reuse
     `@cel-cpp//parser`, `@cel-cpp//checker:*`, `@cel-cpp//common:*`.
   - Don't edit files under `third_party/cel-cpp/` — we treat that as a
