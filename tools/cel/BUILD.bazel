@@ -174,7 +174,10 @@ sh_test(
     name = "cel_smoke_test",
     size = "large",
     srcs = ["cel_smoke_test.sh"],
-    data = [":cel"],
+    data = [
+        ":cel",
+        "//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin.wasm",
+    ],
 )
 
 # Activation-marshal coverage matrix — every aggregate kind passed

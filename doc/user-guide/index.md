@@ -364,6 +364,25 @@ same way as scalars. `inspect` prints those types in the `--var`
 grammar, so a line of its output pastes straight into a binding:
 `xs:list<int>`, `m:map<string,int>`, `r:acme.Request`.
 
+**Calling plugin functions from the CLI.** Pass the artifact with
+`--plugin` and it serves both halves — its declarations let the checker
+resolve the call site, and the artifact satisfies the import at
+evaluation. It is needed at *both* compile and run:
+
+```bash
+cel eval 'add(2, 3)' --plugin demo_plugin.wasm            # → 5
+
+cel compile 'add(a, b)' --plugin demo_plugin.wasm \
+    --var a:int --var b:int --output prog.wasm
+cel run prog.wasm --plugin demo_plugin.wasm --var a=20 --var b=22   # → 42
+```
+
+`--plugin` is repeatable. Names are used bare (`add`, not
+`customfn.add`) — a `Module` directive names the wasm module, not a CEL
+namespace. At the default `--O 0` every declared plugin function is
+imported whether the expression calls it or not, so `inspect` lists all
+of them; `--O 1` and above drop the unused ones.
+
 A program that calls `@host` functions cannot be run by the stock CLI —
 those implementations are C++ in your process. The program records its
 own requirements in `cel.abi` (`required_functions`), so `run` refuses

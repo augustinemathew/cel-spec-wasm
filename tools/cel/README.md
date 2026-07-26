@@ -61,6 +61,59 @@ a relative `--output` path is resolved inside the runfiles tree, not your
 shell's working directory — pass an absolute path (e.g.
 `--output /tmp/expr.wasm`).
 
+## Calling plugin functions
+
+A **plugin** is a Component-Model `.wasm` carrying its own CEL
+declarations. Pass it with `--plugin` and the CLI does both halves: the
+declarations let the type-checker resolve the call site, and the
+artifact satisfies the import at evaluation.
+
+```bash
+PLUGIN=bazel-bin/e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin.wasm
+
+# one shot
+cel eval 'add(2, 3)' --plugin "$PLUGIN"                       # → 5
+
+# or compile once and run later — the plugin is needed at BOTH steps
+cel compile 'add(a, b)' --plugin "$PLUGIN" \
+    --var a:int --var b:int --output prog.wasm
+cel run prog.wasm --plugin "$PLUGIN" --var a=20 --var b=22    # → 42
+```
+
+`--plugin` is repeatable; pass one per artifact. Function names are used
+bare (`add`, not `customfn.add`) — a `Module` directive in the `.idl`
+names the wasm module, not a CEL namespace.
+
+`inspect` tells you what an artifact needs before you run it:
+
+```bash
+cel inspect prog.wasm
+# vars:       a:int, b:int
+# plugin fns: string greet(string, int), int add(int, int), int len(string)
+# host fns:   none
+# link:       static (cel.abi v1, runtime abi v4)
+```
+
+Forget the flag and the failure names what is missing rather than
+surfacing as a wasm link error:
+
+```
+ERROR: this program requires plugin function(s) but no --plugin was given:
+       int add(int, int)
+  supply the plugin artifact with `--plugin <file.wasm>` (repeatable)
+```
+
+Two things worth knowing. At `--O 0` (the default) every declared
+plugin function is imported whether the expression calls it or not, so
+`inspect` lists all of them; Binaryen drops the unused ones at `--O 1`
+and above. And a plugin function that **returns a string** currently
+traps on the wasm32-wasip2 toolchain — string *arguments* are fine (see
+[writing plugins](../../doc/user-guide/writing-plugins.md)).
+
+`@host` functions are the case `--plugin` cannot help with: those are
+C++ in your process, so a program calling one is only runnable through
+the C++ API.
+
 ## Compile once, run later
 
 `compile` emits a portable `.wasm`; `run` evaluates it with no

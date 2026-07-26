@@ -370,13 +370,26 @@ absl::StatusOr<std::vector<ParsedVar>> ParseAllVars(
 // rather than repeated per subcommand.
 struct CliSetup {
   PoolBundle pool;
+  // Held for the whole compile: `CompileOptions::function_libraries`
+  // references each plugin's library.
+  std::vector<Plugin> plugins;
   std::unique_ptr<google::protobuf::DynamicMessageFactory> factory;
   std::vector<ParsedVar> vars;
   celwasm::CompileOptions opts;
 };
 
+// Defined below, next to the file-reading helper it uses.
+absl::StatusOr<std::vector<Plugin>> LoadPluginFlags();
+
 absl::StatusOr<CliSetup> PrepareCli(absl::string_view source_desc) {
   CliSetup s;
+  // A plugin carries its own declarations, so `--plugin` is what lets
+  // the checker resolve `customfn.add(2, 3)` at compile time.  Without
+  // it the call site is an undeclared reference and nothing that calls
+  // a plugin function could ever be compiled from the CLI.
+  auto plugins = LoadPluginFlags();
+  if (!plugins.ok()) return plugins.status();
+  s.plugins = *std::move(plugins);
   auto pool = BuildPool();
   if (!pool.ok()) return pool.status();
   s.pool = *std::move(pool);
@@ -388,6 +401,14 @@ absl::StatusOr<CliSetup> PrepareCli(absl::string_view source_desc) {
   auto opts = BuildCompileOptions(source_desc, s.vars);
   if (!opts.ok()) return opts.status();
   s.opts = *std::move(opts);
+  // Both lists, as `Compiler::Builder::Build` does: `check.` feeds the
+  // type-checker so the call site resolves, the outer one feeds
+  // codegen so the import is emitted.  Setting only one gives either
+  // an "undeclared reference" or a missing import.
+  for (const Plugin& plugin : s.plugins) {
+    s.opts.check.function_libraries.push_back(plugin.library());
+    s.opts.function_libraries.push_back(plugin.library());
+  }
   return s;
 }
 
@@ -434,7 +455,30 @@ int ReportResult(const Value& value, const std::vector<Format>& formats) {
   return kExitOk;
 }
 
+// A plugin named on the command line is needed twice: its declarations
+// let the checker resolve the call site, and the artifact itself
+// satisfies the import at Plan.  This is the second half.
+absl::Status RegisterPlugins(Engine& engine, absl::Span<const Plugin> plugins) {
+  for (const Plugin& plugin : plugins) {
+    if (auto s = engine.Use(plugin); !s.ok()) return s;
+  }
+  return absl::OkStatus();
+}
+
 // --- Subcommands ------------------------------------------------------------
+
+// Compile `expr`, stand up an engine, register any --plugin artifacts,
+// and Plan.  Split out of RunEval so both stay under the size gate.
+absl::StatusOr<Instance> CompileAndPlan(absl::string_view expr,
+                                        const CliSetup& setup) {
+  auto artifact = celwasm::Compile(expr, setup.opts);
+  if (!artifact.ok()) return artifact.status();
+  Program program(std::move(artifact->wasm_bytes));
+  auto engine = Engine::NewBuilder().Build();
+  if (!engine.ok()) return engine.status();
+  if (auto s = RegisterPlugins(*engine, setup.plugins); !s.ok()) return s;
+  return engine->Plan(program);
+}
 
 int RunEval(absl::string_view expr) {
   auto formats = ResolveFormats();
@@ -447,20 +491,9 @@ int RunEval(absl::string_view expr) {
     std::cerr << "ERROR: " << setup.status().message() << "\n";
     return kExitUsage;
   }
-  auto artifact = celwasm::Compile(expr, setup->opts);
-  if (!artifact.ok()) {
-    std::cerr << "ERROR: " << artifact.status().message() << "\n";
-    return kExitExprFailure;
-  }
-  Program program(std::move(artifact->wasm_bytes));
-  auto engine = Engine::NewBuilder().Build();
-  if (!engine.ok()) {
-    std::cerr << "ERROR: engine: " << engine.status().message() << "\n";
-    return kExitExprFailure;
-  }
-  auto instance = engine->Plan(program);
+  auto instance = CompileAndPlan(expr, *setup);
   if (!instance.ok()) {
-    std::cerr << "ERROR: plan: " << instance.status().message() << "\n";
+    std::cerr << "ERROR: " << instance.status().message() << "\n";
     return kExitExprFailure;
   }
   Activation act;
@@ -530,6 +563,24 @@ absl::StatusOr<std::vector<uint8_t>> ReadFileBytes(absl::string_view path) {
   std::string bytes((std::istreambuf_iterator<char>(in)),
                     std::istreambuf_iterator<char>());
   return std::vector<uint8_t>(bytes.begin(), bytes.end());
+}
+
+// Read and parse every `--plugin` artifact.  Split out of the run
+// prologue so both stay under the function-size gate.
+absl::StatusOr<std::vector<Plugin>> LoadPluginFlags() {
+  std::vector<Plugin> out;
+  out.reserve(PluginFlags().size());
+  for (const std::string& path : PluginFlags()) {
+    auto bytes = ReadFileBytes(path);
+    if (!bytes.ok()) return bytes.status();
+    auto plugin = Plugin::Load(*bytes);
+    if (!plugin.ok()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("--plugin ", path, ": ", plugin.status().message()));
+    }
+    out.push_back(*std::move(plugin));
+  }
+  return out;
 }
 
 int RunInspect(absl::string_view path) {
@@ -645,23 +696,6 @@ absl::Status RejectIfHostFunctionsRequired(const ProgramFacts& facts) {
 // command line: the implementation is a wasm artifact, so `--plugin`
 // can hand it over.  Report the shortfall before Plan so the message
 // names what to pass rather than surfacing as a link failure.
-// Read and parse every `--plugin` artifact.  Split out of the run
-// prologue so both stay under the function-size gate.
-absl::StatusOr<std::vector<Plugin>> LoadPluginFlags() {
-  std::vector<Plugin> out;
-  out.reserve(PluginFlags().size());
-  for (const std::string& path : PluginFlags()) {
-    auto bytes = ReadFileBytes(path);
-    if (!bytes.ok()) return bytes.status();
-    auto plugin = Plugin::Load(*bytes);
-    if (!plugin.ok()) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("--plugin ", path, ": ", plugin.status().message()));
-    }
-    out.push_back(*std::move(plugin));
-  }
-  return out;
-}
 
 absl::Status CheckPluginsSatisfied(const ProgramFacts& facts,
                                    const std::vector<Plugin>& loaded) {
@@ -739,11 +773,9 @@ int RunProgram(absl::string_view path) {
     std::cerr << "ERROR: engine: " << engine.status().message() << "\n";
     return kExitExprFailure;
   }
-  for (const Plugin& plugin : loaded->plugins) {
-    if (auto s = engine->Use(plugin); !s.ok()) {
-      std::cerr << "ERROR: --plugin: " << s.message() << "\n";
-      return kExitUsage;
-    }
+  if (auto s = RegisterPlugins(*engine, loaded->plugins); !s.ok()) {
+    std::cerr << "ERROR: --plugin: " << s.message() << "\n";
+    return kExitUsage;
   }
   auto instance = engine->Plan(program);
   if (!instance.ok()) {
@@ -788,39 +820,64 @@ std::vector<char*> ExtractRepeated(absl::Span<char* const> argv,
 }
 
 void PrintUsage(std::ostream& os, absl::string_view argv0) {
-  os << "usage: " << argv0 << " <subcommand> <expr|prog.wasm> [flags...]\n"
-     << "subcommands:\n"
-     << "  eval     compile + evaluate <expr>; print the result\n"
-     << "  check    parse + type-check <expr>; print OK / errors\n"
-     << "  compile  compile <expr> to wasm bytes (--output PATH)\n"
-     << "  run      evaluate a precompiled <prog.wasm> (no recompile)\n"
-     << "  inspect  print what a <prog.wasm> declares\n"
-     << "  generate emit custom-function bindings (fns.wit, codec.h,\n"
-     << "           generated_stub.cc, user_fns.h) from a .idl file\n"
-     << "  embed-decls\n"
-     << "           embed .idl declaration text into a Component-Model\n"
-     << "           plugin as the cel.fns custom section\n"
-     << "common flags:\n"
-     << "  --var name:Type=value    (repeatable) declare + bind\n"
-     << "  --var name:Type          (repeatable) declare only\n"
-     << "  --var name=value         (run) bind; type comes from cel.abi\n"
-     << "  --plugin PATH            (run, repeatable) plugin .wasm "
-        "supplying\n"
-     << "                           @plugin functions the program requires\n"
-     << "  --proto PATH             .proto source for message types\n"
-     << "  --descriptor_set PATH    FileDescriptorSet for message types\n"
-     << "  --container PKG          name-resolution container\n"
-     << "  --format FMT             (eval, repeatable) textproto|json|cel\n"
-     << "  --O LEVEL                Binaryen optimize level (0..3)\n"
-     << "  --output PATH            (compile) wasm output path\n"
-     << "generate flags:\n"
-     << "  --idl PATH               required: .idl input\n"
-     << "  --out_dir PATH           required: output dir\n"
-     << "  --language LANG          cpp (default); go (planned)\n"
-     << "embed-decls flags:\n"
-     << "  --plugin PATH            required: input CM component .wasm\n"
-     << "  --idl PATH               required: .idl declaration text\n"
-     << "  --out PATH               required: output .wasm path\n";
+  os << "usage: " << argv0 << " <subcommand> <arg> [flags...]\n"
+     << "\n"
+     << "  eval     <expr>        compile + evaluate; print the result\n"
+     << "  check    <expr>        parse + type-check; print OK / errors\n"
+     << "  compile  <expr>        compile to wasm bytes\n"
+     << "  run      <prog.wasm>   evaluate a precompiled program\n"
+     << "  inspect  <prog.wasm>   print what a program declares and needs\n"
+     << "  generate               emit plugin bindings from a .idl\n"
+     << "  embed-decls            stamp .idl decls into a plugin .wasm\n"
+     << "\n"
+     << "eval <expr>\n"
+     << "  optional  --var name:Type[=value]  (repeatable) declare, and bind\n"
+     << "            --plugin PATH            (repeatable) plugin .wasm whose\n"
+     << "                                     functions the expression calls\n"
+     << "            --proto PATH             .proto for message-typed vars\n"
+     << "            --descriptor_set PATH    FileDescriptorSet, instead of "
+        "--proto\n"
+     << "            --container PKG          name-resolution container\n"
+     << "            --format FMT             (repeatable) textproto|json|cel\n"
+     << "            --O 0..3                 optimize level (default 0)\n"
+     << "\n"
+     << "check <expr>\n"
+     << "  optional  --var name:Type          (repeatable) declare\n"
+     << "            --plugin PATH            (repeatable)\n"
+     << "            --proto | --descriptor_set | --container\n"
+     << "\n"
+     << "compile <expr>\n"
+     << "  required  --output PATH            wasm output (omit for stdout)\n"
+     << "  optional  --var name:Type          (repeatable) declare\n"
+     << "            --plugin PATH            (repeatable)\n"
+     << "            --proto | --descriptor_set | --container | --O\n"
+     << "\n"
+     << "run <prog.wasm>\n"
+     << "  optional  --var name=value         (repeatable) bind; the type\n"
+     << "                                     comes from the program\n"
+     << "            --plugin PATH            (repeatable) required if the\n"
+     << "                                     program needs plugin functions\n"
+     << "            --proto PATH             .proto for message-typed vars\n"
+     << "            --format FMT             (repeatable) textproto|json|cel\n"
+     << "\n"
+     << "inspect <prog.wasm>\n"
+     << "  (no flags)\n"
+     << "\n"
+     << "generate\n"
+     << "  required  --idl PATH               .idl input\n"
+     << "            --out_dir PATH           output directory\n"
+     << "  optional  --language LANG          cpp (default); go planned\n"
+     << "            --package PKG            WIT package-name override\n"
+     << "            --include PATH           (comma-separated) extra "
+        "#includes\n"
+     << "\n"
+     << "embed-decls\n"
+     << "  required  --plugin PATH            input Component-Model .wasm\n"
+     << "            --idl PATH               .celfn declaration text\n"
+     << "            --out PATH               output .wasm\n"
+     << "\n"
+     << "exit codes: 0 success · 1 the expression or program failed · "
+        "2 usage\n";
 }
 
 // True when `--help` / `-h` / `help` appears anywhere in argv, so that
@@ -869,10 +926,11 @@ std::optional<std::vector<char*>> ParseFlagsAfterSubcommand(
   }
   rest = ExtractRepeated(rest, "var", VarFlags());
   rest = ExtractRepeated(rest, "format", FormatFlags());
-  // `--plugin` is repeatable on `run` but a single absl flag on
-  // `embed-decls`.  Peel it out only for `run`, or the extraction
-  // would consume the value before absl ever sees it.
-  if (subcommand == "run") {
+  // `--plugin` is repeatable everywhere except `embed-decls`, where
+  // it is a single absl flag naming the artifact being stamped.  Peel
+  // it out for the others only, or the extraction would consume
+  // embed-decls' value before absl ever sees it.
+  if (subcommand != "embed-decls") {
     rest = ExtractRepeated(rest, "plugin", PluginFlags());
   }
 
