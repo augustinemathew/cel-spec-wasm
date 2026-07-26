@@ -54,8 +54,7 @@ absl::Status ValidateIdl(absl::string_view idl_text) {
 
 // Validation 4: no pre-existing `cel.fns` section (NotFound is the
 // good case; any framing error also rejects).
-absl::Status ValidateNoExistingSection(
-    absl::Span<const uint8_t> plugin_bytes) {
+absl::Status ValidateNoExistingSection(absl::Span<const uint8_t> plugin_bytes) {
   const auto section = FindCustomSection(plugin_bytes, kCelFnsSection);
   if (section.ok()) {
     return absl::InvalidArgumentError(absl::StrCat(
@@ -64,9 +63,8 @@ absl::Status ValidateNoExistingSection(
         "on the pre-embed build output"));
   }
   if (!absl::IsNotFound(section.status())) {
-    return absl::InvalidArgumentError(
-        absl::StrCat(kErrorPrefix, "--plugin is malformed: ",
-                     section.status().message()));
+    return absl::InvalidArgumentError(absl::StrCat(
+        kErrorPrefix, "--plugin is malformed: ", section.status().message()));
   }
   return absl::OkStatus();
 }

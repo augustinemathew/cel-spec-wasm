@@ -55,10 +55,9 @@ CelfnType ProtoOf(std::string fqn) {
 
 FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
                       std::vector<CelfnParam> params) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin(fn_name, std::move(ret), std::move(params))
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddPlugin(fn_name, std::move(ret), std::move(params))
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -148,8 +147,9 @@ TEST(EmitStubCc, StringReturnUsesOutParam) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "name"}});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr("void exports_cel_customfn_fns_greet_string("
-                            "customfn_string_t* name, customfn_string_t* ret)"));
+  EXPECT_THAT(*t,
+              HasSubstr("void exports_cel_customfn_fns_greet_string("
+                        "customfn_string_t* name, customfn_string_t* ret)"));
   EXPECT_THAT(*t, HasSubstr("rules::codec::lower(ret, rules::Greet("
                             "rules::codec::lift(*name)));"));
 }
@@ -194,8 +194,9 @@ TEST(EmitStubCc, ListStringReturn) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
   auto t = EmitStubCc(lib, kMod, kPkg, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(*t, HasSubstr("void exports_cel_customfn_fns_words_string("
-                            "customfn_string_t* s, customfn_list_string_t* ret)"));
+  EXPECT_THAT(*t,
+              HasSubstr("void exports_cel_customfn_fns_words_string("
+                        "customfn_string_t* s, customfn_list_string_t* ret)"));
 }
 
 // ── Duration / Timestamp ──────────────────────────────────────────
@@ -258,12 +259,10 @@ TEST(EmitStubCc, ProtoReturnUsesLowerProtoTemplate) {
 TEST(EmitStubCc, MultipleDeclsEmitMultipleExports) {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin(
-              "f1", Prim(CelfnType::Kind::kInt),
-              {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
-          .AddPlugin(
-              "f2", Prim(CelfnType::Kind::kBool),
-              {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
+          .AddPlugin("f1", Prim(CelfnType::Kind::kInt),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
+          .AddPlugin("f2", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto t = EmitStubCc(*lib_or, kMod, kPkg, {});

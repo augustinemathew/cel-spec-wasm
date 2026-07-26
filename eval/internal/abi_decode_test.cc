@@ -155,8 +155,7 @@ TEST(AbiDecodeTest, DecodesRequiredFunctions) {
   auto* elem = param->add_params();
   elem->set_kind(celwasm::abi::Type::KIND_PROTO);
   elem->set_proto_fqn("acme.User");
-  plugin_fn->mutable_return_type()->set_kind(
-      celwasm::abi::Type::KIND_BOOL);
+  plugin_fn->mutable_return_type()->set_kind(celwasm::abi::Type::KIND_BOOL);
   plugin_fn->set_is_receiver(true);
 
   auto decoded = DecodeCelAbiFromWasm(

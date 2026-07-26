@@ -306,10 +306,10 @@ absl::Status CheckUniversalDeclShape(const CelfnDecl& d) {
 // as declarable shapes.  CEL `null` (kNull) stays supported.
 absl::Status CheckPluginDeclShape(const CelfnDecl& d) {
   if (MentionsOptional(d.return_type)) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "plugin `", d.fn_name,
-        "` has an optional<...> return type — optional<T> is not "
-        "supported as a plugin argument or return shape"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("plugin `", d.fn_name,
+                     "` has an optional<...> return type — optional<T> is not "
+                     "supported as a plugin argument or return shape"));
   }
   if (MentionsType(d.return_type)) {
     return absl::InvalidArgumentError(
@@ -325,10 +325,10 @@ absl::Status CheckPluginDeclShape(const CelfnDecl& d) {
           "plugin argument or return shape"));
     }
     if (MentionsType(p.type)) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "plugin `", d.fn_name, "` parameter `", p.name,
-          "` is `type` — `type` is not supported as a "
-          "plugin argument or return shape"));
+      return absl::InvalidArgumentError(
+          absl::StrCat("plugin `", d.fn_name, "` parameter `", p.name,
+                       "` is `type` — `type` is not supported as a "
+                       "plugin argument or return shape"));
     }
   }
   return absl::OkStatus();
@@ -548,7 +548,7 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source) {
       auto ps = ExtractParams(comp->params());
       if (!ps.ok()) return ps.status();
       b.AddPlugin(comp->Identifier()->getText(), std::move(*rt),
-                            std::move(*ps));
+                  std::move(*ps));
     } else if (auto* bare = item->bareHostDecl(); bare != nullptr) {
       return absl::InvalidArgumentError(
           absl::StrCat("`host` is a reserved alias; use `@host.",
@@ -574,8 +574,8 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source) {
 // ── WIT name derivation ─────────────────────────────────────────────
 
 std::string DeriveWitPackageName(absl::string_view module_name) {
-  return absl::StrCat(
-      "cel:", module_name.empty() ? absl::string_view("customfn")
+  return absl::StrCat("cel:", module_name.empty()
+                                  ? absl::string_view("customfn")
                                   : module_name);
 }
 

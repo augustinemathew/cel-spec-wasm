@@ -821,12 +821,12 @@ TEST(CompileRequiredFunctionsTest, MixedBackendsCarryBackendPerRow) {
   opts.check.variable_specs = {"u:string"};
   opts.function_libraries = {
       *FunctionLibrary::Builder()
-           .AddHost("discount_pct", RfScalar(CelfnType::Kind::kInt),
-                    {CelfnParam{false, RfScalar(CelfnType::Kind::kString),
-                                "s"}})
-           .AddPlugin("allow", RfScalar(CelfnType::Kind::kBool),
-                      {CelfnParam{false, RfScalar(CelfnType::Kind::kString),
-                                  "u"}})
+           .AddHost(
+               "discount_pct", RfScalar(CelfnType::Kind::kInt),
+               {CelfnParam{false, RfScalar(CelfnType::Kind::kString), "s"}})
+           .AddPlugin(
+               "allow", RfScalar(CelfnType::Kind::kBool),
+               {CelfnParam{false, RfScalar(CelfnType::Kind::kString), "u"}})
            .Build()};
   opts.check.function_libraries = opts.function_libraries;
   auto art_or = Compile("allow(u) && discount_pct(u) > 0", opts);

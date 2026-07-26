@@ -194,8 +194,7 @@ TEST(WasmModuleListFunctionImportsTest,
 TEST(WasmModuleListFunctionImportsTest, ExcludesDefinedFunctions) {
   WasmModule m;
   const BinaryenType params[1] = {BinaryenTypeInt32()};
-  m.AddFunctionImport("imp", "cel", "arena_alloc", params,
-                      BinaryenTypeInt32());
+  m.AddFunctionImport("imp", "cel", "arena_alloc", params, BinaryenTypeInt32());
   BinaryenExpressionRef body = BinaryenNop(m.raw());
   m.AddFunction("defined_fn", {}, BinaryenTypeNone(), {}, body);
   const auto imports = m.ListFunctionImports();

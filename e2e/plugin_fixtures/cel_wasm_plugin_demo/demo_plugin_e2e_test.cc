@@ -105,14 +105,12 @@ FunctionLibrary BuildDemoLibrary() {
           // The embedder mirrors the matching WIT interface name so
           // Engine::AddPlugin does the two-level export lookup.
           .SetWitInterface("cel:customfn/fns@0.1.0")
-          .AddPlugin(
-              "greet", Prim(CelfnType::Kind::kString),
-              {CelfnParam{false, Prim(CelfnType::Kind::kString), "name"},
-               CelfnParam{false, Prim(CelfnType::Kind::kInt), "age"}})
-          .AddPlugin(
-              "add", Prim(CelfnType::Kind::kInt),
-              {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-               CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
+          .AddPlugin("greet", Prim(CelfnType::Kind::kString),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kString), "name"},
+                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "age"}})
+          .AddPlugin("add", Prim(CelfnType::Kind::kInt),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
+                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
           .Build();
   ABSL_CHECK_OK(lib_or) << lib_or.status();
   return *std::move(lib_or);
@@ -124,8 +122,8 @@ FunctionLibrary BuildDemoLibrary() {
 TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
   const std::vector<uint8_t> bytes = LoadDemoPluginBytes();
   const std::vector<uint8_t> idl = LoadRunfileBytes("fns.idl");
-  const absl::string_view idl_text(
-      reinterpret_cast<const char*>(idl.data()), idl.size());
+  const absl::string_view idl_text(reinterpret_cast<const char*>(idl.data()),
+                                   idl.size());
 
   // The section is present and its payload is the exact fns.idl bytes.
   auto section = FindCustomSection(bytes, "cel.fns");

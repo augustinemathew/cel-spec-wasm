@@ -33,8 +33,8 @@ namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::celwasm::abi::Type;
 using ::celwasm::abi::RequiredFunction;
+using ::celwasm::abi::Type;
 
 // ── Wire-side builders ─────────────────────────────────────────────
 
@@ -106,10 +106,10 @@ CelfnType ListOf(CelfnType elem) {
 
 FunctionLibrary PluginLib(absl::string_view fn_name, CelfnType return_type,
                           std::vector<CelfnParam> params) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin(fn_name, std::move(return_type),
-                               std::move(params))
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddPlugin(fn_name, std::move(return_type), std::move(params))
+          .Build();
   ABSL_CHECK(lib_or.ok()) << lib_or.status();
   return *std::move(lib_or);
 }
@@ -128,8 +128,7 @@ std::array<uint8_t, 32> DocExampleHash() {
   return h;
 }
 
-RegisteredPlugin Plug(FunctionLibrary lib,
-                      std::array<uint8_t, 32> hash = {}) {
+RegisteredPlugin Plug(FunctionLibrary lib, std::array<uint8_t, 32> hash = {}) {
   RegisteredPlugin p;
   p.component = nullptr;  // never dereferenced by the check
   p.library = std::move(lib);
@@ -143,7 +142,9 @@ using PluginVec = std::vector<RegisteredPlugin>;
 RegisteredHostCallback HostCb(uint8_t num_args) {
   RegisteredHostCallback cb;
   cb.num_args = num_args;
-  cb.callback = [](HostCallContext&) { return absl::OkStatus(); };
+  cb.callback = [](HostCallContext&) {
+    return absl::OkStatus();
+  };
   return cb;
 }
 
@@ -153,9 +154,9 @@ TEST(RequiredFnCheckTest, EmptyRequiredListNoOpsEntirely) {
   // Pre-field-8 Programs (and programs with no custom-fn call
   // sites) carry an empty list: the check must pass even against a
   // completely empty registry.
-  EXPECT_THAT(CheckRequiredFunctions(celwasm::abi::CelAbi(), HostMap(),
-                                     PluginVec()),
-              IsOk());
+  EXPECT_THAT(
+      CheckRequiredFunctions(celwasm::abi::CelAbi(), HostMap(), PluginVec()),
+      IsOk());
 }
 
 TEST(RequiredFnCheckTest, UnknownBackendRowsAreSkipped) {
@@ -165,8 +166,7 @@ TEST(RequiredFnCheckTest, UnknownBackendRowsAreSkipped) {
   auto abi = AbiWith(
       {Row("mystery_int", "mystery", RequiredFunction::BACKEND_UNSPECIFIED,
            {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT)),
-       Row("future_int", "future",
-           static_cast<RequiredFunction::Backend>(99),
+       Row("future_int", "future", static_cast<RequiredFunction::Backend>(99),
            {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, HostMap(), PluginVec()), IsOk());
 }
@@ -175,9 +175,9 @@ TEST(RequiredFnCheckTest, UnknownBackendRowsAreSkipped) {
 
 TEST(RequiredFnCheckTest, MissingPluginFnExactFrozenMessage) {
   // The §2 missing-plugin shape, verbatim (single line).
-  auto abi = AbiWith({Row(
-      "is_adult_message_acme_User", "is_adult", RequiredFunction::PLUGIN,
-      {WireProto("acme.User")}, Wire(Type::KIND_BOOL))});
+  auto abi = AbiWith(
+      {Row("is_adult_message_acme_User", "is_adult", RequiredFunction::PLUGIN,
+           {WireProto("acme.User")}, Wire(Type::KIND_BOOL))});
   auto s = CheckRequiredFunctions(abi, HostMap(), PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -217,8 +217,7 @@ TEST(RequiredFnCheckTest, SecondRegisteredPluginCanOwnTheDecl) {
   // Registry scan crosses plugins: the owning decl living in the
   // SECOND registered plugin still satisfies the row.
   PluginVec plugins;
-  plugins.push_back(
-      Plug(PluginLib("other", Prim(CelfnType::Kind::kBool), {})));
+  plugins.push_back(Plug(PluginLib("other", Prim(CelfnType::Kind::kBool), {})));
   plugins.push_back(
       Plug(PluginLib("add", Prim(CelfnType::Kind::kInt),
                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
@@ -233,18 +232,17 @@ TEST(RequiredFnCheckTest, ProtoFqnMismatchExactFrozenMessage) {
   // The §2 signature-mismatch shape, verbatim, including the hash
   // rendered as the first 12 lowercase hex chars.
   PluginVec plugins;
-  plugins.push_back(Plug(
-      PluginLib("is_adult", Prim(CelfnType::Kind::kBool),
-                {CelfnParam{false, ProtoOf("acme.Person"), "u"}}),
-      DocExampleHash()));
+  plugins.push_back(
+      Plug(PluginLib("is_adult", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false, ProtoOf("acme.Person"), "u"}}),
+           DocExampleHash()));
   // The registered decl synthesises overload-id
   // `is_adult_message_acme_Person`; the Program's row carries the
   // SAME id (the drift scenario: the plugin was rebuilt against a
   // renamed proto out from under the compiled program).
-  auto abi = AbiWith({Row(
-      plugins[0].library.decls()[0].overload_id, "is_adult",
-      RequiredFunction::PLUGIN, {WireProto("acme.User")},
-      Wire(Type::KIND_BOOL))});
+  auto abi = AbiWith({Row(plugins[0].library.decls()[0].overload_id, "is_adult",
+                          RequiredFunction::PLUGIN, {WireProto("acme.User")},
+                          Wire(Type::KIND_BOOL))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -271,9 +269,9 @@ TEST(RequiredFnCheckTest, LegacyAddPluginRendersHashUnavailable) {
                           Wire(Type::KIND_STRING))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
-  EXPECT_THAT(std::string(s.message()),
-              ::testing::HasSubstr(
-                  "(hash unavailable; registered via AddPlugin)"));
+  EXPECT_THAT(
+      std::string(s.message()),
+      ::testing::HasSubstr("(hash unavailable; registered via AddPlugin)"));
 }
 
 TEST(RequiredFnCheckTest, ParamCountMismatchFails) {
@@ -299,8 +297,7 @@ TEST(RequiredFnCheckTest, ParamTypeMismatchFails) {
       PluginLib("echo", Prim(CelfnType::Kind::kString),
                 {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})));
   auto abi = AbiWith({Row("echo_string", "echo", RequiredFunction::PLUGIN,
-                          {Wire(Type::KIND_INT)},
-                          Wire(Type::KIND_STRING))});
+                          {Wire(Type::KIND_INT)}, Wire(Type::KIND_STRING))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -316,9 +313,9 @@ TEST(RequiredFnCheckTest, NestedGenericMismatchFails) {
   plugins.push_back(Plug(PluginLib(
       "sum", Prim(CelfnType::Kind::kInt),
       {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}})));
-  auto abi = AbiWith({Row("sum_list_int", "sum", RequiredFunction::PLUGIN,
-                          {WireList(Wire(Type::KIND_STRING))},
-                          Wire(Type::KIND_INT))});
+  auto abi =
+      AbiWith({Row("sum_list_int", "sum", RequiredFunction::PLUGIN,
+                   {WireList(Wire(Type::KIND_STRING))}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -350,13 +347,12 @@ TEST(RequiredFnCheckTest, IsReceiverMismatchFails) {
   // ReceiverDeclSynthesisesSameIdAsPlainParam), so is_receiver drift
   // is exactly the case the dedicated flag compare exists for.
   PluginVec plugins;
-  plugins.push_back(Plug(
-      PluginLib("upper", Prim(CelfnType::Kind::kString),
-                {CelfnParam{true, Prim(CelfnType::Kind::kString), "s"}})));
+  plugins.push_back(
+      Plug(PluginLib("upper", Prim(CelfnType::Kind::kString),
+                     {CelfnParam{true, Prim(CelfnType::Kind::kString), "s"}})));
   ASSERT_TRUE(plugins[0].library.decls()[0].is_receiver);
   auto abi = AbiWith({Row("upper_string", "upper", RequiredFunction::PLUGIN,
-                          {Wire(Type::KIND_STRING)},
-                          Wire(Type::KIND_STRING),
+                          {Wire(Type::KIND_STRING)}, Wire(Type::KIND_STRING),
                           /*is_receiver=*/false)});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
@@ -370,10 +366,9 @@ TEST(RequiredFnCheckTest, IsReceiverMismatchFails) {
 
 TEST(RequiredFnCheckTest, MissingHostFnExactFrozenMessage) {
   // The §5.3 missing-host shape, verbatim (single line).
-  auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
-                          RequiredFunction::HOST,
-                          {Wire(Type::KIND_STRING)},
-                          Wire(Type::KIND_INT))});
+  auto abi = AbiWith(
+      {Row("discount_pct_string", "discount_pct", RequiredFunction::HOST,
+           {Wire(Type::KIND_STRING)}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -386,13 +381,12 @@ TEST(RequiredFnCheckTest, MissingHostFnExactFrozenMessage) {
 TEST(RequiredFnCheckTest, HostRowBackedByPluginDeclStillMissing) {
   // Backend must match in this direction too.
   PluginVec plugins;
-  plugins.push_back(Plug(PluginLib(
-      "discount_pct", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false, Prim(CelfnType::Kind::kString), "tier"}})));
-  auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
-                          RequiredFunction::HOST,
-                          {Wire(Type::KIND_STRING)},
-                          Wire(Type::KIND_INT))});
+  plugins.push_back(Plug(
+      PluginLib("discount_pct", Prim(CelfnType::Kind::kInt),
+                {CelfnParam{false, Prim(CelfnType::Kind::kString), "tier"}})));
+  auto abi = AbiWith(
+      {Row("discount_pct_string", "discount_pct", RequiredFunction::HOST,
+           {Wire(Type::KIND_STRING)}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -403,10 +397,9 @@ TEST(RequiredFnCheckTest, HostArityMismatchExactFrozenMessage) {
   // The §5.3 arity shape, verbatim: wasm arity = param_types + 1.
   HostMap hosts;
   hosts.emplace("discount_pct_string", HostCb(3));
-  auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
-                          RequiredFunction::HOST,
-                          {Wire(Type::KIND_STRING)},
-                          Wire(Type::KIND_INT))});
+  auto abi = AbiWith(
+      {Row("discount_pct_string", "discount_pct", RequiredFunction::HOST,
+           {Wire(Type::KIND_STRING)}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts, PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -421,10 +414,9 @@ TEST(RequiredFnCheckTest, AddFunctionRegistrationIsArityOnly) {
   // documented arity-only contract on both methods).
   HostMap hosts;
   hosts.emplace("discount_pct_string", HostCb(2));
-  auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
-                          RequiredFunction::HOST,
-                          {Wire(Type::KIND_STRING)},
-                          Wire(Type::KIND_INT))});
+  auto abi = AbiWith(
+      {Row("discount_pct_string", "discount_pct", RequiredFunction::HOST,
+           {Wire(Type::KIND_STRING)}, Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, hosts, PluginVec()), IsOk());
 }
 
@@ -438,15 +430,14 @@ RegisteredHostCallback TypedHostCb(const RequiredFunction& decl_signature) {
 
 TEST(RequiredFnCheckTest, BindFunctionTypedMatchPasses) {
   HostMap hosts;
-  hosts.emplace("discount_pct_string",
-                TypedHostCb(Row("discount_pct_string", "discount_pct",
-                                RequiredFunction::HOST,
-                                {Wire(Type::KIND_STRING)},
-                                Wire(Type::KIND_INT))));
-  auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
-                          RequiredFunction::HOST,
-                          {Wire(Type::KIND_STRING)},
-                          Wire(Type::KIND_INT))});
+  hosts.emplace(
+      "discount_pct_string",
+      TypedHostCb(Row("discount_pct_string", "discount_pct",
+                      RequiredFunction::HOST, {Wire(Type::KIND_STRING)},
+                      Wire(Type::KIND_INT))));
+  auto abi = AbiWith(
+      {Row("discount_pct_string", "discount_pct", RequiredFunction::HOST,
+           {Wire(Type::KIND_STRING)}, Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, hosts, PluginVec()), IsOk());
 }
 
@@ -454,15 +445,14 @@ TEST(RequiredFnCheckTest, BindFunctionTypedMismatchFails) {
   // Same arity, different param type: only the BindFunction-typed
   // compare can catch this, and its message names both spellings.
   HostMap hosts;
-  hosts.emplace("discount_pct_string",
-                TypedHostCb(Row("discount_pct_string", "discount_pct",
-                                RequiredFunction::HOST,
-                                {Wire(Type::KIND_BYTES)},
-                                Wire(Type::KIND_INT))));
-  auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
-                          RequiredFunction::HOST,
-                          {Wire(Type::KIND_STRING)},
-                          Wire(Type::KIND_INT))});
+  hosts.emplace(
+      "discount_pct_string",
+      TypedHostCb(Row("discount_pct_string", "discount_pct",
+                      RequiredFunction::HOST, {Wire(Type::KIND_BYTES)},
+                      Wire(Type::KIND_INT))));
+  auto abi = AbiWith(
+      {Row("discount_pct_string", "discount_pct", RequiredFunction::HOST,
+           {Wire(Type::KIND_STRING)}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts, PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -477,14 +467,12 @@ TEST(RequiredFnCheckTest, ArityFailureWinsOverTypedCompare) {
   // Both the arity and the captured types are wrong: the arity
   // message fires (checked first — first failure wins per row).
   HostMap hosts;
-  RegisteredHostCallback cb = TypedHostCb(
-      Row("f_int", "f", RequiredFunction::HOST,
-          {Wire(Type::KIND_BYTES), Wire(Type::KIND_BYTES)},
-          Wire(Type::KIND_INT)));
+  RegisteredHostCallback cb = TypedHostCb(Row(
+      "f_int", "f", RequiredFunction::HOST,
+      {Wire(Type::KIND_BYTES), Wire(Type::KIND_BYTES)}, Wire(Type::KIND_INT)));
   hosts.emplace("f_int", std::move(cb));
   auto abi = AbiWith({Row("f_int", "f", RequiredFunction::HOST,
-                          {Wire(Type::KIND_INT)},
-                          Wire(Type::KIND_INT))});
+                          {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts, PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -497,11 +485,10 @@ TEST(RequiredFnCheckTest, ArityFailureWinsOverTypedCompare) {
 TEST(RequiredFnCheckTest, FirstFailureWinsInWireOrder) {
   // Two unsatisfied rows: the error names the FIRST row in wire
   // order, deterministically.
-  auto abi = AbiWith(
-      {Row("first_int", "first", RequiredFunction::PLUGIN,
-           {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT)),
-       Row("second_int", "second", RequiredFunction::HOST,
-           {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
+  auto abi = AbiWith({Row("first_int", "first", RequiredFunction::PLUGIN,
+                          {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT)),
+                      Row("second_int", "second", RequiredFunction::HOST,
+                          {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()), ::testing::HasSubstr("`first_int`"));

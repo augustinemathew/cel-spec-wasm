@@ -20,7 +20,9 @@ absl::Span<const uint8_t> AsBytes(absl::string_view s) {
   return {reinterpret_cast<const uint8_t*>(s.data()), s.size()};
 }
 
-std::string HexOf(absl::string_view s) { return Sha256Hex(AsBytes(s)); }
+std::string HexOf(absl::string_view s) {
+  return Sha256Hex(AsBytes(s));
+}
 
 // NIST CAVP SHA256ShortMsg.rsp, Len = 0 (the empty-message digest;
 // also RFC 6234 / de-facto universal).
@@ -91,9 +93,9 @@ INSTANTIATE_TEST_SUITE_P(
         BoundaryCase{
             64,
             "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"},
-        BoundaryCase{
-            65,
-            "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0"}));
+        BoundaryCase{65,
+                     "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f1"
+                     "7eb0ae0"}));
 
 // The digest bytes returned by Sha256() match Sha256Hex()'s encoding
 // (pins the two entry points to one another and the array form).

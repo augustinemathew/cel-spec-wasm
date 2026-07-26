@@ -291,9 +291,9 @@ std::vector<WasmModule::FunctionImportName> WasmModule::ListFunctionImports()
     // Binaryen returns "" (never nullptr) for a defined function.
     const char* import_module = BinaryenFunctionImportGetModule(fn);
     if (import_module == nullptr || import_module[0] == '\0') continue;
-    out.push_back(FunctionImportName{
-        /*module=*/import_module,
-        /*base=*/BinaryenFunctionImportGetBase(fn)});
+    out.push_back(
+        FunctionImportName{/*module=*/import_module,
+                           /*base=*/BinaryenFunctionImportGetBase(fn)});
   }
   return out;
 }

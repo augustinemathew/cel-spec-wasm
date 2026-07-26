@@ -96,15 +96,15 @@ struct CelfnParam {
 
 struct CelfnDecl {
   enum class Backend : uint8_t {
-    kHost,              // `@host.` prefix
-    kCelDefined,        // `@native.` prefix, has body
+    kHost,        // `@host.` prefix
+    kCelDefined,  // `@native.` prefix, has body
     kPlugin,      // `@plugin.` prefix — m24 §3 plugin-backed fn —
-                // dispatched as a host callback (module_name =
-                // "cel_fn"), but marshaled through a per-fn typed
-                // WIT export of the Component-Model plugin
-                // registered via `Engine::AddPlugin(bytes, lib)`.
-                // Admits protos (as serialized bytes, m24 §8);
-                // admits `type` and `optional<T>` per m24 §6.
+                  // dispatched as a host callback (module_name =
+                  // "cel_fn"), but marshaled through a per-fn typed
+                  // WIT export of the Component-Model plugin
+                  // registered via `Engine::AddPlugin(bytes, lib)`.
+                  // Admits protos (as serialized bytes, m24 §8);
+                  // admits `type` and `optional<T>` per m24 §6.
   };
 
   Backend backend = Backend::kHost;
@@ -189,9 +189,8 @@ class FunctionLibrary {
     // Admits `proto(...)` arguments and returns — they cross as
     // serialized bytes (m24 §8).  Admits `type` and `optional<T>` per
     // m24 §6.
-    Builder& AddPlugin(absl::string_view fn_name,
-                                 CelfnType return_type,
-                                 std::vector<CelfnParam> params);
+    Builder& AddPlugin(absl::string_view fn_name, CelfnType return_type,
+                       std::vector<CelfnParam> params);
 
     // Add a CEL-defined function (body is a CEL expression).
     // celwasmc compiles the body into the wasm module named by

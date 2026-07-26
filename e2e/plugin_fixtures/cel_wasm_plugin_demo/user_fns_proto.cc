@@ -18,8 +18,8 @@ acme::User Capitalize(const acme::User& u) {
   acme::User r = u;
   std::string name = r.name();
   if (!name.empty()) {
-    name[0] = static_cast<char>(
-        std::toupper(static_cast<unsigned char>(name[0])));
+    name[0] =
+        static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
   }
   r.set_name(name);
   return r;

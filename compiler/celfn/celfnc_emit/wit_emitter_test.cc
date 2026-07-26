@@ -68,10 +68,10 @@ CelfnType ProtoOf(std::string fqn) {
 
 FunctionLibrary OneFn(absl::string_view fn_name, CelfnType return_type,
                       std::vector<CelfnParam> params) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin(fn_name, std::move(return_type),
-                                         std::move(params))
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddPlugin(fn_name, std::move(return_type), std::move(params))
+          .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -109,9 +109,8 @@ TEST(EmitWit, NonPluginDeclsAreIgnored) {
       FunctionLibrary::Builder()
           .AddHost("h", Prim(CelfnType::Kind::kBool),
                    {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
-          .AddPlugin(
-              "fc", Prim(CelfnType::Kind::kBool),
-              {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
+          .AddPlugin("fc", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto text_or = EmitWit(*lib_or, kPkg, kVer);
@@ -234,12 +233,10 @@ TEST(EmitWit, RecordEmittedOnlyOnceEvenWithMultipleDurationDecls) {
   // even when many fns reference it.  Same for timestamp.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin(
-              "f", Prim(CelfnType::Kind::kDuration),
-              {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "x"}})
-          .AddPlugin(
-              "g", Prim(CelfnType::Kind::kBool),
-              {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "y"}})
+          .AddPlugin("f", Prim(CelfnType::Kind::kDuration),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "x"}})
+          .AddPlugin("g", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "y"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto t = EmitWit(*lib_or, kPkg, kVer);

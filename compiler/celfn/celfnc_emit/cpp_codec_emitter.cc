@@ -279,33 +279,31 @@ constexpr absl::string_view kProtoTpl =
 // $0 = record struct name (e.g. exports_cel_customfn_fns_duration_t).
 constexpr absl::string_view kDurationTpl =
     R"cpp(inline ::google::protobuf::Duration lift(const $0& r) {
-  ::google::protobuf::Duration d;
-  d.set_seconds(r.seconds);
-  d.set_nanos(r.nanos);
-  return d;
-}
+            ::google::protobuf::Duration d;
+            d.set_seconds(r.seconds);
+            d.set_nanos(r.nanos);
+            return d;
+          }
 
-inline void lower($0* ret, const ::google::protobuf::Duration& d) {
-  ret->seconds = d.seconds();
-  ret->nanos = d.nanos();
-}
-
-)cpp";
+          inline void lower($0* ret, const ::google::protobuf::Duration& d) {
+            ret->seconds = d.seconds();
+            ret->nanos = d.nanos();
+          }
+    )cpp";
 
 constexpr absl::string_view kTimestampTpl =
     R"cpp(inline ::google::protobuf::Timestamp lift(const $0& r) {
-  ::google::protobuf::Timestamp t;
-  t.set_seconds(r.seconds);
-  t.set_nanos(r.nanos);
-  return t;
-}
+            ::google::protobuf::Timestamp t;
+            t.set_seconds(r.seconds);
+            t.set_nanos(r.nanos);
+            return t;
+          }
 
-inline void lower($0* ret, const ::google::protobuf::Timestamp& t) {
-  ret->seconds = t.seconds();
-  ret->nanos = t.nanos();
-}
-
-)cpp";
+          inline void lower($0* ret, const ::google::protobuf::Timestamp& t) {
+            ret->seconds = t.seconds();
+            ret->nanos = t.nanos();
+          }
+    )cpp";
 
 constexpr absl::string_view kNullTpl =
     R"cpp(inline std::monostate lift(const customfn_option_u8_t& /*o*/) {
@@ -511,9 +509,9 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
   // codec.h's lower(...) bodies call `cabi_realloc(...)` for every
   // list / bytes / proto path — emit the forward decl here so we
   // don't depend on header changes from wit-bindgen.
-  absl::StrAppend(
-      &out, "extern \"C\" void* cabi_realloc(void* ptr, size_t old_size, "
-            "size_t align, size_t new_size);\n\n");
+  absl::StrAppend(&out,
+                  "extern \"C\" void* cabi_realloc(void* ptr, size_t old_size, "
+                  "size_t align, size_t new_size);\n\n");
 
   if (!cpp_namespace.empty()) {
     absl::StrAppend(&out, "namespace ", cpp_namespace, "::codec {\n\n");

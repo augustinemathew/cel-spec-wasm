@@ -110,11 +110,11 @@ absl::Status CheckHostRow(
     const std::map<std::string, RegisteredHostCallback>& host_callbacks) {
   const auto it = host_callbacks.find(row.overload_id());
   if (it == host_callbacks.end()) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "Engine::Plan: program requires host function `", row.overload_id(),
-        "` (`", RenderSignature(row),
-        "`) but none is registered; call Engine::BindFunction (or "
-        "AddFunction) before Plan"));
+    return absl::FailedPreconditionError(
+        absl::StrCat("Engine::Plan: program requires host function `",
+                     row.overload_id(), "` (`", RenderSignature(row),
+                     "`) but none is registered; call Engine::BindFunction (or "
+                     "AddFunction) before Plan"));
   }
   const RegisteredHostCallback& registered = it->second;
   const int wasm_arity = row.param_types_size() + 1;

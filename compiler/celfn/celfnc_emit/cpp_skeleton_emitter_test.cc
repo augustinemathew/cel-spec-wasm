@@ -47,10 +47,9 @@ CelfnType ProtoOf(std::string fqn) {
 
 FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
                       std::vector<CelfnParam> params) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin(fn_name, std::move(ret), std::move(params))
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddPlugin(fn_name, std::move(ret), std::move(params))
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -141,8 +140,7 @@ TEST(EmitUserFnsH, DurationParam) {
                    {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "d"}});
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
-  EXPECT_THAT(
-      *t, HasSubstr("int64_t Ms(::google::protobuf::Duration d);"));
+  EXPECT_THAT(*t, HasSubstr("int64_t Ms(::google::protobuf::Duration d);"));
   EXPECT_THAT(*t, HasSubstr("#include \"google/protobuf/duration.pb.h\""));
 }
 
@@ -151,8 +149,7 @@ TEST(EmitUserFnsH, TimestampReturn) {
   auto t = EmitUserFnsH(lib, kMod, {});
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("::google::protobuf::Timestamp Now();"));
-  EXPECT_THAT(*t,
-              HasSubstr("#include \"google/protobuf/timestamp.pb.h\""));
+  EXPECT_THAT(*t, HasSubstr("#include \"google/protobuf/timestamp.pb.h\""));
 }
 
 // ── Aggregates ────────────────────────────────────────────────────

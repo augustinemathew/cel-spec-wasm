@@ -63,10 +63,9 @@ CelfnType ProtoOf(std::string fqn) {
 
 FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
                       std::vector<CelfnParam> params) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin(fn_name, std::move(ret), std::move(params))
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddPlugin(fn_name, std::move(ret), std::move(params))
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -123,7 +122,8 @@ TEST(EmitCodecH, StringLiftReturnsStringView) {
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(
-      *t, HasSubstr("inline std::string_view lift(const customfn_string_t& s)"));
+      *t,
+      HasSubstr("inline std::string_view lift(const customfn_string_t& s)"));
   EXPECT_THAT(*t, HasSubstr("return {reinterpret_cast<const char*>(s.ptr), "
                             "s.len};"));
 }
@@ -259,9 +259,8 @@ TEST(EmitCodecH, SharedTypeAcrossDeclsEmittedOnce) {
           .AddPlugin(
               "f1", Prim(CelfnType::Kind::kInt),
               {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}})
-          .AddPlugin(
-              "f2", ListOf(Prim(CelfnType::Kind::kInt)),
-              {CelfnParam{false, Prim(CelfnType::Kind::kString), "k"}})
+          .AddPlugin("f2", ListOf(Prim(CelfnType::Kind::kInt)),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kString), "k"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto t = EmitCodecH(*lib_or, kMod, kPkg);

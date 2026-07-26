@@ -58,29 +58,24 @@ int main() {  // NOLINT(misc-use-internal-linkage)
 
   // Every type the emitter handles, in one decl each.
   b.AddPlugin("f_string", Prim(K::kString),
-                        {celwasm::CelfnParam{false, Prim(K::kString), "x"}});
+              {celwasm::CelfnParam{false, Prim(K::kString), "x"}});
   b.AddPlugin("f_bytes", Prim(K::kBytes),
-                        {celwasm::CelfnParam{false, Prim(K::kBytes), "x"}});
+              {celwasm::CelfnParam{false, Prim(K::kBytes), "x"}});
   b.AddPlugin("f_duration", Prim(K::kDuration),
-                        {celwasm::CelfnParam{false, Prim(K::kDuration), "x"}});
+              {celwasm::CelfnParam{false, Prim(K::kDuration), "x"}});
   b.AddPlugin("f_timestamp", Prim(K::kTimestamp),
-                        {celwasm::CelfnParam{false, Prim(K::kTimestamp), "x"}});
-  b.AddPlugin(
-      "f_list_int", ListOf(Prim(K::kInt)),
-      {celwasm::CelfnParam{false, ListOf(Prim(K::kInt)), "x"}});
-  b.AddPlugin(
-      "f_list_string", ListOf(Prim(K::kString)),
-      {celwasm::CelfnParam{false, ListOf(Prim(K::kString)), "x"}});
-  b.AddPlugin(
-      "f_list_list_int", ListOf(ListOf(Prim(K::kInt))),
-      {celwasm::CelfnParam{false, ListOf(ListOf(Prim(K::kInt))), "x"}});
-  b.AddPlugin(
-      "f_map_string_int", Prim(K::kInt),
-      {celwasm::CelfnParam{false, MapOf(Prim(K::kString), Prim(K::kInt)),
-                           "x"}});
-  b.AddPlugin(
-      "f_proto", Prim(K::kBool),
-      {celwasm::CelfnParam{false, ProtoOf("acme.User"), "u"}});
+              {celwasm::CelfnParam{false, Prim(K::kTimestamp), "x"}});
+  b.AddPlugin("f_list_int", ListOf(Prim(K::kInt)),
+              {celwasm::CelfnParam{false, ListOf(Prim(K::kInt)), "x"}});
+  b.AddPlugin("f_list_string", ListOf(Prim(K::kString)),
+              {celwasm::CelfnParam{false, ListOf(Prim(K::kString)), "x"}});
+  b.AddPlugin("f_list_list_int", ListOf(ListOf(Prim(K::kInt))),
+              {celwasm::CelfnParam{false, ListOf(ListOf(Prim(K::kInt))), "x"}});
+  b.AddPlugin("f_map_string_int", Prim(K::kInt),
+              {celwasm::CelfnParam{
+                  false, MapOf(Prim(K::kString), Prim(K::kInt)), "x"}});
+  b.AddPlugin("f_proto", Prim(K::kBool),
+              {celwasm::CelfnParam{false, ProtoOf("acme.User"), "u"}});
 
   auto lib_or = std::move(b).Build();
   ABSL_CHECK_OK(lib_or) << lib_or.status();

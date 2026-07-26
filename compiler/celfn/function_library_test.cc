@@ -46,8 +46,7 @@ TEST(FunctionLibrary, ExtractsHostDecl) {
 }
 
 TEST(FunctionLibrary, ExtractsPluginDecl) {
-  auto r =
-      ParseCelfnSource("bool @plugin.allow(this string user, string r);");
+  auto r = ParseCelfnSource("bool @plugin.allow(this string user, string r);");
   ASSERT_TRUE(r.ok()) << r.status();
   ASSERT_EQ(r->decls().size(), 1u);
   const auto& d = r->decls()[0];
@@ -171,12 +170,11 @@ TEST(FunctionLibraryBuilder, ProgrammaticHostDecl) {
 }
 
 TEST(FunctionLibraryBuilder, ProgrammaticPluginDecl) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin("allow", Prim(CelfnType::Kind::kBool),
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddPlugin("allow", Prim(CelfnType::Kind::kBool),
                                {{true, Prim(CelfnType::Kind::kString), "u"},
                                 {false, Prim(CelfnType::Kind::kString), "r"}})
-          .Build();
+                    .Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
   ASSERT_EQ(lib_or->decls().size(), 1u);
   EXPECT_EQ(lib_or->decls()[0].backend, CelfnDecl::Backend::kPlugin);
@@ -261,9 +259,8 @@ CelfnType ListOf(CelfnType inner) {
 TEST(FunctionLibraryBuilder, PluginOptionalReturnRejectedAtBuild) {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin(
-              "lookup", OptOfPrim(CelfnType::Kind::kInt),
-              {CelfnParam{false, Prim(CelfnType::Kind::kString), "k"}})
+          .AddPlugin("lookup", OptOfPrim(CelfnType::Kind::kInt),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kString), "k"}})
           .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("optional"));
@@ -282,8 +279,7 @@ TEST(FunctionLibraryBuilder, PluginOptionalParamRejectedAtBuild) {
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("u"));
 }
 
-TEST(FunctionLibraryBuilder,
-     PluginOptionalNestedInListRejectedAtBuild) {
+TEST(FunctionLibraryBuilder, PluginOptionalNestedInListRejectedAtBuild) {
   // list<optional<int>> — nested optional must be rejected too.
   auto lib_or =
       FunctionLibrary::Builder()
@@ -305,9 +301,8 @@ TEST(FunctionLibraryBuilder, PluginTypeReturnRejectedAtBuild) {
   // is closed.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin(
-              "type_of", Prim(CelfnType::Kind::kType),
-              {CelfnParam{false, Prim(CelfnType::Kind::kString), "x"}})
+          .AddPlugin("type_of", Prim(CelfnType::Kind::kType),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kString), "x"}})
           .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("type"));
@@ -315,11 +310,11 @@ TEST(FunctionLibraryBuilder, PluginTypeReturnRejectedAtBuild) {
 }
 
 TEST(FunctionLibraryBuilder, PluginTypeParamRejectedAtBuild) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin(
-                        "f", Prim(CelfnType::Kind::kBool),
-                        {CelfnParam{false, Prim(CelfnType::Kind::kType), "t"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddPlugin("f", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kType), "t"}})
+          .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("type"));
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("t"));
@@ -338,8 +333,7 @@ TEST(FunctionLibraryBuilder, PluginTypeNestedInListRejectedAtBuild) {
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("type"));
 }
 
-TEST(FunctionLibraryBuilder,
-     PluginTypeNestedInsideOptionalIsRejected) {
+TEST(FunctionLibraryBuilder, PluginTypeNestedInsideOptionalIsRejected) {
   // optional<type> — the optional check fires first (it's an outer
   // optional), but the test pins that nesting type inside any
   // rejected carrier is still rejected.
@@ -362,20 +356,20 @@ TEST(FunctionLibraryBuilder, PluginNullParamIsAccepted) {
   // null encodes as `option<unit>` (a canonical-ABI detail), but
   // the IDL/decl-level kind is kNull, not kOptional, and
   // MentionsOptional must not flag it.
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin(
-                        "accepts_null", Prim(CelfnType::Kind::kBool),
-                        {CelfnParam{false, Prim(CelfnType::Kind::kNull), "n"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddPlugin("accepts_null", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kNull), "n"}})
+          .Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
 }
 
 TEST(FunctionLibraryBuilder, PluginNullReturnIsAccepted) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin(
-                        "returns_null", Prim(CelfnType::Kind::kNull),
-                        {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddPlugin("returns_null", Prim(CelfnType::Kind::kNull),
+                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}})
+          .Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
 }
 
@@ -444,36 +438,33 @@ TEST(FunctionLibraryBuilder, PluginListOfMapStringListOfIntAccepted) {
             CelfnType::Kind::kList);
 }
 
-TEST(FunctionLibraryBuilder,
-     PluginNestedDeclWithIllegalMapKeyRejected) {
+TEST(FunctionLibraryBuilder, PluginNestedDeclWithIllegalMapKeyRejected) {
   // `list<map<double, int>>` — the legal-map-key check (m24 §A.5)
   // recurses through list_element; a buggy gate that only looked
   // at top-level map shape would let this through.
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin(
-                        "f", Prim(CelfnType::Kind::kBool),
-                        {CelfnParam{false,
-                                    ListOf(MapOf(Prim(CelfnType::Kind::kDouble),
-                                                 Prim(CelfnType::Kind::kInt))),
-                                    "xs"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddPlugin("f", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false,
+                                 ListOf(MapOf(Prim(CelfnType::Kind::kDouble),
+                                              Prim(CelfnType::Kind::kInt))),
+                                 "xs"}})
+          .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
 }
 
-TEST(FunctionLibraryBuilder,
-     PluginNestedDeclWithOptionalDeepInsideRejected) {
+TEST(FunctionLibraryBuilder, PluginNestedDeclWithOptionalDeepInsideRejected) {
   // `list<map<string, list<optional<int>>>>` — optional buried at
   // depth-4 still gets caught by MentionsOptional's recursion.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin(
-              "f", Prim(CelfnType::Kind::kBool),
-              {CelfnParam{
-                  false,
-                  ListOf(MapOf(Prim(CelfnType::Kind::kString),
-                               ListOf(OptOfPrim(CelfnType::Kind::kInt)))),
-                  "groups"}})
+          .AddPlugin("f", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false,
+                                 ListOf(MapOf(
+                                     Prim(CelfnType::Kind::kString),
+                                     ListOf(OptOfPrim(CelfnType::Kind::kInt)))),
+                                 "groups"}})
           .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("optional"));
@@ -503,14 +494,13 @@ TEST(FunctionLibraryBuilder, PluginListOfIntAccepted) {
 // the grammar.
 
 TEST(FunctionLibraryBuilder, RejectsPluginMapWithDoubleKeyParam) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin("f", Prim(CelfnType::Kind::kBool),
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddPlugin("f", Prim(CelfnType::Kind::kBool),
                                {CelfnParam{false,
                                            MapOf(Prim(CelfnType::Kind::kDouble),
                                                  Prim(CelfnType::Kind::kInt)),
                                            "m"}})
-          .Build();
+                    .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
   EXPECT_THAT(std::string(lib_or.status().message()),
@@ -539,7 +529,7 @@ TEST(FunctionLibraryBuilder, RejectsMapWithDoubleKeyNestedInList) {
       MapOf(Prim(CelfnType::Kind::kDouble), Prim(CelfnType::Kind::kInt)));
   auto lib_or = FunctionLibrary::Builder()
                     .AddPlugin("g", Prim(CelfnType::Kind::kBool),
-                                         {CelfnParam{false, nested, "xs"}})
+                               {CelfnParam{false, nested, "xs"}})
                     .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
@@ -547,15 +537,15 @@ TEST(FunctionLibraryBuilder, RejectsMapWithDoubleKeyNestedInList) {
 
 TEST(FunctionLibraryBuilder, RejectsMapWithDoubleKeyNestedAsMapValue) {
   // map<string, map<double, int>> — illegal key inside the value.
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin(
-                        "h", Prim(CelfnType::Kind::kBool),
-                        {CelfnParam{false,
-                                    MapOf(Prim(CelfnType::Kind::kString),
-                                          MapOf(Prim(CelfnType::Kind::kDouble),
-                                                Prim(CelfnType::Kind::kInt))),
-                                    "m"}})
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddPlugin("h", Prim(CelfnType::Kind::kBool),
+                     {CelfnParam{false,
+                                 MapOf(Prim(CelfnType::Kind::kString),
+                                       MapOf(Prim(CelfnType::Kind::kDouble),
+                                             Prim(CelfnType::Kind::kInt))),
+                                 "m"}})
+          .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
 }
@@ -597,11 +587,10 @@ TEST(FunctionLibraryBuilder, PluginProtoAdmitted) {
   CelfnType proto_user;
   proto_user.kind = CelfnType::Kind::kProto;
   proto_user.proto_fqn = "acme.User";
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin("is_admin", Prim(CelfnType::Kind::kBool),
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddPlugin("is_admin", Prim(CelfnType::Kind::kBool),
                                {CelfnParam{false, proto_user, "u"}})
-          .Build();
+                    .Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
 }
 

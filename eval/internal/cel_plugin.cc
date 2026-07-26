@@ -463,9 +463,9 @@ absl::Status LiftMap(const CelfnType& type, const Value& v,
   const CelfnType& key_type = type.map_kv[0];
   const CelfnType& val_type = type.map_kv[1];
   if (!IsLegalMapKeyKind(key_type.kind)) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "cel_plugin: map key kind `", CelfnKindName(key_type.kind),
-        "` is not allowed (langdef: bool|int|uint|string only)"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("cel_plugin: map key kind `", CelfnKindName(key_type.kind),
+                     "` is not allowed (langdef: bool|int|uint|string only)"));
   }
   if (v.kind() != Value::Kind::kMap) {
     return CelfnVsValueMismatch(type, v);
@@ -505,14 +505,14 @@ absl::Status LiftMap(const CelfnType& type, const Value& v,
     slot->of.tuple.data[1].of.boolean = false;
     if (auto s = LiftCelToComponent(key_type, k, ctx, &slot->of.tuple.data[0]);
         !s.ok()) {
-      err = absl::Status(s.code(), absl::StrCat("cel_plugin: map entry ",
-                                                idx, " key: ", s.message()));
+      err = absl::Status(s.code(), absl::StrCat("cel_plugin: map entry ", idx,
+                                                " key: ", s.message()));
       return;
     }
     if (auto s = LiftCelToComponent(val_type, vv, ctx, &slot->of.tuple.data[1]);
         !s.ok()) {
-      err = absl::Status(s.code(), absl::StrCat("cel_plugin: map entry ",
-                                                idx, " value: ", s.message()));
+      err = absl::Status(s.code(), absl::StrCat("cel_plugin: map entry ", idx,
+                                                " value: ", s.message()));
       return;
     }
     ++idx;
@@ -529,9 +529,9 @@ absl::Status LowerMap(const CelfnType& type, const wasmtime_component_val_t& in,
   const CelfnType& key_type = type.map_kv[0];
   const CelfnType& val_type = type.map_kv[1];
   if (!IsLegalMapKeyKind(key_type.kind)) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "cel_plugin: map key kind `", CelfnKindName(key_type.kind),
-        "` is not allowed (langdef: bool|int|uint|string only)"));
+    return absl::InvalidArgumentError(
+        absl::StrCat("cel_plugin: map key kind `", CelfnKindName(key_type.kind),
+                     "` is not allowed (langdef: bool|int|uint|string only)"));
   }
   if (in.kind != WASMTIME_COMPONENT_LIST) {
     return WasmtimeKindMismatch(type, in.kind, "list<tuple<K,V>>");
@@ -632,11 +632,10 @@ absl::Status LowerProto(const CelfnType& type,
   const google::protobuf::Message* prototype =
       google::protobuf::MessageFactory::generated_factory()->GetPrototype(desc);
   if (prototype == nullptr) {
-    return absl::InternalError(
-        absl::StrCat("cel_plugin: generated_factory has no prototype for `",
-                     type.proto_fqn,
-                     "` (descriptor not registered with the generated "
-                     "pool — link the cc_proto_library into the test binary)"));
+    return absl::InternalError(absl::StrCat(
+        "cel_plugin: generated_factory has no prototype for `", type.proto_fqn,
+        "` (descriptor not registered with the generated "
+        "pool — link the cc_proto_library into the test binary)"));
   }
   // Collect bytes from the list<u8>.
   std::string bytes;
@@ -685,8 +684,8 @@ absl::Status LowerList(const CelfnType& type,
     Value e;
     if (auto s = LowerComponentToCel(elem_type, in.of.list.data[i], ctx, &e);
         !s.ok()) {
-      return absl::Status(s.code(), absl::StrCat("cel_plugin: list element ",
-                                                 i, ": ", s.message()));
+      return absl::Status(s.code(), absl::StrCat("cel_plugin: list element ", i,
+                                                 ": ", s.message()));
     }
     elems.push_back(std::move(e));
   }
@@ -805,9 +804,8 @@ absl::Status LiftCelToComponent(const CelfnType& type, const Value& value,
   }
   // Closed-set switch: any unhandled value is an invariant break, not
   // a recoverable input — match the codebase's unreachable-default rule.
-  return absl::InternalError(
-      absl::StrCat("cel_plugin: unhandled CelfnType::Kind = ",
-                   static_cast<int>(type.kind)));
+  return absl::InternalError(absl::StrCat(
+      "cel_plugin: unhandled CelfnType::Kind = ", static_cast<int>(type.kind)));
 }
 
 absl::Status LowerComponentToCel(const CelfnType& type,
@@ -847,9 +845,8 @@ absl::Status LowerComponentToCel(const CelfnType& type,
           "cel_plugin: type-of-types is not a supported return shape "
           "for plugin fns (cleanup-backlog #44)");
   }
-  return absl::InternalError(
-      absl::StrCat("cel_plugin: unhandled CelfnType::Kind = ",
-                   static_cast<int>(type.kind)));
+  return absl::InternalError(absl::StrCat(
+      "cel_plugin: unhandled CelfnType::Kind = ", static_cast<int>(type.kind)));
 }
 
 }  // namespace celwasm
