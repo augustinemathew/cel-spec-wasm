@@ -983,8 +983,11 @@ cleanup-backlog #52.
         (violated the invariant m35 itself legislated); payload
         offsets derived from the `FindCustomSection` span, framing
         via `BuildCustomSection`.
-  - [ ] P1-3 delete `compiler/probes/m35/` (probe discipline).
-  - [ ] rename-sweep miss: `current-capabilities.md:96`.
+  - [x] P1-3 delete `compiler/probes/m35/` (probe discipline; the
+        §3.3 dated callout keeps what it confirmed, with the
+        wasmtime header citation).
+  - [x] rename-sweep miss: `current-capabilities.md:96` — now names
+        the `@plugin` / `AddPlugin` + one-noun surface on HEAD.
   - [ ] Slice N (compile-path benches, user-scoped) + B4/G gates —
         in flight.
 

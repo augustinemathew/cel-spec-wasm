@@ -21,6 +21,33 @@ struck through or removed.
 
 ## Open
 
+- [ ] **#52** — m35 dedupe items deliberately deferred at the
+      post-review cleanup: (a) **D6** — a third first-party UTF-8
+      validator (`IsValidUtf8` in `abi/plugin.cc`) alongside
+      `runtime/cel_string_ext_internal.h::Utf8Decode` (wasm-C-side;
+      layering makes reuse awkward) and vendored cel-cpp's
+      `internal/utf8.h` (rejected: internal-namespace, not a
+      sanctioned dep surface).  Swapping is conditional on a public
+      validator dep decision — `utf8_range` is the noted candidate
+      if one is taken; until then the local one stays (small,
+      NIST-grade tested via plugin_test).  (b) **D7** — the
+      `kComponentPreamble` / `kCorePreamble` test preamble byte
+      constants, now declared in four tests (`abi/plugin_test.cc`,
+      `abi/plugin_validate_test.cc`,
+      `tools/cel/run_embed_decls_test.cc`,
+      `compiler/compiler_test.cc`) — the review's "tiny
+      `abi/testing` util if a fourth copy ever appears" threshold
+      has been met; build it next time one of these is touched.
+      Surfaced: 2026-07-25 m35 closeout review
+      (rewrite/reviews/2026-07-25-m35-closeout.md, dedupe table
+      D6/D7).
+      Files: `abi/plugin.cc`, `abi/plugin_test.cc`,
+      `abi/plugin_validate_test.cc`,
+      `tools/cel/run_embed_decls_test.cc`,
+      `compiler/compiler_test.cc`.
+      Why P2: dedupe-only, no behavior gap; D6 is blocked on a dep
+      decision, D7 is test-fixture consolidation.
+
 - [ ] **#49** — native test/bench arena (64 KiB,
       `CELWASM_ARENA_CAPACITY_BYTES`) segfaults silently on oversized
       operands instead of failing loudly: `cel_make_string` of a
