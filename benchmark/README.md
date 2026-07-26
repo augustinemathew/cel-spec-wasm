@@ -31,9 +31,9 @@ moved and you want to know *which layer* is at fault, drop a tier:
 no wasm in the loop, `//benchmark/compiler:*` times Compile/Plan,
 `//benchmark/plugin:plugin_bench` isolates the
 Component-Model call boundary, and
-`//benchmark/plugin:plugin_compile_bench` its compile path
+`//benchmark/compiler:plugin_compile_bench` the plugin compile path
 (`Plugin::Load`, `Use` decl registration, required-functions
-emission; latest numbers: `plugin/results/`).
+emission; latest numbers: `compiler/results/`).
 
 **You want publishable numbers.** On an idle machine:
 

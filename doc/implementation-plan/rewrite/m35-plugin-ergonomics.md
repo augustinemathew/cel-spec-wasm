@@ -1113,11 +1113,12 @@ cleanup-backlog #52.
      > (`BM_PlanScalingByRegisteredPlugins`,
      > `BM_PlanVerificationOverhead`, `BM_EngineUse`) and the V4
      > before/after table were dropped from this slice.  Shipped as
-     > `//benchmark/plugin:plugin_compile_bench` (Load ~415 µs on the
+     > `//benchmark/compiler:plugin_compile_bench` (moved to the
+     > compile tier per PR review; Load ~415 µs on the
      > ~50 KB demo; Use registration +218 ns at Build; decls carried
      > uncalled +3.8 % per opt2 Compile; required-fn emission at 8
      > declared/1 called +1.2 ms at opt2, noise at opt0); numbers in
-     > `benchmark/plugin/results/2026-07-25-Mac.md`.
+     > `benchmark/compiler/results/2026-07-25-plugin-compile-Mac.md`.
   C. `Swap` (§8) — deferred.
   D. C ABI (§10) — deferred.
 

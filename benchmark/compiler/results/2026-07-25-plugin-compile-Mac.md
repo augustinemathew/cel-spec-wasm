@@ -7,7 +7,7 @@ numbers live in `plugin_bench` (not re-run here).
 Command:
 
 ```bash
-bazel build -c opt //benchmark/plugin:plugin_compile_bench
+bazel build -c opt //benchmark/compiler:plugin_compile_bench
 bazel-bin/benchmark/plugin/plugin_compile_bench \
     --benchmark_repetitions=5 --benchmark_report_aggregates_only=true
 ```

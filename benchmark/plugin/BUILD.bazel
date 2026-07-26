@@ -42,35 +42,3 @@ cc_binary(
     ],
 )
 
-# Compile-path plugin costs: Plugin::Load (section walk + celfn parse
-# + SHA-256), decl-registration cost (plain builder vs Builder::Use'd
-# plugin, same expression), and required-functions emission overhead
-# (1 vs 8 declared fns, 1 called, at optimize_level 0 vs 2 — the
-# table derives from the post-optimize import surface, so the pair
-# reads table-size scaling).  Eval-side dispatch cost lives in
-# :plugin_bench above.
-#
-# `manual`-tagged; run explicitly, always -c opt:
-#   bazel run -c opt //benchmark/plugin:plugin_compile_bench
-cc_binary(
-    name = "plugin_compile_bench",
-    srcs = ["plugin_compile_bench.cc"],
-    copts = ["-std=c++17"],
-    data = [
-        "//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin",
-    ],
-    tags = ["manual"],
-    deps = [
-        "//abi:plugin",
-        "//compiler:compiler",
-        "//compiler:program",
-        "//compiler/celfn:function_library",
-        "//shared:type",
-        "@bazel_tools//tools/cpp/runfiles",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_benchmark//:benchmark_main",
-    ],
-)
