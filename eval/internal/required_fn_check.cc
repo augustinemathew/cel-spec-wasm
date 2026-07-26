@@ -63,17 +63,17 @@ FoundPluginDecl FindPluginDecl(absl::Span<const RegisteredPlugin> registry,
 
 // Full recursive signature compare between a Program's row and a
 // registered decl's wire spelling: is_receiver, param count, each
-// param type, return type (FnTypeEquals — protos by FQN).
+// param type, return type (TypeEquals — protos by FQN).
 bool SignaturesAgree(const RequiredFunction& row,
                      const RequiredFunction& registered) {
   if (row.is_receiver() != registered.is_receiver()) return false;
   if (row.param_types_size() != registered.param_types_size()) return false;
   for (int i = 0; i < row.param_types_size(); ++i) {
-    if (!FnTypeEquals(row.param_types(i), registered.param_types(i))) {
+    if (!TypeEquals(row.param_types(i), registered.param_types(i))) {
       return false;
     }
   }
-  return FnTypeEquals(row.return_type(), registered.return_type());
+  return TypeEquals(row.return_type(), registered.return_type());
 }
 
 // One PLUGIN row: registry lookup + full signature compare.  Message

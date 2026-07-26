@@ -560,6 +560,18 @@ existence + full signature match, hash NOT enforced.
 
 ### 5.1 Wire: `cel.abi` field 8 (additive, no version bump)
 
+> **As-built delta (2026-07-25, review):** the `FnType` message below
+> shipped generalized as **`Type`** (nested enum values `FN_KIND_*` →
+> `KIND_*`; field numbers and semantics unchanged — message/enum
+> renames are wire-invisible).  Per user review call, the ABI keeps
+> ONE wire type vocabulary rather than a function-specific one:
+> `RequiredFunction` carries `Type` today, and variables adopt the
+> same message later (`VariableEntry`'s reserved slot 5, when
+> variable introspection lands).  The celfn_wire.h helpers renamed
+> with it: `FnTypeFromCelfn` → `TypeFromCelfn`, `FnTypeEquals` →
+> `TypeEquals`, `RenderFnType` → `RenderType`.  See
+> `doc/design/08-abi-wire-format.md` §1.4 for the as-shipped shape.
+
 ```proto
 // Recursive type spelling for a custom-function signature.  Mirrors
 // compiler/celfn CelfnType 1:1; open-set on wire (unknown kinds

@@ -865,8 +865,8 @@ TEST(CompileRequiredFunctionsTest, ReceiverRowCarriesTypesAndReceiverBit) {
   EXPECT_EQ(row.overload_id(), "is_number_string");
   EXPECT_TRUE(row.is_receiver());
   ASSERT_EQ(row.param_types_size(), 1);
-  EXPECT_EQ(row.param_types(0).kind(), celwasm::abi::FnType::FN_KIND_STRING);
-  EXPECT_EQ(row.return_type().kind(), celwasm::abi::FnType::FN_KIND_BOOL);
+  EXPECT_EQ(row.param_types(0).kind(), celwasm::abi::Type::KIND_STRING);
+  EXPECT_EQ(row.return_type().kind(), celwasm::abi::Type::KIND_BOOL);
 }
 
 TEST(CompileProtoMapTest, ProtoMapFieldLayoutReusesSelectAndCallSlot) {

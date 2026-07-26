@@ -1,8 +1,8 @@
 // Tests for abi/celfn_wire.  Covers:
-//   - FnTypeFromCelfn: every CelfnType kind (scalars, proto FQN,
+//   - TypeFromCelfn: every CelfnType kind (scalars, proto FQN,
 //     list / map / optional element recursion, deep nesting), plus
 //     CHECK-death on malformed generic shapes.
-//   - FnTypeEquals: positive (reflexive over nested shapes, unknown
+//   - TypeEquals: positive (reflexive over nested shapes, unknown
 //     kinds numerically equal) and negative along every signature-
 //     matrix axis expressible at the type level — kind, proto FQN,
 //     params count, nested generic element (see
@@ -24,7 +24,7 @@
 namespace celwasm {
 namespace {
 
-using ::celwasm::abi::FnType;
+using ::celwasm::abi::Type;
 using ::celwasm::abi::RequiredFunction;
 
 // --- CelfnType construction helpers --------------------------------
@@ -66,194 +66,194 @@ CelfnType Optional(CelfnType elem) {
 
 // Wire-side helpers.
 
-FnType WireScalar(FnType::Kind kind) {
-  FnType t;
+Type WireScalar(Type::Kind kind) {
+  Type t;
   t.set_kind(kind);
   return t;
 }
 
-FnType WireUnknownKind(int value) {
-  FnType t;
-  t.set_kind(static_cast<FnType::Kind>(value));
+Type WireUnknownKind(int value) {
+  Type t;
+  t.set_kind(static_cast<Type::Kind>(value));
   return t;
 }
 
-// --- FnTypeFromCelfn: scalar kinds ---------------------------------
+// --- TypeFromCelfn: scalar kinds ---------------------------------
 
 struct ScalarCase {
   CelfnType::Kind celfn = CelfnType::Kind::kBool;
-  FnType::Kind wire = FnType::FN_KIND_UNSPECIFIED;
+  Type::Kind wire = Type::KIND_UNSPECIFIED;
 };
 
-class FnTypeFromCelfnScalarTest : public ::testing::TestWithParam<ScalarCase> {
+class TypeFromCelfnScalarTest : public ::testing::TestWithParam<ScalarCase> {
 };
 
-TEST_P(FnTypeFromCelfnScalarTest, MapsKindWithNoFqnAndNoParams) {
-  const FnType wire = FnTypeFromCelfn(Scalar(GetParam().celfn));
+TEST_P(TypeFromCelfnScalarTest, MapsKindWithNoFqnAndNoParams) {
+  const Type wire = TypeFromCelfn(Scalar(GetParam().celfn));
   EXPECT_EQ(wire.kind(), GetParam().wire);
   EXPECT_TRUE(wire.proto_fqn().empty());
   EXPECT_EQ(wire.params_size(), 0);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    AllScalarKinds, FnTypeFromCelfnScalarTest,
+    AllScalarKinds, TypeFromCelfnScalarTest,
     ::testing::Values(
-        ScalarCase{CelfnType::Kind::kBool, FnType::FN_KIND_BOOL},
-        ScalarCase{CelfnType::Kind::kInt, FnType::FN_KIND_INT},
-        ScalarCase{CelfnType::Kind::kUint, FnType::FN_KIND_UINT},
-        ScalarCase{CelfnType::Kind::kDouble, FnType::FN_KIND_DOUBLE},
-        ScalarCase{CelfnType::Kind::kString, FnType::FN_KIND_STRING},
-        ScalarCase{CelfnType::Kind::kBytes, FnType::FN_KIND_BYTES},
-        ScalarCase{CelfnType::Kind::kNull, FnType::FN_KIND_NULL},
-        ScalarCase{CelfnType::Kind::kDuration, FnType::FN_KIND_DURATION},
-        ScalarCase{CelfnType::Kind::kTimestamp, FnType::FN_KIND_TIMESTAMP},
-        ScalarCase{CelfnType::Kind::kType, FnType::FN_KIND_TYPE}));
+        ScalarCase{CelfnType::Kind::kBool, Type::KIND_BOOL},
+        ScalarCase{CelfnType::Kind::kInt, Type::KIND_INT},
+        ScalarCase{CelfnType::Kind::kUint, Type::KIND_UINT},
+        ScalarCase{CelfnType::Kind::kDouble, Type::KIND_DOUBLE},
+        ScalarCase{CelfnType::Kind::kString, Type::KIND_STRING},
+        ScalarCase{CelfnType::Kind::kBytes, Type::KIND_BYTES},
+        ScalarCase{CelfnType::Kind::kNull, Type::KIND_NULL},
+        ScalarCase{CelfnType::Kind::kDuration, Type::KIND_DURATION},
+        ScalarCase{CelfnType::Kind::kTimestamp, Type::KIND_TIMESTAMP},
+        ScalarCase{CelfnType::Kind::kType, Type::KIND_TYPE}));
 
-// --- FnTypeFromCelfn: composite kinds ------------------------------
+// --- TypeFromCelfn: composite kinds ------------------------------
 
-TEST(FnTypeFromCelfnTest, ProtoCarriesFqn) {
-  const FnType wire = FnTypeFromCelfn(Proto("acme.User"));
-  EXPECT_EQ(wire.kind(), FnType::FN_KIND_PROTO);
+TEST(TypeFromCelfnTest, ProtoCarriesFqn) {
+  const Type wire = TypeFromCelfn(Proto("acme.User"));
+  EXPECT_EQ(wire.kind(), Type::KIND_PROTO);
   EXPECT_EQ(wire.proto_fqn(), "acme.User");
   EXPECT_EQ(wire.params_size(), 0);
 }
 
-TEST(FnTypeFromCelfnTest, ListElementLandsInParams) {
-  const FnType wire = FnTypeFromCelfn(List(Scalar(CelfnType::Kind::kInt)));
-  EXPECT_EQ(wire.kind(), FnType::FN_KIND_LIST);
+TEST(TypeFromCelfnTest, ListElementLandsInParams) {
+  const Type wire = TypeFromCelfn(List(Scalar(CelfnType::Kind::kInt)));
+  EXPECT_EQ(wire.kind(), Type::KIND_LIST);
   ASSERT_EQ(wire.params_size(), 1);
-  EXPECT_EQ(wire.params(0).kind(), FnType::FN_KIND_INT);
+  EXPECT_EQ(wire.params(0).kind(), Type::KIND_INT);
 }
 
-TEST(FnTypeFromCelfnTest, MapKeyValueLandInParamsInOrder) {
-  const FnType wire = FnTypeFromCelfn(
+TEST(TypeFromCelfnTest, MapKeyValueLandInParamsInOrder) {
+  const Type wire = TypeFromCelfn(
       Map(Scalar(CelfnType::Kind::kString), Scalar(CelfnType::Kind::kUint)));
-  EXPECT_EQ(wire.kind(), FnType::FN_KIND_MAP);
+  EXPECT_EQ(wire.kind(), Type::KIND_MAP);
   ASSERT_EQ(wire.params_size(), 2);
-  EXPECT_EQ(wire.params(0).kind(), FnType::FN_KIND_STRING);
-  EXPECT_EQ(wire.params(1).kind(), FnType::FN_KIND_UINT);
+  EXPECT_EQ(wire.params(0).kind(), Type::KIND_STRING);
+  EXPECT_EQ(wire.params(1).kind(), Type::KIND_UINT);
 }
 
-TEST(FnTypeFromCelfnTest, OptionalElementLandsInParams) {
-  const FnType wire = FnTypeFromCelfn(Optional(Scalar(CelfnType::Kind::kBool)));
-  EXPECT_EQ(wire.kind(), FnType::FN_KIND_OPTIONAL);
+TEST(TypeFromCelfnTest, OptionalElementLandsInParams) {
+  const Type wire = TypeFromCelfn(Optional(Scalar(CelfnType::Kind::kBool)));
+  EXPECT_EQ(wire.kind(), Type::KIND_OPTIONAL);
   ASSERT_EQ(wire.params_size(), 1);
-  EXPECT_EQ(wire.params(0).kind(), FnType::FN_KIND_BOOL);
+  EXPECT_EQ(wire.params(0).kind(), Type::KIND_BOOL);
 }
 
-TEST(FnTypeFromCelfnTest, DeepNestingRecursesListMapProto) {
+TEST(TypeFromCelfnTest, DeepNestingRecursesListMapProto) {
   // list<map<string, proto(acme.User)>>
-  const FnType wire = FnTypeFromCelfn(
+  const Type wire = TypeFromCelfn(
       List(Map(Scalar(CelfnType::Kind::kString), Proto("acme.User"))));
-  ASSERT_EQ(wire.kind(), FnType::FN_KIND_LIST);
+  ASSERT_EQ(wire.kind(), Type::KIND_LIST);
   ASSERT_EQ(wire.params_size(), 1);
-  const FnType& map = wire.params(0);
-  ASSERT_EQ(map.kind(), FnType::FN_KIND_MAP);
+  const Type& map = wire.params(0);
+  ASSERT_EQ(map.kind(), Type::KIND_MAP);
   ASSERT_EQ(map.params_size(), 2);
-  EXPECT_EQ(map.params(0).kind(), FnType::FN_KIND_STRING);
-  EXPECT_EQ(map.params(1).kind(), FnType::FN_KIND_PROTO);
+  EXPECT_EQ(map.params(0).kind(), Type::KIND_STRING);
+  EXPECT_EQ(map.params(1).kind(), Type::KIND_PROTO);
   EXPECT_EQ(map.params(1).proto_fqn(), "acme.User");
 }
 
 // Malformed generic shapes are builder-invariant violations, not
 // admissible inputs — they must fail loudly, never emit a
 // plausible-looking half-empty wire type.
-TEST(FnTypeFromCelfnDeathTest, ListWithoutElementChecks) {
+TEST(TypeFromCelfnDeathTest, ListWithoutElementChecks) {
   CelfnType t;
   t.kind = CelfnType::Kind::kList;
-  EXPECT_DEATH(FnTypeFromCelfn(t), "kList");
+  EXPECT_DEATH(TypeFromCelfn(t), "kList");
 }
 
-TEST(FnTypeFromCelfnDeathTest, MapWithoutKeyValueChecks) {
+TEST(TypeFromCelfnDeathTest, MapWithoutKeyValueChecks) {
   CelfnType t;
   t.kind = CelfnType::Kind::kMap;
-  EXPECT_DEATH(FnTypeFromCelfn(t), "kMap");
+  EXPECT_DEATH(TypeFromCelfn(t), "kMap");
 }
 
-TEST(FnTypeFromCelfnDeathTest, OptionalWithoutElementChecks) {
+TEST(TypeFromCelfnDeathTest, OptionalWithoutElementChecks) {
   CelfnType t;
   t.kind = CelfnType::Kind::kOptional;
-  EXPECT_DEATH(FnTypeFromCelfn(t), "kOptional");
+  EXPECT_DEATH(TypeFromCelfn(t), "kOptional");
 }
 
-// --- FnTypeEquals: positive ----------------------------------------
+// --- TypeEquals: positive ----------------------------------------
 
-TEST(FnTypeEqualsTest, ScalarReflexive) {
-  EXPECT_TRUE(FnTypeEquals(WireScalar(FnType::FN_KIND_INT),
-                           WireScalar(FnType::FN_KIND_INT)));
+TEST(TypeEqualsTest, ScalarReflexive) {
+  EXPECT_TRUE(TypeEquals(WireScalar(Type::KIND_INT),
+                           WireScalar(Type::KIND_INT)));
 }
 
-TEST(FnTypeEqualsTest, NestedShapeReflexive) {
-  const FnType a = FnTypeFromCelfn(
+TEST(TypeEqualsTest, NestedShapeReflexive) {
+  const Type a = TypeFromCelfn(
       List(Map(Scalar(CelfnType::Kind::kString), Proto("acme.User"))));
-  const FnType b = FnTypeFromCelfn(
+  const Type b = TypeFromCelfn(
       List(Map(Scalar(CelfnType::Kind::kString), Proto("acme.User"))));
-  EXPECT_TRUE(FnTypeEquals(a, b));
+  EXPECT_TRUE(TypeEquals(a, b));
 }
 
-TEST(FnTypeEqualsTest, SameProtoFqnEqual) {
-  EXPECT_TRUE(FnTypeEquals(FnTypeFromCelfn(Proto("acme.User")),
-                           FnTypeFromCelfn(Proto("acme.User"))));
+TEST(TypeEqualsTest, SameProtoFqnEqual) {
+  EXPECT_TRUE(TypeEquals(TypeFromCelfn(Proto("acme.User")),
+                           TypeFromCelfn(Proto("acme.User"))));
 }
 
 // Open-set wire contract: kinds this binary doesn't know compare
 // numerically — same number equal, different numbers unequal.
-TEST(FnTypeEqualsTest, UnknownKindsEqualWhenSameNumber) {
-  EXPECT_TRUE(FnTypeEquals(WireUnknownKind(99), WireUnknownKind(99)));
+TEST(TypeEqualsTest, UnknownKindsEqualWhenSameNumber) {
+  EXPECT_TRUE(TypeEquals(WireUnknownKind(99), WireUnknownKind(99)));
 }
 
-TEST(FnTypeEqualsTest, UnknownKindsUnequalWhenDifferentNumbers) {
-  EXPECT_FALSE(FnTypeEquals(WireUnknownKind(99), WireUnknownKind(100)));
+TEST(TypeEqualsTest, UnknownKindsUnequalWhenDifferentNumbers) {
+  EXPECT_FALSE(TypeEquals(WireUnknownKind(99), WireUnknownKind(100)));
 }
 
-TEST(FnTypeEqualsTest, UnspecifiedEqualsUnspecified) {
-  EXPECT_TRUE(FnTypeEquals(FnType(), FnType()));
+TEST(TypeEqualsTest, UnspecifiedEqualsUnspecified) {
+  EXPECT_TRUE(TypeEquals(Type(), Type()));
 }
 
-// --- FnTypeEquals: negative, one per matrix axis -------------------
+// --- TypeEquals: negative, one per matrix axis -------------------
 
-TEST(FnTypeEqualsTest, DistinguishesKind) {
-  EXPECT_FALSE(FnTypeEquals(WireScalar(FnType::FN_KIND_INT),
-                            WireScalar(FnType::FN_KIND_UINT)));
+TEST(TypeEqualsTest, DistinguishesKind) {
+  EXPECT_FALSE(TypeEquals(WireScalar(Type::KIND_INT),
+                            WireScalar(Type::KIND_UINT)));
 }
 
-TEST(FnTypeEqualsTest, DistinguishesProtoFqn) {
-  EXPECT_FALSE(FnTypeEquals(FnTypeFromCelfn(Proto("acme.User")),
-                            FnTypeFromCelfn(Proto("acme.Person"))));
+TEST(TypeEqualsTest, DistinguishesProtoFqn) {
+  EXPECT_FALSE(TypeEquals(TypeFromCelfn(Proto("acme.User")),
+                            TypeFromCelfn(Proto("acme.Person"))));
 }
 
-TEST(FnTypeEqualsTest, DistinguishesParamsCount) {
-  FnType one = WireScalar(FnType::FN_KIND_LIST);
-  *one.add_params() = WireScalar(FnType::FN_KIND_INT);
-  FnType two = one;
-  *two.add_params() = WireScalar(FnType::FN_KIND_INT);
-  EXPECT_FALSE(FnTypeEquals(one, two));
+TEST(TypeEqualsTest, DistinguishesParamsCount) {
+  Type one = WireScalar(Type::KIND_LIST);
+  *one.add_params() = WireScalar(Type::KIND_INT);
+  Type two = one;
+  *two.add_params() = WireScalar(Type::KIND_INT);
+  EXPECT_FALSE(TypeEquals(one, two));
 }
 
-TEST(FnTypeEqualsTest, DistinguishesNestedGenericElement) {
+TEST(TypeEqualsTest, DistinguishesNestedGenericElement) {
   // list<map<string, int>> vs list<map<string, uint>>.
-  const FnType a = FnTypeFromCelfn(List(
+  const Type a = TypeFromCelfn(List(
       Map(Scalar(CelfnType::Kind::kString), Scalar(CelfnType::Kind::kInt))));
-  const FnType b = FnTypeFromCelfn(List(
+  const Type b = TypeFromCelfn(List(
       Map(Scalar(CelfnType::Kind::kString), Scalar(CelfnType::Kind::kUint))));
-  EXPECT_FALSE(FnTypeEquals(a, b));
+  EXPECT_FALSE(TypeEquals(a, b));
 }
 
-TEST(FnTypeEqualsTest, DistinguishesNestedProtoFqn) {
-  const FnType a = FnTypeFromCelfn(List(Proto("acme.User")));
-  const FnType b = FnTypeFromCelfn(List(Proto("acme.Person")));
-  EXPECT_FALSE(FnTypeEquals(a, b));
+TEST(TypeEqualsTest, DistinguishesNestedProtoFqn) {
+  const Type a = TypeFromCelfn(List(Proto("acme.User")));
+  const Type b = TypeFromCelfn(List(Proto("acme.Person")));
+  EXPECT_FALSE(TypeEquals(a, b));
 }
 
 // --- RenderSignature -----------------------------------------------
 
-RequiredFunction MakeFn(std::string fn_name, FnType return_type,
-                        std::vector<FnType> param_types,
+RequiredFunction MakeFn(std::string fn_name, Type return_type,
+                        std::vector<Type> param_types,
                         bool is_receiver = false) {
   RequiredFunction fn;
   fn.set_fn_name(std::move(fn_name));
   *fn.mutable_return_type() = std::move(return_type);
-  for (FnType& p : param_types) {
+  for (Type& p : param_types) {
     *fn.add_param_types() = std::move(p);
   }
   fn.set_is_receiver(is_receiver);
@@ -263,29 +263,29 @@ RequiredFunction MakeFn(std::string fn_name, FnType return_type,
 // The exact spelling frozen by the m35 plan §2's error messages.
 TEST(RenderSignatureTest, ProtoParamMatchesPlanSpelling) {
   const RequiredFunction fn =
-      MakeFn("is_adult", WireScalar(FnType::FN_KIND_BOOL),
-             {FnTypeFromCelfn(Proto("acme.User"))});
+      MakeFn("is_adult", WireScalar(Type::KIND_BOOL),
+             {TypeFromCelfn(Proto("acme.User"))});
   EXPECT_EQ(RenderSignature(fn), "bool is_adult(proto(acme.User))");
 }
 
 TEST(RenderSignatureTest, ReceiverRendersThisOnFirstParam) {
   const RequiredFunction fn =
-      MakeFn("upper", WireScalar(FnType::FN_KIND_STRING),
-             {WireScalar(FnType::FN_KIND_STRING)}, /*is_receiver=*/true);
+      MakeFn("upper", WireScalar(Type::KIND_STRING),
+             {WireScalar(Type::KIND_STRING)}, /*is_receiver=*/true);
   EXPECT_EQ(RenderSignature(fn), "string upper(this string)");
 }
 
 TEST(RenderSignatureTest, ZeroParams) {
   const RequiredFunction fn =
-      MakeFn("invocation_id", WireScalar(FnType::FN_KIND_INT), {});
+      MakeFn("invocation_id", WireScalar(Type::KIND_INT), {});
   EXPECT_EQ(RenderSignature(fn), "int invocation_id()");
 }
 
 TEST(RenderSignatureTest, MultipleParamsCommaSeparated) {
   const RequiredFunction fn = MakeFn("discount_pct",
-                                     WireScalar(FnType::FN_KIND_INT),
-                                     {WireScalar(FnType::FN_KIND_STRING),
-                                      WireScalar(FnType::FN_KIND_DOUBLE)});
+                                     WireScalar(Type::KIND_INT),
+                                     {WireScalar(Type::KIND_STRING),
+                                      WireScalar(Type::KIND_DOUBLE)});
   EXPECT_EQ(RenderSignature(fn), "int discount_pct(string, double)");
 }
 
@@ -293,13 +293,13 @@ TEST(RenderSignatureTest, NestedGenericsAndGrammarSpellings) {
   // list<int> f(map<string, list<double>>, optional<bytes>, Duration,
   //             Timestamp, null, type)
   const RequiredFunction fn = MakeFn(
-      "f", FnTypeFromCelfn(List(Scalar(CelfnType::Kind::kInt))),
-      {FnTypeFromCelfn(Map(Scalar(CelfnType::Kind::kString),
+      "f", TypeFromCelfn(List(Scalar(CelfnType::Kind::kInt))),
+      {TypeFromCelfn(Map(Scalar(CelfnType::Kind::kString),
                            List(Scalar(CelfnType::Kind::kDouble)))),
-       FnTypeFromCelfn(Optional(Scalar(CelfnType::Kind::kBytes))),
-       WireScalar(FnType::FN_KIND_DURATION),
-       WireScalar(FnType::FN_KIND_TIMESTAMP), WireScalar(FnType::FN_KIND_NULL),
-       WireScalar(FnType::FN_KIND_TYPE)});
+       TypeFromCelfn(Optional(Scalar(CelfnType::Kind::kBytes))),
+       WireScalar(Type::KIND_DURATION),
+       WireScalar(Type::KIND_TIMESTAMP), WireScalar(Type::KIND_NULL),
+       WireScalar(Type::KIND_TYPE)});
   EXPECT_EQ(RenderSignature(fn),
             "list<int> f(map<string, list<double>>, optional<bytes>, "
             "Duration, Timestamp, null, type)");
@@ -308,37 +308,37 @@ TEST(RenderSignatureTest, NestedGenericsAndGrammarSpellings) {
 // Open-set wire data renders, never rejects.
 TEST(RenderSignatureTest, UnknownKindRendersNumerically) {
   const RequiredFunction fn =
-      MakeFn("mystery", WireUnknownKind(99), {WireScalar(FnType::FN_KIND_INT)});
+      MakeFn("mystery", WireUnknownKind(99), {WireScalar(Type::KIND_INT)});
   EXPECT_EQ(RenderSignature(fn), "<kind 99> mystery(int)");
 }
 
 TEST(RenderSignatureTest, UnspecifiedKindRendersNumerically) {
-  const RequiredFunction fn = MakeFn("f", WireScalar(FnType::FN_KIND_BOOL),
-                                     {WireScalar(FnType::FN_KIND_UNSPECIFIED)});
+  const RequiredFunction fn = MakeFn("f", WireScalar(Type::KIND_BOOL),
+                                     {WireScalar(Type::KIND_UNSPECIFIED)});
   EXPECT_EQ(RenderSignature(fn), "bool f(<kind 0>)");
 }
 
-// --- RenderFnType (the public single-type renderer) ----------------
+// --- RenderType (the public single-type renderer) ----------------
 
-TEST(RenderFnTypeTest, GrammarSpellingsIncludingNestedComposites) {
+TEST(RenderTypeTest, GrammarSpellingsIncludingNestedComposites) {
   // The grammar spellings (`Duration` / `Timestamp` capitalised,
   // `map<K, V>` with a space) — the contract Plan messages and emit
-  // tests pin; compiler.cc diagnostics compose FnTypeFromCelfn with
+  // tests pin; compiler.cc diagnostics compose TypeFromCelfn with
   // this renderer so they can't diverge from it.
-  EXPECT_EQ(RenderFnType(WireScalar(FnType::FN_KIND_DURATION)), "Duration");
-  EXPECT_EQ(RenderFnType(WireScalar(FnType::FN_KIND_TIMESTAMP)), "Timestamp");
-  EXPECT_EQ(RenderFnType(FnTypeFromCelfn(
+  EXPECT_EQ(RenderType(WireScalar(Type::KIND_DURATION)), "Duration");
+  EXPECT_EQ(RenderType(WireScalar(Type::KIND_TIMESTAMP)), "Timestamp");
+  EXPECT_EQ(RenderType(TypeFromCelfn(
                 Map(Scalar(CelfnType::Kind::kString),
                     Scalar(CelfnType::Kind::kDuration)))),
             "map<string, Duration>");
-  EXPECT_EQ(RenderFnType(FnTypeFromCelfn(Optional(
+  EXPECT_EQ(RenderType(TypeFromCelfn(Optional(
                 Map(Scalar(CelfnType::Kind::kString),
                     Scalar(CelfnType::Kind::kInt))))),
             "optional<map<string, int>>");
 }
 
-TEST(RenderFnTypeTest, UnknownKindRendersNumerically) {
-  EXPECT_EQ(RenderFnType(WireUnknownKind(99)), "<kind 99>");
+TEST(RenderTypeTest, UnknownKindRendersNumerically) {
+  EXPECT_EQ(RenderType(WireUnknownKind(99)), "<kind 99>");
 }
 
 // --- RequiredFunctionFromDecl --------------------------------------
@@ -367,9 +367,9 @@ TEST(RequiredFunctionFromDeclTest, PluginDeclMapsAllFields) {
   EXPECT_EQ(row.fn_name(), "is_adult");
   EXPECT_EQ(row.backend(), RequiredFunction::PLUGIN);
   ASSERT_EQ(row.param_types_size(), 1);
-  EXPECT_EQ(row.param_types(0).kind(), FnType::FN_KIND_PROTO);
+  EXPECT_EQ(row.param_types(0).kind(), Type::KIND_PROTO);
   EXPECT_EQ(row.param_types(0).proto_fqn(), "acme.User");
-  EXPECT_EQ(row.return_type().kind(), FnType::FN_KIND_BOOL);
+  EXPECT_EQ(row.return_type().kind(), Type::KIND_BOOL);
   EXPECT_FALSE(row.is_receiver());
   EXPECT_EQ(RenderSignature(row), "bool is_adult(proto(acme.User))");
 }

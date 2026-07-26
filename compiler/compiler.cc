@@ -83,7 +83,7 @@ std::string CelTypeToSpec(const CelType& t) {
 // `map<K, V>`, `optional<T>`, …) can never drift from the one Plan
 // messages and emit tests pin.
 std::string RenderCelfnTypeForDiagnostic(const CelfnType& t) {
-  return RenderFnType(FnTypeFromCelfn(t));
+  return RenderType(TypeFromCelfn(t));
 }
 
 // Returns the first sub-type of `t` that the checker-side mapping

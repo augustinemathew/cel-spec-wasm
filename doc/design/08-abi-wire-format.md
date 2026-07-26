@@ -47,27 +47,31 @@ wasmtime demands every *surviving* import at link time — deriving from
 anything but the final module would desync per optimize level. (This is
 why `cel.abi` attachment happens *after* the optimize pass.)
 
-Signature types use the recursive `FnType` message — a 1:1 wire mirror
-of the celfn type grammar (`abi/celfn_wire.{h,cc}`:
-`FnTypeFromCelfn`, `FnTypeEquals`, `RenderSignature`):
+Signature types use the recursive `Type` message — THE wire spelling
+of a CEL type, a 1:1 mirror of the celfn type grammar
+(`abi/celfn_wire.{h,cc}`: `TypeFromCelfn`, `TypeEquals`,
+`RenderSignature`). `Type` is the section's *general* type
+vocabulary, not a function-specific one: `RequiredFunction` carries
+it today, and `VariableEntry`'s reserved slot 5 adopts the same
+message when variable introspection lands.
 
 ```proto
-message FnType {
+message Type {
   enum Kind {
-    FN_KIND_UNSPECIFIED = 0;
-    FN_KIND_BOOL = 1;   FN_KIND_INT = 2;    FN_KIND_UINT = 3;
-    FN_KIND_DOUBLE = 4; FN_KIND_STRING = 5; FN_KIND_BYTES = 6;
-    FN_KIND_DURATION = 7; FN_KIND_TIMESTAMP = 8;
-    FN_KIND_PROTO = 9;   // fqn in proto_fqn
-    FN_KIND_LIST = 10;   // params = [elem]
-    FN_KIND_MAP = 11;    // params = [key, value]
-    FN_KIND_TYPE = 12;
-    FN_KIND_OPTIONAL = 13;  // params = [elem]
-    FN_KIND_NULL = 14;      // CEL `null` is a declarable celfn shape
+    KIND_UNSPECIFIED = 0;
+    KIND_BOOL = 1;   KIND_INT = 2;    KIND_UINT = 3;
+    KIND_DOUBLE = 4; KIND_STRING = 5; KIND_BYTES = 6;
+    KIND_DURATION = 7; KIND_TIMESTAMP = 8;
+    KIND_PROTO = 9;   // fqn in proto_fqn
+    KIND_LIST = 10;   // params = [elem]
+    KIND_MAP = 11;    // params = [key, value]
+    KIND_TYPE = 12;
+    KIND_OPTIONAL = 13;  // params = [elem]
+    KIND_NULL = 14;      // CEL `null` is a declarable celfn shape
   }
   Kind kind = 1;
   string proto_fqn = 2;
-  repeated FnType params = 3;
+  repeated Type params = 3;
 }
 
 message RequiredFunction {
@@ -75,8 +79,8 @@ message RequiredFunction {
   string overload_id = 1;    // == the cel_fn import base name
   string fn_name = 2;        // source-level name, for messages
   Backend backend = 3;
-  repeated FnType param_types = 4;  // excludes out_slot; wasm arity = size+1
-  FnType return_type = 5;
+  repeated Type param_types = 4;  // excludes out_slot; wasm arity = size+1
+  Type return_type = 5;
   bool is_receiver = 6;
 }
 ```
@@ -90,7 +94,7 @@ registration was forgotten) into a clean `FailedPrecondition` at Plan.
 `@native` decls are excluded naturally: their imports are per-module
 aliases, not `cel_fn`. **Empty table = legacy Program**: the Plan-time
 check no-ops and plugin instantiation reverts to instantiate-all —
-pre-field-8 Programs keep working unchanged. `FnTypeEquals` is
+pre-field-8 Programs keep working unchanged. `TypeEquals` is
 recursive and proto-FQN-sensitive; `RenderSignature` is shared by emit
 tests and Plan diagnostics so both render a signature identically.
 
@@ -217,7 +221,7 @@ disagrees fails loudly at `Engine::Use`'s static export check
 
 ## 5. Change discipline
 
-**Bumps `runtime_abi_version`** (currently 2): renaming/removing a helper, changing an arity, a return shape, or a namespace. **Does not bump:** adding a helper, adding a proto field (field 8, `required_functions`, landed additively this way — empty table = legacy behavior), appending a `LinkMode` / `CelKind` / `CEL_ERR_*` / `FnType.Kind` / `RequiredFunction.Backend` / `Repr` value (`FnType.Kind` and `Backend` are open-set at decode by design, §1.4). Append-only enums, and what enforces each:
+**Bumps `runtime_abi_version`** (currently 2): renaming/removing a helper, changing an arity, a return shape, or a namespace. **Does not bump:** adding a helper, adding a proto field (field 8, `required_functions`, landed additively this way — empty table = legacy behavior), appending a `LinkMode` / `CelKind` / `CEL_ERR_*` / `Type.Kind` / `RequiredFunction.Backend` / `Repr` value (`Type.Kind` and `Backend` are open-set at decode by design, §1.4). Append-only enums, and what enforces each:
 
 | surface | rule | enforcement today |
 |---|---|---|

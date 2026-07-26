@@ -29,6 +29,42 @@ syntax = "proto3";
 
 package celwasm.abi;
 
+// THE wire spelling of a CEL type — the `cel.abi` section's general
+// type vocabulary, not specific to any one consumer.  Mirrors
+// `CelfnType` (compiler/celfn/function_library.h) 1:1; open-set on
+// wire (unknown kinds compare numerically, never rejected at
+// decode).  Emitted by `TypeFromCelfn`, compared by `TypeEquals`
+// (abi/celfn_wire.h).  Used by `RequiredFunction` today (param /
+// return types); `VariableEntry`'s reserved slot 5 adopts it when
+// variable introspection lands.
+message Type {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_BOOL = 1;
+    KIND_INT = 2;
+    KIND_UINT = 3;
+    KIND_DOUBLE = 4;
+    KIND_STRING = 5;
+    KIND_BYTES = 6;
+    KIND_DURATION = 7;
+    KIND_TIMESTAMP = 8;
+    KIND_PROTO = 9;  // fqn in proto_fqn
+    KIND_LIST = 10;  // params = [elem]
+    KIND_MAP = 11;   // params = [key, value]
+    KIND_TYPE = 12;
+    KIND_OPTIONAL = 13;  // params = [elem]
+    // CEL `null` is a declarable celfn shape (`CelfnType::kNull`;
+    // grammar production `type: ... | 'null'`), so it needs a wire
+    // kind.  Additive value — lands past the m35 plan's original 13
+    // (the plan's §5.1 enum omitted it despite the 1:1-mirror
+    // intent).
+    KIND_NULL = 14;
+  }
+  Kind kind = 1;
+  string proto_fqn = 2;
+  repeated Type params = 3;
+}
+
 // One declared free variable.  Emitted by compile.cc from
 // `StaticLayout::variables`; consumed by Engine::Plan to build the
 // variable lookup table `Instance::Eval(Activation)` uses to marshal
@@ -53,13 +89,14 @@ package celwasm.abi;
 // parameters) is NOT on the wire.  The host marshal only needs
 // Repr to pick an encoder; if a future feature (introspection,
 // per-type dispatch) needs the full type, it lands as an additive
-// field (reserved slot 5) — the wire stays backward-compatible.
+// `Type` field (reserved slot 5; see `Type` above) — the wire
+// stays backward-compatible.
 message VariableEntry {
   string name = 1;
   uint32 local_index = 2;
   uint32 slot_offset = 3;
   uint32 repr = 4;
-  // reserved 5;  // future: full CelType for introspection / M6
+  // reserved 5;  // future: full `Type` for variable introspection
 }
 
 // One row of the field intern table.  Populated by codegen at
@@ -191,39 +228,6 @@ message TypeEntry {
   string fully_qualified_name = 2;
 }
 
-// Recursive type spelling for a custom-function signature.  Mirrors
-// `CelfnType` (compiler/celfn/function_library.h) 1:1; open-set on
-// wire (unknown kinds compare numerically, never rejected at
-// decode).  Emitted by `FnTypeFromCelfn`, compared by `FnTypeEquals`
-// (abi/celfn_wire.h).
-message FnType {
-  enum Kind {
-    FN_KIND_UNSPECIFIED = 0;
-    FN_KIND_BOOL = 1;
-    FN_KIND_INT = 2;
-    FN_KIND_UINT = 3;
-    FN_KIND_DOUBLE = 4;
-    FN_KIND_STRING = 5;
-    FN_KIND_BYTES = 6;
-    FN_KIND_DURATION = 7;
-    FN_KIND_TIMESTAMP = 8;
-    FN_KIND_PROTO = 9;  // fqn in proto_fqn
-    FN_KIND_LIST = 10;  // params = [elem]
-    FN_KIND_MAP = 11;   // params = [key, value]
-    FN_KIND_TYPE = 12;
-    FN_KIND_OPTIONAL = 13;  // params = [elem]
-    // CEL `null` is a declarable celfn shape (`CelfnType::kNull`;
-    // grammar production `type: ... | 'null'`), so it needs a wire
-    // kind.  Additive value — lands past the m35 plan's original 13
-    // (the plan's §5.1 enum omitted it despite the 1:1-mirror
-    // intent).
-    FN_KIND_NULL = 14;
-  }
-  Kind kind = 1;
-  string proto_fqn = 2;
-  repeated FnType params = 3;
-}
-
 // One custom function the Program's wasm imports (module `cel_fn`)
 // — i.e. one function instantiation WILL demand.  Engine::Plan
 // verifies each row against its registry before any wasmtime
@@ -253,8 +257,8 @@ message RequiredFunction {
   string overload_id = 1;  // == the cel_fn import base name
   string fn_name = 2;      // source-level name, for messages
   Backend backend = 3;
-  repeated FnType param_types = 4;  // excludes out_slot; wasm arity = size+1
-  FnType return_type = 5;
+  repeated Type param_types = 4;  // excludes out_slot; wasm arity = size+1
+  Type return_type = 5;
   bool is_receiver = 6;
 }
 

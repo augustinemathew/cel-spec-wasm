@@ -13,33 +13,33 @@ namespace celwasm {
 
 namespace {
 
-using ::celwasm::abi::FnType;
+using ::celwasm::abi::Type;
 
 // Scalar (non-composite) kind mapping.  Composite kinds (kProto /
 // kList / kMap / kOptional) are handled by the caller — reaching
 // here with one is an invariant violation.
-FnType::Kind WireKindForScalar(CelfnType::Kind kind) {
+Type::Kind WireKindForScalar(CelfnType::Kind kind) {
   switch (kind) {
     case CelfnType::Kind::kBool:
-      return FnType::FN_KIND_BOOL;
+      return Type::KIND_BOOL;
     case CelfnType::Kind::kInt:
-      return FnType::FN_KIND_INT;
+      return Type::KIND_INT;
     case CelfnType::Kind::kUint:
-      return FnType::FN_KIND_UINT;
+      return Type::KIND_UINT;
     case CelfnType::Kind::kDouble:
-      return FnType::FN_KIND_DOUBLE;
+      return Type::KIND_DOUBLE;
     case CelfnType::Kind::kString:
-      return FnType::FN_KIND_STRING;
+      return Type::KIND_STRING;
     case CelfnType::Kind::kBytes:
-      return FnType::FN_KIND_BYTES;
+      return Type::KIND_BYTES;
     case CelfnType::Kind::kNull:
-      return FnType::FN_KIND_NULL;
+      return Type::KIND_NULL;
     case CelfnType::Kind::kDuration:
-      return FnType::FN_KIND_DURATION;
+      return Type::KIND_DURATION;
     case CelfnType::Kind::kTimestamp:
-      return FnType::FN_KIND_TIMESTAMP;
+      return Type::KIND_TIMESTAMP;
     case CelfnType::Kind::kType:
-      return FnType::FN_KIND_TYPE;
+      return Type::KIND_TYPE;
     case CelfnType::Kind::kProto:
     case CelfnType::Kind::kList:
     case CelfnType::Kind::kMap:
@@ -49,53 +49,53 @@ FnType::Kind WireKindForScalar(CelfnType::Kind kind) {
   ABSL_CHECK(false) << "WireKindForScalar: composite CelfnType kind "
                     << static_cast<int>(kind)
                     << " reached the scalar mapping";
-  return FnType::FN_KIND_UNSPECIFIED;
+  return Type::KIND_UNSPECIFIED;
 }
 
 }  // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-std::string RenderFnType(const FnType& type) {
+std::string RenderType(const Type& type) {
   switch (type.kind()) {
-    case FnType::FN_KIND_BOOL:
+    case Type::KIND_BOOL:
       return "bool";
-    case FnType::FN_KIND_INT:
+    case Type::KIND_INT:
       return "int";
-    case FnType::FN_KIND_UINT:
+    case Type::KIND_UINT:
       return "uint";
-    case FnType::FN_KIND_DOUBLE:
+    case Type::KIND_DOUBLE:
       return "double";
-    case FnType::FN_KIND_STRING:
+    case Type::KIND_STRING:
       return "string";
-    case FnType::FN_KIND_BYTES:
+    case Type::KIND_BYTES:
       return "bytes";
-    case FnType::FN_KIND_NULL:
+    case Type::KIND_NULL:
       return "null";
-    case FnType::FN_KIND_DURATION:
+    case Type::KIND_DURATION:
       return "Duration";
-    case FnType::FN_KIND_TIMESTAMP:
+    case Type::KIND_TIMESTAMP:
       return "Timestamp";
-    case FnType::FN_KIND_TYPE:
+    case Type::KIND_TYPE:
       return "type";
-    case FnType::FN_KIND_PROTO:
+    case Type::KIND_PROTO:
       return absl::StrCat("proto(", type.proto_fqn(), ")");
-    case FnType::FN_KIND_LIST:
+    case Type::KIND_LIST:
       return absl::StrCat("list<",
-                          type.params_size() > 0 ? RenderFnType(type.params(0))
+                          type.params_size() > 0 ? RenderType(type.params(0))
                                                  : std::string("?"),
                           ">");
-    case FnType::FN_KIND_MAP:
+    case Type::KIND_MAP:
       return absl::StrCat(
           "map<",
-          type.params_size() > 0 ? RenderFnType(type.params(0))
+          type.params_size() > 0 ? RenderType(type.params(0))
                                  : std::string("?"),
           ", ",
-          type.params_size() > 1 ? RenderFnType(type.params(1))
+          type.params_size() > 1 ? RenderType(type.params(1))
                                  : std::string("?"),
           ">");
-    case FnType::FN_KIND_OPTIONAL:
+    case Type::KIND_OPTIONAL:
       return absl::StrCat("optional<",
-                          type.params_size() > 0 ? RenderFnType(type.params(0))
+                          type.params_size() > 0 ? RenderType(type.params(0))
                                                  : std::string("?"),
                           ">");
     default:
@@ -111,31 +111,31 @@ std::string RenderFnType(const FnType& type) {
 // path for the header is incomplete in compile_commands.json and it
 // mistakes these for static candidates.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-FnType FnTypeFromCelfn(const CelfnType& type) {
-  FnType wire;
+Type TypeFromCelfn(const CelfnType& type) {
+  Type wire;
   switch (type.kind) {
     case CelfnType::Kind::kProto:
-      wire.set_kind(FnType::FN_KIND_PROTO);
+      wire.set_kind(Type::KIND_PROTO);
       wire.set_proto_fqn(type.proto_fqn);
       return wire;
     case CelfnType::Kind::kList:
       ABSL_CHECK_EQ(type.list_element.size(), 1u)
-          << "FnTypeFromCelfn: kList without exactly one element type";
-      wire.set_kind(FnType::FN_KIND_LIST);
-      *wire.add_params() = FnTypeFromCelfn(type.list_element[0]);
+          << "TypeFromCelfn: kList without exactly one element type";
+      wire.set_kind(Type::KIND_LIST);
+      *wire.add_params() = TypeFromCelfn(type.list_element[0]);
       return wire;
     case CelfnType::Kind::kMap:
       ABSL_CHECK_EQ(type.map_kv.size(), 2u)
-          << "FnTypeFromCelfn: kMap without exactly [key, value] types";
-      wire.set_kind(FnType::FN_KIND_MAP);
-      *wire.add_params() = FnTypeFromCelfn(type.map_kv[0]);
-      *wire.add_params() = FnTypeFromCelfn(type.map_kv[1]);
+          << "TypeFromCelfn: kMap without exactly [key, value] types";
+      wire.set_kind(Type::KIND_MAP);
+      *wire.add_params() = TypeFromCelfn(type.map_kv[0]);
+      *wire.add_params() = TypeFromCelfn(type.map_kv[1]);
       return wire;
     case CelfnType::Kind::kOptional:
       ABSL_CHECK_EQ(type.optional_element.size(), 1u)
-          << "FnTypeFromCelfn: kOptional without exactly one element type";
-      wire.set_kind(FnType::FN_KIND_OPTIONAL);
-      *wire.add_params() = FnTypeFromCelfn(type.optional_element[0]);
+          << "TypeFromCelfn: kOptional without exactly one element type";
+      wire.set_kind(Type::KIND_OPTIONAL);
+      *wire.add_params() = TypeFromCelfn(type.optional_element[0]);
       return wire;
     case CelfnType::Kind::kBool:
     case CelfnType::Kind::kInt:
@@ -150,18 +150,18 @@ FnType FnTypeFromCelfn(const CelfnType& type) {
       wire.set_kind(WireKindForScalar(type.kind));
       return wire;
   }
-  ABSL_CHECK(false) << "FnTypeFromCelfn: unknown CelfnType kind "
+  ABSL_CHECK(false) << "TypeFromCelfn: unknown CelfnType kind "
                     << static_cast<int>(type.kind);
   return wire;
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-bool FnTypeEquals(const FnType& a, const FnType& b) {
+bool TypeEquals(const Type& a, const Type& b) {
   if (a.kind() != b.kind()) return false;
   if (a.proto_fqn() != b.proto_fqn()) return false;
   if (a.params_size() != b.params_size()) return false;
   for (int i = 0; i < a.params_size(); ++i) {
-    if (!FnTypeEquals(a.params(i), b.params(i))) return false;
+    if (!TypeEquals(a.params(i), b.params(i))) return false;
   }
   return true;
 }
@@ -188,9 +188,9 @@ celwasm::abi::RequiredFunction RequiredFunctionFromDecl(
       break;
   }
   for (const CelfnParam& param : decl.params) {
-    *row.add_param_types() = FnTypeFromCelfn(param.type);
+    *row.add_param_types() = TypeFromCelfn(param.type);
   }
-  *row.mutable_return_type() = FnTypeFromCelfn(decl.return_type);
+  *row.mutable_return_type() = TypeFromCelfn(decl.return_type);
   row.set_is_receiver(decl.is_receiver);
   return row;
 }
@@ -200,13 +200,13 @@ std::string RenderSignature(const celwasm::abi::RequiredFunction& fn) {
   std::vector<std::string> params;
   params.reserve(static_cast<size_t>(fn.param_types_size()));
   for (int i = 0; i < fn.param_types_size(); ++i) {
-    std::string rendered = RenderFnType(fn.param_types(i));
+    std::string rendered = RenderType(fn.param_types(i));
     if (i == 0 && fn.is_receiver()) {
       rendered = absl::StrCat("this ", rendered);
     }
     params.push_back(std::move(rendered));
   }
-  return absl::StrCat(RenderFnType(fn.return_type()), " ", fn.fn_name(), "(",
+  return absl::StrCat(RenderType(fn.return_type()), " ", fn.fn_name(), "(",
                       absl::StrJoin(params, ", "), ")");
 }
 

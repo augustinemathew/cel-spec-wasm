@@ -612,7 +612,7 @@ TEST(CompilerBuilderUnmappableTypeTest, NestedUnmappableInsideListRejected) {
 TEST(CompilerBuilderUnmappableTypeTest,
      DiagnosticUsesCelfnGrammarSpelling) {
   // The rejected type is rendered via THE `.celfn` grammar renderer
-  // (abi/celfn_wire.h::RenderFnType) — `Duration` capitalised,
+  // (abi/celfn_wire.h::RenderType) — `Duration` capitalised,
   // `map<K, V>` with a space — the same spellings Plan messages and
   // emit tests pin, not an ad-hoc per-call-site respelling.
   CelfnType m = Prim(CelfnType::Kind::kMap);

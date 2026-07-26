@@ -3370,7 +3370,7 @@ row below has both positive and negative cases):
       stability/divergence, macro-output round-trip (`abi/plugin_test.cc`).
 - [x] `cel embed-decls` — §3.4-row-1 validation order negatives +
       determinism + Plugin::Load round-trip (`run_embed_decls_test.cc`).
-- [x] `cel.abi` field 8 — FnType full kind matrix incl. FN_KIND_NULL,
+- [x] `cel.abi` field 8 — wire `Type` full kind matrix incl. KIND_NULL,
       nested generics, open-set wire decode (kind 99 / backend 7);
       emit→decode round-trip; O2-drops-unused-import pin in both link
       modes (`celfn_wire_test.cc`, `abi_decode_test.cc`,

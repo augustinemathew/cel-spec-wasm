@@ -33,34 +33,34 @@ namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::celwasm::abi::FnType;
+using ::celwasm::abi::Type;
 using ::celwasm::abi::RequiredFunction;
 
 // ── Wire-side builders ─────────────────────────────────────────────
 
-FnType Wire(FnType::Kind kind) {
-  FnType t;
+Type Wire(Type::Kind kind) {
+  Type t;
   t.set_kind(kind);
   return t;
 }
 
-FnType WireProto(absl::string_view fqn) {
-  FnType t;
-  t.set_kind(FnType::FN_KIND_PROTO);
+Type WireProto(absl::string_view fqn) {
+  Type t;
+  t.set_kind(Type::KIND_PROTO);
   t.set_proto_fqn(std::string(fqn));
   return t;
 }
 
-FnType WireList(FnType elem) {
-  FnType t;
-  t.set_kind(FnType::FN_KIND_LIST);
+Type WireList(Type elem) {
+  Type t;
+  t.set_kind(Type::KIND_LIST);
   *t.add_params() = std::move(elem);
   return t;
 }
 
 RequiredFunction Row(absl::string_view overload_id, absl::string_view fn_name,
                      RequiredFunction::Backend backend,
-                     std::vector<FnType> params, FnType ret,
+                     std::vector<Type> params, Type ret,
                      bool is_receiver = false) {
   RequiredFunction row;
   row.set_overload_id(std::string(overload_id));
@@ -164,10 +164,10 @@ TEST(RequiredFnCheckTest, UnknownBackendRowsAreSkipped) {
   // still fails loudly at wasmtime link time.
   auto abi = AbiWith(
       {Row("mystery_int", "mystery", RequiredFunction::BACKEND_UNSPECIFIED,
-           {Wire(FnType::FN_KIND_INT)}, Wire(FnType::FN_KIND_INT)),
+           {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT)),
        Row("future_int", "future",
            static_cast<RequiredFunction::Backend>(99),
-           {Wire(FnType::FN_KIND_INT)}, Wire(FnType::FN_KIND_INT))});
+           {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, HostMap(), PluginVec()), IsOk());
 }
 
@@ -177,7 +177,7 @@ TEST(RequiredFnCheckTest, MissingPluginFnExactFrozenMessage) {
   // The §2 missing-plugin shape, verbatim (single line).
   auto abi = AbiWith({Row(
       "is_adult_message_acme_User", "is_adult", RequiredFunction::PLUGIN,
-      {WireProto("acme.User")}, Wire(FnType::FN_KIND_BOOL))});
+      {WireProto("acme.User")}, Wire(Type::KIND_BOOL))});
   auto s = CheckRequiredFunctions(abi, HostMap(), PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -193,8 +193,8 @@ TEST(RequiredFnCheckTest, PluginRowBackedByHostCallbackStillMissing) {
   HostMap hosts;
   hosts.emplace("mul_int_int", HostCb(3));
   auto abi = AbiWith({Row("mul_int_int", "mul", RequiredFunction::PLUGIN,
-                          {Wire(FnType::FN_KIND_INT), Wire(FnType::FN_KIND_INT)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts, PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -208,8 +208,8 @@ TEST(RequiredFnCheckTest, MatchingPluginDeclPasses) {
                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
                       CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})));
   auto abi = AbiWith({Row("add_int_int", "add", RequiredFunction::PLUGIN,
-                          {Wire(FnType::FN_KIND_INT), Wire(FnType::FN_KIND_INT)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, HostMap(), plugins), IsOk());
 }
 
@@ -224,8 +224,8 @@ TEST(RequiredFnCheckTest, SecondRegisteredPluginCanOwnTheDecl) {
                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
                       CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})));
   auto abi = AbiWith({Row("add_int_int", "add", RequiredFunction::PLUGIN,
-                          {Wire(FnType::FN_KIND_INT), Wire(FnType::FN_KIND_INT)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, HostMap(), plugins), IsOk());
 }
 
@@ -244,7 +244,7 @@ TEST(RequiredFnCheckTest, ProtoFqnMismatchExactFrozenMessage) {
   auto abi = AbiWith({Row(
       plugins[0].library.decls()[0].overload_id, "is_adult",
       RequiredFunction::PLUGIN, {WireProto("acme.User")},
-      Wire(FnType::FN_KIND_BOOL))});
+      Wire(Type::KIND_BOOL))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -267,8 +267,8 @@ TEST(RequiredFnCheckTest, LegacyAddPluginRendersHashUnavailable) {
                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
                       CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})));
   auto abi = AbiWith({Row("add_int_int", "add", RequiredFunction::PLUGIN,
-                          {Wire(FnType::FN_KIND_INT), Wire(FnType::FN_KIND_INT)},
-                          Wire(FnType::FN_KIND_STRING))});
+                          {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_STRING))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -283,8 +283,8 @@ TEST(RequiredFnCheckTest, ParamCountMismatchFails) {
                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"}})));
   // Row reuses the registered id but declares two params.
   auto abi = AbiWith({Row("add_int", "add", RequiredFunction::PLUGIN,
-                          {Wire(FnType::FN_KIND_INT), Wire(FnType::FN_KIND_INT)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -299,8 +299,8 @@ TEST(RequiredFnCheckTest, ParamTypeMismatchFails) {
       PluginLib("echo", Prim(CelfnType::Kind::kString),
                 {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})));
   auto abi = AbiWith({Row("echo_string", "echo", RequiredFunction::PLUGIN,
-                          {Wire(FnType::FN_KIND_INT)},
-                          Wire(FnType::FN_KIND_STRING))});
+                          {Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_STRING))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -311,14 +311,14 @@ TEST(RequiredFnCheckTest, ParamTypeMismatchFails) {
 
 TEST(RequiredFnCheckTest, NestedGenericMismatchFails) {
   // list<int> vs list<string> differ only inside the generic — the
-  // recursive FnTypeEquals arm must catch it.
+  // recursive TypeEquals arm must catch it.
   PluginVec plugins;
   plugins.push_back(Plug(PluginLib(
       "sum", Prim(CelfnType::Kind::kInt),
       {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}})));
   auto abi = AbiWith({Row("sum_list_int", "sum", RequiredFunction::PLUGIN,
-                          {WireList(Wire(FnType::FN_KIND_STRING))},
-                          Wire(FnType::FN_KIND_INT))});
+                          {WireList(Wire(Type::KIND_STRING))},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -334,8 +334,8 @@ TEST(RequiredFnCheckTest, ReturnTypeMismatchFails) {
                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
                       CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})));
   auto abi = AbiWith({Row("add_int_int", "add", RequiredFunction::PLUGIN,
-                          {Wire(FnType::FN_KIND_INT), Wire(FnType::FN_KIND_INT)},
-                          Wire(FnType::FN_KIND_STRING))});
+                          {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_STRING))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -355,8 +355,8 @@ TEST(RequiredFnCheckTest, IsReceiverMismatchFails) {
                 {CelfnParam{true, Prim(CelfnType::Kind::kString), "s"}})));
   ASSERT_TRUE(plugins[0].library.decls()[0].is_receiver);
   auto abi = AbiWith({Row("upper_string", "upper", RequiredFunction::PLUGIN,
-                          {Wire(FnType::FN_KIND_STRING)},
-                          Wire(FnType::FN_KIND_STRING),
+                          {Wire(Type::KIND_STRING)},
+                          Wire(Type::KIND_STRING),
                           /*is_receiver=*/false)});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
@@ -372,8 +372,8 @@ TEST(RequiredFnCheckTest, MissingHostFnExactFrozenMessage) {
   // The §5.3 missing-host shape, verbatim (single line).
   auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
                           RequiredFunction::HOST,
-                          {Wire(FnType::FN_KIND_STRING)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_STRING)},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -391,8 +391,8 @@ TEST(RequiredFnCheckTest, HostRowBackedByPluginDeclStillMissing) {
       {CelfnParam{false, Prim(CelfnType::Kind::kString), "tier"}})));
   auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
                           RequiredFunction::HOST,
-                          {Wire(FnType::FN_KIND_STRING)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_STRING)},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -405,8 +405,8 @@ TEST(RequiredFnCheckTest, HostArityMismatchExactFrozenMessage) {
   hosts.emplace("discount_pct_string", HostCb(3));
   auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
                           RequiredFunction::HOST,
-                          {Wire(FnType::FN_KIND_STRING)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_STRING)},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts, PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -423,8 +423,8 @@ TEST(RequiredFnCheckTest, AddFunctionRegistrationIsArityOnly) {
   hosts.emplace("discount_pct_string", HostCb(2));
   auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
                           RequiredFunction::HOST,
-                          {Wire(FnType::FN_KIND_STRING)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_STRING)},
+                          Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, hosts, PluginVec()), IsOk());
 }
 
@@ -441,12 +441,12 @@ TEST(RequiredFnCheckTest, BindFunctionTypedMatchPasses) {
   hosts.emplace("discount_pct_string",
                 TypedHostCb(Row("discount_pct_string", "discount_pct",
                                 RequiredFunction::HOST,
-                                {Wire(FnType::FN_KIND_STRING)},
-                                Wire(FnType::FN_KIND_INT))));
+                                {Wire(Type::KIND_STRING)},
+                                Wire(Type::KIND_INT))));
   auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
                           RequiredFunction::HOST,
-                          {Wire(FnType::FN_KIND_STRING)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_STRING)},
+                          Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, hosts, PluginVec()), IsOk());
 }
 
@@ -457,12 +457,12 @@ TEST(RequiredFnCheckTest, BindFunctionTypedMismatchFails) {
   hosts.emplace("discount_pct_string",
                 TypedHostCb(Row("discount_pct_string", "discount_pct",
                                 RequiredFunction::HOST,
-                                {Wire(FnType::FN_KIND_BYTES)},
-                                Wire(FnType::FN_KIND_INT))));
+                                {Wire(Type::KIND_BYTES)},
+                                Wire(Type::KIND_INT))));
   auto abi = AbiWith({Row("discount_pct_string", "discount_pct",
                           RequiredFunction::HOST,
-                          {Wire(FnType::FN_KIND_STRING)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_STRING)},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts, PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -479,12 +479,12 @@ TEST(RequiredFnCheckTest, ArityFailureWinsOverTypedCompare) {
   HostMap hosts;
   RegisteredHostCallback cb = TypedHostCb(
       Row("f_int", "f", RequiredFunction::HOST,
-          {Wire(FnType::FN_KIND_BYTES), Wire(FnType::FN_KIND_BYTES)},
-          Wire(FnType::FN_KIND_INT)));
+          {Wire(Type::KIND_BYTES), Wire(Type::KIND_BYTES)},
+          Wire(Type::KIND_INT)));
   hosts.emplace("f_int", std::move(cb));
   auto abi = AbiWith({Row("f_int", "f", RequiredFunction::HOST,
-                          {Wire(FnType::FN_KIND_INT)},
-                          Wire(FnType::FN_KIND_INT))});
+                          {Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts, PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -499,9 +499,9 @@ TEST(RequiredFnCheckTest, FirstFailureWinsInWireOrder) {
   // order, deterministically.
   auto abi = AbiWith(
       {Row("first_int", "first", RequiredFunction::PLUGIN,
-           {Wire(FnType::FN_KIND_INT)}, Wire(FnType::FN_KIND_INT)),
+           {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT)),
        Row("second_int", "second", RequiredFunction::HOST,
-           {Wire(FnType::FN_KIND_INT)}, Wire(FnType::FN_KIND_INT))});
+           {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, HostMap(), PluginVec());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()), ::testing::HasSubstr("`first_int`"));

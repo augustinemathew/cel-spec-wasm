@@ -1,20 +1,25 @@
 #ifndef CELWASM_ABI_CELFN_WIRE_H_
 #define CELWASM_ABI_CELFN_WIRE_H_
 
-// celfn signature vocabulary ↔ `cel.abi` wire mapping.
+// The `cel.abi` wire type vocabulary (`abi.Type` — THE wire
+// spelling of a CEL type) and its mapping to/from the celfn
+// signature vocabulary.  `Type` is general — `RequiredFunction`
+// carries it today, and future surfaces (e.g. variable
+// introspection via `VariableEntry`'s reserved slot 5) adopt the
+// same message rather than minting consumer-specific spellings.
 //
-// Three pieces, shared by the compile-side emitter
+// The pieces, shared by the compile-side emitter
 // (`BuildRequiredFunctions` in abi/cel_abi_emit.cc) and the
 // eval-side Plan verification (which compares a decoded
 // `RequiredFunction` row against a registered `CelfnDecl`):
 //
-//   - `FnTypeFromCelfn`   — `CelfnType` → wire `FnType`, recursive.
-//   - `FnTypeEquals`      — recursive structural equality over wire
-//     `FnType`s; proto-FQN-sensitive; unknown kinds compare
+//   - `TypeFromCelfn`   — `CelfnType` → wire `Type`, recursive.
+//   - `TypeEquals`      — recursive structural equality over wire
+//     `Type`s; proto-FQN-sensitive; unknown kinds compare
 //     numerically (open-set wire data is never rejected here).
-//   - `RenderFnType`      — one wire `FnType` → its `.celfn` grammar
+//   - `RenderType`      — one wire `Type` → its `.celfn` grammar
 //     spelling.  THE type renderer for error messages: compose with
-//     `FnTypeFromCelfn` to render a `CelfnType` diagnostic so the
+//     `TypeFromCelfn` to render a `CelfnType` diagnostic so the
 //     spelling can never drift from the grammar.
 //   - `RenderSignature`   — a `RequiredFunction` row → the `.celfn`
 //     source spelling, e.g. `bool is_adult(proto(acme.User))`.
@@ -35,29 +40,29 @@
 
 namespace celwasm {
 
-// Translate a compile-time `CelfnType` into its wire `FnType`
+// Translate a compile-time `CelfnType` into its wire `Type`
 // spelling.  Recursive: `list<T>` / `map<K, V>` / `optional<T>`
-// element types land in `params` (per the FnType.Kind comments).
+// element types land in `params` (per the Type.Kind comments).
 // `proto(...)`'s fully-qualified name lands in `proto_fqn`.
 //
 // Total over every `CelfnType::Kind`; a malformed input shape (a
 // kList with no element type, a kMap without exactly [key, value])
 // is a builder-invariant violation and CHECK-fails.
-celwasm::abi::FnType FnTypeFromCelfn(const CelfnType& type);
+celwasm::abi::Type TypeFromCelfn(const CelfnType& type);
 
-// Recursive structural equality over wire `FnType`s.  Two types are
+// Recursive structural equality over wire `Type`s.  Two types are
 // equal iff their kinds match (numerically — unknown future kinds
 // are compared by value, never rejected), their `proto_fqn`s match
 // byte-for-byte, and their `params` match pairwise (same count,
 // each recursively equal).
-bool FnTypeEquals(const celwasm::abi::FnType& a, const celwasm::abi::FnType& b);
+bool TypeEquals(const celwasm::abi::Type& a, const celwasm::abi::Type& b);
 
-// Render one wire `FnType` in its `.celfn` grammar spelling
+// Render one wire `Type` in its `.celfn` grammar spelling
 // (`Duration`, `Timestamp`, `map<K, V>`, `list<T>`, `optional<T>`,
 // `proto(<fqn>)`).  An unknown wire kind renders as `<kind N>` —
 // open-set wire data is never rejected.  A composite with missing
 // element types renders the gap as `?`.
-std::string RenderFnType(const celwasm::abi::FnType& type);
+std::string RenderType(const celwasm::abi::Type& type);
 
 // Render a `RequiredFunction` row as its `.celfn` source spelling:
 //
@@ -74,7 +79,7 @@ std::string RenderSignature(const celwasm::abi::RequiredFunction& fn);
 
 // Translate a whole `CelfnDecl` into its wire `RequiredFunction`
 // row: overload_id, fn_name, backend (kHost → HOST, kPlugin →
-// PLUGIN), per-param `FnType`s (out_slot excluded), return type,
+// PLUGIN), per-param `Type`s (out_slot excluded), return type,
 // is_receiver.  A `kCelDefined` decl has no `cel_fn` wire backend
 // (its imports are per-module aliases) — passing one is a caller
 // invariant violation and CHECK-fails.

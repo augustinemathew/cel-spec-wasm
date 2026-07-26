@@ -117,7 +117,7 @@ cc_test(
 )
 
 # celfn signature vocabulary <-> `cel.abi` wire mapping: CelfnType ->
-# FnType (recursive), FnType structural equality (proto-FQN-sensitive,
+# Type (recursive), Type structural equality (proto-FQN-sensitive,
 # open-set on unknown kinds), and THE signature renderer shared by
 # emit tests and Engine::Plan diagnostics.  First-party internal.
 cc_library(

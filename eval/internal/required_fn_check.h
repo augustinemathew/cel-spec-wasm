@@ -20,7 +20,7 @@
 //   - PLUGIN rows resolve against the plugin registry's `kPlugin`
 //     decls by overload-id.  Missing → fail; any difference in
 //     is_receiver / param count / param types / return type
-//     (`FnTypeEquals`, protos by FQN) → fail, naming the registered
+//     (`TypeEquals`, protos by FQN) → fail, naming the registered
 //     plugin by its content hash (first 12 lowercase hex chars;
 //     legacy `AddPlugin` registrations have no hash and render as
 //     `hash unavailable; registered via AddPlugin`).

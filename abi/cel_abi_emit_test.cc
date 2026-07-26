@@ -279,8 +279,8 @@ TEST(BuildRequiredFunctionsTest, HostRowCarriesAllFields) {
   EXPECT_EQ(rows[0].backend(), celwasm::abi::RequiredFunction::HOST);
   ASSERT_EQ(rows[0].param_types_size(), 1);
   EXPECT_EQ(rows[0].param_types(0).kind(),
-            celwasm::abi::FnType::FN_KIND_STRING);
-  EXPECT_EQ(rows[0].return_type().kind(), celwasm::abi::FnType::FN_KIND_INT);
+            celwasm::abi::Type::KIND_STRING);
+  EXPECT_EQ(rows[0].return_type().kind(), celwasm::abi::Type::KIND_INT);
   EXPECT_FALSE(rows[0].is_receiver());
 }
 
@@ -301,7 +301,7 @@ TEST(BuildRequiredFunctionsTest, PluginRowWithProtoParamAndReceiver) {
   EXPECT_EQ(rows[0].fn_name(), "is_adult");
   EXPECT_EQ(rows[0].backend(), celwasm::abi::RequiredFunction::PLUGIN);
   ASSERT_EQ(rows[0].param_types_size(), 1);
-  EXPECT_EQ(rows[0].param_types(0).kind(), celwasm::abi::FnType::FN_KIND_PROTO);
+  EXPECT_EQ(rows[0].param_types(0).kind(), celwasm::abi::Type::KIND_PROTO);
   EXPECT_EQ(rows[0].param_types(0).proto_fqn(), "acme.User");
   EXPECT_TRUE(rows[0].is_receiver());
 }
@@ -324,14 +324,14 @@ TEST(BuildRequiredFunctionsTest, NestedGenericParamMapsRecursively) {
   const auto rows = BuildRequiredFunctions(imports, libs);
   ASSERT_EQ(rows.size(), 1u);
   const auto& param = rows[0].param_types(0);
-  ASSERT_EQ(param.kind(), celwasm::abi::FnType::FN_KIND_LIST);
+  ASSERT_EQ(param.kind(), celwasm::abi::Type::KIND_LIST);
   ASSERT_EQ(param.params_size(), 1);
-  ASSERT_EQ(param.params(0).kind(), celwasm::abi::FnType::FN_KIND_MAP);
+  ASSERT_EQ(param.params(0).kind(), celwasm::abi::Type::KIND_MAP);
   ASSERT_EQ(param.params(0).params_size(), 2);
   EXPECT_EQ(param.params(0).params(0).kind(),
-            celwasm::abi::FnType::FN_KIND_STRING);
+            celwasm::abi::Type::KIND_STRING);
   EXPECT_EQ(param.params(0).params(1).kind(),
-            celwasm::abi::FnType::FN_KIND_INT);
+            celwasm::abi::Type::KIND_INT);
 }
 
 TEST(BuildRequiredFunctionsTest, NonCelFnImportsContributeNothing) {
