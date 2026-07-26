@@ -16,42 +16,6 @@ namespace {
 
 using ::celwasm::abi::Type;
 
-// Scalar (non-composite) kind mapping.  Composite kinds (kProto /
-// kList / kMap / kOptional) are handled by the caller — reaching
-// here with one is an invariant violation.
-Type::Kind WireKindForScalar(CelfnType::Kind kind) {
-  switch (kind) {
-    case CelfnType::Kind::kBool:
-      return Type::KIND_BOOL;
-    case CelfnType::Kind::kInt:
-      return Type::KIND_INT;
-    case CelfnType::Kind::kUint:
-      return Type::KIND_UINT;
-    case CelfnType::Kind::kDouble:
-      return Type::KIND_DOUBLE;
-    case CelfnType::Kind::kString:
-      return Type::KIND_STRING;
-    case CelfnType::Kind::kBytes:
-      return Type::KIND_BYTES;
-    case CelfnType::Kind::kNull:
-      return Type::KIND_NULL;
-    case CelfnType::Kind::kDuration:
-      return Type::KIND_DURATION;
-    case CelfnType::Kind::kTimestamp:
-      return Type::KIND_TIMESTAMP;
-    case CelfnType::Kind::kType:
-      return Type::KIND_TYPE;
-    case CelfnType::Kind::kProto:
-    case CelfnType::Kind::kList:
-    case CelfnType::Kind::kMap:
-    case CelfnType::Kind::kOptional:
-      break;
-  }
-  ABSL_CHECK(false) << "WireKindForScalar: composite CelfnType kind "
-                    << static_cast<int>(kind) << " reached the scalar mapping";
-  return Type::KIND_UNSPECIFIED;
-}
-
 // Scalar (non-composite) kind mapping over the unified vocabulary.
 // Composite kinds (kMessage / kList / kMap / kOptional) are handled
 // by the caller — reaching here with one is an invariant violation.
@@ -184,54 +148,6 @@ std::string RenderType(const Type& type) {
   }
 }
 
-// Public declarations live in celfn_wire.h; clang-tidy's include
-// path for the header is incomplete in compile_commands.json and it
-// mistakes these for static candidates.
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-Type TypeFromCelfn(const CelfnType& type) {
-  Type wire;
-  switch (type.kind) {
-    case CelfnType::Kind::kProto:
-      wire.set_kind(Type::KIND_PROTO);
-      wire.set_proto_fqn(type.proto_fqn);
-      return wire;
-    case CelfnType::Kind::kList:
-      ABSL_CHECK_EQ(type.list_element.size(), 1u)
-          << "TypeFromCelfn: kList without exactly one element type";
-      wire.set_kind(Type::KIND_LIST);
-      *wire.add_params() = TypeFromCelfn(type.list_element[0]);
-      return wire;
-    case CelfnType::Kind::kMap:
-      ABSL_CHECK_EQ(type.map_kv.size(), 2u)
-          << "TypeFromCelfn: kMap without exactly [key, value] types";
-      wire.set_kind(Type::KIND_MAP);
-      *wire.add_params() = TypeFromCelfn(type.map_kv[0]);
-      *wire.add_params() = TypeFromCelfn(type.map_kv[1]);
-      return wire;
-    case CelfnType::Kind::kOptional:
-      ABSL_CHECK_EQ(type.optional_element.size(), 1u)
-          << "TypeFromCelfn: kOptional without exactly one element type";
-      wire.set_kind(Type::KIND_OPTIONAL);
-      *wire.add_params() = TypeFromCelfn(type.optional_element[0]);
-      return wire;
-    case CelfnType::Kind::kBool:
-    case CelfnType::Kind::kInt:
-    case CelfnType::Kind::kUint:
-    case CelfnType::Kind::kDouble:
-    case CelfnType::Kind::kString:
-    case CelfnType::Kind::kBytes:
-    case CelfnType::Kind::kNull:
-    case CelfnType::Kind::kDuration:
-    case CelfnType::Kind::kTimestamp:
-    case CelfnType::Kind::kType:
-      wire.set_kind(WireKindForScalar(type.kind));
-      return wire;
-  }
-  ABSL_CHECK(false) << "TypeFromCelfn: unknown CelfnType kind "
-                    << static_cast<int>(type.kind);
-  return wire;
-}
-
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 bool TypeEquals(const Type& a, const Type& b) {
   if (a.kind() != b.kind()) return false;
@@ -264,9 +180,9 @@ celwasm::abi::RequiredFunction RequiredFunctionFromDecl(const CelfnDecl& decl) {
       break;
   }
   for (const CelfnParam& param : decl.params) {
-    *row.add_param_types() = TypeFromCelfn(param.type);
+    *row.add_param_types() = TypeFromCelType(param.type);
   }
-  *row.mutable_return_type() = TypeFromCelfn(decl.return_type);
+  *row.mutable_return_type() = TypeFromCelType(decl.return_type);
   row.set_is_receiver(decl.is_receiver);
   return row;
 }

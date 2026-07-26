@@ -13,13 +13,13 @@
 // eval-side Plan verification (which compares a decoded
 // `RequiredFunction` row against a registered `CelfnDecl`):
 //
-//   - `TypeFromCelfn`   — `CelfnType` → wire `Type`, recursive.
+//   - `TypeFromCelType` — `CelType` → wire `Type`, recursive.
 //   - `TypeEquals`      — recursive structural equality over wire
 //     `Type`s; proto-FQN-sensitive; unknown kinds compare
 //     numerically (open-set wire data is never rejected here).
 //   - `RenderType`      — one wire `Type` → its `.celfn` grammar
 //     spelling.  THE type renderer for error messages: compose with
-//     `TypeFromCelfn` to render a `CelfnType` diagnostic so the
+//     `TypeFromCelType` to render a `CelType` diagnostic so the
 //     spelling can never drift from the grammar.
 //   - `RenderSignature`   — a `RequiredFunction` row → the `.celfn`
 //     source spelling, e.g. `bool is_adult(proto(acme.User))`.
@@ -50,16 +50,6 @@ namespace celwasm {
 // default-constructed sentinel) is a builder-invariant violation and
 // CHECK-fails.
 celwasm::abi::Type TypeFromCelType(const CelType& type);
-
-// Translate a compile-time `CelfnType` into its wire `Type`
-// spelling.  Recursive: `list<T>` / `map<K, V>` / `optional<T>`
-// element types land in `params` (per the Type.Kind comments).
-// `proto(...)`'s fully-qualified name lands in `proto_fqn`.
-//
-// Total over every `CelfnType::Kind`; a malformed input shape (a
-// kList with no element type, a kMap without exactly [key, value])
-// is a builder-invariant violation and CHECK-fails.
-celwasm::abi::Type TypeFromCelfn(const CelfnType& type);
 
 // Recursive structural equality over wire `Type`s.  Two types are
 // equal iff their kinds match (numerically — unknown future kinds

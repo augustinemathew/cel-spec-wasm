@@ -273,10 +273,8 @@ TEST(AbiDecodeTest, RoundTripsRequiredFunctionsFromCompiler) {
   // a program calling one of two declared plugin fns at O2 (the
   // unused import is dropped), decode the emitted bytes, and assert
   // the surviving row's full shape.
-  CelfnType bool_t;
-  bool_t.kind = CelfnType::Kind::kBool;
-  CelfnType string_t;
-  string_t.kind = CelfnType::Kind::kString;
+  const CelType bool_t = CelType::Bool();
+  const CelType string_t = CelType::String();
   CompileOptions opts;
   opts.optimize_level = 2;
   opts.check.variable_specs = {"u:string"};

@@ -15,12 +15,12 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
+#include "bazel/link_mode_test_helpers.h"
 #include "compiler/program.h"
+#include "google/protobuf/message.h"
+#include "gtest/gtest.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
-#include "google/protobuf/message.h"
-#include "bazel/link_mode_test_helpers.h"
-#include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
@@ -72,7 +72,8 @@ TEST(CompilerCompileTest, CompileBadSourceReturnsInvalidArgument) {
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
   Compiler compiler = *std::move(compiler_or);
 
-  auto prog_or = compiler.Compile("this is not a CEL expression !!", LinkModeOpts());
+  auto prog_or =
+      compiler.Compile("this is not a CEL expression !!", LinkModeOpts());
   EXPECT_EQ(prog_or.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
@@ -249,11 +250,10 @@ TEST(CompilerBuilderDeclareFunctionsTest, EmptyLibraryBuildsOk) {
   EXPECT_EQ(c->function_libraries()[0].decls().size(), 0u);
 }
 
-TEST(CompilerBuilderDeclareFunctionsTest, LibraryWithHostFnPropagatesToCompiler) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kString;
+TEST(CompilerBuilderDeclareFunctionsTest,
+     LibraryWithHostFnPropagatesToCompiler) {
+  const celwasm::CelType ret = celwasm::CelType::Bool();
+  const celwasm::CelType arg = celwasm::CelType::String();
   std::vector<celwasm::CelfnParam> params{
       celwasm::CelfnParam{/*is_receiver=*/true, arg, "s"}};
   auto lib_or = celwasm::FunctionLibrary::Builder()
@@ -298,11 +298,10 @@ TEST(CompilerBuilderAddFunctionTest, FirstParseErrorWins) {
   EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(CompilerBuilderDeclareFunctionsTest, CrossLibraryDuplicateOverloadIdRejected) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kString;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kString;
+TEST(CompilerBuilderDeclareFunctionsTest,
+     CrossLibraryDuplicateOverloadIdRejected) {
+  const celwasm::CelType ret = celwasm::CelType::String();
+  const celwasm::CelType arg = celwasm::CelType::String();
   auto make_lib = [&]() {
     return *celwasm::FunctionLibrary::Builder()
                 .AddHost("upper", ret, {celwasm::CelfnParam{true, arg, "s"}})
@@ -349,15 +348,13 @@ TEST(CompilerBuilderAddFunctionTest, CompileReceiverHostFnResolvesAndLowers) {
 // emitted wasm import is `(import "cel_fn" "<helper>" …)`, identical
 // to a kHost decl).  These tests pin that contract.
 TEST(CompilerBuilderDeclareFunctionsTest, PluginDeclRoutesViaCelFn) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kString;
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddPlugin(
-                        "allow", ret,
-                        {celwasm::CelfnParam{/*is_receiver=*/false, arg, "u"}})
-                    .Build();
+  const celwasm::CelType ret = celwasm::CelType::Bool();
+  const celwasm::CelType arg = celwasm::CelType::String();
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddPlugin("allow", ret,
+                     {celwasm::CelfnParam{/*is_receiver=*/false, arg, "u"}})
+          .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("u", CelType::String());
@@ -384,16 +381,14 @@ TEST(CompilerBuilderDeclareFunctionsTest, PluginDeclRoutesViaCelFn) {
 TEST(CompilerBuilderDeclareFunctionsTest,
      PluginDeclAdmitsProtoAndRoutesViaCelFn) {
   // m24 §8 admits proto(...) on kPlugin (cross as bytes).
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kProto;
-  arg.proto_fqn = "celwasm.testdata.Customer";
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddPlugin(
-                        "is_premium", ret,
-                        {celwasm::CelfnParam{/*is_receiver=*/false, arg, "c"}})
-                    .Build();
+  const celwasm::CelType ret = celwasm::CelType::Bool();
+  const celwasm::CelType arg =
+      celwasm::CelType::Message("celwasm.testdata.Customer");
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddPlugin("is_premium", ret,
+                     {celwasm::CelfnParam{/*is_receiver=*/false, arg, "c"}})
+          .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
@@ -414,42 +409,33 @@ TEST(CompilerBuilderDeclareFunctionsTest,
      PluginAndHostCoexistAndShareCelFnNamespace) {
   // Two decls with distinct overload-ids, one kHost + one kPlugin,
   // both routing via cel_fn — must coexist in one library.
-  celwasm::CelfnType b_t;
-  b_t.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType s_t;
-  s_t.kind = celwasm::CelfnType::Kind::kString;
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddHost("upper", s_t, {celwasm::CelfnParam{true, s_t, "s"}})
-                    .AddPlugin(
-                        "allow", b_t,
-                        {celwasm::CelfnParam{false, s_t, "u"}})
-                    .Build();
+  const celwasm::CelType b_t = celwasm::CelType::Bool();
+  const celwasm::CelType s_t = celwasm::CelType::String();
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("upper", s_t, {celwasm::CelfnParam{true, s_t, "s"}})
+          .AddPlugin("allow", b_t, {celwasm::CelfnParam{false, s_t, "u"}})
+          .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   ASSERT_EQ(lib_or->decls().size(), 2u);
-  EXPECT_EQ(lib_or->decls()[0].backend,
-            celwasm::CelfnDecl::Backend::kHost);
-  EXPECT_EQ(lib_or->decls()[1].backend,
-            celwasm::CelfnDecl::Backend::kPlugin);
+  EXPECT_EQ(lib_or->decls()[0].backend, celwasm::CelfnDecl::Backend::kHost);
+  EXPECT_EQ(lib_or->decls()[1].backend, celwasm::CelfnDecl::Backend::kPlugin);
   // Both decls should claim module_name=="cel_fn" (the call-site
   // import-module is the same for kHost and kPlugin).
   EXPECT_EQ(lib_or->decls()[0].module_name, "cel_fn");
   EXPECT_EQ(lib_or->decls()[1].module_name, "cel_fn");
 }
 
-TEST(CompilerBuilderDeclareFunctionsTest,
-     PluginDuplicateOverloadIdRejected) {
+TEST(CompilerBuilderDeclareFunctionsTest, PluginDuplicateOverloadIdRejected) {
   // Same overload-id collision detection as @host — registering the
   // same helper twice (one @host + one kPlugin) must fail.
-  celwasm::CelfnType b_t;
-  b_t.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType s_t;
-  s_t.kind = celwasm::CelfnType::Kind::kString;
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddHost("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
-                    .AddPlugin(
-                        "clash", b_t,
-                        {celwasm::CelfnParam{false, s_t, "x"}})
-                    .Build();
+  const celwasm::CelType b_t = celwasm::CelType::Bool();
+  const celwasm::CelType s_t = celwasm::CelType::String();
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
+          .AddPlugin("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
+          .Build();
   EXPECT_THAT(lib_or, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(lib_or.status().message()),
               testing::HasSubstr("duplicate"));
@@ -471,8 +457,8 @@ Plugin MakePlugin(absl::string_view celfn_text) {
   std::vector<uint8_t> bytes(kComponentPreamble,
                              kComponentPreamble + sizeof(kComponentPreamble));
   const std::vector<uint8_t> section = BuildCustomSection(
-      "cel.fns", {reinterpret_cast<const uint8_t*>(celfn_text.data()),
-                  celfn_text.size()});
+      "cel.fns",
+      {reinterpret_cast<const uint8_t*>(celfn_text.data()), celfn_text.size()});
   bytes.insert(bytes.end(), section.begin(), section.end());
   auto plugin_or = Plugin::Load(bytes);
   EXPECT_THAT(plugin_or, IsOk()) << plugin_or.status();
@@ -543,19 +529,13 @@ TEST(CompilerBuilderUseTest, DuplicateOverloadIdAcrossUseAndAddFunction) {
 //
 // `FunctionLibrary::Builder` admits `type` / `optional<T>` on
 // programmatically-built kHost decls, but the checker-side mapping
-// (`CelfnTypeToCelType`) has no `cel::Type` for either
+// (`DeclTypeToCheckerType`) has no `cel::Type` for either
 // (cleanup-backlog #44).  Build() must reject with a clean
 // InvalidArgument naming the decl and the type — never crash.
 
-CelfnType Prim(CelfnType::Kind k) {
-  CelfnType t;
-  t.kind = k;
-  return t;
-}
-
 TEST(CompilerBuilderUnmappableTypeTest, TypeReturnRejectedNamingDeclAndType) {
   auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddHost("weird", Prim(CelfnType::Kind::kType), {})
+                    .AddHost("weird", CelType::Type(), {})
                     .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
@@ -570,11 +550,10 @@ TEST(CompilerBuilderUnmappableTypeTest, TypeReturnRejectedNamingDeclAndType) {
 
 TEST(CompilerBuilderUnmappableTypeTest,
      OptionalParamRejectedNamingDeclAndType) {
-  CelfnType opt = Prim(CelfnType::Kind::kOptional);
-  opt.optional_element.push_back(Prim(CelfnType::Kind::kInt));
+  const CelType opt = CelType::Optional(CelType::Int());
   auto lib_or =
       celwasm::FunctionLibrary::Builder()
-          .AddHost("maybe", Prim(CelfnType::Kind::kInt),
+          .AddHost("maybe", CelType::Int(),
                    {celwasm::CelfnParam{/*is_receiver=*/false, opt, "x"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
@@ -593,13 +572,9 @@ TEST(CompilerBuilderUnmappableTypeTest,
 TEST(CompilerBuilderUnmappableTypeTest, NestedUnmappableInsideListRejected) {
   // The check is structural: `list<optional<string>>` is just as
   // unmappable as a bare `optional<...>`.
-  CelfnType opt = Prim(CelfnType::Kind::kOptional);
-  opt.optional_element.push_back(Prim(CelfnType::Kind::kString));
-  CelfnType lst = Prim(CelfnType::Kind::kList);
-  lst.list_element.push_back(opt);
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddHost("nested", lst, {})
-                    .Build();
+  const CelType lst = CelType::List(CelType::Optional(CelType::String()));
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder().AddHost("nested", lst, {}).Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
   b.DeclareFunctions(*std::move(lib_or));
@@ -609,20 +584,16 @@ TEST(CompilerBuilderUnmappableTypeTest, NestedUnmappableInsideListRejected) {
               testing::HasSubstr("`optional<string>`"));
 }
 
-TEST(CompilerBuilderUnmappableTypeTest,
-     DiagnosticUsesCelfnGrammarSpelling) {
+TEST(CompilerBuilderUnmappableTypeTest, DiagnosticUsesCelfnGrammarSpelling) {
   // The rejected type is rendered via THE `.celfn` grammar renderer
   // (abi/celfn_wire.h::RenderType) — `Duration` capitalised,
   // `map<K, V>` with a space — the same spellings Plan messages and
   // emit tests pin, not an ad-hoc per-call-site respelling.
-  CelfnType m = Prim(CelfnType::Kind::kMap);
-  m.map_kv.push_back(Prim(CelfnType::Kind::kString));
-  m.map_kv.push_back(Prim(CelfnType::Kind::kDuration));
-  CelfnType opt = Prim(CelfnType::Kind::kOptional);
-  opt.optional_element.push_back(m);
+  const CelType opt =
+      CelType::Optional(CelType::Map(CelType::String(), CelType::Duration()));
   auto lib_or =
       celwasm::FunctionLibrary::Builder()
-          .AddHost("later", Prim(CelfnType::Kind::kInt),
+          .AddHost("later", CelType::Int(),
                    {celwasm::CelfnParam{/*is_receiver=*/false, opt, "x"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
@@ -644,11 +615,10 @@ TEST(CompilerBuilderUnmappableTypeTest, MappableDeclStillBuildsAndCompiles) {
   EXPECT_THAT(c->Compile("s.is_number()", LinkModeOpts()), IsOk());
 }
 
-TEST(CompilerBuilderDeclareFunctionsTest, MultipleLibrariesWithDistinctOverloadsOk) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kString;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kString;
+TEST(CompilerBuilderDeclareFunctionsTest,
+     MultipleLibrariesWithDistinctOverloadsOk) {
+  const celwasm::CelType ret = celwasm::CelType::String();
+  const celwasm::CelType arg = celwasm::CelType::String();
   auto lib1 = *celwasm::FunctionLibrary::Builder()
                    .AddHost("upper", ret, {celwasm::CelfnParam{true, arg, "s"}})
                    .Build();

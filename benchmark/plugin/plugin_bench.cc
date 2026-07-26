@@ -96,12 +96,6 @@ const std::vector<uint8_t>& DemoPluginBytes() {
   return *bytes;
 }
 
-CelfnType Prim(CelfnType::Kind k) {
-  CelfnType t;
-  t.kind = k;
-  return t;
-}
-
 // Plugin-side libraries — the demo's fns.idl declares add + len + greet
 // inside `cel:customfn/fns@0.1.0`.  The bench builds the smallest library
 // it needs for each shape; the engine's two-level lookup uses the WIT
@@ -110,46 +104,42 @@ CelfnType Prim(CelfnType::Kind k) {
 constexpr absl::string_view kDemoWitInterface = "cel:customfn/fns@0.1.0";
 
 FunctionLibrary BuildAddLib() {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .SetWitInterface(kDemoWitInterface)
-          .AddPlugin("add", Prim(CelfnType::Kind::kInt),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .SetWitInterface(kDemoWitInterface)
+                    .AddPlugin("add", CelType::Int(),
+                               {CelfnParam{false, CelType::Int(), "a"},
+                                CelfnParam{false, CelType::Int(), "b"}})
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
 
 FunctionLibrary BuildLenLib() {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .SetWitInterface(kDemoWitInterface)
-          .AddPlugin("len", Prim(CelfnType::Kind::kInt),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .SetWitInterface(kDemoWitInterface)
+                    .AddPlugin("len", CelType::Int(),
+                               {CelfnParam{false, CelType::String(), "s"}})
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
 
 // Host-side baselines — same overload-id shape, body is a C++ lambda.
 FunctionLibrary BuildAddLibAsHost() {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddHost("add", Prim(CelfnType::Kind::kInt),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                    CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddHost("add", CelType::Int(),
+                             {CelfnParam{false, CelType::Int(), "a"},
+                              CelfnParam{false, CelType::Int(), "b"}})
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
 
 FunctionLibrary BuildLenLibAsHost() {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddHost("len", Prim(CelfnType::Kind::kInt),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddHost("len", CelType::Int(),
+                             {CelfnParam{false, CelType::String(), "s"}})
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }

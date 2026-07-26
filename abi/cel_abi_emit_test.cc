@@ -249,17 +249,11 @@ TEST(CelAbiEmitTest, UnknownFutureLinkModeValueParsesAndIsPreserved) {
 // module (including the O2 unused-import drop) is pinned at the
 // pipeline level in compiler/internal/compile_test.cc.
 
-CelfnType FnScalar(CelfnType::Kind kind) {
-  CelfnType t;
-  t.kind = kind;
-  return t;
-}
-
 FunctionLibrary HostDiscountLib() {
   return *FunctionLibrary::Builder()
-              .AddHost("discount_pct", FnScalar(CelfnType::Kind::kInt),
-                       {CelfnParam{/*is_receiver=*/false,
-                                   FnScalar(CelfnType::Kind::kString), "s"}})
+              .AddHost(
+                  "discount_pct", CelType::Int(),
+                  {CelfnParam{/*is_receiver=*/false, CelType::String(), "s"}})
               .Build();
 }
 
@@ -278,21 +272,17 @@ TEST(BuildRequiredFunctionsTest, HostRowCarriesAllFields) {
   EXPECT_EQ(rows[0].fn_name(), "discount_pct");
   EXPECT_EQ(rows[0].backend(), celwasm::abi::RequiredFunction::HOST);
   ASSERT_EQ(rows[0].param_types_size(), 1);
-  EXPECT_EQ(rows[0].param_types(0).kind(),
-            celwasm::abi::Type::KIND_STRING);
+  EXPECT_EQ(rows[0].param_types(0).kind(), celwasm::abi::Type::KIND_STRING);
   EXPECT_EQ(rows[0].return_type().kind(), celwasm::abi::Type::KIND_INT);
   EXPECT_FALSE(rows[0].is_receiver());
 }
 
 TEST(BuildRequiredFunctionsTest, PluginRowWithProtoParamAndReceiver) {
-  CelfnType user;
-  user.kind = CelfnType::Kind::kProto;
-  user.proto_fqn = "acme.User";
-  auto lib =
-      *FunctionLibrary::Builder()
-           .AddPlugin("is_adult", FnScalar(CelfnType::Kind::kBool),
-                      {CelfnParam{/*is_receiver=*/true, user, "u"}})
-           .Build();
+  const CelType user = CelType::Message("acme.User");
+  auto lib = *FunctionLibrary::Builder()
+                  .AddPlugin("is_adult", CelType::Bool(),
+                             {CelfnParam{/*is_receiver=*/true, user, "u"}})
+                  .Build();
   const std::vector<WasmModule::FunctionImportName> imports = {
       {"cel_fn", lib.decls()[0].overload_id}};
   const std::vector<FunctionLibrary> libs = {std::move(lib)};
@@ -307,15 +297,10 @@ TEST(BuildRequiredFunctionsTest, PluginRowWithProtoParamAndReceiver) {
 }
 
 TEST(BuildRequiredFunctionsTest, NestedGenericParamMapsRecursively) {
-  CelfnType map_t;
-  map_t.kind = CelfnType::Kind::kMap;
-  map_t.map_kv.push_back(FnScalar(CelfnType::Kind::kString));
-  map_t.map_kv.push_back(FnScalar(CelfnType::Kind::kInt));
-  CelfnType list_t;
-  list_t.kind = CelfnType::Kind::kList;
-  list_t.list_element.push_back(std::move(map_t));
+  CelType list_t =
+      CelType::List(CelType::Map(CelType::String(), CelType::Int()));
   auto lib = *FunctionLibrary::Builder()
-                  .AddHost("tally", FnScalar(CelfnType::Kind::kInt),
+                  .AddHost("tally", CelType::Int(),
                            {CelfnParam{false, std::move(list_t), "rows"}})
                   .Build();
   const std::vector<WasmModule::FunctionImportName> imports = {
@@ -328,10 +313,8 @@ TEST(BuildRequiredFunctionsTest, NestedGenericParamMapsRecursively) {
   ASSERT_EQ(param.params_size(), 1);
   ASSERT_EQ(param.params(0).kind(), celwasm::abi::Type::KIND_MAP);
   ASSERT_EQ(param.params(0).params_size(), 2);
-  EXPECT_EQ(param.params(0).params(0).kind(),
-            celwasm::abi::Type::KIND_STRING);
-  EXPECT_EQ(param.params(0).params(1).kind(),
-            celwasm::abi::Type::KIND_INT);
+  EXPECT_EQ(param.params(0).params(0).kind(), celwasm::abi::Type::KIND_STRING);
+  EXPECT_EQ(param.params(0).params(1).kind(), celwasm::abi::Type::KIND_INT);
 }
 
 TEST(BuildRequiredFunctionsTest, NonCelFnImportsContributeNothing) {
@@ -347,13 +330,10 @@ TEST(BuildRequiredFunctionsTest, NonCelFnImportsContributeNothing) {
 
 TEST(BuildRequiredFunctionsTest, RowsFollowImportOrderNotDeclOrder) {
   auto lib = *FunctionLibrary::Builder()
-                  .AddHost("first", FnScalar(CelfnType::Kind::kBool),
-                           {CelfnParam{false,
-                                       FnScalar(CelfnType::Kind::kString),
-                                       "s"}})
-                  .AddHost("second", FnScalar(CelfnType::Kind::kBool),
-                           {CelfnParam{false, FnScalar(CelfnType::Kind::kInt),
-                                       "i"}})
+                  .AddHost("first", CelType::Bool(),
+                           {CelfnParam{false, CelType::String(), "s"}})
+                  .AddHost("second", CelType::Bool(),
+                           {CelfnParam{false, CelType::Int(), "i"}})
                   .Build();
   // Import order deliberately reversed vs decl order.
   const std::vector<WasmModule::FunctionImportName> imports = {
@@ -367,10 +347,8 @@ TEST(BuildRequiredFunctionsTest, RowsFollowImportOrderNotDeclOrder) {
 
 TEST(BuildRequiredFunctionsTest, DeclFoundAcrossMultipleLibraries) {
   auto other = *FunctionLibrary::Builder()
-                    .AddHost("unrelated", FnScalar(CelfnType::Kind::kBool),
-                             {CelfnParam{false,
-                                         FnScalar(CelfnType::Kind::kBool),
-                                         "b"}})
+                    .AddHost("unrelated", CelType::Bool(),
+                             {CelfnParam{false, CelType::Bool(), "b"}})
                     .Build();
   const std::vector<WasmModule::FunctionImportName> imports = {
       {"cel_fn", "discount_pct_string"}};

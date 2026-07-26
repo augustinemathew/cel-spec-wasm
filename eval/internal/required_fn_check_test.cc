@@ -84,27 +84,15 @@ celwasm::abi::CelAbi AbiWith(std::vector<RequiredFunction> rows) {
 
 // ── Decl-side builders ─────────────────────────────────────────────
 
-CelfnType Prim(CelfnType::Kind k) {
-  CelfnType t;
-  t.kind = k;
-  return t;
+CelType ProtoOf(std::string fqn) {
+  return CelType::Message(std::move(fqn));
 }
 
-CelfnType ProtoOf(absl::string_view fqn) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kProto;
-  t.proto_fqn = std::string(fqn);
-  return t;
+CelType ListOf(CelType elem) {
+  return CelType::List(std::move(elem));
 }
 
-CelfnType ListOf(CelfnType elem) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kList;
-  t.list_element.push_back(std::move(elem));
-  return t;
-}
-
-FunctionLibrary PluginLib(absl::string_view fn_name, CelfnType return_type,
+FunctionLibrary PluginLib(absl::string_view fn_name, CelType return_type,
                           std::vector<CelfnParam> params) {
   auto lib_or =
       FunctionLibrary::Builder()
@@ -203,10 +191,9 @@ TEST(RequiredFnCheckTest, PluginRowBackedByHostCallbackStillMissing) {
 
 TEST(RequiredFnCheckTest, MatchingPluginDeclPasses) {
   PluginVec plugins;
-  plugins.push_back(
-      Plug(PluginLib("add", Prim(CelfnType::Kind::kInt),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})));
+  plugins.push_back(Plug(PluginLib("add", CelType::Int(),
+                                   {CelfnParam{false, CelType::Int(), "a"},
+                                    CelfnParam{false, CelType::Int(), "b"}})));
   auto abi = AbiWith({Row("add_int_int", "add", RequiredFunction::PLUGIN,
                           {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
                           Wire(Type::KIND_INT))});
@@ -217,11 +204,10 @@ TEST(RequiredFnCheckTest, SecondRegisteredPluginCanOwnTheDecl) {
   // Registry scan crosses plugins: the owning decl living in the
   // SECOND registered plugin still satisfies the row.
   PluginVec plugins;
-  plugins.push_back(Plug(PluginLib("other", Prim(CelfnType::Kind::kBool), {})));
-  plugins.push_back(
-      Plug(PluginLib("add", Prim(CelfnType::Kind::kInt),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})));
+  plugins.push_back(Plug(PluginLib("other", CelType::Bool(), {})));
+  plugins.push_back(Plug(PluginLib("add", CelType::Int(),
+                                   {CelfnParam{false, CelType::Int(), "a"},
+                                    CelfnParam{false, CelType::Int(), "b"}})));
   auto abi = AbiWith({Row("add_int_int", "add", RequiredFunction::PLUGIN,
                           {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
                           Wire(Type::KIND_INT))});
@@ -233,7 +219,7 @@ TEST(RequiredFnCheckTest, ProtoFqnMismatchExactFrozenMessage) {
   // rendered as the first 12 lowercase hex chars.
   PluginVec plugins;
   plugins.push_back(
-      Plug(PluginLib("is_adult", Prim(CelfnType::Kind::kBool),
+      Plug(PluginLib("is_adult", CelType::Bool(),
                      {CelfnParam{false, ProtoOf("acme.Person"), "u"}}),
            DocExampleHash()));
   // The registered decl synthesises overload-id
@@ -260,10 +246,9 @@ TEST(RequiredFnCheckTest, LegacyAddPluginRendersHashUnavailable) {
   // `hash unavailable; registered via AddPlugin` instead of 12 hex
   // chars of a hash that does not exist.
   PluginVec plugins;
-  plugins.push_back(
-      Plug(PluginLib("add", Prim(CelfnType::Kind::kInt),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})));
+  plugins.push_back(Plug(PluginLib("add", CelType::Int(),
+                                   {CelfnParam{false, CelType::Int(), "a"},
+                                    CelfnParam{false, CelType::Int(), "b"}})));
   auto abi = AbiWith({Row("add_int_int", "add", RequiredFunction::PLUGIN,
                           {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
                           Wire(Type::KIND_STRING))});
@@ -276,9 +261,8 @@ TEST(RequiredFnCheckTest, LegacyAddPluginRendersHashUnavailable) {
 
 TEST(RequiredFnCheckTest, ParamCountMismatchFails) {
   PluginVec plugins;
-  plugins.push_back(
-      Plug(PluginLib("add", Prim(CelfnType::Kind::kInt),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"}})));
+  plugins.push_back(Plug(PluginLib("add", CelType::Int(),
+                                   {CelfnParam{false, CelType::Int(), "a"}})));
   // Row reuses the registered id but declares two params.
   auto abi = AbiWith({Row("add_int", "add", RequiredFunction::PLUGIN,
                           {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
@@ -293,9 +277,8 @@ TEST(RequiredFnCheckTest, ParamCountMismatchFails) {
 
 TEST(RequiredFnCheckTest, ParamTypeMismatchFails) {
   PluginVec plugins;
-  plugins.push_back(Plug(
-      PluginLib("echo", Prim(CelfnType::Kind::kString),
-                {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}})));
+  plugins.push_back(Plug(PluginLib(
+      "echo", CelType::String(), {CelfnParam{false, CelType::String(), "s"}})));
   auto abi = AbiWith({Row("echo_string", "echo", RequiredFunction::PLUGIN,
                           {Wire(Type::KIND_INT)}, Wire(Type::KIND_STRING))});
   auto s = CheckRequiredFunctions(abi, HostMap(), plugins);
@@ -310,9 +293,9 @@ TEST(RequiredFnCheckTest, NestedGenericMismatchFails) {
   // list<int> vs list<string> differ only inside the generic — the
   // recursive TypeEquals arm must catch it.
   PluginVec plugins;
-  plugins.push_back(Plug(PluginLib(
-      "sum", Prim(CelfnType::Kind::kInt),
-      {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}})));
+  plugins.push_back(
+      Plug(PluginLib("sum", CelType::Int(),
+                     {CelfnParam{false, ListOf(CelType::Int()), "xs"}})));
   auto abi =
       AbiWith({Row("sum_list_int", "sum", RequiredFunction::PLUGIN,
                    {WireList(Wire(Type::KIND_STRING))}, Wire(Type::KIND_INT))});
@@ -326,10 +309,9 @@ TEST(RequiredFnCheckTest, NestedGenericMismatchFails) {
 
 TEST(RequiredFnCheckTest, ReturnTypeMismatchFails) {
   PluginVec plugins;
-  plugins.push_back(
-      Plug(PluginLib("add", Prim(CelfnType::Kind::kInt),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})));
+  plugins.push_back(Plug(PluginLib("add", CelType::Int(),
+                                   {CelfnParam{false, CelType::Int(), "a"},
+                                    CelfnParam{false, CelType::Int(), "b"}})));
   auto abi = AbiWith({Row("add_int_int", "add", RequiredFunction::PLUGIN,
                           {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
                           Wire(Type::KIND_STRING))});
@@ -347,9 +329,8 @@ TEST(RequiredFnCheckTest, IsReceiverMismatchFails) {
   // ReceiverDeclSynthesisesSameIdAsPlainParam), so is_receiver drift
   // is exactly the case the dedicated flag compare exists for.
   PluginVec plugins;
-  plugins.push_back(
-      Plug(PluginLib("upper", Prim(CelfnType::Kind::kString),
-                     {CelfnParam{true, Prim(CelfnType::Kind::kString), "s"}})));
+  plugins.push_back(Plug(PluginLib(
+      "upper", CelType::String(), {CelfnParam{true, CelType::String(), "s"}})));
   ASSERT_TRUE(plugins[0].library.decls()[0].is_receiver);
   auto abi = AbiWith({Row("upper_string", "upper", RequiredFunction::PLUGIN,
                           {Wire(Type::KIND_STRING)}, Wire(Type::KIND_STRING),
@@ -381,9 +362,9 @@ TEST(RequiredFnCheckTest, MissingHostFnExactFrozenMessage) {
 TEST(RequiredFnCheckTest, HostRowBackedByPluginDeclStillMissing) {
   // Backend must match in this direction too.
   PluginVec plugins;
-  plugins.push_back(Plug(
-      PluginLib("discount_pct", Prim(CelfnType::Kind::kInt),
-                {CelfnParam{false, Prim(CelfnType::Kind::kString), "tier"}})));
+  plugins.push_back(
+      Plug(PluginLib("discount_pct", CelType::Int(),
+                     {CelfnParam{false, CelType::String(), "tier"}})));
   auto abi = AbiWith(
       {Row("discount_pct_string", "discount_pct", RequiredFunction::HOST,
            {Wire(Type::KIND_STRING)}, Wire(Type::KIND_INT))});

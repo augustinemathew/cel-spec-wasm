@@ -28,45 +28,45 @@ namespace celfn = celwasm_celfn;
 
 // ── Argkind synthesis ────────────────────────────────────────────────
 
-std::string CelfnType::Argkind() const {
-  switch (kind) {
-    case Kind::kBool:
+std::string ArgkindSlug(const CelType& type) {
+  switch (type.kind()) {
+    case CelType::Kind::kBool:
       return "bool";
-    case Kind::kInt:
+    case CelType::Kind::kInt:
       return "int";
-    case Kind::kUint:
+    case CelType::Kind::kUint:
       return "uint";
-    case Kind::kDouble:
+    case CelType::Kind::kDouble:
       return "double";
-    case Kind::kString:
+    case CelType::Kind::kString:
       return "string";
-    case Kind::kBytes:
+    case CelType::Kind::kBytes:
       return "bytes";
-    case Kind::kNull:
+    case CelType::Kind::kNull:
       return "null";
-    case Kind::kDuration:
+    case CelType::Kind::kDuration:
       return "duration";
-    case Kind::kTimestamp:
+    case CelType::Kind::kTimestamp:
       return "timestamp";
-    case Kind::kList:
-      return absl::StrCat("list_", list_element.empty()
-                                       ? "unknown"
-                                       : list_element[0].Argkind());
-    case Kind::kMap:
-      if (map_kv.size() != 2) return "map_unknown_unknown";
-      return absl::StrCat("map_", map_kv[0].Argkind(), "_",
-                          map_kv[1].Argkind());
-    case Kind::kProto:
-      return absl::StrCat("message_",
-                          absl::StrReplaceAll(proto_fqn, {{".", "_"}}));
-    case Kind::kType:
+    case CelType::Kind::kList:
+      return absl::StrCat("list_", ArgkindSlug(type.list_element()));
+    case CelType::Kind::kMap:
+      return absl::StrCat("map_", ArgkindSlug(type.map_key()), "_",
+                          ArgkindSlug(type.map_value()));
+    case CelType::Kind::kMessage:
+      return absl::StrCat(
+          "message_", absl::StrReplaceAll(type.message_fully_qualified_name(),
+                                          {{".", "_"}}));
+    case CelType::Kind::kType:
       return "type";
-    case Kind::kOptional:
-      return absl::StrCat("optional_", optional_element.empty()
-                                           ? "unknown"
-                                           : optional_element[0].Argkind());
+    case CelType::Kind::kOptional:
+      return absl::StrCat("optional_", ArgkindSlug(type.optional_element()));
+    case CelType::Kind::kUnknown:
+      break;
   }
-  return "unknown";
+  ABSL_CHECK(false) << "ArgkindSlug: kUnknown CelType (default-constructed "
+                       "sentinel) has no argkind slug";
+  return "";
 }
 
 // ── Backend spelling ─────────────────────────────────────────────────
@@ -87,7 +87,7 @@ absl::string_view BackendPrefix(CelfnDecl::Backend backend) {
 
 namespace {
 
-// Mirrors a structural-recursion check across CelfnType for the
+// Mirrors a structural-recursion check across CelType for the
 // permanently-out-of-scope kinds (`optional<T>` and `type`).  Used by
 // Build() to
 // reject kPlugin decls whose return / any param shape
@@ -99,13 +99,13 @@ namespace {
 // `Compiler::Builder::DeclareFunctions` time, with the offending decl named.  CEL
 // `null` (kNull) is a distinct kind and stays supported — see the
 // kNull arm in eval/internal/cel_plugin.cc.
-bool MentionsOptional(const CelfnType& t) {
-  if (t.kind == CelfnType::Kind::kOptional) return true;
-  if (t.kind == CelfnType::Kind::kList && !t.list_element.empty()) {
-    return MentionsOptional(t.list_element[0]);
+bool MentionsOptional(const CelType& t) {
+  if (t.kind() == CelType::Kind::kOptional) return true;
+  if (t.kind() == CelType::Kind::kList) {
+    return MentionsOptional(t.list_element());
   }
-  if (t.kind == CelfnType::Kind::kMap && t.map_kv.size() == 2) {
-    return MentionsOptional(t.map_kv[0]) || MentionsOptional(t.map_kv[1]);
+  if (t.kind() == CelType::Kind::kMap) {
+    return MentionsOptional(t.map_key()) || MentionsOptional(t.map_value());
   }
   return false;
 }
@@ -115,83 +115,49 @@ bool MentionsOptional(const CelfnType& t) {
 // `type` Lift/Lower stays implemented in cel_plugin.cc because
 // other kCelFn / kHost paths can still use it; only the plugin
 // decl surface is closed.
-bool MentionsType(const CelfnType& t) {
-  if (t.kind == CelfnType::Kind::kType) return true;
-  if (t.kind == CelfnType::Kind::kList && !t.list_element.empty()) {
-    return MentionsType(t.list_element[0]);
+bool MentionsType(const CelType& t) {
+  if (t.kind() == CelType::Kind::kType) return true;
+  if (t.kind() == CelType::Kind::kList) {
+    return MentionsType(t.list_element());
   }
-  if (t.kind == CelfnType::Kind::kMap && t.map_kv.size() == 2) {
-    return MentionsType(t.map_kv[0]) || MentionsType(t.map_kv[1]);
+  if (t.kind() == CelType::Kind::kMap) {
+    return MentionsType(t.map_key()) || MentionsType(t.map_value());
   }
-  if (t.kind == CelfnType::Kind::kOptional && !t.optional_element.empty()) {
-    return MentionsType(t.optional_element[0]);
+  if (t.kind() == CelType::Kind::kOptional) {
+    return MentionsType(t.optional_element());
   }
   return false;
 }
 
 // langdef "Map type" restricts keys to {bool, int, uint, string}.
 // Source-driven decls hit this at the grammar layer
-// (ExtractType in this file's `mapType` arm, ~ line 322);
+// (ExtractType in this file's `mapType` arm);
 // programmatically-built decls (AddHost / AddPlugin /
-// AddPlugin with a constructed CelfnType) bypass the grammar and
+// AddPlugin with a constructed CelType) bypass the grammar and
 // would otherwise surface the error at first Eval (kPlugin
 // via Lift) or at codegen / runtime (kHost via the trampoline).
 // Catching it here names the offending decl at registration time.
-bool IsLegalMapKeyKind(CelfnType::Kind k) {
-  return k == CelfnType::Kind::kBool || k == CelfnType::Kind::kInt ||
-         k == CelfnType::Kind::kUint || k == CelfnType::Kind::kString;
+bool IsLegalMapKeyKind(CelType::Kind k) {
+  return k == CelType::Kind::kBool || k == CelType::Kind::kInt ||
+         k == CelType::Kind::kUint || k == CelType::Kind::kString;
 }
 
 // Returns the first illegal map-key kind found inside `t`, or
-// kBool (the canonical-legal sentinel) when no illegal key exists.
-// Recurses through list element, map key+value, optional inner.
+// nullopt when no illegal key exists.  Recurses through list
+// element, map key+value, optional inner.
 // Caller checks: `FirstIllegalMapKey(t).has_value()`.
-std::optional<CelfnType::Kind> FirstIllegalMapKey(const CelfnType& t) {
-  if (t.kind == CelfnType::Kind::kMap && t.map_kv.size() == 2) {
-    if (!IsLegalMapKeyKind(t.map_kv[0].kind)) return t.map_kv[0].kind;
-    if (auto k = FirstIllegalMapKey(t.map_kv[1]); k.has_value()) return k;
+std::optional<CelType::Kind> FirstIllegalMapKey(const CelType& t) {
+  if (t.kind() == CelType::Kind::kMap) {
+    if (!IsLegalMapKeyKind(t.map_key().kind())) return t.map_key().kind();
+    if (auto k = FirstIllegalMapKey(t.map_value()); k.has_value()) return k;
   }
-  if (t.kind == CelfnType::Kind::kList && !t.list_element.empty()) {
-    return FirstIllegalMapKey(t.list_element[0]);
+  if (t.kind() == CelType::Kind::kList) {
+    return FirstIllegalMapKey(t.list_element());
   }
-  if (t.kind == CelfnType::Kind::kOptional && !t.optional_element.empty()) {
-    return FirstIllegalMapKey(t.optional_element[0]);
+  if (t.kind() == CelType::Kind::kOptional) {
+    return FirstIllegalMapKey(t.optional_element());
   }
   return std::nullopt;
-}
-
-absl::string_view MapKeyKindName(CelfnType::Kind k) {
-  switch (k) {
-    case CelfnType::Kind::kBool:
-      return "bool";
-    case CelfnType::Kind::kInt:
-      return "int";
-    case CelfnType::Kind::kUint:
-      return "uint";
-    case CelfnType::Kind::kDouble:
-      return "double";
-    case CelfnType::Kind::kString:
-      return "string";
-    case CelfnType::Kind::kBytes:
-      return "bytes";
-    case CelfnType::Kind::kNull:
-      return "null";
-    case CelfnType::Kind::kDuration:
-      return "duration";
-    case CelfnType::Kind::kTimestamp:
-      return "timestamp";
-    case CelfnType::Kind::kList:
-      return "list";
-    case CelfnType::Kind::kMap:
-      return "map";
-    case CelfnType::Kind::kProto:
-      return "proto";
-    case CelfnType::Kind::kType:
-      return "type";
-    case CelfnType::Kind::kOptional:
-      return "optional";
-  }
-  return "unknown";
 }
 
 std::string SynthesiseOverloadId(absl::string_view fn_name,
@@ -199,7 +165,7 @@ std::string SynthesiseOverloadId(absl::string_view fn_name,
   std::vector<std::string> parts;
   parts.emplace_back(fn_name);
   for (const auto& p : params) {
-    parts.push_back(p.type.Argkind());
+    parts.push_back(ArgkindSlug(p.type));
   }
   return absl::StrJoin(parts, "_");
 }
@@ -233,7 +199,7 @@ FunctionLibrary::Builder& FunctionLibrary::Builder::SetModuleName(
 }
 
 FunctionLibrary::Builder& FunctionLibrary::Builder::AddHost(
-    absl::string_view fn_name, CelfnType return_type,
+    absl::string_view fn_name, CelType return_type,
     std::vector<CelfnParam> params) {
   CelfnDecl d{};
   d.backend = CelfnDecl::Backend::kHost;
@@ -247,7 +213,7 @@ FunctionLibrary::Builder& FunctionLibrary::Builder::AddHost(
 }
 
 FunctionLibrary::Builder& FunctionLibrary::Builder::AddPlugin(
-    absl::string_view fn_name, CelfnType return_type,
+    absl::string_view fn_name, CelType return_type,
     std::vector<CelfnParam> params) {
   CelfnDecl d{};
   d.backend = CelfnDecl::Backend::kPlugin;
@@ -265,7 +231,7 @@ FunctionLibrary::Builder& FunctionLibrary::Builder::AddPlugin(
 }
 
 FunctionLibrary::Builder& FunctionLibrary::Builder::AddCelDefined(
-    absl::string_view fn_name, CelfnType return_type,
+    absl::string_view fn_name, CelType return_type,
     std::vector<CelfnParam> params, absl::string_view body) {
   CelfnDecl d{};
   d.backend = CelfnDecl::Backend::kCelDefined;
@@ -287,14 +253,14 @@ namespace {
 absl::Status CheckUniversalDeclShape(const CelfnDecl& d) {
   if (auto bad = FirstIllegalMapKey(d.return_type); bad.has_value()) {
     return absl::InvalidArgumentError(absl::StrCat(
-        "`", d.fn_name, "` return type contains map<", MapKeyKindName(*bad),
+        "`", d.fn_name, "` return type contains map<", CelTypeKindName(*bad),
         ", ...> — map keys must be bool|int|uint|string (langdef)"));
   }
   for (const auto& p : d.params) {
     if (auto bad = FirstIllegalMapKey(p.type); bad.has_value()) {
       return absl::InvalidArgumentError(absl::StrCat(
           "`", d.fn_name, "` parameter `", p.name, "` contains map<",
-          MapKeyKindName(*bad),
+          CelTypeKindName(*bad),
           ", ...> — map keys must be bool|int|uint|string (langdef)"));
     }
   }
@@ -401,84 +367,64 @@ class CollectingErrorListener : public antlr4::BaseErrorListener {
   std::vector<std::string> errors_;
 };
 
-absl::StatusOr<CelfnType> ExtractType(celfn::CelfnParser::TypeContext* ctx);
+absl::StatusOr<CelType> ExtractType(celfn::CelfnParser::TypeContext* ctx);
 
-absl::StatusOr<CelfnType::Kind> KindFromPrimitiveText(absl::string_view txt) {
-  if (txt == "bool") return CelfnType::Kind::kBool;
-  if (txt == "int") return CelfnType::Kind::kInt;
-  if (txt == "uint") return CelfnType::Kind::kUint;
-  if (txt == "double") return CelfnType::Kind::kDouble;
-  if (txt == "string") return CelfnType::Kind::kString;
-  if (txt == "bytes") return CelfnType::Kind::kBytes;
+absl::StatusOr<CelType> TypeFromPrimitiveText(absl::string_view txt) {
+  if (txt == "bool") return CelType::Bool();
+  if (txt == "int") return CelType::Int();
+  if (txt == "uint") return CelType::Uint();
+  if (txt == "double") return CelType::Double();
+  if (txt == "string") return CelType::String();
+  if (txt == "bytes") return CelType::Bytes();
   return absl::InternalError(absl::StrCat("unknown primitive type: ", txt));
 }
 
-absl::StatusOr<CelfnType::Kind> KindFromWktText(absl::string_view txt) {
-  if (txt == "Duration") return CelfnType::Kind::kDuration;
-  if (txt == "Timestamp") return CelfnType::Kind::kTimestamp;
+absl::StatusOr<CelType> TypeFromWktText(absl::string_view txt) {
+  if (txt == "Duration") return CelType::Duration();
+  if (txt == "Timestamp") return CelType::Timestamp();
   return absl::InternalError(absl::StrCat("unknown wkt keyword: ", txt));
 }
 
-absl::StatusOr<CelfnType::Kind> KindFromMapKeyText(absl::string_view txt) {
-  if (txt == "bool") return CelfnType::Kind::kBool;
-  if (txt == "int") return CelfnType::Kind::kInt;
-  if (txt == "uint") return CelfnType::Kind::kUint;
-  if (txt == "string") return CelfnType::Kind::kString;
+absl::StatusOr<CelType> TypeFromMapKeyText(absl::string_view txt) {
+  if (txt == "bool") return CelType::Bool();
+  if (txt == "int") return CelType::Int();
+  if (txt == "uint") return CelType::Uint();
+  if (txt == "string") return CelType::String();
   return absl::InvalidArgumentError(absl::StrCat(
       "map key type `", txt, "` not allowed (must be bool|int|uint|string)"));
 }
 
-absl::StatusOr<CelfnType> ExtractListType(
-    celfn::CelfnParser::TypeContext* ctx) {
-  CelfnType t{};
-  t.kind = CelfnType::Kind::kList;
+absl::StatusOr<CelType> ExtractListType(celfn::CelfnParser::TypeContext* ctx) {
   auto inner = ExtractType(ctx->listType()->type());
   if (!inner.ok()) return inner.status();
-  t.list_element.push_back(std::move(*inner));
-  return t;
+  return CelType::List(*std::move(inner));
 }
 
-absl::StatusOr<CelfnType> ExtractMapType(celfn::CelfnParser::TypeContext* ctx) {
-  CelfnType t{};
-  t.kind = CelfnType::Kind::kMap;
-  auto k = KindFromMapKeyText(ctx->mapType()->mapKeyType()->getText());
+absl::StatusOr<CelType> ExtractMapType(celfn::CelfnParser::TypeContext* ctx) {
+  auto k = TypeFromMapKeyText(ctx->mapType()->mapKeyType()->getText());
   if (!k.ok()) return k.status();
-  CelfnType key{};
-  key.kind = *k;
   auto v = ExtractType(ctx->mapType()->type());
   if (!v.ok()) return v.status();
-  t.map_kv.push_back(std::move(key));
-  t.map_kv.push_back(std::move(*v));
-  return t;
+  return CelType::Map(*std::move(k), *std::move(v));
 }
 
-absl::StatusOr<CelfnType> ExtractType(celfn::CelfnParser::TypeContext* ctx) {
+absl::StatusOr<CelType> ExtractType(celfn::CelfnParser::TypeContext* ctx) {
   if (ctx == nullptr) {
     return absl::InternalError("ExtractType called with nullptr context");
   }
-  CelfnType t{};
   if (ctx->primitiveType() != nullptr) {
-    auto k = KindFromPrimitiveText(ctx->primitiveType()->getText());
-    if (!k.ok()) return k.status();
-    t.kind = *k;
-    return t;
+    return TypeFromPrimitiveText(ctx->primitiveType()->getText());
   }
   if (ctx->wktKeyword() != nullptr) {
-    auto k = KindFromWktText(ctx->wktKeyword()->getText());
-    if (!k.ok()) return k.status();
-    t.kind = *k;
-    return t;
+    return TypeFromWktText(ctx->wktKeyword()->getText());
   }
   if (ctx->listType() != nullptr) return ExtractListType(ctx);
   if (ctx->mapType() != nullptr) return ExtractMapType(ctx);
   if (ctx->protoType() != nullptr) {
-    t.kind = CelfnType::Kind::kProto;
-    t.proto_fqn = ctx->protoType()->qualifiedIdentifier()->getText();
-    return t;
+    return CelType::Message(ctx->protoType()->qualifiedIdentifier()->getText());
   }
   if (ctx->getText() == "null") {
-    t.kind = CelfnType::Kind::kNull;
-    return t;
+    return CelType::Null();
   }
   return absl::InternalError(absl::StrCat("unhandled type: ", ctx->getText()));
 }

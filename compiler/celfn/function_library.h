@@ -35,62 +35,24 @@
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "shared/type.h"
 
 namespace celwasm {
 
-// CEL type as it appears in a custom-fn signature.  Mirrors §3.6 of
-// m13-custom-fns.md, extended by §6 of m24-foreign-fn-component-backend.md
-// (the plugin author surface adds `type` and `optional<T>` to
-// the declarable matrix; existing host backend does not yet
-// admit either — see m24 §6 for the type-to-WIT-to-C++ mapping).
-struct CelfnType {
-  enum class Kind : uint8_t {
-    kBool,
-    kInt,
-    kUint,
-    kDouble,
-    kString,
-    kBytes,
-    kNull,
-    kDuration,
-    kTimestamp,
-    kList,
-    kMap,
-    kProto,
-    kType,      // CEL `type` (the type-of-types).  m24 §6: WIT `string`,
-                // C++ `std::string` (the type name).  Only reachable
-                // through `kPlugin` decls today.
-    kOptional,  // CEL `optional<T>`.  m24 §6: WIT `option<wit T>`, C++
-                // `std::optional<C++ T>`.  Element type in
-                // `optional_element[0]`.  Only reachable through
-                // `kPlugin` decls; the @host adapter has no
-                // canonical spelling.
-  };
-
-  Kind kind = Kind::kBool;
-  // For kProto: fully-qualified message name ("acme.User").  Empty
-  // otherwise.
-  std::string proto_fqn;
-  // For kList: single-element vector holding the element type.
-  // Empty for non-kList.
-  std::vector<CelfnType> list_element;
-  // For kMap: two-element vector [key, value].  Empty for non-kMap.
-  std::vector<CelfnType> map_kv;
-  // For kOptional: single-element vector holding the wrapped type.
-  // Empty for non-kOptional.
-  std::vector<CelfnType> optional_element;
-
-  // Synthesises the argkind slug used in overload-ids per §3.6.
-  // E.g. `int` → "int", `proto(acme.User)` → "message_acme_User",
-  // `list<int>` → "list_int", `type` → "type",
-  // `optional<int>` → "optional_int".
-  std::string Argkind() const;
-};
+// Synthesises the argkind slug used in overload-ids per
+// m13-custom-fns.md §3.6, over the one type vocabulary
+// (shared/type.h).  E.g. `int` → "int", `proto(acme.User)` /
+// `CelType::Message("acme.User")` → "message_acme_User",
+// `list<int>` → "list_int", `type` → "type",
+// `optional<int>` → "optional_int".  Total over every representable
+// kind; `kUnknown` (the default-constructed sentinel) is a
+// builder-invariant violation and CHECK-fails.
+std::string ArgkindSlug(const CelType& type);
 
 struct CelfnParam {
   // `this` modifier on the first param → method-style dispatch.
   bool is_receiver = false;
-  CelfnType type;
+  CelType type;
   std::string name;
 };
 
@@ -120,7 +82,7 @@ struct CelfnDecl {
   uint8_t num_args = 0;
   bool is_receiver = false;
   std::vector<CelfnParam> params;
-  CelfnType return_type;
+  CelType return_type;
   // For kCelDefined only: the raw CEL expression source.
   std::string body;
 };
@@ -176,7 +138,7 @@ class FunctionLibrary {
 
     // Add a host-backed declaration.  Embedder C++ provides the impl
     // at Plan time via RuntimeBindings::AddFunction(overload_id, …).
-    Builder& AddHost(absl::string_view fn_name, CelfnType return_type,
+    Builder& AddHost(absl::string_view fn_name, CelType return_type,
                      std::vector<CelfnParam> params);
 
     // Add a plugin-backed declaration (a sandboxed Component-Model
@@ -189,14 +151,14 @@ class FunctionLibrary {
     // Admits `proto(...)` arguments and returns — they cross as
     // serialized bytes (m24 §8).  Admits `type` and `optional<T>` per
     // m24 §6.
-    Builder& AddPlugin(absl::string_view fn_name, CelfnType return_type,
+    Builder& AddPlugin(absl::string_view fn_name, CelType return_type,
                        std::vector<CelfnParam> params);
 
     // Add a CEL-defined function (body is a CEL expression).
     // celwasmc compiles the body into the wasm module named by
     // SetModuleName().  The body string is taken verbatim — no
     // surrounding whitespace stripping; cel-cpp's parser handles it.
-    Builder& AddCelDefined(absl::string_view fn_name, CelfnType return_type,
+    Builder& AddCelDefined(absl::string_view fn_name, CelType return_type,
                            std::vector<CelfnParam> params,
                            absl::string_view body);
 

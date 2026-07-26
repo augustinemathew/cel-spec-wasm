@@ -204,19 +204,13 @@ BENCHMARK(BM_Compile_PluginCallAdd);
 // 3. Required-functions emission overhead — N declared, 1 called.
 // ══════════════════════════════════════════════════════════════════════
 
-CelfnType Prim(CelfnType::Kind k) {
-  CelfnType t;
-  t.kind = k;
-  return t;
-}
-
 // N plugin decls `int fn<i>(int x)` under one synthetic interface.
 FunctionLibrary BuildSyntheticPluginLib(int n_decls) {
   FunctionLibrary::Builder b;
   b.SetWitInterface("cel:bench/fns@0.1.0");
   for (int i = 1; i <= n_decls; ++i) {
-    b.AddPlugin(absl::StrCat("fn", i), Prim(CelfnType::Kind::kInt),
-                {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+    b.AddPlugin(absl::StrCat("fn", i), CelType::Int(),
+                {CelfnParam{false, CelType::Int(), "x"}});
   }
   auto lib_or = b.Build();
   ABSL_CHECK_OK(lib_or);

@@ -711,23 +711,17 @@ TEST(CompileProtoMapTest, ProtoMapEmittedModuleSerializesAndValidates) {
 
 namespace {
 
-CelfnType RfScalar(CelfnType::Kind kind) {
-  CelfnType t;
-  t.kind = kind;
-  return t;
-}
-
 // Two plugin decls — the O2 pin calls only `allow`, so `deny_string`
 // must survive at O0 and vanish at O2.
 std::vector<FunctionLibrary> TwoPluginFnLibs() {
   auto lib =
       *FunctionLibrary::Builder()
-           .AddPlugin("allow", RfScalar(CelfnType::Kind::kBool),
-                      {CelfnParam{/*is_receiver=*/false,
-                                  RfScalar(CelfnType::Kind::kString), "u"}})
-           .AddPlugin("deny", RfScalar(CelfnType::Kind::kBool),
-                      {CelfnParam{/*is_receiver=*/false,
-                                  RfScalar(CelfnType::Kind::kString), "u"}})
+           .AddPlugin(
+               "allow", CelType::Bool(),
+               {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
+           .AddPlugin(
+               "deny", CelType::Bool(),
+               {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
            .Build();
   return {std::move(lib)};
 }
@@ -821,12 +815,10 @@ TEST(CompileRequiredFunctionsTest, MixedBackendsCarryBackendPerRow) {
   opts.check.variable_specs = {"u:string"};
   opts.function_libraries = {
       *FunctionLibrary::Builder()
-           .AddHost(
-               "discount_pct", RfScalar(CelfnType::Kind::kInt),
-               {CelfnParam{false, RfScalar(CelfnType::Kind::kString), "s"}})
-           .AddPlugin(
-               "allow", RfScalar(CelfnType::Kind::kBool),
-               {CelfnParam{false, RfScalar(CelfnType::Kind::kString), "u"}})
+           .AddHost("discount_pct", CelType::Int(),
+                    {CelfnParam{false, CelType::String(), "s"}})
+           .AddPlugin("allow", CelType::Bool(),
+                      {CelfnParam{false, CelType::String(), "u"}})
            .Build()};
   opts.check.function_libraries = opts.function_libraries;
   auto art_or = Compile("allow(u) && discount_pct(u) > 0", opts);
@@ -851,9 +843,8 @@ TEST(CompileRequiredFunctionsTest, ReceiverRowCarriesTypesAndReceiverBit) {
   opts.check.variable_specs = {"name:string"};
   opts.function_libraries = {
       *FunctionLibrary::Builder()
-           .AddHost("is_number", RfScalar(CelfnType::Kind::kBool),
-                    {CelfnParam{/*is_receiver=*/true,
-                                RfScalar(CelfnType::Kind::kString), "s"}})
+           .AddHost("is_number", CelType::Bool(),
+                    {CelfnParam{/*is_receiver=*/true, CelType::String(), "s"}})
            .Build()};
   opts.check.function_libraries = opts.function_libraries;
   auto art_or = Compile("name.is_number()", opts);

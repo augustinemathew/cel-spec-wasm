@@ -1,7 +1,7 @@
 // Tests for abi/celfn_wire.  Covers:
-//   - TypeFromCelfn: every CelfnType kind (scalars, proto FQN,
-//     list / map / optional element recursion, deep nesting), plus
-//     CHECK-death on malformed generic shapes.
+//   - TypeFromCelType: every CelType kind (scalars, message FQN,
+//     list / map / optional element recursion, deep nesting) pinned
+//     to the frozen wire numerics, plus CHECK-death on kUnknown.
 //   - TypeEquals: positive (reflexive over nested shapes, unknown
 //     kinds numerically equal) and negative along every signature-
 //     matrix axis expressible at the type level — kind, proto FQN,
@@ -28,41 +28,22 @@ namespace {
 using ::celwasm::abi::RequiredFunction;
 using ::celwasm::abi::Type;
 
-// --- CelfnType construction helpers --------------------------------
+// --- CelType construction helpers --------------------------------
 
-CelfnType Scalar(CelfnType::Kind kind) {
-  CelfnType t;
-  t.kind = kind;
-  return t;
+CelType Proto(std::string fqn) {
+  return CelType::Message(std::move(fqn));
 }
 
-CelfnType Proto(std::string fqn) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kProto;
-  t.proto_fqn = std::move(fqn);
-  return t;
+CelType List(CelType elem) {
+  return CelType::List(std::move(elem));
 }
 
-CelfnType List(CelfnType elem) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kList;
-  t.list_element.push_back(std::move(elem));
-  return t;
+CelType Map(CelType key, CelType value) {
+  return CelType::Map(std::move(key), std::move(value));
 }
 
-CelfnType Map(CelfnType key, CelfnType value) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kMap;
-  t.map_kv.push_back(std::move(key));
-  t.map_kv.push_back(std::move(value));
-  return t;
-}
-
-CelfnType Optional(CelfnType elem) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kOptional;
-  t.optional_element.push_back(std::move(elem));
-  return t;
+CelType Optional(CelType elem) {
+  return CelType::Optional(std::move(elem));
 }
 
 // Wire-side helpers.
@@ -77,103 +58,6 @@ Type WireUnknownKind(int value) {
   Type t;
   t.set_kind(static_cast<Type::Kind>(value));
   return t;
-}
-
-// --- TypeFromCelfn: scalar kinds ---------------------------------
-
-struct ScalarCase {
-  CelfnType::Kind celfn = CelfnType::Kind::kBool;
-  Type::Kind wire = Type::KIND_UNSPECIFIED;
-};
-
-class TypeFromCelfnScalarTest : public ::testing::TestWithParam<ScalarCase> {};
-
-TEST_P(TypeFromCelfnScalarTest, MapsKindWithNoFqnAndNoParams) {
-  const Type wire = TypeFromCelfn(Scalar(GetParam().celfn));
-  EXPECT_EQ(wire.kind(), GetParam().wire);
-  EXPECT_TRUE(wire.proto_fqn().empty());
-  EXPECT_EQ(wire.params_size(), 0);
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    AllScalarKinds, TypeFromCelfnScalarTest,
-    ::testing::Values(
-        ScalarCase{CelfnType::Kind::kBool, Type::KIND_BOOL},
-        ScalarCase{CelfnType::Kind::kInt, Type::KIND_INT},
-        ScalarCase{CelfnType::Kind::kUint, Type::KIND_UINT},
-        ScalarCase{CelfnType::Kind::kDouble, Type::KIND_DOUBLE},
-        ScalarCase{CelfnType::Kind::kString, Type::KIND_STRING},
-        ScalarCase{CelfnType::Kind::kBytes, Type::KIND_BYTES},
-        ScalarCase{CelfnType::Kind::kNull, Type::KIND_NULL},
-        ScalarCase{CelfnType::Kind::kDuration, Type::KIND_DURATION},
-        ScalarCase{CelfnType::Kind::kTimestamp, Type::KIND_TIMESTAMP},
-        ScalarCase{CelfnType::Kind::kType, Type::KIND_TYPE}));
-
-// --- TypeFromCelfn: composite kinds ------------------------------
-
-TEST(TypeFromCelfnTest, ProtoCarriesFqn) {
-  const Type wire = TypeFromCelfn(Proto("acme.User"));
-  EXPECT_EQ(wire.kind(), Type::KIND_PROTO);
-  EXPECT_EQ(wire.proto_fqn(), "acme.User");
-  EXPECT_EQ(wire.params_size(), 0);
-}
-
-TEST(TypeFromCelfnTest, ListElementLandsInParams) {
-  const Type wire = TypeFromCelfn(List(Scalar(CelfnType::Kind::kInt)));
-  EXPECT_EQ(wire.kind(), Type::KIND_LIST);
-  ASSERT_EQ(wire.params_size(), 1);
-  EXPECT_EQ(wire.params(0).kind(), Type::KIND_INT);
-}
-
-TEST(TypeFromCelfnTest, MapKeyValueLandInParamsInOrder) {
-  const Type wire = TypeFromCelfn(
-      Map(Scalar(CelfnType::Kind::kString), Scalar(CelfnType::Kind::kUint)));
-  EXPECT_EQ(wire.kind(), Type::KIND_MAP);
-  ASSERT_EQ(wire.params_size(), 2);
-  EXPECT_EQ(wire.params(0).kind(), Type::KIND_STRING);
-  EXPECT_EQ(wire.params(1).kind(), Type::KIND_UINT);
-}
-
-TEST(TypeFromCelfnTest, OptionalElementLandsInParams) {
-  const Type wire = TypeFromCelfn(Optional(Scalar(CelfnType::Kind::kBool)));
-  EXPECT_EQ(wire.kind(), Type::KIND_OPTIONAL);
-  ASSERT_EQ(wire.params_size(), 1);
-  EXPECT_EQ(wire.params(0).kind(), Type::KIND_BOOL);
-}
-
-TEST(TypeFromCelfnTest, DeepNestingRecursesListMapProto) {
-  // list<map<string, proto(acme.User)>>
-  const Type wire = TypeFromCelfn(
-      List(Map(Scalar(CelfnType::Kind::kString), Proto("acme.User"))));
-  ASSERT_EQ(wire.kind(), Type::KIND_LIST);
-  ASSERT_EQ(wire.params_size(), 1);
-  const Type& map = wire.params(0);
-  ASSERT_EQ(map.kind(), Type::KIND_MAP);
-  ASSERT_EQ(map.params_size(), 2);
-  EXPECT_EQ(map.params(0).kind(), Type::KIND_STRING);
-  EXPECT_EQ(map.params(1).kind(), Type::KIND_PROTO);
-  EXPECT_EQ(map.params(1).proto_fqn(), "acme.User");
-}
-
-// Malformed generic shapes are builder-invariant violations, not
-// admissible inputs — they must fail loudly, never emit a
-// plausible-looking half-empty wire type.
-TEST(TypeFromCelfnDeathTest, ListWithoutElementChecks) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kList;
-  EXPECT_DEATH(TypeFromCelfn(t), "kList");
-}
-
-TEST(TypeFromCelfnDeathTest, MapWithoutKeyValueChecks) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kMap;
-  EXPECT_DEATH(TypeFromCelfn(t), "kMap");
-}
-
-TEST(TypeFromCelfnDeathTest, OptionalWithoutElementChecks) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kOptional;
-  EXPECT_DEATH(TypeFromCelfn(t), "kOptional");
 }
 
 // --- TypeFromCelType: the unified-vocabulary mapping -------------
@@ -279,16 +163,16 @@ TEST(TypeEqualsTest, ScalarReflexive) {
 }
 
 TEST(TypeEqualsTest, NestedShapeReflexive) {
-  const Type a = TypeFromCelfn(
-      List(Map(Scalar(CelfnType::Kind::kString), Proto("acme.User"))));
-  const Type b = TypeFromCelfn(
-      List(Map(Scalar(CelfnType::Kind::kString), Proto("acme.User"))));
+  const Type a =
+      TypeFromCelType(List(Map(CelType::String(), Proto("acme.User"))));
+  const Type b =
+      TypeFromCelType(List(Map(CelType::String(), Proto("acme.User"))));
   EXPECT_TRUE(TypeEquals(a, b));
 }
 
 TEST(TypeEqualsTest, SameProtoFqnEqual) {
-  EXPECT_TRUE(TypeEquals(TypeFromCelfn(Proto("acme.User")),
-                         TypeFromCelfn(Proto("acme.User"))));
+  EXPECT_TRUE(TypeEquals(TypeFromCelType(Proto("acme.User")),
+                         TypeFromCelType(Proto("acme.User"))));
 }
 
 // Open-set wire contract: kinds this binary doesn't know compare
@@ -313,8 +197,8 @@ TEST(TypeEqualsTest, DistinguishesKind) {
 }
 
 TEST(TypeEqualsTest, DistinguishesProtoFqn) {
-  EXPECT_FALSE(TypeEquals(TypeFromCelfn(Proto("acme.User")),
-                          TypeFromCelfn(Proto("acme.Person"))));
+  EXPECT_FALSE(TypeEquals(TypeFromCelType(Proto("acme.User")),
+                          TypeFromCelType(Proto("acme.Person"))));
 }
 
 TEST(TypeEqualsTest, DistinguishesParamsCount) {
@@ -327,16 +211,14 @@ TEST(TypeEqualsTest, DistinguishesParamsCount) {
 
 TEST(TypeEqualsTest, DistinguishesNestedGenericElement) {
   // list<map<string, int>> vs list<map<string, uint>>.
-  const Type a = TypeFromCelfn(List(
-      Map(Scalar(CelfnType::Kind::kString), Scalar(CelfnType::Kind::kInt))));
-  const Type b = TypeFromCelfn(List(
-      Map(Scalar(CelfnType::Kind::kString), Scalar(CelfnType::Kind::kUint))));
+  const Type a = TypeFromCelType(List(Map(CelType::String(), CelType::Int())));
+  const Type b = TypeFromCelType(List(Map(CelType::String(), CelType::Uint())));
   EXPECT_FALSE(TypeEquals(a, b));
 }
 
 TEST(TypeEqualsTest, DistinguishesNestedProtoFqn) {
-  const Type a = TypeFromCelfn(List(Proto("acme.User")));
-  const Type b = TypeFromCelfn(List(Proto("acme.Person")));
+  const Type a = TypeFromCelType(List(Proto("acme.User")));
+  const Type b = TypeFromCelType(List(Proto("acme.Person")));
   EXPECT_FALSE(TypeEquals(a, b));
 }
 
@@ -358,7 +240,7 @@ RequiredFunction MakeFn(std::string fn_name, Type return_type,
 // The exact spelling frozen by the m35 plan §2's error messages.
 TEST(RenderSignatureTest, ProtoParamMatchesPlanSpelling) {
   const RequiredFunction fn = MakeFn("is_adult", WireScalar(Type::KIND_BOOL),
-                                     {TypeFromCelfn(Proto("acme.User"))});
+                                     {TypeFromCelType(Proto("acme.User"))});
   EXPECT_EQ(RenderSignature(fn), "bool is_adult(proto(acme.User))");
 }
 
@@ -386,10 +268,9 @@ TEST(RenderSignatureTest, NestedGenericsAndGrammarSpellings) {
   // list<int> f(map<string, list<double>>, optional<bytes>, Duration,
   //             Timestamp, null, type)
   const RequiredFunction fn =
-      MakeFn("f", TypeFromCelfn(List(Scalar(CelfnType::Kind::kInt))),
-             {TypeFromCelfn(Map(Scalar(CelfnType::Kind::kString),
-                                List(Scalar(CelfnType::Kind::kDouble)))),
-              TypeFromCelfn(Optional(Scalar(CelfnType::Kind::kBytes))),
+      MakeFn("f", TypeFromCelType(List(CelType::Int())),
+             {TypeFromCelType(Map(CelType::String(), List(CelType::Double()))),
+              TypeFromCelType(Optional(CelType::Bytes())),
               WireScalar(Type::KIND_DURATION), WireScalar(Type::KIND_TIMESTAMP),
               WireScalar(Type::KIND_NULL), WireScalar(Type::KIND_TYPE)});
   EXPECT_EQ(RenderSignature(fn),
@@ -415,17 +296,16 @@ TEST(RenderSignatureTest, UnspecifiedKindRendersNumerically) {
 TEST(RenderTypeTest, GrammarSpellingsIncludingNestedComposites) {
   // The grammar spellings (`Duration` / `Timestamp` capitalised,
   // `map<K, V>` with a space) — the contract Plan messages and emit
-  // tests pin; compiler.cc diagnostics compose TypeFromCelfn with
+  // tests pin; compiler.cc diagnostics compose TypeFromCelType with
   // this renderer so they can't diverge from it.
   EXPECT_EQ(RenderType(WireScalar(Type::KIND_DURATION)), "Duration");
   EXPECT_EQ(RenderType(WireScalar(Type::KIND_TIMESTAMP)), "Timestamp");
-  EXPECT_EQ(RenderType(TypeFromCelfn(Map(Scalar(CelfnType::Kind::kString),
-                                         Scalar(CelfnType::Kind::kDuration)))),
-            "map<string, Duration>");
   EXPECT_EQ(
-      RenderType(TypeFromCelfn(Optional(Map(Scalar(CelfnType::Kind::kString),
-                                            Scalar(CelfnType::Kind::kInt))))),
-      "optional<map<string, int>>");
+      RenderType(TypeFromCelType(Map(CelType::String(), CelType::Duration()))),
+      "map<string, Duration>");
+  EXPECT_EQ(RenderType(TypeFromCelType(
+                Optional(Map(CelType::String(), CelType::Int())))),
+            "optional<map<string, int>>");
 }
 
 TEST(RenderTypeTest, UnknownKindRendersNumerically) {
@@ -435,7 +315,7 @@ TEST(RenderTypeTest, UnknownKindRendersNumerically) {
 // --- RequiredFunctionFromDecl --------------------------------------
 
 CelfnDecl MakeDecl(CelfnDecl::Backend backend, std::string fn_name,
-                   std::string overload_id, CelfnType return_type,
+                   std::string overload_id, CelType return_type,
                    std::vector<CelfnParam> params) {
   CelfnDecl d;
   d.backend = backend;
@@ -449,10 +329,9 @@ CelfnDecl MakeDecl(CelfnDecl::Backend backend, std::string fn_name,
 }
 
 TEST(RequiredFunctionFromDeclTest, PluginDeclMapsAllFields) {
-  const CelfnDecl decl =
-      MakeDecl(CelfnDecl::Backend::kPlugin, "is_adult",
-               "is_adult_message_acme_User", Scalar(CelfnType::Kind::kBool),
-               {CelfnParam{false, Proto("acme.User"), "u"}});
+  const CelfnDecl decl = MakeDecl(CelfnDecl::Backend::kPlugin, "is_adult",
+                                  "is_adult_message_acme_User", CelType::Bool(),
+                                  {CelfnParam{false, Proto("acme.User"), "u"}});
   const RequiredFunction row = RequiredFunctionFromDecl(decl);
   EXPECT_EQ(row.overload_id(), "is_adult_message_acme_User");
   EXPECT_EQ(row.fn_name(), "is_adult");
@@ -468,8 +347,7 @@ TEST(RequiredFunctionFromDeclTest, PluginDeclMapsAllFields) {
 TEST(RequiredFunctionFromDeclTest, HostReceiverDeclMapsBackendAndReceiver) {
   const CelfnDecl decl =
       MakeDecl(CelfnDecl::Backend::kHost, "upper", "upper_string",
-               Scalar(CelfnType::Kind::kString),
-               {CelfnParam{true, Scalar(CelfnType::Kind::kString), "s"}});
+               CelType::String(), {CelfnParam{true, CelType::String(), "s"}});
   const RequiredFunction row = RequiredFunctionFromDecl(decl);
   EXPECT_EQ(row.backend(), RequiredFunction::HOST);
   EXPECT_TRUE(row.is_receiver());
@@ -479,8 +357,7 @@ TEST(RequiredFunctionFromDeclTest, HostReceiverDeclMapsBackendAndReceiver) {
 TEST(RequiredFunctionFromDeclDeathTest, CelDefinedDeclChecks) {
   const CelfnDecl decl =
       MakeDecl(CelfnDecl::Backend::kCelDefined, "twice", "twice_int",
-               Scalar(CelfnType::Kind::kInt),
-               {CelfnParam{false, Scalar(CelfnType::Kind::kInt), "x"}});
+               CelType::Int(), {CelfnParam{false, CelType::Int(), "x"}});
   EXPECT_DEATH(RequiredFunctionFromDecl(decl), "has no cel_fn wire backend");
 }
 

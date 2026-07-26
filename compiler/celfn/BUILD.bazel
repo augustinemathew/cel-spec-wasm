@@ -27,6 +27,7 @@ cc_library(
     hdrs = ["function_library.h"],
     deps = [
         ":celfn_grammar_cc_parser",
+        "//shared:type",
         "@antlr4-cpp-runtime//:antlr4-cpp-runtime",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_check",

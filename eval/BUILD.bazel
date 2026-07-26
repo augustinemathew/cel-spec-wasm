@@ -242,7 +242,7 @@ cc_library(
     deps = [
         ":cel_host_hdrs",  # HostListBacking / HostMapBacking abstract bases
         ":value",
-        "//compiler/celfn:function_library",
+        "//shared:type",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/status",

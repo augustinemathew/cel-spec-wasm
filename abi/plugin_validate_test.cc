@@ -60,10 +60,8 @@ TEST(RequireComponentLayerTest, EmptyAndTruncatedSelectPreambleMessage) {
 
 // --- RequireAllPluginBacked ----------------------------------------
 
-CelfnType Int() {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kInt;
-  return t;
+CelType Int() {
+  return CelType::Int();
 }
 
 TEST(RequireAllPluginBackedTest, AllPluginDeclsPass) {
@@ -85,11 +83,10 @@ TEST(RequireAllPluginBackedTest, EmptyLibraryPassesHere) {
 TEST(RequireAllPluginBackedTest, HostDeclRejectedWithComposedMessage) {
   auto lib = FunctionLibrary::Builder().AddHost("upper", Int(), {}).Build();
   ASSERT_THAT(lib, IsOk());
-  EXPECT_THAT(
-      RequireAllPluginBacked(*lib, "ctx: ", "embedded here"),
-      StatusIs(absl::StatusCode::kInvalidArgument,
-               "ctx: decl `upper` is @host.-backed — every declaration "
-               "embedded here must be @plugin."));
+  EXPECT_THAT(RequireAllPluginBacked(*lib, "ctx: ", "embedded here"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       "ctx: decl `upper` is @host.-backed — every declaration "
+                       "embedded here must be @plugin."));
 }
 
 TEST(RequireAllPluginBackedTest, NativeDeclNamesNativeBackend) {

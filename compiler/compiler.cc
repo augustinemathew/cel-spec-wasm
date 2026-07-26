@@ -12,9 +12,9 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "compiler/internal/compile.h"
 #include "compiler/program.h"
 #include "shared/type.h"
-#include "compiler/internal/compile.h"
 
 namespace celwasm {
 
@@ -81,62 +81,67 @@ std::string CelTypeToSpec(const CelType& t) {
                     << static_cast<int>(t.kind());
 }
 
-// Renders a `CelfnType` for diagnostics via THE `.celfn` grammar
-// renderer (abi/celfn_wire.h), so the spelling (`Duration`,
+// Renders a declaration `CelType` for diagnostics via THE `.celfn`
+// grammar renderer (abi/celfn_wire.h), so the spelling (`Duration`,
 // `map<K, V>`, `optional<T>`, …) can never drift from the one Plan
 // messages and emit tests pin.
-std::string RenderCelfnTypeForDiagnostic(const CelfnType& t) {
-  return RenderType(TypeFromCelfn(t));
+std::string RenderDeclTypeForDiagnostic(const CelType& t) {
+  return RenderType(TypeFromCelType(t));
 }
 
 // Returns the first sub-type of `t` that the checker-side mapping
-// (`CelfnTypeToCelType`, compiler/frontend/parse_and_check.cc) has
+// (`DeclTypeToCheckerType`, compiler/frontend/parse_and_check.cc) has
 // no `cel::Type` for — `type` and `optional<T>` (cleanup-backlog
 // #44) — or nullptr when `t` is fully mappable.  The switch is the
 // mapping's kind coverage restated over the closed enum, so a new
-// `CelfnType::Kind` fails to compile here until classified.
-const CelfnType* absl_nullable FindUnmappableType(const CelfnType& t) {
-  switch (t.kind) {
-    case CelfnType::Kind::kBool:
-    case CelfnType::Kind::kInt:
-    case CelfnType::Kind::kUint:
-    case CelfnType::Kind::kDouble:
-    case CelfnType::Kind::kString:
-    case CelfnType::Kind::kBytes:
-    case CelfnType::Kind::kNull:
-    case CelfnType::Kind::kDuration:
-    case CelfnType::Kind::kTimestamp:
-    case CelfnType::Kind::kProto:
+// `CelType::Kind` fails to compile here until classified.
+const CelType* absl_nullable FindUnmappableType(const CelType& t) {
+  switch (t.kind()) {
+    case CelType::Kind::kBool:
+    case CelType::Kind::kInt:
+    case CelType::Kind::kUint:
+    case CelType::Kind::kDouble:
+    case CelType::Kind::kString:
+    case CelType::Kind::kBytes:
+    case CelType::Kind::kNull:
+    case CelType::Kind::kDuration:
+    case CelType::Kind::kTimestamp:
+    case CelType::Kind::kMessage:
       return nullptr;
-    case CelfnType::Kind::kType:
-    case CelfnType::Kind::kOptional:
+    case CelType::Kind::kType:
+    case CelType::Kind::kOptional:
+      // With one vocabulary these are representable in a declaration,
+      // but the checker still has no `cel::TypeType` /
+      // `cel::OptionalType` wiring for custom-fn CALL-SITE typing
+      // (cleanup-backlog #44) — so the Build()-time rejection stays.
       return &t;
-    case CelfnType::Kind::kList:
-      return t.list_element.empty() ? nullptr
-                                    : FindUnmappableType(t.list_element[0]);
-    case CelfnType::Kind::kMap: {
-      if (t.map_kv.size() != 2) return nullptr;
-      if (const auto* bad = FindUnmappableType(t.map_kv[0])) return bad;
-      return FindUnmappableType(t.map_kv[1]);
+    case CelType::Kind::kList:
+      return FindUnmappableType(t.list_element());
+    case CelType::Kind::kMap: {
+      if (const auto* bad = FindUnmappableType(t.map_key())) return bad;
+      return FindUnmappableType(t.map_value());
     }
+    case CelType::Kind::kUnknown:
+      break;
   }
-  ABSL_CHECK(false) << "FindUnmappableType: unhandled CelfnType::Kind = "
-                    << static_cast<int>(t.kind);
+  ABSL_CHECK(false) << "FindUnmappableType: kUnknown CelType cannot appear in "
+                       "a Builder-finalised decl";
 }
 
 // Reject function declarations whose types the type-checker cannot
 // map.  `FunctionLibrary::Builder` admits `type` / `optional<T>` on
 // programmatically-built kHost/kCelDefined decls (only the kPlugin
-// surface rejects them), and `CelfnTypeToCelType` has no `cel::Type`
-// for either — without this gate the failure is an ABSL_CHECK crash
-// inside Compile() (cleanup-backlog #44).  Naming the decl + type
-// here turns it into a clean InvalidArgument at Build().
+// surface rejects them), and `DeclTypeToCheckerType` has no
+// `cel::Type` for either — without this gate the failure is an
+// ABSL_CHECK crash inside Compile() (cleanup-backlog #44).  Naming
+// the decl + type here turns it into a clean InvalidArgument at
+// Build().
 absl::Status ValidateDeclTypesMappable(const CelfnDecl& d) {
   if (const auto* bad = FindUnmappableType(d.return_type)) {
     return absl::InvalidArgumentError(absl::StrCat(
         "Compiler::Builder::Build: declaration `", d.fn_name,
         "` (overload-id `", d.overload_id, "`) return type uses `",
-        RenderCelfnTypeForDiagnostic(*bad),
+        RenderDeclTypeForDiagnostic(*bad),
         "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
   }
   for (const auto& p : d.params) {
@@ -144,7 +149,7 @@ absl::Status ValidateDeclTypesMappable(const CelfnDecl& d) {
       return absl::InvalidArgumentError(absl::StrCat(
           "Compiler::Builder::Build: declaration `", d.fn_name,
           "` (overload-id `", d.overload_id, "`) parameter `", p.name,
-          "` uses `", RenderCelfnTypeForDiagnostic(*bad),
+          "` uses `", RenderDeclTypeForDiagnostic(*bad),
           "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
     }
   }

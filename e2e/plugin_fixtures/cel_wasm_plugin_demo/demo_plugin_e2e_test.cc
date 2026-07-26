@@ -65,12 +65,6 @@ namespace {
 using ::absl_testing::IsOk;
 using ::bazel::tools::cpp::runfiles::Runfiles;
 
-CelfnType Prim(CelfnType::Kind k) {
-  CelfnType t;
-  t.kind = k;
-  return t;
-}
-
 // Load `demo_plugin.wasm` from the runfiles tree.  The bazel
 // `data = [":demo_plugin"]` on the cc_test makes the file
 // available; runfiles resolves the path on both macOS and Linux.
@@ -105,12 +99,12 @@ FunctionLibrary BuildDemoLibrary() {
           // The embedder mirrors the matching WIT interface name so
           // Engine::AddPlugin does the two-level export lookup.
           .SetWitInterface("cel:customfn/fns@0.1.0")
-          .AddPlugin("greet", Prim(CelfnType::Kind::kString),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kString), "name"},
-                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "age"}})
-          .AddPlugin("add", Prim(CelfnType::Kind::kInt),
-                     {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                      CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}})
+          .AddPlugin("greet", CelType::String(),
+                     {CelfnParam{false, CelType::String(), "name"},
+                      CelfnParam{false, CelType::Int(), "age"}})
+          .AddPlugin("add", CelType::Int(),
+                     {CelfnParam{false, CelType::Int(), "a"},
+                      CelfnParam{false, CelType::Int(), "b"}})
           .Build();
   ABSL_CHECK_OK(lib_or) << lib_or.status();
   return *std::move(lib_or);

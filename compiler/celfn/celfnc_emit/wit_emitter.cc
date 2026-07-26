@@ -58,10 +58,10 @@ enum class RecordKind { kDuration, kTimestamp };
 
 // Walk a CEL type → its WIT spelling, stamping `records` for every
 // duration/timestamp encountered so the emitter can declare them.
-absl::StatusOr<std::string> WitTypeText(const CelfnType& t,
+absl::StatusOr<std::string> WitTypeText(const CelType& t,
                                         std::set<RecordKind>* records) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kBool:
       return std::string("bool");
     case K::kInt:
@@ -85,37 +85,33 @@ absl::StatusOr<std::string> WitTypeText(const CelfnType& t,
       records->insert(RecordKind::kTimestamp);
       return std::string("timestamp");
     case K::kList: {
-      if (t.list_element.empty()) {
-        return absl::InternalError("list<> with empty element type");
-      }
-      auto inner = WitTypeText(t.list_element[0], records);
+      auto inner = WitTypeText(t.list_element(), records);
       if (!inner.ok()) return inner.status();
       return absl::StrCat("list<", *inner, ">");
     }
     case K::kMap: {
-      if (t.map_kv.size() != 2) {
-        return absl::InternalError("map<> with wrong kv arity");
-      }
-      auto k = WitTypeText(t.map_kv[0], records);
-      auto v = WitTypeText(t.map_kv[1], records);
+      auto k = WitTypeText(t.map_key(), records);
+      auto v = WitTypeText(t.map_value(), records);
       if (!k.ok()) return k.status();
       if (!v.ok()) return v.status();
       // m24 §6: map<K,V> → list<tuple<K,V>>.
       return absl::StrCat("list<tuple<", *k, ", ", *v, ">>");
     }
-    case K::kProto:
+    case K::kMessage:
       // m24 §8: proto crosses as serialized bytes (list<u8>).  The
       // proto fqn is host-side metadata; it does NOT appear in WIT.
       return std::string("list<u8>");
     case K::kType:
     case K::kOptional:
       return absl::FailedPreconditionError(absl::StrCat(
-          "wit emitter saw a permanently-rejected CelfnType::Kind (",
-          (t.kind == K::kType ? "type" : "optional"),
+          "wit emitter saw a permanently-rejected CelType::Kind (",
+          (t.kind() == K::kType ? "type" : "optional"),
           "); Builder::Build() should have rejected upstream (m24 §A.4 / "
           "§14)"));
+    case K::kUnknown:
+      break;
   }
-  return absl::InternalError("WitTypeText: unknown CelfnType::Kind");
+  return absl::InternalError("WitTypeText: unknown CelType::Kind");
 }
 
 absl::StatusOr<std::string> EmitOneFn(const CelfnDecl& d,

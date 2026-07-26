@@ -62,7 +62,7 @@ std::string SnakeToCamel(absl::string_view snake);
 //     generated proto headers when any decl is proto-typed.
 //
 // Errors: `FailedPrecondition` if a permanently-rejected
-// CelfnType::Kind (`optional<T>` / `type`) reaches the emitter.
+// CelType::Kind (`optional<T>` / `type`) reaches the emitter.
 ABSL_MUST_USE_RESULT absl::StatusOr<std::string> EmitStubCc(
     const FunctionLibrary& lib, absl::string_view cpp_namespace,
     absl::string_view wit_package_name,

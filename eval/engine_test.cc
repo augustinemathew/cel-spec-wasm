@@ -912,10 +912,8 @@ TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {
 // nullary bool fn under the given overload-id.  Used as the
 // conflict-detection surface.
 celwasm::FunctionLibrary OneBoolFnLibrary(absl::string_view fn_name) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kBool;
   auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddPlugin(fn_name, ret, {})
+                    .AddPlugin(fn_name, celwasm::CelType::Bool(), {})
                     .Build();
   ABSL_CHECK(lib_or.ok()) << lib_or.status();
   return *std::move(lib_or);
@@ -957,8 +955,7 @@ TEST(EngineAddPluginTest,
   EXPECT_NE(std::string(s.message()).find("AddFunction"), std::string::npos);
 }
 
-TEST(EngineAddPluginTest,
-     ConflictWithEarlierAddPluginReportedAtRegistration) {
+TEST(EngineAddPluginTest, ConflictWithEarlierAddPluginReportedAtRegistration) {
   // Two AddPlugin calls naming the same overload-id; the second
   // is rejected.  The first registration needs bytes that
   // wasmtime_component_new accepts — an empty `(component)` is
@@ -971,8 +968,7 @@ TEST(EngineAddPluginTest,
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
   const std::vector<uint8_t> plugin_bytes = Wat2Wasm("(component)");
-  ASSERT_TRUE(
-      engine_or->AddPlugin(plugin_bytes, OneBoolFnLibrary("dup")).ok());
+  ASSERT_TRUE(engine_or->AddPlugin(plugin_bytes, OneBoolFnLibrary("dup")).ok());
   const std::vector<uint8_t> garbage{0xde, 0xad, 0xbe, 0xef};
   auto s = engine_or->AddPlugin(garbage, OneBoolFnLibrary("dup"));
   EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
@@ -1054,8 +1050,7 @@ std::vector<uint8_t> ComponentWithCelFns(absl::string_view component_wat,
   const std::vector<uint8_t> component = Wat2Wasm(component_wat);
   auto with_fns = AppendCustomSection(
       component, "cel.fns",
-      {reinterpret_cast<const uint8_t*>(celfn_text.data()),
-       celfn_text.size()});
+      {reinterpret_cast<const uint8_t*>(celfn_text.data()), celfn_text.size()});
   ABSL_CHECK_OK(with_fns.status());
   return *std::move(with_fns);
 }
@@ -1149,8 +1144,7 @@ TEST(EngineUseTest, CollisionWithEarlierAddFunctionAlreadyExists) {
   HostCallback impl = [](HostCallContext& /*ctx*/) {
     return absl::OkStatus();
   };
-  ASSERT_TRUE(
-      engine_or->AddFunction("phantom_int", /*num_args=*/2, impl).ok());
+  ASSERT_TRUE(engine_or->AddFunction("phantom_int", /*num_args=*/2, impl).ok());
   auto s = engine_or->Use(*plugin_or);
   EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists) << s;
   EXPECT_TRUE(absl::StrContains(s.message(), "Engine::Use")) << s;
@@ -1180,10 +1174,9 @@ TEST(EngineUseTest, CollisionAcrossUseAndLegacyAddPluginAlreadyExists) {
   // Use of a plugin declaring the same id.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
-  ASSERT_TRUE(engine_or
-                  ->AddPlugin(Wat2Wasm("(component)"),
-                              OneBoolFnLibrary("phantom"))
-                  .ok());
+  ASSERT_TRUE(
+      engine_or->AddPlugin(Wat2Wasm("(component)"), OneBoolFnLibrary("phantom"))
+          .ok());
   auto plugin_or = Plugin::Load(
       ComponentWithCelFns("(component)", "bool @plugin.phantom();\n"));
   ASSERT_TRUE(plugin_or.ok()) << plugin_or.status();
@@ -1326,9 +1319,9 @@ TEST(EnginePlanLinkModeTripwireTest,
   const std::string payload = abi.SerializeAsString();
 
   const std::vector<uint8_t> section = BuildCustomSection(
-      "cel.abi", absl::Span<const uint8_t>(
-                     reinterpret_cast<const uint8_t*>(payload.data()),
-                     payload.size()));
+      "cel.abi",
+      absl::Span<const uint8_t>(
+          reinterpret_cast<const uint8_t*>(payload.data()), payload.size()));
 
   std::vector<uint8_t> bytes = Wat2Wasm(kSyntheticExprWat);
   bytes.insert(bytes.end(), section.begin(), section.end());

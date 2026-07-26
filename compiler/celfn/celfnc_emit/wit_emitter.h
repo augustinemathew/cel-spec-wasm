@@ -58,7 +58,7 @@ namespace celwasm::celfnc_emit {
 //     `optional<T>` or `type` (the Builder gates should have rejected
 //     it; this is the regression tripwire).
 //   - `Internal` on any closed-set switch falling through (e.g. a new
-//     `CelfnType::Kind` was added without updating this emitter).
+//     `CelType::Kind` was added without updating this emitter).
 ABSL_MUST_USE_RESULT absl::StatusOr<std::string> EmitWit(
     const FunctionLibrary& lib, absl::string_view package_name,
     absl::string_view package_version);

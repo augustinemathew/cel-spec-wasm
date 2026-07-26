@@ -130,7 +130,7 @@ constexpr absl::string_view kBlockerB2 =
 constexpr absl::string_view kNoErrorResultVariant =
     "the m24 wire has no eval-error result variant — "
     "CallPluginAndLowerResult (eval/engine.cc:835) lowers exactly one "
-    "plain value per the decl's return CelfnType; a component has no "
+    "plain value per the decl's return CelType; a component has no "
     "channel to surface a CEL error Value (verified 2026-06-10 against "
     "eval/internal/cel_plugin.cc LowerComponentToCel, which has no "
     "result/error arm). Un-skip if a result<T, cel-error> wire variant "
@@ -380,45 +380,24 @@ std::string TrapIfInvokedWat(absl::string_view export_name) {
 // Decl plumbing
 // ─────────────────────────────────────────────────────────────────────
 
-CelfnType Prim(CelfnType::Kind k) {
-  CelfnType t;
-  t.kind = k;
-  return t;
+CelType ListOf(CelType elem) {
+  return CelType::List(std::move(elem));
 }
 
-CelfnType ListOf(CelfnType elem) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kList;
-  t.list_element.push_back(std::move(elem));
-  return t;
+CelType MapOf(CelType key, CelType value) {
+  return CelType::Map(std::move(key), std::move(value));
 }
 
-CelfnType MapOf(CelfnType key, CelfnType value) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kMap;
-  t.map_kv.push_back(std::move(key));
-  t.map_kv.push_back(std::move(value));
-  return t;
+CelType ProtoOf(std::string fqn) {
+  return CelType::Message(std::move(fqn));
 }
 
-CelfnType ProtoOf(absl::string_view fqn) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kProto;
-  t.proto_fqn = std::string(fqn);
-  return t;
+CelType OptionalOf(CelType elem) {
+  return CelType::Optional(std::move(elem));
 }
 
-CelfnType OptionalOf(CelfnType elem) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kOptional;
-  t.optional_element.push_back(std::move(elem));
-  return t;
-}
-
-CelfnType TypeOfTypes() {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kType;
-  return t;
+CelType TypeOfTypes() {
+  return CelType::Type();
 }
 
 struct DeclVar {
@@ -428,7 +407,7 @@ struct DeclVar {
 
 // Build a FunctionLibrary with one plugin fn.
 absl::StatusOr<FunctionLibrary> ForeignLibOne(absl::string_view fn_name,
-                                              CelfnType return_type,
+                                              CelType return_type,
                                               std::vector<CelfnParam> params) {
   return FunctionLibrary::Builder()
       .AddPlugin(fn_name, std::move(return_type), std::move(params))
@@ -441,10 +420,12 @@ absl::StatusOr<FunctionLibrary> ForeignLibOne(absl::string_view fn_name,
 // parsed decl synthesize the same overload-id (both go through
 // SynthesiseOverloadId), which is what ties the compiled call site to
 // the component export.
-absl::StatusOr<Value> RunWithPlugin(
-    absl::string_view fn_decl_celfn, absl::string_view expr,
-    const std::vector<DeclVar>& vars, const FunctionLibrary& lib,
-    absl::Span<const uint8_t> plugin_bytes, const Activation& act) {
+absl::StatusOr<Value> RunWithPlugin(absl::string_view fn_decl_celfn,
+                                    absl::string_view expr,
+                                    const std::vector<DeclVar>& vars,
+                                    const FunctionLibrary& lib,
+                                    absl::Span<const uint8_t> plugin_bytes,
+                                    const Activation& act) {
   auto b = Compiler::NewBuilder();
   for (const auto& v : vars) {
     b.DeclareVariable(v.name, v.type);
@@ -469,8 +450,8 @@ absl::StatusOr<Value> RunWithPlugin(
 // ═════════════════════════════════════════════════════════════════════
 
 TEST(PluginTypeMatrix, BoolArgPluginSeesBoundValue) {
-  auto lib = ForeignLibOne("echo_bool", Prim(CelfnType::Kind::kBool),
-                           {{false, Prim(CelfnType::Kind::kBool), "b"}});
+  auto lib = ForeignLibOne("echo_bool", CelType::Bool(),
+                           {{false, CelType::Bool(), "b"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("b", Value::Bool(true));
@@ -483,7 +464,7 @@ TEST(PluginTypeMatrix, BoolArgPluginSeesBoundValue) {
 }
 
 TEST(PluginTypeMatrix, BoolReturnPluginEmitsValue) {
-  auto lib = ForeignLibOne("always_false", Prim(CelfnType::Kind::kBool), {});
+  auto lib = ForeignLibOne("always_false", CelType::Bool(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   auto v = RunWithPlugin(
@@ -505,8 +486,8 @@ struct Int64Case {
 class IntBoundary : public testing::TestWithParam<Int64Case> {};
 
 TEST_P(IntBoundary, ArgRoundTripsBoundaryValue) {
-  auto lib = ForeignLibOne("echo_int", Prim(CelfnType::Kind::kInt),
-                           {{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib =
+      ForeignLibOne("echo_int", CelType::Int(), {{false, CelType::Int(), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Int(GetParam().in));
@@ -528,14 +509,14 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST(PluginTypeMatrix, IntReturnPluginEmitsInt64Min) {
-  auto lib = ForeignLibOne("int_min", Prim(CelfnType::Kind::kInt), {});
+  auto lib = ForeignLibOne("int_min", CelType::Int(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithPlugin(
-      "int @plugin.int_min();", "int_min()", {}, *lib,
-      WatToWasm(ConstScalarWat("int-min", "s64", "i64",
-                               "i64.const -9223372036854775808")),
-      act);
+  auto v =
+      RunWithPlugin("int @plugin.int_min();", "int_min()", {}, *lib,
+                    WatToWasm(ConstScalarWat("int-min", "s64", "i64",
+                                             "i64.const -9223372036854775808")),
+                    act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), std::numeric_limits<int64_t>::min());
 }
@@ -551,8 +532,8 @@ struct Uint64Case {
 class UintBoundary : public testing::TestWithParam<Uint64Case> {};
 
 TEST_P(UintBoundary, ArgRoundTripsBoundaryValue) {
-  auto lib = ForeignLibOne("echo_uint", Prim(CelfnType::Kind::kUint),
-                           {{false, Prim(CelfnType::Kind::kUint), "x"}});
+  auto lib = ForeignLibOne("echo_uint", CelType::Uint(),
+                           {{false, CelType::Uint(), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Uint(GetParam().in));
@@ -574,7 +555,7 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST(PluginTypeMatrix, UintReturnPluginEmitsUintMax) {
-  auto lib = ForeignLibOne("uint_max", Prim(CelfnType::Kind::kUint), {});
+  auto lib = ForeignLibOne("uint_max", CelType::Uint(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   // i64.const -1 is the all-ones bit pattern == UINT64_MAX under u64.
@@ -596,8 +577,8 @@ struct DoubleCase {
 class DoubleBoundary : public testing::TestWithParam<DoubleCase> {};
 
 TEST_P(DoubleBoundary, ArgRoundTripsBoundaryValue) {
-  auto lib = ForeignLibOne("echo_double", Prim(CelfnType::Kind::kDouble),
-                           {{false, Prim(CelfnType::Kind::kDouble), "x"}});
+  auto lib = ForeignLibOne("echo_double", CelType::Double(),
+                           {{false, CelType::Double(), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Double(GetParam().in));
@@ -629,7 +610,7 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST(PluginTypeMatrix, DoubleReturnPluginEmitsNan) {
-  auto lib = ForeignLibOne("nanval", Prim(CelfnType::Kind::kDouble), {});
+  auto lib = ForeignLibOne("nanval", CelType::Double(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   auto v = RunWithPlugin(
@@ -651,8 +632,8 @@ struct StringCase {
 class StringBoundary : public testing::TestWithParam<StringCase> {};
 
 TEST_P(StringBoundary, ArgRoundTripsBoundaryValue) {
-  auto lib = ForeignLibOne("echo_string", Prim(CelfnType::Kind::kString),
-                           {{false, Prim(CelfnType::Kind::kString), "s"}});
+  auto lib = ForeignLibOne("echo_string", CelType::String(),
+                           {{false, CelType::String(), "s"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("s", Value::String(GetParam().in));
@@ -676,12 +657,11 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST(PluginTypeMatrix, StringReturnPluginEmitsEmpty) {
-  auto lib = ForeignLibOne("empty_str", Prim(CelfnType::Kind::kString), {});
+  auto lib = ForeignLibOne("empty_str", CelType::String(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithPlugin(
-      "string @plugin.empty_str();", "empty_str()", {}, *lib,
-      WatToWasm(EmptyPtrLenWat("empty-str", "string")), act);
+  auto v = RunWithPlugin("string @plugin.empty_str();", "empty_str()", {}, *lib,
+                         WatToWasm(EmptyPtrLenWat("empty-str", "string")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->AsString()->empty());
 }
@@ -697,8 +677,8 @@ struct BytesCase {
 class BytesBoundary : public testing::TestWithParam<BytesCase> {};
 
 TEST_P(BytesBoundary, ArgRoundTripsBoundaryValue) {
-  auto lib = ForeignLibOne("echo_bytes", Prim(CelfnType::Kind::kBytes),
-                           {{false, Prim(CelfnType::Kind::kBytes), "b"}});
+  auto lib = ForeignLibOne("echo_bytes", CelType::Bytes(),
+                           {{false, CelType::Bytes(), "b"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("b", Value::Bytes(GetParam().in));
@@ -721,12 +701,12 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST(PluginTypeMatrix, BytesReturnPluginEmitsEmpty) {
-  auto lib = ForeignLibOne("empty_bytes", Prim(CelfnType::Kind::kBytes), {});
+  auto lib = ForeignLibOne("empty_bytes", CelType::Bytes(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithPlugin(
-      "bytes @plugin.empty_bytes();", "empty_bytes()", {}, *lib,
-      WatToWasm(EmptyPtrLenWat("empty-bytes", "(list u8)")), act);
+  auto v =
+      RunWithPlugin("bytes @plugin.empty_bytes();", "empty_bytes()", {}, *lib,
+                    WatToWasm(EmptyPtrLenWat("empty-bytes", "(list u8)")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->AsBytes()->empty());
 }
@@ -754,12 +734,12 @@ constexpr absl::string_view kIsNullComponentWat = R"WAT(
 )WAT";
 
 TEST(PluginTypeMatrix, NullArgPluginObservesAbsence) {
-  auto lib = ForeignLibOne("is_null", Prim(CelfnType::Kind::kBool),
-                           {{false, Prim(CelfnType::Kind::kNull), "x"}});
+  auto lib = ForeignLibOne("is_null", CelType::Bool(),
+                           {{false, CelType::Null(), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithPlugin("bool @plugin.is_null(null x);", "is_null(null)",
-                            {}, *lib, WatToWasm(kIsNullComponentWat), act);
+  auto v = RunWithPlugin("bool @plugin.is_null(null x);", "is_null(null)", {},
+                         *lib, WatToWasm(kIsNullComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(*v->AsBool());
 }
@@ -780,11 +760,11 @@ constexpr absl::string_view kMakeNullComponentWat = R"WAT(
 )WAT";
 
 TEST(PluginTypeMatrix, NullReturnPluginEmitsNull) {
-  auto lib = ForeignLibOne("make_null", Prim(CelfnType::Kind::kNull), {});
+  auto lib = ForeignLibOne("make_null", CelType::Null(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithPlugin("null @plugin.make_null();", "make_null()", {},
-                            *lib, WatToWasm(kMakeNullComponentWat), act);
+  auto v = RunWithPlugin("null @plugin.make_null();", "make_null()", {}, *lib,
+                         WatToWasm(kMakeNullComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_TRUE(v->IsNull());
 }
@@ -800,15 +780,15 @@ struct DurationCase {
 class DurationBoundary : public testing::TestWithParam<DurationCase> {};
 
 TEST_P(DurationBoundary, ArgRoundTripsBoundaryValue) {
-  auto lib = ForeignLibOne("echo_dur", Prim(CelfnType::Kind::kDuration),
-                           {{false, Prim(CelfnType::Kind::kDuration), "d"}});
+  auto lib = ForeignLibOne("echo_dur", CelType::Duration(),
+                           {{false, CelType::Duration(), "d"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("d", Value::Duration(GetParam().in));
-  auto v = RunWithPlugin("Duration @plugin.echo_dur(Duration d);",
-                            "echo_dur(d)", {{"d", CelType::Duration()}}, *lib,
-                            WatToWasm(EchoSecondsNanosWat("echo-dur-duration")),
-                            act);
+  auto v =
+      RunWithPlugin("Duration @plugin.echo_dur(Duration d);", "echo_dur(d)",
+                    {{"d", CelType::Duration()}}, *lib,
+                    WatToWasm(EchoSecondsNanosWat("echo-dur-duration")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsDuration(), GetParam().in);
 }
@@ -831,15 +811,15 @@ struct TimestampCase {
 class TimestampBoundary : public testing::TestWithParam<TimestampCase> {};
 
 TEST_P(TimestampBoundary, ArgRoundTripsBoundaryValue) {
-  auto lib = ForeignLibOne("echo_ts", Prim(CelfnType::Kind::kTimestamp),
-                           {{false, Prim(CelfnType::Kind::kTimestamp), "t"}});
+  auto lib = ForeignLibOne("echo_ts", CelType::Timestamp(),
+                           {{false, CelType::Timestamp(), "t"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("t", Value::Timestamp(GetParam().in));
-  auto v = RunWithPlugin("Timestamp @plugin.echo_ts(Timestamp t);",
-                            "echo_ts(t)", {{"t", CelType::Timestamp()}}, *lib,
-                            WatToWasm(EchoSecondsNanosWat("echo-ts-timestamp")),
-                            act);
+  auto v =
+      RunWithPlugin("Timestamp @plugin.echo_ts(Timestamp t);", "echo_ts(t)",
+                    {{"t", CelType::Timestamp()}}, *lib,
+                    WatToWasm(EchoSecondsNanosWat("echo-ts-timestamp")), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsTimestamp(), GetParam().in);
 }
@@ -864,7 +844,7 @@ INSTANTIATE_TEST_SUITE_P(
 // ═════════════════════════════════════════════════════════════════════
 
 TEST(PluginTypeMatrix, TypeArgRejectedAtLibraryBuild) {
-  auto lib = ForeignLibOne("type_name", Prim(CelfnType::Kind::kString),
+  auto lib = ForeignLibOne("type_name", CelType::String(),
                            {{false, TypeOfTypes(), "t"}});
   ASSERT_FALSE(lib.ok());
   EXPECT_EQ(lib.status().code(), absl::StatusCode::kInvalidArgument);
@@ -890,9 +870,8 @@ TEST(PluginTypeMatrix, TypeReturnRejectedAtLibraryBuild) {
 // The Build()-time rejection pin — the positive statement of the
 // m24 §14 contract, runs today.
 TEST(PluginTypeMatrix, OptionalArgRejectedAtLibraryBuild) {
-  auto lib =
-      ForeignLibOne("opt_arg", Prim(CelfnType::Kind::kInt),
-                    {{false, OptionalOf(Prim(CelfnType::Kind::kInt)), "x"}});
+  auto lib = ForeignLibOne("opt_arg", CelType::Int(),
+                           {{false, OptionalOf(CelType::Int()), "x"}});
   ASSERT_FALSE(lib.ok());
   EXPECT_EQ(lib.status().code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(std::string(lib.status().message()),
@@ -933,7 +912,7 @@ struct ListElemCase {
   std::string label;
   std::string elem_celfn;
   std::string elem_wit;  // WIT spelling for the component's param type
-  CelfnType elem_celfn_type;
+  CelType elem_celfn_type;
   CelType cel_elem;
   std::vector<Value> elems;
   int64_t expected_size;
@@ -943,7 +922,7 @@ class ListByElemKind : public testing::TestWithParam<ListElemCase> {};
 
 TEST_P(ListByElemKind, ArgSizeIsObservable) {
   const ListElemCase& c = GetParam();
-  auto lib = ForeignLibOne("list_size", Prim(CelfnType::Kind::kInt),
+  auto lib = ForeignLibOne("list_size", CelType::Int(),
                            {{false, ListOf(c.elem_celfn_type), "xs"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
@@ -953,9 +932,9 @@ TEST_P(ListByElemKind, ArgSizeIsObservable) {
   const std::string export_name = Kebab(lib->decls()[0].overload_id);
   const std::string wat =
       LenOfListArgWat(export_name, absl::StrCat("(list ", c.elem_wit, ")"));
-  auto v = RunWithPlugin(decl, "list_size(xs)",
-                            {{"xs", CelType::List(c.cel_elem)}}, *lib,
-                            WatToWasm(wat), act);
+  auto v =
+      RunWithPlugin(decl, "list_size(xs)", {{"xs", CelType::List(c.cel_elem)}},
+                    *lib, WatToWasm(wat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), c.expected_size);
 }
@@ -966,14 +945,14 @@ INSTANTIATE_TEST_SUITE_P(
         ListElemCase{"bool",
                      "bool",
                      "bool",
-                     Prim(CelfnType::Kind::kBool),
+                     CelType::Bool(),
                      CelType::Bool(),
                      {Value::Bool(true), Value::Bool(false)},
                      2},
         ListElemCase{"int",
                      "int",
                      "s64",
-                     Prim(CelfnType::Kind::kInt),
+                     CelType::Int(),
                      CelType::Int(),
                      {Value::Int(1), Value::Int(2),
                       Value::Int(std::numeric_limits<int64_t>::min())},
@@ -981,7 +960,7 @@ INSTANTIATE_TEST_SUITE_P(
         ListElemCase{"uint",
                      "uint",
                      "u64",
-                     Prim(CelfnType::Kind::kUint),
+                     CelType::Uint(),
                      CelType::Uint(),
                      {Value::Uint(uint64_t{0}),
                       Value::Uint(std::numeric_limits<uint64_t>::max())},
@@ -989,7 +968,7 @@ INSTANTIATE_TEST_SUITE_P(
         ListElemCase{"double",
                      "double",
                      "f64",
-                     Prim(CelfnType::Kind::kDouble),
+                     CelType::Double(),
                      CelType::Double(),
                      {Value::Double(1.5), Value::Double(2.5)},
                      2},
@@ -997,32 +976,26 @@ INSTANTIATE_TEST_SUITE_P(
             "string",
             "string",
             "string",
-            Prim(CelfnType::Kind::kString),
+            CelType::String(),
             CelType::String(),
             {Value::String(""), Value::String("a"), Value::String("b")},
             3},
         ListElemCase{"bytes",
                      "bytes",
                      "(list u8)",
-                     Prim(CelfnType::Kind::kBytes),
+                     CelType::Bytes(),
                      CelType::Bytes(),
                      {Value::Bytes("\x01"), Value::Bytes("")},
                      2},
-        ListElemCase{"empty_int",
-                     "int",
-                     "s64",
-                     Prim(CelfnType::Kind::kInt),
-                     CelType::Int(),
-                     {},
-                     0}),
+        ListElemCase{
+            "empty_int", "int", "s64", CelType::Int(), CelType::Int(), {}, 0}),
     [](const testing::TestParamInfo<ListElemCase>& info) {
       return info.param.label;
     });
 
 TEST(PluginTypeMatrix, ListNestedListIntOuterSize) {
-  auto lib = ForeignLibOne(
-      "outer_size", Prim(CelfnType::Kind::kInt),
-      {{false, ListOf(ListOf(Prim(CelfnType::Kind::kInt))), "xs"}});
+  auto lib = ForeignLibOne("outer_size", CelType::Int(),
+                           {{false, ListOf(ListOf(CelType::Int())), "xs"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("xs", Value::List({Value::List({Value::Int(1), Value::Int(2)}),
@@ -1068,13 +1041,11 @@ constexpr absl::string_view kThreeIntsComponentWat = R"WAT(
 )WAT";
 
 TEST(PluginTypeMatrix, ListReturnPluginEmitsThreeInts) {
-  auto lib =
-      ForeignLibOne("three_ints", ListOf(Prim(CelfnType::Kind::kInt)), {});
+  auto lib = ForeignLibOne("three_ints", ListOf(CelType::Int()), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v =
-      RunWithPlugin("list<int> @plugin.three_ints();", "three_ints()", {},
-                       *lib, WatToWasm(kThreeIntsComponentWat), act);
+  auto v = RunWithPlugin("list<int> @plugin.three_ints();", "three_ints()", {},
+                         *lib, WatToWasm(kThreeIntsComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kList);
   auto lb = v->ListBacking();
@@ -1096,7 +1067,7 @@ struct MapKeyKindCase {
   std::string label;
   std::string key_celfn;
   std::string key_wit;  // WIT spelling for the tuple's key slot
-  CelfnType key_celfn_type;
+  CelType key_celfn_type;
   CelType cel_key;
   std::vector<std::pair<Value, Value>> entries;
   int64_t expected_size;
@@ -1106,9 +1077,9 @@ class MapByKeyKind : public testing::TestWithParam<MapKeyKindCase> {};
 
 TEST_P(MapByKeyKind, ArgSizeIsObservable) {
   const MapKeyKindCase& c = GetParam();
-  auto lib = ForeignLibOne(
-      "map_size", Prim(CelfnType::Kind::kInt),
-      {{false, MapOf(c.key_celfn_type, Prim(CelfnType::Kind::kInt)), "m"}});
+  auto lib =
+      ForeignLibOne("map_size", CelType::Int(),
+                    {{false, MapOf(c.key_celfn_type, CelType::Int()), "m"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("m", Value::Map(c.entries));
@@ -1118,8 +1089,8 @@ TEST_P(MapByKeyKind, ArgSizeIsObservable) {
   const std::string wat = LenOfListArgWat(
       export_name, absl::StrCat("(list (tuple ", c.key_wit, " s64))"));
   auto v = RunWithPlugin(decl, "map_size(m)",
-                            {{"m", CelType::Map(c.cel_key, CelType::Int())}},
-                            *lib, WatToWasm(wat), act);
+                         {{"m", CelType::Map(c.cel_key, CelType::Int())}}, *lib,
+                         WatToWasm(wat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), c.expected_size);
 }
@@ -1129,7 +1100,7 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Values(MapKeyKindCase{"bool",
                                    "bool",
                                    "bool",
-                                   Prim(CelfnType::Kind::kBool),
+                                   CelType::Bool(),
                                    CelType::Bool(),
                                    {{Value::Bool(true), Value::Int(1)},
                                     {Value::Bool(false), Value::Int(0)}},
@@ -1137,7 +1108,7 @@ INSTANTIATE_TEST_SUITE_P(
                     MapKeyKindCase{"int",
                                    "int",
                                    "s64",
-                                   Prim(CelfnType::Kind::kInt),
+                                   CelType::Int(),
                                    CelType::Int(),
                                    {{Value::Int(-1), Value::Int(100)},
                                     {Value::Int(2), Value::Int(7)}},
@@ -1146,7 +1117,7 @@ INSTANTIATE_TEST_SUITE_P(
                         "uint",
                         "uint",
                         "u64",
-                        Prim(CelfnType::Kind::kUint),
+                        CelType::Uint(),
                         CelType::Uint(),
                         {{Value::Uint(uint64_t{5}), Value::Int(50)},
                          {Value::Uint(uint64_t{10}), Value::Int(100)}},
@@ -1154,7 +1125,7 @@ INSTANTIATE_TEST_SUITE_P(
                     MapKeyKindCase{"string",
                                    "string",
                                    "string",
-                                   Prim(CelfnType::Kind::kString),
+                                   CelType::String(),
                                    CelType::String(),
                                    {{Value::String("a"), Value::Int(1)},
                                     {Value::String("b"), Value::Int(2)}},
@@ -1162,7 +1133,7 @@ INSTANTIATE_TEST_SUITE_P(
                     MapKeyKindCase{"empty_string_keyed",
                                    "string",
                                    "string",
-                                   Prim(CelfnType::Kind::kString),
+                                   CelType::String(),
                                    CelType::String(),
                                    {},
                                    0}),
@@ -1239,11 +1210,9 @@ constexpr absl::string_view kSumInnerSizesComponentWat = R"WAT(
 )WAT";
 
 TEST(PluginTypeMatrix, MapValueListNestedShapeRoundTrips) {
-  auto lib = ForeignLibOne("size_at", Prim(CelfnType::Kind::kInt),
-                           {{false,
-                             MapOf(Prim(CelfnType::Kind::kString),
-                                   ListOf(Prim(CelfnType::Kind::kInt))),
-                             "m"}});
+  auto lib = ForeignLibOne(
+      "size_at", CelType::Int(),
+      {{false, MapOf(CelType::String(), ListOf(CelType::Int())), "m"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind(
@@ -1301,13 +1270,12 @@ constexpr absl::string_view kAgesComponentWat = R"WAT(
 )WAT";
 
 TEST(PluginTypeMatrix, MapReturnPluginEmitsStringInt) {
-  auto lib = ForeignLibOne(
-      "ages",
-      MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)), {});
+  auto lib =
+      ForeignLibOne("ages", MapOf(CelType::String(), CelType::Int()), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithPlugin("map<string, int> @plugin.ages();", "ages()", {},
-                            *lib, WatToWasm(kAgesComponentWat), act);
+  auto v = RunWithPlugin("map<string, int> @plugin.ages();", "ages()", {}, *lib,
+                         WatToWasm(kAgesComponentWat), act);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kMap);
   auto mb = v->MapBacking();
@@ -1387,7 +1355,7 @@ TEST(PluginTypeMatrix, ProtoArgPluginReadsField) {
   c.set_name("Ada");
   c.set_age(36);
   auto lib =
-      ForeignLibOne("first_letter", Prim(CelfnType::Kind::kString),
+      ForeignLibOne("first_letter", CelType::String(),
                     {{false, ProtoOf("celwasm.testdata.Customer"), "c"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
@@ -1465,7 +1433,7 @@ constexpr absl::string_view kBuildCustomerComponentWat = R"WAT(
 TEST(PluginTypeMatrix, ProtoReturnPluginEmitsCustomer) {
   auto lib =
       ForeignLibOne("build_customer", ProtoOf("celwasm.testdata.Customer"),
-                    {{false, Prim(CelfnType::Kind::kString), "n"}});
+                    {{false, CelType::String(), "n"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("n", Value::String("Ada"));
@@ -1481,11 +1449,10 @@ TEST(PluginTypeMatrix, ProtoReturnPluginEmitsCustomer) {
 // One pin at the interface layer — Builder admits proto(...) for
 // kPlugin and synthesizes the message_<fqn> overload-id.
 TEST(PluginTypeMatrix, BuilderAdmitsProtoForPlugin) {
-  auto lib =
-      FunctionLibrary::Builder()
-          .AddPlugin("first_letter", Prim(CelfnType::Kind::kString),
-                               {{false, ProtoOf("acme.User"), "u"}})
-          .Build();
+  auto lib = FunctionLibrary::Builder()
+                 .AddPlugin("first_letter", CelType::String(),
+                            {{false, ProtoOf("acme.User"), "u"}})
+                 .Build();
   ASSERT_TRUE(lib.ok()) << lib.status();
   ASSERT_EQ(lib->decls().size(), 1u);
   EXPECT_EQ(lib->decls()[0].backend, CelfnDecl::Backend::kPlugin);
@@ -1493,13 +1460,13 @@ TEST(PluginTypeMatrix, BuilderAdmitsProtoForPlugin) {
   EXPECT_EQ(lib->decls()[0].module_name, "cel_fn");
 }
 
-// Argkind synthesis for the kType / kOptional CelfnType kinds (the
+// Argkind synthesis for the kType / kOptional CelType kinds (the
 // kinds themselves exist for the kHost surface even though the
 // plugin decl surface rejects them).
 TEST(PluginTypeMatrix, ArgkindForNewKinds) {
-  EXPECT_EQ(TypeOfTypes().Argkind(), "type");
-  EXPECT_EQ(OptionalOf(Prim(CelfnType::Kind::kInt)).Argkind(), "optional_int");
-  EXPECT_EQ(OptionalOf(ListOf(Prim(CelfnType::Kind::kString))).Argkind(),
+  EXPECT_EQ(ArgkindSlug(TypeOfTypes()), "type");
+  EXPECT_EQ(ArgkindSlug(OptionalOf(CelType::Int())), "optional_int");
+  EXPECT_EQ(ArgkindSlug(OptionalOf(ListOf(CelType::String()))),
             "optional_list_string");
 }
 
@@ -1523,17 +1490,16 @@ constexpr absl::string_view kTwoArgComponentWat = R"WAT(
 )WAT";
 
 TEST(PluginTypeMatrix, NegativeWrongArityFailsAtEval) {
-  auto lib = ForeignLibOne("two_arg", Prim(CelfnType::Kind::kInt),
-                           {{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib =
+      ForeignLibOne("two_arg", CelType::Int(), {{false, CelType::Int(), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Int(1));
   auto v = RunWithPlugin("int @plugin.two_arg(int x);", "two_arg(x)",
-                            {{"x", CelType::Int()}}, *lib,
-                            WatToWasm(kTwoArgComponentWat), act);
+                         {{"x", CelType::Int()}}, *lib,
+                         WatToWasm(kTwoArgComponentWat), act);
   ASSERT_FALSE(v.ok()) << "arity-mismatched plugin call produced a value";
-  EXPECT_THAT(std::string(v.status().message()),
-              HasSubstr("plugin func call"));
+  EXPECT_THAT(std::string(v.status().message()), HasSubstr("plugin func call"));
 }
 
 TEST(PluginTypeMatrix, NegativeMissingExportFailsAtPlan) {
@@ -1542,20 +1508,19 @@ TEST(PluginTypeMatrix, NegativeMissingExportFailsAtPlan) {
   // (see plugin_dispatch_test.cc
   // MissingExportFailsAtPlanNotAddPlugin), so the failure is a
   // FailedPrecondition from Engine::Plan naming the kebab-case export.
-  auto lib = ForeignLibOne("not_exported", Prim(CelfnType::Kind::kInt), {});
+  auto lib = ForeignLibOne("not_exported", CelType::Int(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v = RunWithPlugin("int @plugin.not_exported();", "not_exported()",
-                            {}, *lib, WatToWasm(kTwoArgComponentWat), act);
+  auto v = RunWithPlugin("int @plugin.not_exported();", "not_exported()", {},
+                         *lib, WatToWasm(kTwoArgComponentWat), act);
   ASSERT_FALSE(v.ok());
   EXPECT_EQ(v.status().code(), absl::StatusCode::kFailedPrecondition)
       << v.status();
   EXPECT_THAT(std::string(v.status().message()), HasSubstr("not-exported"));
 }
 
-TEST(PluginTypeMatrix,
-     NegativeMalformedPluginBytesAtAddPlugin) {
-  auto lib = ForeignLibOne("any_fn", Prim(CelfnType::Kind::kInt), {});
+TEST(PluginTypeMatrix, NegativeMalformedPluginBytesAtAddPlugin) {
+  auto lib = ForeignLibOne("any_fn", CelType::Int(), {});
   ASSERT_TRUE(lib.ok()) << lib.status();
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
@@ -1585,38 +1550,35 @@ constexpr absl::string_view kTrappingComponentWat = R"WAT(
 TEST(PluginTypeMatrix, NegativePluginTrapBecomesHostStatus) {
   // Component traps (`unreachable`); Instance::Eval returns a non-OK
   // absl::Status (NOT a Value::Error).
-  auto lib = ForeignLibOne("boom", Prim(CelfnType::Kind::kInt),
-                           {{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib =
+      ForeignLibOne("boom", CelType::Int(), {{false, CelType::Int(), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
   act.Bind("x", Value::Int(1));
   auto v = RunWithPlugin("int @plugin.boom(int x);", "boom(x)",
-                            {{"x", CelType::Int()}}, *lib,
-                            WatToWasm(kTrappingComponentWat), act);
+                         {{"x", CelType::Int()}}, *lib,
+                         WatToWasm(kTrappingComponentWat), act);
   ASSERT_FALSE(v.ok()) << "trapping plugin fn produced a value";
 }
 
-TEST(PluginTypeMatrix,
-     NegativeThreeValuedLogicErrorArgShortCircuits) {
+TEST(PluginTypeMatrix, NegativeThreeValuedLogicErrorArgShortCircuits) {
   // 3VL: an error arg short-circuits BEFORE any marshaling
   // (AbsorbUnknownOrErrorArg in PluginCallbackTrampoline,
   // eval/engine.cc:857) and the component is never invoked — the
   // component body traps if it runs, so a clean Value::Error result
   // proves the absorption.  `1 / 0` produces the CEL divide-by-zero
   // error (langdef "Arithmetic errors").
-  auto lib = ForeignLibOne("use_int", Prim(CelfnType::Kind::kInt),
-                           {{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib =
+      ForeignLibOne("use_int", CelType::Int(), {{false, CelType::Int(), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   Activation act;
-  auto v =
-      RunWithPlugin("int @plugin.use_int(int x);", "use_int(1 / 0)", {},
-                       *lib, WatToWasm(TrapIfInvokedWat("use-int-int")), act);
+  auto v = RunWithPlugin("int @plugin.use_int(int x);", "use_int(1 / 0)", {},
+                         *lib, WatToWasm(TrapIfInvokedWat("use-int-int")), act);
   ASSERT_TRUE(v.ok()) << v.status();  // a trap would surface as non-OK
   EXPECT_TRUE(v->IsError());
 }
 
-TEST(PluginTypeMatrix,
-     NegativeThreeValuedLogicUnknownArgShortCircuits) {
+TEST(PluginTypeMatrix, NegativeThreeValuedLogicUnknownArgShortCircuits) {
   // Same absorption contract for unknowns: PartialEval with an
   // AttributePattern over the fn's arg yields an unknown result and
   // the (trap-if-invoked) component never runs.
@@ -1627,14 +1589,13 @@ TEST(PluginTypeMatrix,
   ASSERT_TRUE(compiler.ok()) << compiler.status();
   auto program = compiler->Compile("use_unk(x)");
   ASSERT_TRUE(program.ok()) << program.status();
-  auto lib = ForeignLibOne("use_unk", Prim(CelfnType::Kind::kInt),
-                           {{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib =
+      ForeignLibOne("use_unk", CelType::Int(), {{false, CelType::Int(), "x"}});
   ASSERT_TRUE(lib.ok()) << lib.status();
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
   ASSERT_TRUE(
-      engine->AddPlugin(WatToWasm(TrapIfInvokedWat("use-unk-int")), *lib)
-          .ok());
+      engine->AddPlugin(WatToWasm(TrapIfInvokedWat("use-unk-int")), *lib).ok());
   auto instance = engine->Plan(*program);
   ASSERT_TRUE(instance.ok()) << instance.status();
   Activation act;

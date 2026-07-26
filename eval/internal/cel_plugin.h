@@ -46,10 +46,10 @@
 //
 // Error semantics:
 //
-//   - Returns `InvalidArgumentError` on a CelfnType ↔ Value kind
-//     mismatch (e.g. `type.kind == kInt` but `value.kind() != kInt`),
+//   - Returns `InvalidArgumentError` on a CelType ↔ Value kind
+//     mismatch (e.g. `type.kind() == kInt` but `value.kind() != kInt`),
 //     or on a `wasmtime_component_val_t::kind` that disagrees with the
-//     declared `CelfnType` (an upstream wasmtime invariant violation
+//     declared `CelType` (an upstream wasmtime invariant violation
 //     — should never happen if `Engine::AddPlugin` validated the
 //     FuncType at AddPlugin time, but checked here as defence in
 //     depth).
@@ -72,9 +72,9 @@
 #include "absl/base/attributes.h"
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
-#include "compiler/celfn/function_library.h"
 #include "eval/value.h"
 #include "google/protobuf/descriptor.h"
+#include "shared/type.h"
 
 // The wasmtime component headers are gated by
 // WASMTIME_FEATURE_COMPONENT_MODEL.  This header itself does not
@@ -106,7 +106,7 @@ struct CelComponentContext {
 // MUST call `wasmtime_component_val_delete(out)` once it has been
 // consumed (typically by `wasmtime_component_func_call`).
 ABSL_MUST_USE_RESULT absl::Status LiftCelToComponent(
-    const CelfnType& type, const Value& value, const CelComponentContext& ctx,
+    const CelType& type, const Value& value, const CelComponentContext& ctx,
     wasmtime_component_val_t* absl_nonnull out);
 
 // Lower: wasmtime component val → host-side `Value`.
@@ -117,7 +117,7 @@ ABSL_MUST_USE_RESULT absl::Status LiftCelToComponent(
 // `out` receives a fully-owned `Value` that survives any subsequent
 // `wasmtime_component_val_delete(in)`.
 ABSL_MUST_USE_RESULT absl::Status LowerComponentToCel(
-    const CelfnType& type, const wasmtime_component_val_t& in,
+    const CelType& type, const wasmtime_component_val_t& in,
     const CelComponentContext& ctx, Value* absl_nonnull out);
 
 }  // namespace celwasm

@@ -21,7 +21,7 @@
 namespace celwasm::celfnc_emit {
 namespace {
 
-// CelfnType → idiomatic C++ author-facing type.  Used for params
+// CelType → idiomatic C++ author-facing type.  Used for params
 // AND returns; param/return shape differs slightly:
 //   - strings: param `std::string_view`, return `std::string`.
 //   - aggregates: param `const std::vector<...>&` etc., return by
@@ -30,9 +30,9 @@ namespace {
 //   - scalars: always pass-by-value.
 //
 // `as_param` controls which shape we emit.
-absl::StatusOr<std::string> CppType(const CelfnType& t, bool as_param) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+absl::StatusOr<std::string> CppType(const CelType& t, bool as_param) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kBool:
       return std::string("bool");
     case K::kInt:
@@ -53,27 +53,30 @@ absl::StatusOr<std::string> CppType(const CelfnType& t, bool as_param) {
     case K::kTimestamp:
       return std::string("::google::protobuf::Timestamp");
     case K::kList: {
-      auto inner = CppType(t.list_element[0], /*as_param=*/false);
+      auto inner = CppType(t.list_element(), /*as_param=*/false);
       if (!inner.ok()) return inner.status();
       const std::string body = absl::StrCat("std::vector<", *inner, ">");
       return std::string(as_param ? absl::StrCat("const ", body, "&") : body);
     }
     case K::kMap: {
-      auto k = CppType(t.map_kv[0], /*as_param=*/false);
-      auto v = CppType(t.map_kv[1], /*as_param=*/false);
+      auto k = CppType(t.map_key(), /*as_param=*/false);
+      auto v = CppType(t.map_value(), /*as_param=*/false);
       if (!k.ok()) return k.status();
       if (!v.ok()) return v.status();
       const std::string body = absl::StrCat("std::map<", *k, ", ", *v, ">");
       return std::string(as_param ? absl::StrCat("const ", body, "&") : body);
     }
-    case K::kProto: {
-      const std::string ns = absl::StrReplaceAll(t.proto_fqn, {{".", "::"}});
+    case K::kMessage: {
+      const std::string ns =
+          absl::StrReplaceAll(t.message_fully_qualified_name(), {{".", "::"}});
       return std::string(as_param ? absl::StrCat("const ", ns, "&") : ns);
     }
     case K::kOptional:
     case K::kType:
       return absl::FailedPreconditionError(
-          "skeleton emitter saw a permanently-rejected CelfnType::Kind");
+          "skeleton emitter saw a permanently-rejected CelType::Kind");
+    case K::kUnknown:
+      break;
   }
   return absl::InternalError("CppType: unknown kind");
 }
@@ -89,9 +92,9 @@ struct IncludeProbe {
   bool needs_cstdint = false;
 };
 
-void ProbeType(const CelfnType& t, IncludeProbe* p) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+void ProbeType(const CelType& t, IncludeProbe* p) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kBool:
       break;
     case K::kInt:
@@ -115,19 +118,18 @@ void ProbeType(const CelfnType& t, IncludeProbe* p) {
       break;
     case K::kList:
       p->needs_vector = true;
-      if (!t.list_element.empty()) ProbeType(t.list_element[0], p);
+      ProbeType(t.list_element(), p);
       break;
     case K::kMap:
       p->needs_map = true;
-      if (t.map_kv.size() == 2) {
-        ProbeType(t.map_kv[0], p);
-        ProbeType(t.map_kv[1], p);
-      }
+      ProbeType(t.map_key(), p);
+      ProbeType(t.map_value(), p);
       break;
     case K::kString:
-    case K::kProto:
+    case K::kMessage:
     case K::kOptional:
     case K::kType:
+    case K::kUnknown:
       break;
   }
 }

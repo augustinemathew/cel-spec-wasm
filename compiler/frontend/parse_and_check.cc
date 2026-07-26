@@ -789,37 +789,38 @@ absl::Status ValidateExpressionDepth(const cel::Expr& root) {
       "same depth (doc/implementation-plan/cleanup-backlog.md #45)"));
 }
 
-// M13 Slice C.3 — scalar arms of `CelfnTypeToCelType`.  Returns
-// `nullopt` for non-scalar kinds (list / map / proto); the caller
-// handles those structurally.  Split out from the parent to keep
-// each function under the `readability-function-size` threshold.
-std::optional<cel::Type> CelfnScalarToCelType(CelfnType::Kind k) {
+// Scalar arms of `DeclTypeToCheckerType`.  Returns `nullopt` for
+// non-scalar kinds (list / map / message); the caller handles those
+// structurally.  Split out from the parent to keep each function
+// under the `readability-function-size` threshold.
+std::optional<cel::Type> DeclScalarToCheckerType(CelType::Kind k) {
   switch (k) {
-    case CelfnType::Kind::kBool:
+    case CelType::Kind::kBool:
       return cel::Type(cel::BoolType{});
-    case CelfnType::Kind::kInt:
+    case CelType::Kind::kInt:
       return cel::Type(cel::IntType{});
-    case CelfnType::Kind::kUint:
+    case CelType::Kind::kUint:
       return cel::Type(cel::UintType{});
-    case CelfnType::Kind::kDouble:
+    case CelType::Kind::kDouble:
       return cel::Type(cel::DoubleType{});
-    case CelfnType::Kind::kString:
+    case CelType::Kind::kString:
       return cel::Type(cel::StringType{});
-    case CelfnType::Kind::kBytes:
+    case CelType::Kind::kBytes:
       return cel::Type(cel::BytesType{});
-    case CelfnType::Kind::kNull:
+    case CelType::Kind::kNull:
       return cel::Type(cel::NullType{});
-    case CelfnType::Kind::kDuration:
+    case CelType::Kind::kDuration:
       return cel::Type(cel::DurationType{});
-    case CelfnType::Kind::kTimestamp:
+    case CelType::Kind::kTimestamp:
       return cel::Type(cel::TimestampType{});
-    case CelfnType::Kind::kList:
-    case CelfnType::Kind::kMap:
-    case CelfnType::Kind::kProto:
-    case CelfnType::Kind::kType:
-    case CelfnType::Kind::kOptional:
+    case CelType::Kind::kUnknown:
+    case CelType::Kind::kList:
+    case CelType::Kind::kMap:
+    case CelType::Kind::kMessage:
+    case CelType::Kind::kType:
+    case CelType::Kind::kOptional:
       // kType / kOptional are admitted by the kPlugin
-      // backend per m24 §6 — the structural shape is handled in the
+      // backend — the structural shape is handled in the
       // caller (kOptional has an inner element like kList; kType is
       // the type-of-types).  Neither is reachable through any current
       // kHost / kCelDefined decl path: the celfn IDL has no `type` or
@@ -829,74 +830,80 @@ std::optional<cel::Type> CelfnScalarToCelType(CelfnType::Kind k) {
       // this scalar arm.
       return std::nullopt;
   }
-  ABSL_CHECK(false) << "CelfnScalarToCelType: unhandled CelfnType::Kind = "
+  ABSL_CHECK(false) << "DeclScalarToCheckerType: unhandled CelType::Kind = "
                     << static_cast<int>(k);
 }
 
-absl::StatusOr<cel::Type> CelfnTypeToCelType(
-    const CelfnType& t, google::protobuf::Arena* arena,
+absl::StatusOr<cel::Type> DeclTypeToCheckerType(
+    const CelType& t, google::protobuf::Arena* arena,
     const google::protobuf::DescriptorPool* pool);
 
-absl::StatusOr<cel::Type> CelfnListToCelType(
-    const CelfnType& t, google::protobuf::Arena* arena,
+absl::StatusOr<cel::Type> DeclListToCheckerType(
+    const CelType& t, google::protobuf::Arena* arena,
     const google::protobuf::DescriptorPool* pool) {
-  ABSL_CHECK_EQ(t.list_element.size(), 1u);
-  auto elem = CelfnTypeToCelType(t.list_element[0], arena, pool);
+  auto elem = DeclTypeToCheckerType(t.list_element(), arena, pool);
   if (!elem.ok()) return elem.status();
   return cel::Type(cel::ListType(arena, *elem));
 }
 
-absl::StatusOr<cel::Type> CelfnMapToCelType(
-    const CelfnType& t, google::protobuf::Arena* arena,
+absl::StatusOr<cel::Type> DeclMapToCheckerType(
+    const CelType& t, google::protobuf::Arena* arena,
     const google::protobuf::DescriptorPool* pool) {
-  ABSL_CHECK_EQ(t.map_kv.size(), 2u);
-  auto key = CelfnTypeToCelType(t.map_kv[0], arena, pool);
+  auto key = DeclTypeToCheckerType(t.map_key(), arena, pool);
   if (!key.ok()) return key.status();
-  auto val = CelfnTypeToCelType(t.map_kv[1], arena, pool);
+  auto val = DeclTypeToCheckerType(t.map_value(), arena, pool);
   if (!val.ok()) return val.status();
   return cel::Type(cel::MapType(arena, *key, *val));
 }
 
-absl::StatusOr<cel::Type> CelfnProtoToCelType(
-    const CelfnType& t, const google::protobuf::DescriptorPool* pool) {
-  const auto* descriptor =
-      pool->FindMessageTypeByName(std::string(t.proto_fqn));
+absl::StatusOr<cel::Type> DeclMessageToCheckerType(
+    const CelType& t, const google::protobuf::DescriptorPool* pool) {
+  const std::string fqn(t.message_fully_qualified_name());
+  const auto* descriptor = pool->FindMessageTypeByName(fqn);
   if (descriptor == nullptr) {
     return absl::InvalidArgumentError(
-        absl::StrCat("celfn: unknown proto message type '", t.proto_fqn,
+        absl::StrCat("celfn: unknown proto message type '", fqn,
                      "' — descriptor not in the configured pool"));
   }
   return cel::Type::Message(descriptor);
 }
 
-// Convert a `CelfnType` (the IDL-side shape) into a `cel::Type` (the
-// cel-cpp checker-side shape) so custom-fn signatures can be
-// registered with `TypeCheckerBuilder::AddFunction`.
-absl::StatusOr<cel::Type> CelfnTypeToCelType(
-    const CelfnType& t, google::protobuf::Arena* arena,
+// Convert a declaration-side `CelType` (shared/type.h, the one type
+// vocabulary) into a `cel::Type` (the cel-cpp checker-side shape) so
+// custom-fn signatures can be registered with
+// `TypeCheckerBuilder::AddFunction`.
+absl::StatusOr<cel::Type> DeclTypeToCheckerType(
+    const CelType& t, google::protobuf::Arena* arena,
     const google::protobuf::DescriptorPool* pool) {
-  if (auto scalar = CelfnScalarToCelType(t.kind); scalar.has_value()) {
+  if (auto scalar = DeclScalarToCheckerType(t.kind()); scalar.has_value()) {
     return *scalar;
   }
-  if (t.kind == CelfnType::Kind::kList) {
-    return CelfnListToCelType(t, arena, pool);
+  if (t.kind() == CelType::Kind::kList) {
+    return DeclListToCheckerType(t, arena, pool);
   }
-  if (t.kind == CelfnType::Kind::kMap) return CelfnMapToCelType(t, arena, pool);
-  if (t.kind == CelfnType::Kind::kProto) return CelfnProtoToCelType(t, pool);
+  if (t.kind() == CelType::Kind::kMap) {
+    return DeclMapToCheckerType(t, arena, pool);
+  }
+  if (t.kind() == CelType::Kind::kMessage) {
+    return DeclMessageToCheckerType(t, pool);
+  }
   // kType / kOptional are admitted on CelfnDecl by AddPlugin
   // but have no type-checker mapping to cel::TypeType /
   // cel::OptionalType here (cleanup-backlog #44) — a decl using them
-  // fails loudly rather than miscompiling.
-  ABSL_CHECK(false) << "CelfnTypeToCelType is unimplemented for "
-                       "CelfnType::Kind = "
-                    << static_cast<int>(t.kind) << " (cleanup-backlog #44)";
+  // fails loudly rather than miscompiling.  Guarded upstream by
+  // `ValidateDeclTypesMappable` (compiler.cc); this CHECK is the
+  // gate-regression tripwire.  kUnknown likewise cannot appear in a
+  // Builder-finalised decl (ArgkindSlug CHECKs at Add* time).
+  ABSL_CHECK(false) << "DeclTypeToCheckerType is unimplemented for "
+                       "CelType::Kind = "
+                    << static_cast<int>(t.kind()) << " (cleanup-backlog #44)";
 }
 
 // Build a single `OverloadDecl` from one `CelfnDecl`.
 absl::StatusOr<cel::OverloadDecl> BuildOverloadFromCelfn(
     const CelfnDecl& decl, google::protobuf::Arena* arena,
     const google::protobuf::DescriptorPool* pool) {
-  auto result = CelfnTypeToCelType(decl.return_type, arena, pool);
+  auto result = DeclTypeToCheckerType(decl.return_type, arena, pool);
   if (!result.ok()) return result.status();
   cel::OverloadDecl overload;
   overload.set_id(decl.overload_id);
@@ -905,7 +912,7 @@ absl::StatusOr<cel::OverloadDecl> BuildOverloadFromCelfn(
   auto& mutable_args = overload.mutable_args();
   mutable_args.reserve(decl.params.size());
   for (const auto& p : decl.params) {
-    auto t = CelfnTypeToCelType(p.type, arena, pool);
+    auto t = DeclTypeToCheckerType(p.type, arena, pool);
     if (!t.ok()) return t.status();
     mutable_args.push_back(*t);
   }

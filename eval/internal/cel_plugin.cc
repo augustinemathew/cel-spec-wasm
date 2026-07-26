@@ -9,7 +9,6 @@
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 
-#include "compiler/celfn/function_library.h"
 #include "eval/internal/cel_host.h"
 #include "eval/value.h"
 #include "google/protobuf/descriptor.h"
@@ -22,58 +21,24 @@ namespace celwasm {
 
 namespace {
 
-// Per-CEL-type expected wasmtime_component_valkind_t.  The §6 mapping
-// is closed and the codegen-side FuncType validation should have
-// caught any mismatch by the time Lift / Lower runs — but defence in
-// depth is the same rule as elsewhere in this codebase: a silent
-// miscompile is worse than an InvalidArgument with a named expected
-// kind.
-absl::string_view CelfnKindName(CelfnType::Kind k) {
-  switch (k) {
-    case CelfnType::Kind::kBool:
-      return "bool";
-    case CelfnType::Kind::kInt:
-      return "int";
-    case CelfnType::Kind::kUint:
-      return "uint";
-    case CelfnType::Kind::kDouble:
-      return "double";
-    case CelfnType::Kind::kString:
-      return "string";
-    case CelfnType::Kind::kBytes:
-      return "bytes";
-    case CelfnType::Kind::kNull:
-      return "null";
-    case CelfnType::Kind::kDuration:
-      return "duration";
-    case CelfnType::Kind::kTimestamp:
-      return "timestamp";
-    case CelfnType::Kind::kList:
-      return "list";
-    case CelfnType::Kind::kMap:
-      return "map";
-    case CelfnType::Kind::kProto:
-      return "proto";
-    case CelfnType::Kind::kType:
-      return "type";
-    case CelfnType::Kind::kOptional:
-      return "optional";
-  }
-  return "unknown";
-}
-
-absl::Status CelfnVsValueMismatch(const CelfnType& type, const Value& value) {
+// The kind-mismatch diagnostics spell the declared CEL type via
+// CelTypeKindName (shared/type.h) — the one kind-name helper.  The
+// codegen-side FuncType validation should have caught any mismatch by
+// the time Lift / Lower runs, but defence in depth is the same rule
+// as elsewhere in this codebase: a silent miscompile is worse than an
+// InvalidArgument with a named expected kind.
+absl::Status CelfnVsValueMismatch(const CelType& type, const Value& value) {
   return absl::InvalidArgumentError(absl::StrCat(
-      "cel_plugin: Lift expected Value of kind `", CelfnKindName(type.kind),
+      "cel_plugin: Lift expected Value of kind `", CelTypeKindName(type.kind()),
       "`, got `", ::celwasm::ValueKindName(value.kind()), "`"));
 }
 
-absl::Status WasmtimeKindMismatch(const CelfnType& type, uint8_t actual_kind,
+absl::Status WasmtimeKindMismatch(const CelType& type, uint8_t actual_kind,
                                   absl::string_view expected_kind_name) {
-  return absl::InvalidArgumentError(
-      absl::StrCat("cel_plugin: Lower expected wasmtime val of kind `",
-                   expected_kind_name, "` (for CEL `", CelfnKindName(type.kind),
-                   "`), got valkind=", static_cast<int>(actual_kind)));
+  return absl::InvalidArgumentError(absl::StrCat(
+      "cel_plugin: Lower expected wasmtime val of kind `", expected_kind_name,
+      "` (for CEL `", CelTypeKindName(type.kind()),
+      "`), got valkind=", static_cast<int>(actual_kind)));
 }
 
 // ── Lift arms ───────────────────────────────────────────────────────
@@ -190,11 +155,10 @@ absl::Status LiftTimestamp(const Value& v, wasmtime_component_val_t* out) {
 
 // Forward decl: list / map Lift need to recurse into the public
 // `LiftCelToComponent` dispatcher.  Same for the Lower side.
-absl::Status LiftList(const CelfnType& type, const Value& v,
+absl::Status LiftList(const CelType& type, const Value& v,
                       const CelComponentContext& ctx,
                       wasmtime_component_val_t* out);
-absl::Status LowerList(const CelfnType& type,
-                       const wasmtime_component_val_t& in,
+absl::Status LowerList(const CelType& type, const wasmtime_component_val_t& in,
                        const CelComponentContext& ctx, Value* out);
 
 absl::Status LiftBytes(const Value& v, wasmtime_component_val_t* out) {
@@ -215,8 +179,8 @@ absl::Status LiftBytes(const Value& v, wasmtime_component_val_t* out) {
 
 // ── Lower arms ──────────────────────────────────────────────────────
 
-absl::Status LowerBool(const CelfnType& type,
-                       const wasmtime_component_val_t& in, Value* out) {
+absl::Status LowerBool(const CelType& type, const wasmtime_component_val_t& in,
+                       Value* out) {
   if (in.kind != WASMTIME_COMPONENT_BOOL) {
     return WasmtimeKindMismatch(type, in.kind, "bool");
   }
@@ -224,7 +188,7 @@ absl::Status LowerBool(const CelfnType& type,
   return absl::OkStatus();
 }
 
-absl::Status LowerInt(const CelfnType& type, const wasmtime_component_val_t& in,
+absl::Status LowerInt(const CelType& type, const wasmtime_component_val_t& in,
                       Value* out) {
   if (in.kind != WASMTIME_COMPONENT_S64) {
     return WasmtimeKindMismatch(type, in.kind, "s64");
@@ -233,8 +197,8 @@ absl::Status LowerInt(const CelfnType& type, const wasmtime_component_val_t& in,
   return absl::OkStatus();
 }
 
-absl::Status LowerUint(const CelfnType& type,
-                       const wasmtime_component_val_t& in, Value* out) {
+absl::Status LowerUint(const CelType& type, const wasmtime_component_val_t& in,
+                       Value* out) {
   if (in.kind != WASMTIME_COMPONENT_U64) {
     return WasmtimeKindMismatch(type, in.kind, "u64");
   }
@@ -242,7 +206,7 @@ absl::Status LowerUint(const CelfnType& type,
   return absl::OkStatus();
 }
 
-absl::Status LowerDouble(const CelfnType& type,
+absl::Status LowerDouble(const CelType& type,
                          const wasmtime_component_val_t& in, Value* out) {
   if (in.kind != WASMTIME_COMPONENT_F64) {
     return WasmtimeKindMismatch(type, in.kind, "f64");
@@ -251,8 +215,8 @@ absl::Status LowerDouble(const CelfnType& type,
   return absl::OkStatus();
 }
 
-absl::Status LowerNull(const CelfnType& type,
-                       const wasmtime_component_val_t& in, Value* out) {
+absl::Status LowerNull(const CelType& type, const wasmtime_component_val_t& in,
+                       Value* out) {
   if (in.kind != WASMTIME_COMPONENT_OPTION) {
     return WasmtimeKindMismatch(type, in.kind, "option");
   }
@@ -264,7 +228,7 @@ absl::Status LowerNull(const CelfnType& type,
   return absl::OkStatus();
 }
 
-absl::Status LowerString(const CelfnType& type,
+absl::Status LowerString(const CelType& type,
                          const wasmtime_component_val_t& in, Value* out) {
   if (in.kind != WASMTIME_COMPONENT_STRING) {
     return WasmtimeKindMismatch(type, in.kind, "string");
@@ -349,7 +313,7 @@ absl::Status DecodeSecondsNanosRecord(const wasmtime_component_val_t& in,
   return absl::OkStatus();
 }
 
-absl::Status LowerDuration(const CelfnType& /*type*/,
+absl::Status LowerDuration(const CelType& /*type*/,
                            const wasmtime_component_val_t& in, Value* out) {
   int64_t seconds = 0;
   int32_t nanos = 0;
@@ -368,7 +332,7 @@ absl::Status LowerDuration(const CelfnType& /*type*/,
   return absl::OkStatus();
 }
 
-absl::Status LowerTimestamp(const CelfnType& /*type*/,
+absl::Status LowerTimestamp(const CelType& /*type*/,
                             const wasmtime_component_val_t& in, Value* out) {
   int64_t seconds = 0;
   int32_t nanos = 0;
@@ -387,13 +351,9 @@ absl::Status LowerTimestamp(const CelfnType& /*type*/,
   return absl::OkStatus();
 }
 
-absl::Status LiftList(const CelfnType& type, const Value& v,
+absl::Status LiftList(const CelType& type, const Value& v,
                       const CelComponentContext& ctx,
                       wasmtime_component_val_t* out) {
-  if (type.list_element.size() != 1) {
-    return absl::InvalidArgumentError(
-        "cel_plugin: kList CelfnType missing list_element type witness");
-  }
   if (v.kind() != Value::Kind::kList) {
     return CelfnVsValueMismatch(type, v);
   }
@@ -401,7 +361,7 @@ absl::Status LiftList(const CelfnType& type, const Value& v,
   if (!backing_or.ok()) return backing_or.status();
   const HostListBacking* backing = *backing_or;
   const size_t n = backing->Size();
-  const CelfnType& elem_type = type.list_element[0];
+  const CelType& elem_type = type.list_element();
 
   out->kind = WASMTIME_COMPONENT_LIST;
   wasmtime_component_vallist_new_uninit(&out->of.list, n);
@@ -448,24 +408,20 @@ absl::Status LiftList(const CelfnType& type, const Value& v,
 // proto/optional; map_key_kind check belongs here because it's
 // invariant of the marshaling wire (a different decl source could
 // produce a map<double, V> shape).
-bool IsLegalMapKeyKind(CelfnType::Kind k) {
-  return k == CelfnType::Kind::kBool || k == CelfnType::Kind::kInt ||
-         k == CelfnType::Kind::kUint || k == CelfnType::Kind::kString;
+bool IsLegalMapKeyKind(CelType::Kind k) {
+  return k == CelType::Kind::kBool || k == CelType::Kind::kInt ||
+         k == CelType::Kind::kUint || k == CelType::Kind::kString;
 }
 
-absl::Status LiftMap(const CelfnType& type, const Value& v,
+absl::Status LiftMap(const CelType& type, const Value& v,
                      const CelComponentContext& ctx,
                      wasmtime_component_val_t* out) {
-  if (type.map_kv.size() != 2) {
-    return absl::InvalidArgumentError(
-        "cel_plugin: kMap CelfnType missing map_kv type witness");
-  }
-  const CelfnType& key_type = type.map_kv[0];
-  const CelfnType& val_type = type.map_kv[1];
-  if (!IsLegalMapKeyKind(key_type.kind)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("cel_plugin: map key kind `", CelfnKindName(key_type.kind),
-                     "` is not allowed (langdef: bool|int|uint|string only)"));
+  const CelType& key_type = type.map_key();
+  const CelType& val_type = type.map_value();
+  if (!IsLegalMapKeyKind(key_type.kind())) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "cel_plugin: map key kind `", CelTypeKindName(key_type.kind()),
+        "` is not allowed (langdef: bool|int|uint|string only)"));
   }
   if (v.kind() != Value::Kind::kMap) {
     return CelfnVsValueMismatch(type, v);
@@ -520,18 +476,14 @@ absl::Status LiftMap(const CelfnType& type, const Value& v,
   return err;
 }
 
-absl::Status LowerMap(const CelfnType& type, const wasmtime_component_val_t& in,
+absl::Status LowerMap(const CelType& type, const wasmtime_component_val_t& in,
                       const CelComponentContext& ctx, Value* out) {
-  if (type.map_kv.size() != 2) {
-    return absl::InvalidArgumentError(
-        "cel_plugin: kMap CelfnType missing map_kv type witness");
-  }
-  const CelfnType& key_type = type.map_kv[0];
-  const CelfnType& val_type = type.map_kv[1];
-  if (!IsLegalMapKeyKind(key_type.kind)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("cel_plugin: map key kind `", CelfnKindName(key_type.kind),
-                     "` is not allowed (langdef: bool|int|uint|string only)"));
+  const CelType& key_type = type.map_key();
+  const CelType& val_type = type.map_value();
+  if (!IsLegalMapKeyKind(key_type.kind())) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "cel_plugin: map key kind `", CelTypeKindName(key_type.kind()),
+        "` is not allowed (langdef: bool|int|uint|string only)"));
   }
   if (in.kind != WASMTIME_COMPONENT_LIST) {
     return WasmtimeKindMismatch(type, in.kind, "list<tuple<K,V>>");
@@ -578,7 +530,7 @@ absl::Status LowerMap(const CelfnType& type, const wasmtime_component_val_t& in,
 // externrefs, but the bytes _can_ cross, and the codec on the
 // component side decodes them with the proto runtime.
 
-absl::Status LiftProto(const CelfnType& type, const Value& v,
+absl::Status LiftProto(const CelType& type, const Value& v,
                        wasmtime_component_val_t* out) {
   if (v.kind() != Value::Kind::kMessage) {
     return CelfnVsValueMismatch(type, v);
@@ -587,10 +539,10 @@ absl::Status LiftProto(const CelfnType& type, const Value& v,
   if (!backing_or.ok()) return backing_or.status();
   const google::protobuf::Message* msg = (*backing_or)->message();
   if (msg == nullptr) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("cel_plugin: Lift for proto(", type.proto_fqn,
-                     ") cannot serialise a non-proto-backed message (custom "
-                     "HostMessageBacking returned message()==nullptr)"));
+    return absl::InvalidArgumentError(absl::StrCat(
+        "cel_plugin: Lift for proto(", type.message_fully_qualified_name(),
+        ") cannot serialise a non-proto-backed message (custom "
+        "HostMessageBacking returned message()==nullptr)"));
   }
   // SerializePartialToString admits messages with unset required
   // fields — matches cel-cpp's tolerance.  The full-form
@@ -600,7 +552,7 @@ absl::Status LiftProto(const CelfnType& type, const Value& v,
   if (!msg->SerializePartialToString(&bytes)) {
     return absl::InternalError(
         absl::StrCat("cel_plugin: SerializePartialToString failed for `",
-                     type.proto_fqn, "`"));
+                     type.message_fully_qualified_name(), "`"));
   }
   out->kind = WASMTIME_COMPONENT_LIST;
   wasmtime_component_vallist_new_uninit(&out->of.list, bytes.size());
@@ -611,31 +563,31 @@ absl::Status LiftProto(const CelfnType& type, const Value& v,
   return absl::OkStatus();
 }
 
-absl::Status LowerProto(const CelfnType& type,
-                        const wasmtime_component_val_t& in,
+absl::Status LowerProto(const CelType& type, const wasmtime_component_val_t& in,
                         const CelComponentContext& ctx, Value* out) {
   if (in.kind != WASMTIME_COMPONENT_LIST) {
     return WasmtimeKindMismatch(type, in.kind, "list<u8>");
   }
   if (ctx.pool == nullptr) {
     return absl::InvalidArgumentError(absl::StrCat(
-        "cel_plugin: Lower for proto(", type.proto_fqn,
+        "cel_plugin: Lower for proto(", type.message_fully_qualified_name(),
         ") requires CelComponentContext::pool to materialise the message"));
   }
   const google::protobuf::Descriptor* desc =
-      ctx.pool->FindMessageTypeByName(type.proto_fqn);
+      ctx.pool->FindMessageTypeByName(type.message_fully_qualified_name());
   if (desc == nullptr) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("cel_plugin: proto type `", type.proto_fqn,
-                     "` not found in descriptor pool"));
+    return absl::InvalidArgumentError(absl::StrCat(
+        "cel_plugin: proto type `", type.message_fully_qualified_name(),
+        "` not found in descriptor pool"));
   }
   const google::protobuf::Message* prototype =
       google::protobuf::MessageFactory::generated_factory()->GetPrototype(desc);
   if (prototype == nullptr) {
-    return absl::InternalError(absl::StrCat(
-        "cel_plugin: generated_factory has no prototype for `", type.proto_fqn,
-        "` (descriptor not registered with the generated "
-        "pool — link the cc_proto_library into the test binary)"));
+    return absl::InternalError(
+        absl::StrCat("cel_plugin: generated_factory has no prototype for `",
+                     type.message_fully_qualified_name(),
+                     "` (descriptor not registered with the generated "
+                     "pool — link the cc_proto_library into the test binary)"));
   }
   // Collect bytes from the list<u8>.
   std::string bytes;
@@ -643,30 +595,26 @@ absl::Status LowerProto(const CelfnType& type,
   for (size_t i = 0; i < in.of.list.size; ++i) {
     const auto& el = in.of.list.data[i];
     if (el.kind != WASMTIME_COMPONENT_U8) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("cel_plugin: Lower for proto(", type.proto_fqn,
-                       ") saw non-u8 element at index ", i,
-                       " (valkind=", static_cast<int>(el.kind), ")"));
+      return absl::InvalidArgumentError(absl::StrCat(
+          "cel_plugin: Lower for proto(", type.message_fully_qualified_name(),
+          ") saw non-u8 element at index ", i,
+          " (valkind=", static_cast<int>(el.kind), ")"));
     }
     bytes.push_back(static_cast<char>(el.of.u8));
   }
   std::unique_ptr<google::protobuf::Message> msg(prototype->New());
   if (!msg->ParseFromString(bytes)) {
     return absl::InvalidArgumentError(
-        absl::StrCat("cel_plugin: failed to parse proto(", type.proto_fqn,
-                     ") from ", bytes.size(), " bytes"));
+        absl::StrCat("cel_plugin: failed to parse proto(",
+                     type.message_fully_qualified_name(), ") from ",
+                     bytes.size(), " bytes"));
   }
   *out = Value::OwnedMessage(std::move(msg));
   return absl::OkStatus();
 }
 
-absl::Status LowerList(const CelfnType& type,
-                       const wasmtime_component_val_t& in,
+absl::Status LowerList(const CelType& type, const wasmtime_component_val_t& in,
                        const CelComponentContext& ctx, Value* out) {
-  if (type.list_element.size() != 1) {
-    return absl::InvalidArgumentError(
-        "cel_plugin: kList CelfnType missing list_element type witness");
-  }
   if (in.kind != WASMTIME_COMPONENT_LIST) {
     return WasmtimeKindMismatch(type, in.kind, "list");
   }
@@ -677,7 +625,7 @@ absl::Status LowerList(const CelfnType& type,
         "cel_plugin: Lower for `list` saw size=", in.of.list.size,
         " with null data pointer (malformed wasmtime_component_val_t)"));
   }
-  const CelfnType& elem_type = type.list_element[0];
+  const CelType& elem_type = type.list_element();
   std::vector<Value> elems;
   elems.reserve(in.of.list.size);
   for (size_t i = 0; i < in.of.list.size; ++i) {
@@ -693,8 +641,8 @@ absl::Status LowerList(const CelfnType& type,
   return absl::OkStatus();
 }
 
-absl::Status LowerBytes(const CelfnType& type,
-                        const wasmtime_component_val_t& in, Value* out) {
+absl::Status LowerBytes(const CelType& type, const wasmtime_component_val_t& in,
+                        Value* out) {
   if (in.kind != WASMTIME_COMPONENT_LIST) {
     return WasmtimeKindMismatch(type, in.kind, "list<u8>");
   }
@@ -722,72 +670,77 @@ absl::Status LowerBytes(const CelfnType& type,
 
 }  // namespace
 
-absl::Status LiftCelToComponent(const CelfnType& type, const Value& value,
+absl::Status LiftCelToComponent(const CelType& type, const Value& value,
                                 const CelComponentContext& ctx,
                                 wasmtime_component_val_t* out) {
-  switch (type.kind) {
-    case CelfnType::Kind::kBool:
+  switch (type.kind()) {
+    case CelType::Kind::kBool:
       if (value.kind() != Value::Kind::kBool) {
         return CelfnVsValueMismatch(type, value);
       }
       return LiftBool(value, out);
-    case CelfnType::Kind::kInt:
+    case CelType::Kind::kInt:
       if (value.kind() != Value::Kind::kInt) {
         return CelfnVsValueMismatch(type, value);
       }
       return LiftInt(value, out);
-    case CelfnType::Kind::kUint:
+    case CelType::Kind::kUint:
       if (value.kind() != Value::Kind::kUint) {
         return CelfnVsValueMismatch(type, value);
       }
       return LiftUint(value, out);
-    case CelfnType::Kind::kDouble:
+    case CelType::Kind::kDouble:
       if (value.kind() != Value::Kind::kDouble) {
         return CelfnVsValueMismatch(type, value);
       }
       return LiftDouble(value, out);
-    case CelfnType::Kind::kNull:
+    case CelType::Kind::kNull:
       if (!value.IsNull()) return CelfnVsValueMismatch(type, value);
       // Bypass the broken LiftNull dispatch above — write directly.
       out->kind = WASMTIME_COMPONENT_OPTION;
       out->of.option = nullptr;
       return absl::OkStatus();
-    case CelfnType::Kind::kString:
+    case CelType::Kind::kString:
       if (value.kind() != Value::Kind::kString) {
         return CelfnVsValueMismatch(type, value);
       }
       return LiftString(value, out);
-    case CelfnType::Kind::kBytes:
+    case CelType::Kind::kBytes:
       if (value.kind() != Value::Kind::kBytes) {
         return CelfnVsValueMismatch(type, value);
       }
       return LiftBytes(value, out);
-    case CelfnType::Kind::kDuration:
+    case CelType::Kind::kDuration:
       if (value.kind() != Value::Kind::kDuration) {
         return CelfnVsValueMismatch(type, value);
       }
       return LiftDuration(value, out);
-    case CelfnType::Kind::kTimestamp:
+    case CelType::Kind::kTimestamp:
       if (value.kind() != Value::Kind::kTimestamp) {
         return CelfnVsValueMismatch(type, value);
       }
       return LiftTimestamp(value, out);
-    case CelfnType::Kind::kList:
+    case CelType::Kind::kList:
       return LiftList(type, value, ctx, out);
-    case CelfnType::Kind::kMap:
+    case CelType::Kind::kMap:
       return LiftMap(type, value, ctx, out);
-    case CelfnType::Kind::kOptional:
+    case CelType::Kind::kOptional:
       // Dropped from v1 (user direction 2026-06-03): plugin
       // fns may not declare `optional<T>` arg / return shapes.  The
       // wire `option<unit>` used for CEL `null` is encoded inside the
-      // null arm (above); a CelfnType of kOptional in a decl is the
+      // null arm (above); a kOptional decl type is the
       // embedder asking for a feature this regime doesn't provide.
       return absl::InvalidArgumentError(
           "cel_plugin: optional<T> is not a supported argument or "
           "return shape for plugin fns (m24 v1)");
-    case CelfnType::Kind::kProto:
+    case CelType::Kind::kMessage:
       return LiftProto(type, value, out);
-    case CelfnType::Kind::kType:
+    case CelType::Kind::kUnknown:
+      // A Builder-finalised decl can never carry kUnknown (ArgkindSlug
+      // CHECKs at Add* time); fall through to the invariant-break
+      // return below.
+      break;
+    case CelType::Kind::kType:
       if (value.kind() != Value::Kind::kType) {
         return CelfnVsValueMismatch(type, value);
       }
@@ -805,48 +758,51 @@ absl::Status LiftCelToComponent(const CelfnType& type, const Value& value,
   // Closed-set switch: any unhandled value is an invariant break, not
   // a recoverable input — match the codebase's unreachable-default rule.
   return absl::InternalError(absl::StrCat(
-      "cel_plugin: unhandled CelfnType::Kind = ", static_cast<int>(type.kind)));
+      "cel_plugin: unhandled CelType::Kind = ", static_cast<int>(type.kind())));
 }
 
-absl::Status LowerComponentToCel(const CelfnType& type,
+absl::Status LowerComponentToCel(const CelType& type,
                                  const wasmtime_component_val_t& in,
                                  const CelComponentContext& ctx, Value* out) {
-  switch (type.kind) {
-    case CelfnType::Kind::kBool:
+  switch (type.kind()) {
+    case CelType::Kind::kBool:
       return LowerBool(type, in, out);
-    case CelfnType::Kind::kInt:
+    case CelType::Kind::kInt:
       return LowerInt(type, in, out);
-    case CelfnType::Kind::kUint:
+    case CelType::Kind::kUint:
       return LowerUint(type, in, out);
-    case CelfnType::Kind::kDouble:
+    case CelType::Kind::kDouble:
       return LowerDouble(type, in, out);
-    case CelfnType::Kind::kNull:
+    case CelType::Kind::kNull:
       return LowerNull(type, in, out);
-    case CelfnType::Kind::kString:
+    case CelType::Kind::kString:
       return LowerString(type, in, out);
-    case CelfnType::Kind::kBytes:
+    case CelType::Kind::kBytes:
       return LowerBytes(type, in, out);
-    case CelfnType::Kind::kDuration:
+    case CelType::Kind::kDuration:
       return LowerDuration(type, in, out);
-    case CelfnType::Kind::kTimestamp:
+    case CelType::Kind::kTimestamp:
       return LowerTimestamp(type, in, out);
-    case CelfnType::Kind::kList:
+    case CelType::Kind::kList:
       return LowerList(type, in, ctx, out);
-    case CelfnType::Kind::kMap:
+    case CelType::Kind::kMap:
       return LowerMap(type, in, ctx, out);
-    case CelfnType::Kind::kOptional:
+    case CelType::Kind::kOptional:
       return absl::InvalidArgumentError(
           "cel_plugin: optional<T> is not a supported return shape "
           "for plugin fns");
-    case CelfnType::Kind::kProto:
+    case CelType::Kind::kMessage:
       return LowerProto(type, in, ctx, out);
-    case CelfnType::Kind::kType:
+    case CelType::Kind::kType:
       return absl::UnimplementedError(
           "cel_plugin: type-of-types is not a supported return shape "
           "for plugin fns (cleanup-backlog #44)");
+    case CelType::Kind::kUnknown:
+      // See the Lift-side kUnknown arm — invariant break below.
+      break;
   }
   return absl::InternalError(absl::StrCat(
-      "cel_plugin: unhandled CelfnType::Kind = ", static_cast<int>(type.kind)));
+      "cel_plugin: unhandled CelType::Kind = ", static_cast<int>(type.kind())));
 }
 
 }  // namespace celwasm

@@ -22,8 +22,8 @@
 #include "eval/host/cel_log.h"
 #include "eval/host_call_context.h"
 #include "eval/internal/abi_decode.h"
-#include "eval/internal/cel_plugin.h"
 #include "eval/internal/cel_host_wasmtime.h"
+#include "eval/internal/cel_plugin.h"
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/module_imports.h"
 #include "eval/internal/required_fn_check.h"
@@ -850,8 +850,8 @@ struct PluginFnEnv {
   // shared_ptr on Instance, so the library is reachable, but copying
   // the per-decl types here keeps the trampoline's data-dependence
   // graph independent of the library map's iterator-stability rules.
-  std::vector<celwasm::CelfnType> param_types;
-  celwasm::CelfnType return_type;
+  std::vector<celwasm::CelType> param_types;
+  celwasm::CelType return_type;
   // Descriptor pool for proto(...) args / returns (m24 §8).
   const google::protobuf::DescriptorPool* pool = nullptr;
   // Borrowed; points at InstanceImpl::host_env.  Provides the
@@ -867,10 +867,10 @@ struct PluginFnEnv {
 // kSentinelKind=BOOL slots the init-loop leaves behind, but calling
 // it on the lifted ones is the only way to release their
 // allocations.
-absl::Status LiftPluginArgs(
-    const celwasm::PluginFnEnv& env, celwasm::HostCallContext& call_ctx,
-    celwasm::CelComponentContext& cc,
-    std::vector<wasmtime_component_val_t>& arg_vals) {
+absl::Status LiftPluginArgs(const celwasm::PluginFnEnv& env,
+                            celwasm::HostCallContext& call_ctx,
+                            celwasm::CelComponentContext& cc,
+                            std::vector<wasmtime_component_val_t>& arg_vals) {
   arg_vals.resize(env.param_types.size());
   for (auto& v : arg_vals) {
     v.kind = WASMTIME_COMPONENT_BOOL;
@@ -892,7 +892,7 @@ absl::Status LiftPluginArgs(
 }
 
 // Invoke the plugin fn and lower its single result (per m24 §3 /
-// §6 — a decl declares one CelfnType return) back into the
+// §6 — a decl declares one typed return) back into the
 // out_slot.  Releases `arg_vals` regardless of outcome.
 absl::Status CallPluginAndLowerResult(
     celwasm::PluginFnEnv* env, wasmtime_context_t* ctx,
@@ -920,16 +920,16 @@ absl::Status CallPluginAndLowerResult(
   return call_ctx.ReturnValue(result_value);
 }
 
-wasm_trap_t* PluginCallbackTrampoline(
-    void* env_ptr, wasmtime_caller_t* caller, const wasmtime_val_t* args,
-    size_t nargs, wasmtime_val_t* /*results*/, size_t /*nresults*/) {
+wasm_trap_t* PluginCallbackTrampoline(void* env_ptr, wasmtime_caller_t* caller,
+                                      const wasmtime_val_t* args, size_t nargs,
+                                      wasmtime_val_t* /*results*/,
+                                      size_t /*nresults*/) {
   auto* env = static_cast<celwasm::PluginFnEnv*>(env_ptr);
   if (env == nullptr || env->host_env == nullptr) {
     return TrapFromStatus("plugin callback env was null");
   }
   if (nargs < 1) {
-    return TrapFromStatus(
-        "plugin callback needs at least one arg (out_slot)");
+    return TrapFromStatus("plugin callback needs at least one arg (out_slot)");
   }
   celwasm::CelHostCallbackEnv* he = env->host_env;
   wasmtime_context_t* ctx = wasmtime_caller_context(caller);
@@ -952,10 +952,9 @@ wasm_trap_t* PluginCallbackTrampoline(
   }
 
   if (arg_slots.size() != env->param_types.size()) {
-    return TrapFromStatus(
-        absl::StrCat("plugin callback: arity mismatch (decl says ",
-                     env->param_types.size(), " params, got ", arg_slots.size(),
-                     " arg slots)"));
+    return TrapFromStatus(absl::StrCat(
+        "plugin callback: arity mismatch (decl says ", env->param_types.size(),
+        " params, got ", arg_slots.size(), " arg slots)"));
   }
 
   celwasm::HostCallContext call_ctx(mem, he->refs, alloc, out_slot, arg_slots);
@@ -1098,9 +1097,9 @@ absl::Status InstallWasiRandomStubAndTrapStubs(
 // Pure-WAT plugins from `plugin_dispatch_test`
 // carry no such imports; the wiring is a no-op for them.
 absl::Status InstantiateOnePlugin(celwasm::WasmtimeEngineState* state,
-                                     wasmtime_context_t* ctx,
-                                     const celwasm::RegisteredPlugin& reg,
-                                     wasmtime_component_instance_t* cinst) {
+                                  wasmtime_context_t* ctx,
+                                  const celwasm::RegisteredPlugin& reg,
+                                  wasmtime_component_instance_t* cinst) {
   wasmtime_component_linker_t* clinker =
       wasmtime_component_linker_new(state->engine);
   if (clinker == nullptr) {
@@ -1148,10 +1147,10 @@ std::string OverloadIdToKebab(absl::string_view overload_id) {
 // off the instantiated plugin, build the per-Plan PluginFnEnv,
 // and define the `cel_fn.<overload_id>` trampoline on the linker.
 absl::Status BindOnePluginDecl(celwasm::InstanceImpl* impl,
-                                  wasmtime_context_t* ctx,
-                                  const wasmtime_component_instance_t& cinst,
-                                  wasmtime_component_export_index_t* iface_idx,
-                                  const celwasm::CelfnDecl& decl) {
+                               wasmtime_context_t* ctx,
+                               const wasmtime_component_instance_t& cinst,
+                               wasmtime_component_export_index_t* iface_idx,
+                               const celwasm::CelfnDecl& decl) {
   const std::string export_name = OverloadIdToKebab(decl.overload_id);
   wasmtime_component_export_index_t* exp_idx =
       wasmtime_component_instance_get_export_index(
@@ -1245,7 +1244,7 @@ bool PluginOwnsRequiredDecl(
 }
 
 absl::Status InstantiateAndBindPlugins(celwasm::WasmtimeEngineState* state,
-                                          celwasm::InstanceImpl* impl) {
+                                       celwasm::InstanceImpl* impl) {
   if (state->plugin_registry.empty()) {
     return absl::OkStatus();
   }
@@ -1376,34 +1375,35 @@ absl::Status InstantiateExpr(celwasm::InstanceImpl* impl) {
 // `optional<T>` have no canonical C++ spelling, so only `Value` (the
 // early return) can receive them.
 bool CppParamMatchesDeclType(celwasm::HostParamKind cpp_kind,
-                             celwasm::CelfnType::Kind decl_kind) {
+                             celwasm::CelType::Kind decl_kind) {
   using HK = celwasm::HostParamKind;
   if (cpp_kind == HK::kValue) return true;
   switch (decl_kind) {
-    case celwasm::CelfnType::Kind::kBool:
+    case celwasm::CelType::Kind::kBool:
       return cpp_kind == HK::kBool;
-    case celwasm::CelfnType::Kind::kInt:
+    case celwasm::CelType::Kind::kInt:
       return cpp_kind == HK::kInt;
-    case celwasm::CelfnType::Kind::kUint:
+    case celwasm::CelType::Kind::kUint:
       return cpp_kind == HK::kUint;
-    case celwasm::CelfnType::Kind::kDouble:
+    case celwasm::CelType::Kind::kDouble:
       return cpp_kind == HK::kDouble;
-    case celwasm::CelfnType::Kind::kString:
-    case celwasm::CelfnType::Kind::kBytes:
+    case celwasm::CelType::Kind::kString:
+    case celwasm::CelType::Kind::kBytes:
       return cpp_kind == HK::kStringOrBytes;
-    case celwasm::CelfnType::Kind::kDuration:
+    case celwasm::CelType::Kind::kDuration:
       return cpp_kind == HK::kDuration;
-    case celwasm::CelfnType::Kind::kTimestamp:
+    case celwasm::CelType::Kind::kTimestamp:
       return cpp_kind == HK::kTimestamp;
-    case celwasm::CelfnType::Kind::kList:
+    case celwasm::CelType::Kind::kList:
       return cpp_kind == HK::kList;
-    case celwasm::CelfnType::Kind::kMap:
+    case celwasm::CelType::Kind::kMap:
       return cpp_kind == HK::kMap;
-    case celwasm::CelfnType::Kind::kProto:
+    case celwasm::CelType::Kind::kMessage:
       return cpp_kind == HK::kProto || cpp_kind == HK::kProtoMessagePtr;
-    case celwasm::CelfnType::Kind::kNull:
-    case celwasm::CelfnType::Kind::kType:
-    case celwasm::CelfnType::Kind::kOptional:
+    case celwasm::CelType::Kind::kUnknown:
+    case celwasm::CelType::Kind::kNull:
+    case celwasm::CelType::Kind::kType:
+    case celwasm::CelType::Kind::kOptional:
       return false;
   }
   return false;
@@ -1453,13 +1453,13 @@ absl::Status CheckPluginOverloadCollisions(
 // instantiation (the nullable `instance_export_index` parameter
 // gives the two-level lookup).  Missing names return NULL, mapped
 // to FailedPrecondition naming the missing thing.
-absl::Status CheckPluginExportsStatically(
-    const wasmtime_component_t* component, const celwasm::Plugin& plugin) {
+absl::Status CheckPluginExportsStatically(const wasmtime_component_t* component,
+                                          const celwasm::Plugin& plugin) {
   const std::string& iface = plugin.wit_interface();
   wasmtime_component_export_index_t* iface_idx =
-      wasmtime_component_get_export_index(
-          component, /*instance_export_index=*/nullptr, iface.data(),
-          iface.size());
+      wasmtime_component_get_export_index(component,
+                                          /*instance_export_index=*/nullptr,
+                                          iface.data(), iface.size());
   if (iface_idx == nullptr) {
     return absl::FailedPreconditionError(absl::StrCat(
         "Engine::Use: plugin does not export interface `", iface, "`"));
@@ -1471,10 +1471,10 @@ absl::Status CheckPluginExportsStatically(
         wasmtime_component_get_export_index(
             component, iface_idx, export_name.data(), export_name.size());
     if (exp_idx == nullptr) {
-      status = absl::FailedPreconditionError(absl::StrCat(
-          "Engine::Use: plugin does not export `", export_name,
-          "` under interface `", iface, "` (CEL overload-id `",
-          decl.overload_id, "`)"));
+      status = absl::FailedPreconditionError(
+          absl::StrCat("Engine::Use: plugin does not export `", export_name,
+                       "` under interface `", iface, "` (CEL overload-id `",
+                       decl.overload_id, "`)"));
       break;
     }
     wasmtime_component_export_index_delete(exp_idx);
@@ -1491,14 +1491,13 @@ absl::Status CheckPluginExportsStatically(
 // its status-code policy at the call site (see
 // doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §3.4).
 absl::StatusOr<wasmtime_component_t*> ParsePluginComponent(
-    const celwasm::WasmtimeEngineState& state,
-    absl::Span<const uint8_t> bytes, absl::string_view context) {
+    const celwasm::WasmtimeEngineState& state, absl::Span<const uint8_t> bytes,
+    absl::string_view context) {
   wasmtime_component_t* component = nullptr;
   wasmtime_error_t* err = wasmtime_component_new(state.engine, bytes.data(),
                                                  bytes.size(), &component);
   if (err != nullptr) {
-    return WasmtimeErrorToStatus(absl::StrCat(context, ": parse plugin"),
-                                 err);
+    return WasmtimeErrorToStatus(absl::StrCat(context, ": parse plugin"), err);
   }
   return component;
 }
@@ -1689,16 +1688,17 @@ absl::Status Engine::BindParsedFunction(absl::string_view celfn_decl,
         fn.param_kinds.size()));
   }
   for (size_t i = 0; i < decl.params.size(); ++i) {
-    if (!CppParamMatchesDeclType(fn.param_kinds[i], decl.params[i].type.kind)) {
+    if (!CppParamMatchesDeclType(fn.param_kinds[i],
+                                 decl.params[i].type.kind())) {
       return absl::InvalidArgumentError(absl::StrCat(
           "Engine::BindFunction: `", decl.fn_name, "` parameter ", i,
-          " is declared as CEL `", decl.params[i].type.Argkind(),
+          " is declared as CEL `", ArgkindSlug(decl.params[i].type),
           "` but the callable's parameter is `",
           HostParamKindName(fn.param_kinds[i]), "`"));
     }
   }
-  if (auto s = AddFunction(decl.overload_id, fn.num_args,
-                           std::move(fn.callback));
+  if (auto s =
+          AddFunction(decl.overload_id, fn.num_args, std::move(fn.callback));
       !s.ok()) {
     return s;
   }
@@ -1750,13 +1750,13 @@ absl::Status Engine::Use(const Plugin& plugin) {
 }
 
 absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
-                                  const FunctionLibrary& lib) {
+                               const FunctionLibrary& lib) {
   if (plugin_bytes.empty()) {
     return absl::InvalidArgumentError(
         "Engine::AddPlugin: plugin_bytes must be non-empty");
   }
-  if (auto s = CheckPluginOverloadCollisions(*wasmtime_, lib,
-                                             "Engine::AddPlugin");
+  if (auto s =
+          CheckPluginOverloadCollisions(*wasmtime_, lib, "Engine::AddPlugin");
       !s.ok()) {
     return s;
   }

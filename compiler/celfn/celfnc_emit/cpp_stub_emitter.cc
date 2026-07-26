@@ -34,9 +34,9 @@ enum class Carrier {
   kProtoPtr,     // customfn_list_u8_t* — proto bytes
 };
 
-Carrier CarrierFor(const CelfnType& t) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+Carrier CarrierFor(const CelType& t) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kBool:
     case K::kInt:
     case K::kUint:
@@ -45,7 +45,7 @@ Carrier CarrierFor(const CelfnType& t) {
     case K::kDuration:
     case K::kTimestamp:
       return Carrier::kRecordPtr;
-    case K::kProto:
+    case K::kMessage:
       return Carrier::kProtoPtr;
     default:
       return Carrier::kAuthorPtr;
@@ -53,9 +53,9 @@ Carrier CarrierFor(const CelfnType& t) {
 }
 
 // C type of an arg/return for a scalar-passing carrier.
-absl::string_view ScalarCType(const CelfnType& t) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+absl::string_view ScalarCType(const CelType& t) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kBool:
       return "bool";
     case K::kInt:
@@ -71,9 +71,9 @@ absl::string_view ScalarCType(const CelfnType& t) {
 
 // C struct name for an aggregate/string/bytes/list/map carrier.
 // Mirrors cpp_codec_emitter's StructFor.
-std::string AuthorCStruct(const CelfnType& t) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+std::string AuthorCStruct(const CelType& t) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kString:
       return "customfn_string_t";
     case K::kBytes:
@@ -82,7 +82,7 @@ std::string AuthorCStruct(const CelfnType& t) {
       return "customfn_option_u8_t";
     case K::kList: {
       // Reuse the same suffix shape as cpp_codec_emitter.
-      auto inner = AuthorCStruct(t.list_element[0]);
+      auto inner = AuthorCStruct(t.list_element());
       // Replace `customfn_` and trailing `_t` to get the inner suffix.
       absl::string_view innerv = inner;
       if (absl::StartsWith(innerv, "customfn_"))
@@ -91,8 +91,8 @@ std::string AuthorCStruct(const CelfnType& t) {
       return absl::StrCat("customfn_list_", innerv, "_t");
     }
     case K::kMap: {
-      auto k = AuthorCStruct(t.map_kv[0]);
-      auto v = AuthorCStruct(t.map_kv[1]);
+      auto k = AuthorCStruct(t.map_key());
+      auto v = AuthorCStruct(t.map_value());
       absl::string_view kv = k;
       if (absl::StartsWith(kv, "customfn_"))
         kv.remove_prefix(9);  // strip "customfn_"
@@ -113,12 +113,13 @@ std::string AuthorCStruct(const CelfnType& t) {
       return "customfn_u64_t";
     case K::kDouble:
       return "customfn_f64_t";
-    case K::kProto:
+    case K::kMessage:
       return "customfn_list_u8_t";  // same wire shape as bytes
     case K::kDuration:
     case K::kTimestamp:
     case K::kOptional:
     case K::kType:
+    case K::kUnknown:
       return "<unreachable>";
   }
   return "<unreachable>";
@@ -134,9 +135,9 @@ std::string AuthorCStruct(const CelfnType& t) {
 // Centralised here to avoid duplicating with codec; we deliberately
 // inline it for clarity given the surface is small.
 
-std::string RecordCType(const CelfnType& t, absl::string_view exports_prefix) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+std::string RecordCType(const CelType& t, absl::string_view exports_prefix) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kDuration:
       return absl::StrCat(exports_prefix, "duration_t");
     case K::kTimestamp:
@@ -208,14 +209,15 @@ constexpr absl::string_view kExportProtoTpl =
 absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
                                           absl::string_view ns,
                                           absl::string_view exports_prefix) {
-  using K = CelfnType::Kind;
-  if (d.return_type.kind == K::kOptional || d.return_type.kind == K::kType) {
+  using K = CelType::Kind;
+  if (d.return_type.kind() == K::kOptional ||
+      d.return_type.kind() == K::kType) {
     return absl::FailedPreconditionError(
         absl::StrCat("stub emitter saw permanently-rejected return kind for `",
                      d.fn_name, "`"));
   }
   for (const auto& p : d.params) {
-    if (p.type.kind == K::kOptional || p.type.kind == K::kType) {
+    if (p.type.kind() == K::kOptional || p.type.kind() == K::kType) {
       return absl::FailedPreconditionError(
           absl::StrCat("stub emitter saw permanently-rejected param kind for `",
                        d.fn_name, "`.", p.name));
@@ -250,10 +252,11 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
         break;
       case Carrier::kProtoPtr:
         param_decls.push_back(absl::StrCat("customfn_list_u8_t* ", p.name));
-        call_args.push_back(
-            absl::StrCat(ns, "::codec::lift_proto<",
-                         absl::StrReplaceAll(p.type.proto_fqn, {{".", "::"}}),
-                         ">(*", p.name, ")"));
+        call_args.push_back(absl::StrCat(
+            ns, "::codec::lift_proto<",
+            absl::StrReplaceAll(p.type.message_fully_qualified_name(),
+                                {{".", "::"}}),
+            ">(*", p.name, ")"));
         break;
     }
   }
@@ -290,8 +293,8 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
       sig_args.empty() ? absl::StrCat(ret_type, "* ret")
                        : absl::StrCat(sig_args, ", ", ret_type, "* ret");
   if (ret_c == Carrier::kProtoPtr) {
-    const std::string proto_cpp =
-        absl::StrReplaceAll(d.return_type.proto_fqn, {{".", "::"}});
+    const std::string proto_cpp = absl::StrReplaceAll(
+        d.return_type.message_fully_qualified_name(), {{".", "::"}});
     absl::SubstituteAndAppend(&out, kExportProtoTpl, export_name, ret_arg, ns,
                               proto_cpp, called_fn, call_arg_list);
   } else {

@@ -80,25 +80,16 @@ std::vector<uint8_t> WatToWasm(absl::string_view wat) {
   return bytes;
 }
 
-CelfnType Prim(CelfnType::Kind k) {
-  CelfnType t;
-  t.kind = k;
-  return t;
+CelType ListOf(CelType elem) {
+  return CelType::List(std::move(elem));
 }
 
-CelfnType ListOf(CelfnType elem) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kList;
-  t.list_element.push_back(std::move(elem));
-  return t;
-}
-
-FunctionLibrary OneFnLib(absl::string_view fn_name, CelfnType return_type,
+FunctionLibrary OneFnLib(absl::string_view fn_name, CelType return_type,
                          std::vector<CelfnParam> params) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin(fn_name, std::move(return_type),
-                                         std::move(params))
-                    .Build();
+  auto lib_or =
+      FunctionLibrary::Builder()
+          .AddPlugin(fn_name, std::move(return_type), std::move(params))
+          .Build();
   ABSL_CHECK(lib_or.ok()) << lib_or.status();
   return *std::move(lib_or);
 }
@@ -126,11 +117,10 @@ TEST(PluginDispatch, IntAddRoundTripsBoundaryValues) {
   // the integer scalar arm.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  auto lib = OneFnLib("add", Prim(CelfnType::Kind::kInt),
-                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                       CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}});
-  const std::vector<uint8_t> plugin_bytes =
-      WatToWasm(kAddIntIntComponentWat);
+  auto lib = OneFnLib("add", CelType::Int(),
+                      {CelfnParam{false, CelType::Int(), "a"},
+                       CelfnParam{false, CelType::Int(), "b"}});
+  const std::vector<uint8_t> plugin_bytes = WatToWasm(kAddIntIntComponentWat);
   ASSERT_THAT(engine_or->AddPlugin(plugin_bytes, lib), IsOk());
 
   auto builder = Compiler::NewBuilder();
@@ -178,8 +168,8 @@ constexpr absl::string_view kPassthroughBoolBoolComponentWat = R"WAT(
 TEST(PluginDispatch, BoolPassthroughRoundTrips) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  auto lib = OneFnLib("ident", Prim(CelfnType::Kind::kBool),
-                      {CelfnParam{false, Prim(CelfnType::Kind::kBool), "x"}});
+  auto lib = OneFnLib("ident", CelType::Bool(),
+                      {CelfnParam{false, CelType::Bool(), "x"}});
   ASSERT_THAT(
       engine_or->AddPlugin(WatToWasm(kPassthroughBoolBoolComponentWat), lib),
       IsOk());
@@ -256,8 +246,8 @@ TEST(PluginDispatch, LargeStringTransportsAtMiBScale) {
   // tiny — the *transport* is what's under test.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  auto lib = OneFnLib("len", Prim(CelfnType::Kind::kInt),
-                      {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
+  auto lib = OneFnLib("len", CelType::Int(),
+                      {CelfnParam{false, CelType::String(), "s"}});
   ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kStringLenComponentWat), lib),
               IsOk());
 
@@ -341,14 +331,14 @@ TEST(PluginDispatch, LargeListIntTransportsAt100kElements) {
   // and returns one s64.  Boundary-style payload: sum_{0..N-1} = N(N-1)/2.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  auto lib =
-      OneFnLib("sum", Prim(CelfnType::Kind::kInt),
-               {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}});
+  auto lib = OneFnLib("sum", CelType::Int(),
+                      {CelfnParam{false, ListOf(CelType::Int()), "xs"}});
   ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kListSumComponentWat), lib),
               IsOk());
 
   auto builder = Compiler::NewBuilder();
-  builder.DeclareVariable("xs", CelType::List(CelType::Int())).DeclareFunctions(lib);
+  builder.DeclareVariable("xs", CelType::List(CelType::Int()))
+      .DeclareFunctions(lib);
   auto compiler_or = std::move(builder).Build();
   ASSERT_THAT(compiler_or, IsOk());
   auto prog_or = compiler_or->Compile("sum(xs)", e2e::DefaultOpts());
@@ -417,8 +407,8 @@ constexpr absl::string_view kStringEchoComponentWat = R"WAT(
 TEST(PluginDispatch, StringEchoReturnsStringResult) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  auto lib = OneFnLib("echo", Prim(CelfnType::Kind::kString),
-                      {CelfnParam{false, Prim(CelfnType::Kind::kString), "s"}});
+  auto lib = OneFnLib("echo", CelType::String(),
+                      {CelfnParam{false, CelType::String(), "s"}});
   ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kStringEchoComponentWat), lib),
               IsOk());
 
@@ -455,8 +445,8 @@ TEST(PluginDispatch, MissingExportFailsAtPlanNotAddPlugin) {
   // `Engine::Plan`, naming the kebab-case export it looked for.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  auto lib = OneFnLib("frob", Prim(CelfnType::Kind::kInt),
-                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib = OneFnLib("frob", CelType::Int(),
+                      {CelfnParam{false, CelType::Int(), "x"}});
   ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kAddIntIntComponentWat), lib),
               IsOk())
       << "AddPlugin validates bytes + overload-id conflicts only; "
@@ -493,8 +483,8 @@ TEST(PluginDispatch, TrappingPluginFnFailsEvalCleanly) {
   // plausible-looking value.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  auto lib = OneFnLib("boom", Prim(CelfnType::Kind::kInt),
-                      {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib = OneFnLib("boom", CelType::Int(),
+                      {CelfnParam{false, CelType::Int(), "x"}});
   ASSERT_THAT(engine_or->AddPlugin(WatToWasm(kTrappingComponentWat), lib),
               IsOk());
 
@@ -583,19 +573,18 @@ std::vector<uint8_t> StripRequiredFunctions(
   auto payload_or = FindCustomSection(program_bytes, "cel.abi");
   ABSL_CHECK_OK(payload_or.status());
   celwasm::abi::CelAbi abi;
-  ABSL_CHECK(
-      abi.ParseFromArray(payload_or->data(),
-                         static_cast<int>(payload_or->size())));
+  ABSL_CHECK(abi.ParseFromArray(payload_or->data(),
+                                static_cast<int>(payload_or->size())));
   ABSL_CHECK_GT(abi.required_functions_size(), 0)
       << "fixture Program must carry required_functions to strip";
   abi.clear_required_functions();
   const std::string new_payload = abi.SerializeAsString();
   const std::vector<uint8_t> without =
       RemoveTopLevelCustomSection(program_bytes, "cel.abi");
-  auto with_or = AppendCustomSection(
-      without, "cel.abi",
-      {reinterpret_cast<const uint8_t*>(new_payload.data()),
-       new_payload.size()});
+  auto with_or =
+      AppendCustomSection(without, "cel.abi",
+                          {reinterpret_cast<const uint8_t*>(new_payload.data()),
+                           new_payload.size()});
   ABSL_CHECK_OK(with_or.status());
   return *std::move(with_or);
 }
@@ -757,9 +746,10 @@ TEST(RequiredFnPlanCheck, HostArityMismatchFailsAtPlanWithFrozenMessage) {
 
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
-  ASSERT_THAT(engine_or->AddFunction(
-                  "discount_pct_string", /*num_args=*/3,
-                  [](HostCallContext&) { return absl::OkStatus(); }),
+  ASSERT_THAT(engine_or->AddFunction("discount_pct_string", /*num_args=*/3,
+                                     [](HostCallContext&) {
+                                       return absl::OkStatus();
+                                     }),
               IsOk());
   auto inst_or = engine_or->Plan(*prog_or);
   ASSERT_FALSE(inst_or.ok());
@@ -829,14 +819,13 @@ struct BrokenPlusHealthy {
 BrokenPlusHealthy MakeBrokenPlusHealthyEngine() {
   auto engine_or = Engine::NewBuilder().Build();
   ABSL_CHECK_OK(engine_or.status());
-  auto broken_lib =
-      OneFnLib("broken", Prim(CelfnType::Kind::kInt),
-               {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto broken_lib = OneFnLib("broken", CelType::Int(),
+                             {CelfnParam{false, CelType::Int(), "x"}});
   ABSL_CHECK_OK(engine_or->AddPlugin(
       WatToWasm(kBrokenAtInstantiateComponentWat), broken_lib));
-  auto add_lib = OneFnLib("add", Prim(CelfnType::Kind::kInt),
-                          {CelfnParam{false, Prim(CelfnType::Kind::kInt), "a"},
-                           CelfnParam{false, Prim(CelfnType::Kind::kInt), "b"}});
+  auto add_lib = OneFnLib("add", CelType::Int(),
+                          {CelfnParam{false, CelType::Int(), "a"},
+                           CelfnParam{false, CelType::Int(), "b"}});
   ABSL_CHECK_OK(
       engine_or->AddPlugin(WatToWasm(kAddIntIntComponentWat), add_lib));
   return {*std::move(engine_or), std::move(add_lib)};
@@ -893,13 +882,12 @@ TEST(SelectiveInstantiation, ProgramRequiringNoPluginsInstantiatesZero) {
   // plugins — observable because the broken plugin is registered and
   // Plan still goes green.
   BrokenPlusHealthy fx = MakeBrokenPlusHealthyEngine();
-  ASSERT_THAT(
-      fx.engine.BindFunction(
-          "int @host.discount_pct(string tier);",
-          [](absl::string_view tier) -> absl::StatusOr<int64_t> {
-            return tier == "gold" ? 20 : 5;
-          }),
-      IsOk());
+  ASSERT_THAT(fx.engine.BindFunction(
+                  "int @host.discount_pct(string tier);",
+                  [](absl::string_view tier) -> absl::StatusOr<int64_t> {
+                    return tier == "gold" ? 20 : 5;
+                  }),
+              IsOk());
   auto builder = Compiler::NewBuilder();
   builder.AddFunction("int @host.discount_pct(string tier);");
   auto compiler_or = std::move(builder).Build();
