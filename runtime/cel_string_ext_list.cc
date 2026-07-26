@@ -25,6 +25,7 @@
 #include "absl/strings/string_view.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
+#include "runtime/cel_list.h"
 #include "runtime/cel_memory.h"
 #include "runtime/cel_string_ext_internal.h"
 
@@ -81,6 +82,23 @@ ArenaListHeader* AllocList(CelValue* out, uint32_t capacity) {
   out->kind = CEL_LIST_ARENA;
   out->payload.arena_list.header_ptr = hdr_off;
   return hdr;
+}
+
+// Resolve a list operand to a slot whose CelValue is arena-shaped so
+// the join walk below can read the elements run directly.  Arena
+// operands pass through; a `CEL_LIST_HOST` operand is snapshotted into
+// the arena by `cel_list_arena_view` (which routes through
+// `cel_host.cel_list_iter_open`) — that is what makes
+// `boundList.join()` work at all, since the elements only exist on the
+// host side until they are materialised.  Returns 0 after poisoning
+// `out` when the operand is not list-shaped.
+uint32_t ArenaListViewSlot(uint32_t out_slot, uint32_t list_slot) {
+  const CelValue* list = cel_value_at(list_slot);
+  if (list->kind != CEL_LIST_ARENA && list->kind != CEL_LIST_HOST) {
+    Poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+    return 0;
+  }
+  return cel_list_arena_view(list_slot);
 }
 
 // Stamp a subspan-string CelValue into an arena-list element slot.
@@ -169,6 +187,13 @@ void DoSplit(CelValue* out, const CelValue* s, const CelValue* sep,
 // `sep` between.  Returns false if any element is the wrong kind
 // (`out` already poisoned) or on arena OOM.
 bool BuildJoin(CelValue* out, const CelValue* list, absl::string_view sep) {
+  if (list->payload.arena_list.header_ptr == 0) {
+    // Header-less empty list (the shape `cel_list_arena_view` vends
+    // when a host snapshot has nothing to snapshot).  Offset 0 is
+    // never a real allocation, so there is nothing to walk.
+    WriteStringFromBytes(out, nullptr, 0);
+    return true;
+  }
   ArenaListHeader* hdr = ListHeader(list);
   if (hdr->count == 0) {
     WriteStringFromBytes(out, nullptr, 0);
@@ -180,6 +205,13 @@ bool BuildJoin(CelValue* out, const CelValue* list, absl::string_view sep) {
   size_t total = 0;
   for (uint32_t k = 0; k < hdr->count; ++k) {
     const CelValue* elt = ListElement(hdr, k);
+    if (elt->kind == CEL_ERROR || elt->kind == CEL_UNKNOWN) {
+      // A poisoned element — the one-element view `cel_list_arena_view`
+      // vends when the host snapshot itself failed (arena OOM).
+      // Propagate it verbatim rather than reporting a kind mismatch.
+      *out = *elt;
+      return false;
+    }
     if (elt->kind != CEL_STRING) {
       Poison(out, CEL_ERR_TYPE_MISMATCH);
       return false;
@@ -241,12 +273,10 @@ extern "C" void cel_string_join_at_v(uint32_t out_slot, uint32_t list_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* list = cel_value_at(list_slot);
   if (Absorb3vlUnary(out, list)) return;
-  if (list->kind != CEL_LIST_ARENA) {
-    // Host-backed lists (CEL_LIST_HOST) deferred — see header note.
-    Poison(out, CEL_ERR_TYPE_MISMATCH);
-    return;
-  }
-  BuildJoin(out, list, absl::string_view());
+  const uint32_t view_slot = ArenaListViewSlot(out_slot, list_slot);
+  if (view_slot == 0) return;  // not list-shaped; `out` already poisoned.
+  BuildJoin(cel_value_at(out_slot), cel_value_at(view_slot),
+            absl::string_view());
 }
 
 extern "C" void cel_string_join_sep_at_vv(uint32_t out_slot, uint32_t list_slot,
@@ -255,9 +285,16 @@ extern "C" void cel_string_join_sep_at_vv(uint32_t out_slot, uint32_t list_slot,
   const CelValue* list = cel_value_at(list_slot);
   const CelValue* sep = cel_value_at(sep_slot);
   if (Absorb3vlBinary(out, list, sep)) return;
-  if (list->kind != CEL_LIST_ARENA || sep->kind != CEL_STRING) {
+  if (sep->kind != CEL_STRING) {
     Poison(out, CEL_ERR_TYPE_MISMATCH);
     return;
   }
-  BuildJoin(out, list, BorrowSpan(sep->payload.s));
+  // Capture the separator BYTES before the view call: snapshotting a
+  // host list allocates, and `sep` is only a pointer into the slot
+  // array.  The string data itself is untouched by arena growth, so
+  // the span stays valid.
+  const absl::string_view sep_view = BorrowSpan(sep->payload.s);
+  const uint32_t view_slot = ArenaListViewSlot(out_slot, list_slot);
+  if (view_slot == 0) return;  // not list-shaped; `out` already poisoned.
+  BuildJoin(cel_value_at(out_slot), cel_value_at(view_slot), sep_view);
 }

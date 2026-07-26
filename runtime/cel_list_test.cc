@@ -14,18 +14,19 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <vector>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 extern "C" {
-// Strong override of the host-side weak stub in cel_runtime.c.  Lets
-// the dispatcher's kHost arm be observed without pulling in the
-// wasmtime trampoline.
+// Strong overrides of the host-side weak stubs in cel_runtime.c.  Let
+// the dispatchers' kHost arms be observed without pulling in the
+// wasmtime trampolines.
 static int g_host_at_calls = 0;
 void cel_host_cel_list_at(uint32_t out_slot, uint32_t /*list_slot*/,
                           uint32_t /*index_slot*/) {
@@ -33,6 +34,19 @@ void cel_host_cel_list_at(uint32_t out_slot, uint32_t /*list_slot*/,
   CelValue* out = cel_value_at(out_slot);
   out->kind = CEL_INT;
   out->payload.i = 0x5151;  // sentinel — distinguishes from arena hits.
+}
+
+// Concat's kHost arm.  The real body (eval/internal/cel_host.cc
+// `CelListConcatImpl`) lifts both operands into one fresh arena list;
+// here we only pin ROUTING — the sentinel distinguishes a host trip
+// from the arena fast path, whose real output the arena cases assert.
+static int g_host_concat_calls = 0;
+void cel_host_cel_list_concat(uint32_t out_slot, uint32_t /*a_slot*/,
+                              uint32_t /*b_slot*/) {
+  ++g_host_concat_calls;
+  CelValue* out = cel_value_at(out_slot);
+  out->kind = CEL_INT;
+  out->payload.i = 0x6262;
 }
 }
 
@@ -45,6 +59,7 @@ class ListTest : public ::testing::Test {
     arena_init(CELWASM_ARENA_CAPACITY_BYTES);
     arena_reset();
     g_host_at_calls = 0;
+    g_host_concat_calls = 0;
   }
 
  public:
@@ -103,8 +118,18 @@ TEST_F(ListTest, AppendPastCapacityTraps) {
   // via __builtin_trap.  Skipped here because gtest can't catch
   // __builtin_trap; the wasm-execution tests indirectly cover it
   // (any codegen bug that drops the pre-size would crash there).
-  GTEST_SKIP() << "trap on append-past-capacity is unobservable "
-                  "from gtest; covered by wasm-runtime invariant.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: appending past capacity is a CODEGEN invariant violation, and
+  the runtime deliberately answers it with __builtin_trap - the loud failure
+  the CLAUDE.md unimplemented/unreachable rules ask for. gtest cannot catch
+  __builtin_trap, so the behaviour is unobservable from this harness; nothing
+  in the product is missing or wrong. The invariant is held from the other
+  side: codegen sizes capacity exactly (N for literals, iter_range.count for
+  accumulators), and any codegen bug that dropped the pre-size would crash the
+  wasm-execution tests.
+citation: doc/implementation-plan/rewrite/m5-comprehensions-followon.md §10.A (PRESIZE_INVARIANT)
+)CELSKIP";
 }
 
 TEST_F(ListTest, AppendAllowsDuplicateValues) {
@@ -417,6 +442,96 @@ TEST_F(ListTest, DispatcherUnknownOperandPropagates) {
   EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
   EXPECT_EQ(cel_value_at(out)->payload.unk, 42u);
   EXPECT_EQ(g_host_at_calls, 0);
+}
+
+// ════════ kDynamic dispatcher — concat (`_+_` on lists) ════════
+//
+// Unlike the one-list ops, concat's two operands can differ in
+// origin.  Only arena+arena takes the wasm fast path; EVERY pairing
+// involving a host-backed list must reach the trampoline, which lifts
+// both sides into a fresh arena list.  Routing the mixed pairs to the
+// arena kernel instead is what made `[1,2] + boundList` a
+// type_mismatch.
+
+// Arena list of `values`, count == values.size().
+uint32_t MakeIntList(ListTest& t, const std::vector<int64_t>& values) {
+  uint32_t l = t.NewSlot();
+  cel_list_create(l, static_cast<uint32_t>(values.size()));
+  for (int64_t i : values) {
+    cel_list_append_at(l, cel_make_int(i));
+  }
+  return l;
+}
+
+uint32_t MakeHostListSlot(ListTest& t, uint32_t ref_slot) {
+  uint32_t l = t.NewSlot();
+  cel_value_at(l)->kind = CEL_LIST_HOST;
+  cel_value_at(l)->payload.ref_slot = ref_slot;
+  return l;
+}
+
+TEST_F(ListTest, ConcatDispatcherRoutesArenaPairToFastPath) {
+  uint32_t a = MakeIntList(*this, {1, 2});
+  uint32_t b = MakeIntList(*this, {3});
+  uint32_t joined = NewSlot();
+  cel_list_concat(joined, a, b);
+  ASSERT_EQ(cel_value_at(joined)->kind, static_cast<uint32_t>(CEL_LIST_ARENA));
+  uint32_t last = NewSlot();
+  cel_list_at_arena(last, joined, cel_make_int(2));
+  EXPECT_EQ(cel_value_at(last)->payload.i, 3);
+  EXPECT_EQ(g_host_concat_calls, 0);
+}
+
+TEST_F(ListTest, ConcatDispatcherRoutesArenaPlusHostThroughHostArm) {
+  uint32_t out = NewSlot();
+  cel_list_concat(out, MakeIntList(*this, {1}), MakeHostListSlot(*this, 7));
+  EXPECT_EQ(g_host_concat_calls, 1);
+  EXPECT_EQ(cel_value_at(out)->payload.i, 0x6262);
+}
+
+TEST_F(ListTest, ConcatDispatcherRoutesHostPlusArenaThroughHostArm) {
+  uint32_t out = NewSlot();
+  cel_list_concat(out, MakeHostListSlot(*this, 7), MakeIntList(*this, {1}));
+  EXPECT_EQ(g_host_concat_calls, 1);
+  EXPECT_EQ(cel_value_at(out)->payload.i, 0x6262);
+}
+
+TEST_F(ListTest, ConcatDispatcherRoutesHostPlusHostThroughHostArm) {
+  uint32_t out = NewSlot();
+  cel_list_concat(out, MakeHostListSlot(*this, 7), MakeHostListSlot(*this, 8));
+  EXPECT_EQ(g_host_concat_calls, 1);
+  EXPECT_EQ(cel_value_at(out)->payload.i, 0x6262);
+}
+
+TEST_F(ListTest, ConcatDispatcherTypeMismatchOnNonList) {
+  uint32_t out = NewSlot();
+  cel_list_concat(out, MakeIntList(*this, {1}), cel_make_int(42));
+  EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(out)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+  EXPECT_EQ(g_host_concat_calls, 0);
+}
+
+TEST_F(ListTest, ConcatDispatcherPropagatesPoisonedOperands) {
+  // 3VL absorbs BEFORE any origin branch, so a poisoned operand never
+  // reaches the host arm (langdef §"Logical Operators" absorption).
+  uint32_t unk = NewSlot();
+  cel_value_at(unk)->kind = CEL_UNKNOWN;
+  cel_value_at(unk)->payload.unk = 42;
+  uint32_t out = NewSlot();
+  cel_list_concat(out, unk, MakeHostListSlot(*this, 7));
+  EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(cel_value_at(out)->payload.unk, 42u);
+
+  uint32_t err = NewSlot();
+  cel_value_at(err)->kind = CEL_ERROR;
+  cel_value_at(err)->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  uint32_t out2 = NewSlot();
+  cel_list_concat(out2, MakeHostListSlot(*this, 7), err);
+  EXPECT_EQ(cel_value_at(out2)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(out2)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+  EXPECT_EQ(g_host_concat_calls, 0);
 }
 
 }  // namespace

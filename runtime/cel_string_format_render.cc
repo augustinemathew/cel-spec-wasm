@@ -29,7 +29,10 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
+#include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
+#include "runtime/cel_list.h"
+#include "runtime/cel_map.h"
 #include "runtime/cel_memory.h"
 #include "runtime/cel_string_format_internal.h"
 
@@ -40,29 +43,6 @@ namespace {
 // Borrow a CelSpan as an absl::string_view into linear memory.
 absl::string_view BorrowSpan(const CelSpan& s) {
   return {reinterpret_cast<const char*>(cel_mem_base()) + s.ptr, s.len};
-}
-
-// Pull a key/value pair out of an arena map's entries run.  Each
-// entry is `{key:CelValue, value:CelValue}` at `entries_offset +
-// i*kCelMapEntryStride` (key first, value at offset
-// `sizeof(CelValue)`).  Mirrors `arena_map_entry_key` /
-// `arena_map_entry_val` in `cel_runtime.c`.
-const CelValue* MapKey(const ArenaMapHeader* hdr, uint32_t i) {
-  return reinterpret_cast<const CelValue*>(
-      cel_mem_base() + hdr->entries_offset +
-      (static_cast<size_t>(kCelMapEntryStride) * i));
-}
-
-const CelValue* MapVal(const ArenaMapHeader* hdr, uint32_t i) {
-  return reinterpret_cast<const CelValue*>(
-      cel_mem_base() + hdr->entries_offset +
-      (static_cast<size_t>(kCelMapEntryStride) * i) + sizeof(CelValue));
-}
-
-const CelValue* ListElement(const ArenaListHeader* hdr, uint32_t i) {
-  return reinterpret_cast<const CelValue*>(
-      cel_mem_base() + hdr->elements_offset +
-      (static_cast<size_t>(kCelListEntryStride) * i));
 }
 
 // `%s` on a double: cel-cpp uses `absl::StrAppend(&scratch, number)`
@@ -131,49 +111,105 @@ void AppendTimestampCanonical(std::string& buf, int64_t secs, int32_t nanos) {
   buf.append(s);
 }
 
-// %s on a list: walk arena list, render each via RenderString,
-// comma-space separate, wrap in `[]`.  Returns false on first
-// element-level error.
-bool AppendListCanonical(std::string& buf, const CelValue* v) {
-  if (v->kind != CEL_LIST_ARENA) return false;  // host-list deferred
+// Linear-memory offset of a CelValue a caller handed us.  Every
+// CelValue a renderer sees lives in the shared linear memory (a
+// workspace slot, an arena elements run, or a map-iter snapshot
+// cell), so the round-trip is exact.  Needed because the origin-
+// normalising helpers (`cel_list_arena_view`, `cel_map_iter_init`)
+// address values by SLOT, not by pointer.
+uint32_t SlotOf(const CelValue* v) {
+  return static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(v) -
+                               cel_mem_base());
+}
+
+// Element count / element slot of an arena list, addressed by header
+// OFFSET so both survive a base relocation.  A zero header offset is
+// the header-less empty shape (offset 0 is never a real allocation).
+uint32_t ListCountAt(uint32_t header_ptr) {
+  if (header_ptr == 0) return 0;
+  return reinterpret_cast<const ArenaListHeader*>(cel_mem_base() + header_ptr)
+      ->count;
+}
+
+uint32_t ListElementSlot(uint32_t header_ptr, uint32_t i) {
+  const auto* hdr =
+      reinterpret_cast<const ArenaListHeader*>(cel_mem_base() + header_ptr);
+  return hdr->elements_offset +
+         (static_cast<uint32_t>(kCelListEntryStride) * i);
+}
+
+// Render the CelValue at `slot`.  The slot-addressed entry point:
+// nested aggregates can allocate while being lifted, so a renderer
+// must never hold a CelValue* across a recursive call.
+bool RenderStringAtSlot(std::string& buf, uint32_t slot) {
+  return RenderString(buf, cel_value_at(slot));
+}
+
+// %s on a list of EITHER origin: normalise through
+// `cel_list_arena_view` (arena operands pass through; a host list is
+// snapshotted via `cel_host.cel_list_iter_open`), then walk the
+// elements run, render each, comma-space separate, wrap in `[]`.
+// Returns false on the first element-level error.
+bool AppendListCanonical(std::string& buf, uint32_t list_slot) {
+  const uint32_t view_slot = cel_list_arena_view(list_slot);
+  const CelValue* view = cel_value_at(view_slot);
+  if (view->kind != CEL_LIST_ARENA) return false;  // runtime drift
+  const uint32_t header_ptr = view->payload.arena_list.header_ptr;
+  const uint32_t count = ListCountAt(header_ptr);
   buf.push_back('[');
-  const auto* hdr = reinterpret_cast<const ArenaListHeader*>(
-      cel_mem_base() + v->payload.arena_list.header_ptr);
-  for (uint32_t k = 0; k < hdr->count; ++k) {
+  for (uint32_t k = 0; k < count; ++k) {
     if (k > 0) buf.append(", ");
-    if (!RenderString(buf, ListElement(hdr, k))) return false;
+    // Re-derive per iteration: a nested host element lifts through
+    // `cel_list_arena_view`, which allocates.
+    if (!RenderStringAtSlot(buf, ListElementSlot(header_ptr, k))) return false;
   }
   buf.push_back(']');
   return true;
 }
 
-// %s on a map: cel-cpp builds a btree_map<stringified_key, value>
-// so iteration order is lexicographic on the key's string form.
-// Allowed key kinds (per cel-cpp's FormatMap): STRING, BOOL, INT,
-// UINT.  Everything else errors out.
-bool AppendMapCanonical(std::string& buf, const CelValue* v) {
-  if (v->kind != CEL_MAP_ARENA) return false;  // host-map deferred
-  const auto* hdr = reinterpret_cast<const ArenaMapHeader*>(
-      cel_mem_base() + v->payload.arena_map.header_ptr);
-  std::map<std::string, const CelValue*> sorted;
-  for (uint32_t k = 0; k < hdr->count; ++k) {
-    const CelValue* key = MapKey(hdr, k);
-    if (key->kind != CEL_STRING && key->kind != CEL_BOOL &&
-        key->kind != CEL_INT && key->kind != CEL_UINT) {
-      return false;
-    }
+// cel-cpp's FormatMap admits STRING / BOOL / INT / UINT keys only.
+bool IsFormattableMapKey(uint32_t kind) {
+  return kind == CEL_STRING || kind == CEL_BOOL || kind == CEL_INT ||
+         kind == CEL_UINT;
+}
+
+// %s on a map of EITHER origin.  cel-cpp builds a
+// btree_map<stringified_key, value>, so iteration order is
+// lexicographic on the key's string form.
+//
+// The walk goes through the origin-agnostic map iterator
+// (`cel_map_iter_init` / `_next` / `_key_at` / `_value_at`), which
+// passes an arena map through in place and snapshots a host map via
+// `cel_host.cel_map_iter_open`.  Key AND value are rendered to
+// strings during the walk rather than collected as pointers: the
+// iterator copies each entry into a shared scratch pair that the
+// next `_next` overwrites, and rendering a nested aggregate value can
+// relocate the linear-memory base.
+bool AppendMapCanonical(std::string& buf, uint32_t map_slot) {
+  const uint32_t scratch = arena_alloc(2u * sizeof(CelValue));
+  if (scratch == 0) return false;  // arena OOM
+  const uint32_t key_slot = scratch;
+  const uint32_t val_slot = scratch + sizeof(CelValue);
+  const uint32_t iter = cel_map_iter_init(map_slot);
+  std::map<std::string, std::string> sorted;
+  while (cel_map_iter_next(iter) != 0) {
+    cel_map_iter_key_at(key_slot, iter);
+    if (!IsFormattableMapKey(cel_value_at(key_slot)->kind)) return false;
     std::string key_str;
-    if (!RenderString(key_str, key)) return false;
-    sorted.emplace(std::move(key_str), MapVal(hdr, k));
+    if (!RenderStringAtSlot(key_str, key_slot)) return false;
+    cel_map_iter_value_at(val_slot, iter);
+    std::string val_str;
+    if (!RenderStringAtSlot(val_str, val_slot)) return false;
+    sorted.emplace(std::move(key_str), std::move(val_str));
   }
   buf.push_back('{');
   bool first = true;
-  for (const auto& [key_str, val] : sorted) {
+  for (const auto& [key_str, val_str] : sorted) {
     if (!first) buf.append(", ");
     first = false;
     buf.append(key_str);
     buf.append(": ");
-    if (!RenderString(buf, val)) return false;
+    buf.append(val_str);
   }
   buf.push_back('}');
   return true;
@@ -234,10 +270,16 @@ bool RenderString(std::string& buf, const CelValue* v) {
                               v->payload.dur.nanos);
       return true;
     case CEL_LIST_ARENA:
-      return AppendListCanonical(buf, v);
+    case CEL_LIST_HOST:
+      return AppendListCanonical(buf, SlotOf(v));
     case CEL_MAP_ARENA:
-      return AppendMapCanonical(buf, v);
+    case CEL_MAP_HOST:
+      return AppendMapCanonical(buf, SlotOf(v));
     default:
+      // Open by construction: `kind` is a wire field read out of
+      // linear memory.  ERROR / UNKNOWN / MESSAGE have no canonical
+      // `%s` form, and the caller turns the `false` into
+      // CEL_ERR_INVALID_ARGUMENT.
       return false;
   }
 }

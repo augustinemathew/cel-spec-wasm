@@ -370,6 +370,145 @@ TEST(CelListEqImplTest, MissingListRefSlotReturnsNonOkStatus) {
   EXPECT_FALSE(CelListEqImpl(f.out_slot, f.a_slot, f.b_slot, f.ctx).ok());
 }
 
+// ─── Nested-aggregate elements ─────────────────────────────────────
+//
+// The element walk must recurse, ORIGIN-AGNOSTICALLY, into list and
+// map elements: `WireValueEq` dispatches on wire kind and re-enters
+// `ListsEqual` / `NormalizedMapEq`.  Before that, aggregate elements
+// on the host side encoded to a `CEL_ERROR{TYPE_MISMATCH}`
+// placeholder and two placeholders compared UNEQUAL — so a host list
+// of lists was never equal to anything, itself included.
+
+// `[[1, 2]]` with the inner list host-backed.
+CelValue MakeHostListOfHostLists(
+    Fixture& f, const std::vector<std::vector<int64_t>>& rows) {
+  std::vector<celwasm::Value> outer;
+  outer.reserve(rows.size());
+  for (const std::vector<int64_t>& row : rows) {
+    std::vector<celwasm::Value> inner;
+    inner.reserve(row.size());
+    for (int64_t i : row) {
+      inner.push_back(celwasm::Value::Int(i));
+    }
+    outer.push_back(celwasm::Value::List(std::move(inner)));
+  }
+  return MakeHostList(f, std::move(outer));
+}
+
+// `[[1, 2]]` built entirely in linear memory.
+CelValue MakeArenaListOfArenaLists(
+    Fixture& f, const std::vector<std::vector<int64_t>>& rows) {
+  std::vector<CelValue> outer;
+  outer.reserve(rows.size());
+  for (const std::vector<int64_t>& row : rows) {
+    std::vector<CelValue> inner;
+    inner.reserve(row.size());
+    for (int64_t i : row) {
+      inner.push_back(MakeInt(i));
+    }
+    outer.push_back(MakeArenaList(f, inner));
+  }
+  return MakeArenaList(f, outer);
+}
+
+TEST(CelListEqImplNestedTest, HostVsArenaNestedListsCompareEqual) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{1, 2}}),
+                         MakeArenaListOfArenaLists(f, {{1, 2}})),
+                   true);
+}
+
+TEST(CelListEqImplNestedTest, ArenaVsHostNestedListsCompareEqual) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeArenaListOfArenaLists(f, {{1, 2}}),
+                         MakeHostListOfHostLists(f, {{1, 2}})),
+                   true);
+}
+
+TEST(CelListEqImplNestedTest, HostVsHostNestedListsCompareEqual) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{1, 2}}),
+                         MakeHostListOfHostLists(f, {{1, 2}})),
+                   true);
+}
+
+TEST(CelListEqImplNestedTest, ReflexivityHoldsForAHostNestedList) {
+  // `xss == xss` — the same wire operand on both sides.  Returning
+  // `false` here was the reflexivity violation that made this a P0.
+  Fixture f;
+  CelValue xss = MakeHostListOfHostLists(f, {{1, 2}});
+  ExpectBoolResult(RunEq(f, xss, xss), true);
+}
+
+TEST(CelListEqImplNestedTest, DifferingNestedElementComparesFalse) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{1, 2}}),
+                         MakeArenaListOfArenaLists(f, {{1, 3}})),
+                   false);
+  Fixture g;
+  ExpectBoolResult(RunEq(g, MakeHostListOfHostLists(g, {{1, 2}}),
+                         MakeHostListOfHostLists(g, {{1, 3}})),
+                   false);
+}
+
+TEST(CelListEqImplNestedTest, DifferingNestedLengthComparesFalse) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{1, 2}}),
+                         MakeHostListOfHostLists(f, {{1, 2, 3}})),
+                   false);
+}
+
+TEST(CelListEqImplNestedTest, EmptyNestedElementsCompareEqual) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{}}),
+                         MakeArenaListOfArenaLists(f, {{}})),
+                   true);
+  // An empty OUTER list is equal cross-origin too.
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {}),
+                         MakeArenaListOfArenaLists(f, {})),
+                   true);
+  // Empty inner vs non-empty inner is a length mismatch, not equal.
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{}}),
+                         MakeArenaListOfArenaLists(f, {{1}})),
+                   false);
+}
+
+TEST(CelListEqImplNestedTest, Int64MinNestedElementRoundTrips) {
+  // Boundary element: the encode path must carry INT64_MIN exactly,
+  // not through a lossy double.
+  constexpr int64_t kMin = -9223372036854775807LL - 1;
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{kMin}}),
+                         MakeArenaListOfArenaLists(f, {{kMin}})),
+                   true);
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{kMin}}),
+                         MakeArenaListOfArenaLists(f, {{kMin + 1}})),
+                   false);
+}
+
+TEST(CelListEqImplNestedTest, NestedMapElementsCompareByValue) {
+  Fixture f;
+  auto host_row = [] {
+    return celwasm::Value::Map(
+        {{celwasm::Value::String("a"), celwasm::Value::Int(1)}});
+  };
+  CelValue host_a = MakeHostList(f, {host_row()});
+  CelValue host_b = MakeHostList(f, {host_row()});
+  ExpectBoolResult(RunEq(f, host_a, host_b), true);
+  CelValue host_diff = MakeHostList(
+      f, {celwasm::Value::Map(
+             {{celwasm::Value::String("a"), celwasm::Value::Int(2)}})});
+  ExpectBoolResult(RunEq(f, host_a, host_diff), false);
+}
+
+TEST(CelListEqImplNestedTest, AggregateVsScalarElementComparesFalse) {
+  // Cross-kind is langdef `false`, not an error.
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostListOfHostLists(f, {{1}}),
+                         MakeArenaList(f, {MakeInt(1)})),
+                   false);
+}
+
 TEST(CelListEqImplTest, MissingMessageSlotInArenaElementReturnsNonOkStatus) {
   // A CEL_MESSAGE wire value must reference an interned msg_slot;
   // a dangling slot is codegen/interner drift, surfaced as a non-OK

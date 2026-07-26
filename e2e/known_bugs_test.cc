@@ -34,6 +34,7 @@
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
+#include "eval/internal/cel_host.h"  // HostListBacking definition
 #include "eval/value.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
@@ -93,11 +94,32 @@ absl::StatusOr<Value> TryEval(absl::string_view source) {
 // numeric_compare_kernel for ordering only.  Then delete the SKIP.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, MapKeyLossyDoubleEquality) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: returns true, want false): lossy "
-         "double rounding in numeric map-key equality, "
-         "cel_runtime.c:42-43 via cel_compare.c:139. "
-         "Delete this line when fixed — the assertion below guards it.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0004
+severity: P0
+kind: wrong-value
+summary: numeric map-key equality rounds a >2^53 int key to double, so a distinct double query key spuriously matches
+repro: dyn(9007199254740992.0) in {9007199254740993: 'a'}
+bindings: none
+actual: true
+expected: false
+layer: runtime/cel_runtime.c:42-43 (map_keys_equal) via runtime/cel_compare.c:139 (cmp_double)
+blocked-by: none
+found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: map_keys_equal compares two numeric keys with
+  numeric_compare_kernel(...) == kCmpEqual, which for the int-vs-double case
+  casts the int to double (cel_compare.c:139, cmp_double((double)a, b)); for
+  |int| > 2^53 that cast is lossy, so 9007199254740993 and 9007199254740992.0
+  collapse to the same f64. The spec requires key lookup to use LOSSLESS
+  convertibility, not a rounding compare - see cel-cpp
+  equality_functions.cc CheckAlternativeNumericType and
+  internal/number.h LosslessConvertibleToInt. Route map_keys_equal, `in` and
+  lookup through a lossless-eq predicate and leave numeric_compare_kernel for
+  ordering only. The dyn(...) wrapper in the repro is only there to clear the
+  static-subset checker for a cross-type `in`; the defect is in the runtime
+  kernel. Silently wrong with no error, hence P0.
+issue: none
+)CELBUG";
   auto v = TryEval("dyn(9007199254740992.0) in {9007199254740993: 'a'}");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -226,9 +248,28 @@ TEST(KnownBugs, HasOnMapAbsentKey) {
 }
 
 TEST(KnownBugs, DynDoubleListIndexCoercion) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0005
+severity: P1
+kind: wrong-value
+summary: dyn double list-index coercion diverges from the lists.textproto row
+repro: [7, 8, 9][dyn(0.0)]
+bindings: none
+actual: unverified - the original pin message recorded only "verified reproducing" and no observed value. Re-probed 2026-07-25 through tools/cel eval (static link mode), which returns 7 (the spec-correct answer), so this pin may be STALE.
+expected: 7
+layer: the list-index dispatcher for a dyn-typed index (compiler/codegen expr_lower index arm + runtime/cel_list.c index coercion)
+blocked-by: none
+found-by: conformance corpus spec/tests/simple/testdata/lists.textproto (whole-number double index row)
+fix-hint: doc/implementation-plan/known-issues-findings.md records this row as
+  "returns error; conformance fixture expects a value", but a 2026-07-25 CLI
+  re-probe returned the correct value. BEFORE working this pin, delete the
+  GTEST_SKIP and run the assertion under BOTH e2e link modes
+  (known_bugs_test_static and known_bugs_test_dynamic) - if it passes, the
+  right change is to remove the pin, not to fix anything. Mirror of CELW-0006
+  (the uint index form); settle both with the same probe.
+status: possibly-stale - re-run the assertion unskipped before working it
+issue: none
+)CELBUG";
   // lists.textproto: [7,8,9][dyn(0.0)] == 7 (whole-number double index).
   auto v = TryEval("[7, 8, 9][dyn(0.0)]");
   ASSERT_TRUE(v.ok()) << v.status();
@@ -237,9 +278,25 @@ TEST(KnownBugs, DynDoubleListIndexCoercion) {
 }
 
 TEST(KnownBugs, DynUintListIndexCoercion) {
-  GTEST_SKIP() << "KNOWN BUG (verified reproducing); delete this line to fix — "
-                  "the assertions below then guard it. See the per-test "
-                  "comment + doc/implementation-plan/known-issues-findings.md.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0006
+severity: P1
+kind: wrong-value
+summary: dyn uint list-index coercion diverges from the lists.textproto row
+repro: [7, 8, 9][dyn(0u)]
+bindings: none
+actual: unverified - the original pin message recorded only "verified reproducing" and no observed value. Re-probed 2026-07-25 through tools/cel eval (static link mode), which returns 7 (the spec-correct answer), so this pin may be STALE.
+expected: 7
+layer: the list-index dispatcher for a dyn-typed index (compiler/codegen expr_lower index arm + runtime/cel_list.c index coercion)
+blocked-by: none
+found-by: conformance corpus spec/tests/simple/testdata/lists.textproto (uint index row)
+fix-hint: identical situation to CELW-0005, one type over - see that pin's
+  fix-hint. doc/implementation-plan/known-issues-findings.md records the row
+  as returning an error; a 2026-07-25 CLI re-probe returned 7. Delete the
+  GTEST_SKIP and run under both e2e link modes before doing any work.
+status: possibly-stale - re-run the assertion unskipped before working it
+issue: none
+)CELBUG";
   // lists.textproto: [7,8,9][dyn(0u)] == 7.
   auto v = TryEval("[7, 8, 9][dyn(0u)]");
   ASSERT_TRUE(v.ok()) << v.status();
@@ -367,10 +424,26 @@ TEST(KnownBugs, MapDotFieldBacktickQuotedDot) {
 // ══════════════════════════════════════════════════════════════════
 
 TEST(KnownBugs, IndexOfPosBoundIsByteNotCodepoint) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: returns -1, want out-of-range error): "
-         "indexOf/lastIndexOf pos bounded by byte length not code-point count, "
-         "cel_string_ext_search.cc:122-133. Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0007
+severity: P1
+kind: wrong-value
+summary: indexOf/lastIndexOf bound the pos argument by BYTE length, not code-point count
+repro: 'éé'.indexOf('x', 3)
+bindings: none
+actual: -1
+expected: an evaluation error (pos out of range)
+layer: runtime/cel_string_ext_search.cc:122-133 (ValidatePos)
+blocked-by: none
+found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: 'éé' is 2 code points / 4 bytes. ValidatePos bounds pos against the
+  BYTE length, but cel-cpp bounds it against Size() = the code-point count, so
+  pos=3 is out of range upstream and a value here. Silently wrong (a plausible
+  -1 with no error), so any caller that treats -1 as "not found" gets a
+  believable wrong answer on any multi-byte string. Fix by counting code
+  points in ValidatePos, the same walk cel_string_size_at_v already does.
+issue: none
+)CELBUG";
   // 'éé' = 2 code points / 4 bytes. indexOf(sub, pos) bounds pos against the
   // BYTE length (cel_string_ext_search.cc:122-133 ValidatePos), but cel-cpp
   // bounds pos against Size() = code-point count, so pos=3 is out of range.
@@ -383,9 +456,26 @@ TEST(KnownBugs, IndexOfPosBoundIsByteNotCodepoint) {
 }
 
 TEST(KnownBugs, FormatFixedRejectsInt) {
-  GTEST_SKIP() << "KNOWN BUG (verified: renders '42.000000', want error): "
-                  "%f/%e accept int; cel-cpp errors. "
-                  "cel_string_format_render.cc:277-291. Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0008
+severity: P1
+kind: over-permissive
+summary: %f / %e accept an int operand and render it; cel-cpp errors
+repro: '%f'.format([42])
+bindings: none
+actual: "42.000000"
+expected: an evaluation error (cel-cpp: "expected a double but got a int")
+layer: runtime/cel_string_format_render.cc:277-291 (ToDouble)
+blocked-by: none
+found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: cel-cpp's %f/%e accept ONLY a double or the string tokens
+  NaN / Infinity. Our ToDouble additionally accepts int and renders it, so we
+  are the over-permissive side. Note the paired pin CELW-0009, which is the
+  opposite direction on the same helper - ToDouble also REJECTS the string
+  tokens it should accept. Fix both in one edit to ToDouble: reject int,
+  accept the NaN / Infinity string tokens.
+issue: none
+)CELBUG";
   // cel-cpp %f/%e accept only double or the string tokens NaN/Infinity; %f of
   // an int errors ("expected a double but got a int"). cel2's ToDouble
   // (cel_string_format_render.cc:277-291) accepts int and renders it.
@@ -396,10 +486,24 @@ TEST(KnownBugs, FormatFixedRejectsInt) {
 }
 
 TEST(KnownBugs, FormatFixedAcceptsNanToken) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: errors, want 'NaN'): %f of string token "
-         "'NaN'/'Infinity' should render; ToDouble has no string-token path, "
-         "cel_string_format_render.cc:277-291. Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0009
+severity: P1
+kind: missing-feature
+summary: %f of the string tokens NaN / Infinity errors; cel-cpp renders them
+repro: '%f'.format(['NaN'])
+bindings: none
+actual: an evaluation error (cel eval prints `error: invalid_argument`)
+expected: the string "NaN"
+layer: runtime/cel_string_format_render.cc:277-291 (ToDouble - no string-token path)
+blocked-by: none
+found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: cel-cpp's %f/%e accept a double OR the literal string tokens
+  NaN / Infinity, rendering the token verbatim. Our ToDouble has no
+  string arm at all, so it errors. Paired with CELW-0008, which is the same
+  helper being too permissive in the other direction; fix them together.
+issue: none
+)CELBUG";
   // cel-cpp %f of the string "NaN" renders "NaN"; cel2 errors (ToDouble has
   // no string-token path, cel_string_format_render.cc:277-291).
   auto v = TryEval("'%f'.format(['NaN'])");
@@ -413,10 +517,28 @@ TEST(KnownBugs, FormatFixedAcceptsNanToken) {
 // ══════════════════════════════════════════════════════════════════
 
 TEST(KnownBugs, ExistsAbsorbsErrorAccumulator) {
-  GTEST_SKIP() << "KNOWN BUG (verified: returns error, want true): exists "
-                  "short-circuits on an ERROR/UNKNOWN accumulator "
-                  "(expr_lower_comprehension.cc:642-645 checks bool-payload "
-                  "bits, not accu.kind). Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0010
+severity: P0
+kind: wrong-value
+summary: exists short-circuits on an ERROR/UNKNOWN accumulator instead of absorbing it when a later element matches
+repro: [0, 2].exists(x, 2/x == 1)
+bindings: none
+actual: an evaluation error (cel eval prints `error: divide_by_zero`)
+expected: true
+layer: compiler/codegen/expr_lower_comprehension.cc:642-645 (the loop-cond peephole)
+blocked-by: none
+found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: `exists` desugars to `@result || pred`, so per langdef 3VL an error
+  from one element is ABSORBED once a later element matches; the error only
+  surfaces if NO element ever matches. Our loop-cond peephole br_if-exits on
+  the accu's bool-payload BITS without checking accu.kind == CEL_BOOL, so an
+  ERROR accu (a non-zero error code sitting in the bool payload slot) reads as
+  "true", short-circuits the loop, and becomes the result. Gate the br_if on
+  the kind, not the payload bits. P0: reachable from ordinary input, and the
+  wrong answer is an error where a value was due.
+issue: none
+)CELBUG";
   // `exists` is `@result || pred`: an error from one element is absorbed
   // once a LATER element matches; the error only surfaces if NO element
   // ever matches. cel2's loop-cond peephole (expr_lower_comprehension.cc:
@@ -431,9 +553,27 @@ TEST(KnownBugs, ExistsAbsorbsErrorAccumulator) {
 }
 
 TEST(KnownBugs, TransformMapEntryDuplicateKey) {
-  GTEST_SKIP() << "KNOWN BUG (verified: returns {0:4}, want duplicate-key "
-                  "error): cel_map_insert_at overwrites last-write-wins "
-                  "(cel_runtime.c:157-162). Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0011
+severity: P1
+kind: wrong-value
+summary: a duplicate map key built by transformMapEntry is last-write-wins; cel-cpp errors
+repro: {1: 2, 3: 4}.transformMapEntry(k, v, {0: v})
+bindings: none
+actual: {0: 4}
+expected: an evaluation error (duplicate map key)
+layer: runtime/cel_runtime.c:157-162 (cel_map_insert_at)
+blocked-by: none
+found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: comprehensions_v2 builds the result through cel.@mapInsert, which is
+  MapBuilder::Put in cel-cpp (common/values/value_builder.cc) and errors on a
+  duplicate key. Our cel_map_insert_at silently overwrites. Silently wrong -
+  the collision is invisible in the result - so treat the severity as the
+  input-rarity call, not a "loud error" call. The fix has to distinguish the
+  insert-into-comprehension-accumulator path (must error) from map-literal
+  construction, which has its own duplicate-key rules.
+issue: none
+)CELBUG";
   // comprehensions_v2 builds the result via cel.@mapInsert == MapBuilder::Put,
   // which errors on a duplicate key (cel-cpp value_builder.cc). cel2's
   // cel_map_insert_at (cel_runtime.c:157-162) overwrites last-write-wins.
@@ -452,11 +592,28 @@ TEST(KnownBugs, TransformMapEntryComputedEntryCrash) {
   // expr_lower_comprehension.cc:800-805 / :826-831 and ABORTS the compiler
   // instead of returning a status. Kept SKIPPED because running it would
   // abort this whole test binary; delete the skip only alongside the fix.
-  GTEST_SKIP()
-      << "KNOWN BUG (verified via cel CLI: ABSL_CHECK abort): "
-         "transformMapEntry with a computed (non-literal) entry "
-         "crashes the compiler, expr_lower_comprehension.cc:800-805. "
-         "Running unskipped ABORTS the process — fix first, then unskip.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0012
+severity: P0
+kind: crash
+summary: transformMapEntry with a computed (non-literal) entry expression ABORTS the compiler
+repro: {1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {})
+bindings: none
+actual: process abort. Re-confirmed 2026-07-25 through tools/cel eval: "F expr_lower_comprehension.cc:888] Check failed: false transformMapEntry: non-literal entry expression unsupported (needs runtime map-merge helper); entry kind=4" followed by a Check-failure stack trace.
+expected: a value, or an absl::Status rejection - never an abort
+layer: compiler/codegen/expr_lower_comprehension.cc:888 (originally cited as :800-805; the ABSL_CHECK has moved)
+blocked-by: none
+found-by: manual, via the cel CLI; re-confirmed 2026-07-25
+fix-hint: the entry arm only handles a literal kMapExpr and ABSL_CHECK(false)s
+  on anything else, so a ternary (or any computed entry) takes the whole
+  process down. Two acceptable fixes: emit the runtime map-merge helper the
+  check message names, or - as a strictly smaller first step - reject the
+  shape at the frontend with an InvalidArgument status so a bad expression
+  can never reach codegen. DO NOT delete the GTEST_SKIP before the fix lands:
+  running this case unskipped aborts the whole test binary, taking every
+  other case in it with it.
+issue: none
+)CELBUG";
   auto v =
       TryEval("{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {})");
   EXPECT_TRUE(v.ok()) << "should return a value/status, not crash: "
@@ -468,9 +625,26 @@ TEST(KnownBugs, TransformMapEntryComputedEntryCrash) {
 // ══════════════════════════════════════════════════════════════════
 
 TEST(KnownBugs, MaxRangeTimestampConstruction) {
-  GTEST_SKIP() << "KNOWN BUG (verified: CEL_ERR_OVERFLOW, want the timestamp "
-                  "string): max-range timestamp nanos rejected, "
-                  "cel_time_parse.cc:178 / cel_time.c:46. Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0013
+severity: P1
+kind: wrong-value
+summary: the maximum in-range timestamp is rejected because any positive nanos at the max second overflows
+repro: string(timestamp('9999-12-31T23:59:59.999999999Z'))
+bindings: none
+actual: CEL_ERR_OVERFLOW at construction (as recorded when the pin was written). Re-probed 2026-07-25 through tools/cel eval, which returned the EXPECTED string - so this pin may be STALE.
+expected: "9999-12-31T23:59:59.999999999Z"
+layer: runtime/cel_time_parse.cc:178 (the `seconds == MAX && nanos > 0` guard) and runtime/cel_time.c:46
+blocked-by: none
+found-by: conformance corpus spec/tests/simple/testdata/timestamps.textproto (max timestamp row)
+fix-hint: cel-cpp's MaxTimestamp is seconds 253402300799 PLUS nanos 999999999,
+  so positive nanos at the max second are in range; our guard rejects any
+  nanos > 0 there. Before working this, delete the GTEST_SKIP and run the
+  assertion under both e2e link modes - a 2026-07-25 CLI re-probe already
+  returns the expected string, so the pin may simply be closable.
+status: possibly-stale - re-run the assertion unskipped before working it
+issue: none
+)CELBUG";
   // timestamps.textproto: the maximum timestamp
   // 9999-12-31T23:59:59.999999999Z is valid (cel-cpp MaxTimestamp =
   // seconds 253402300799 + nanos 999999999), but cel2 rejects ANY
@@ -532,10 +706,31 @@ TEST(KnownBugs, DoubleToStringExponentForm) {
 // DoubleToStringShortestRoundTrip / DoubleToStringExponentForm,
 // which pin the cases that already work.
 TEST(KnownBugs, PbtStringDoubleScientificForm) {
-  GTEST_SKIP() << "KNOWN BUG (verified: renders '4.294967295e+09', want "
-                  "'4294967295'): wasm to_chars(general) picks scientific "
-                  "where fixed is shorter, cel_convert_double_format.cc. "
-                  "Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0014
+severity: P2
+kind: wrong-value
+summary: string(double) picks the scientific form where the fixed form is shorter
+repro: string(4294967295.0)
+bindings: none
+actual: "4.294967295e+09"
+expected: "4294967295"
+layer: runtime/cel_convert_double_format.cc (the std::to_chars(general) call, as built for wasm32-wasi)
+blocked-by: none
+found-by: e2e/fuzz string seed=113 (M30 string-functions grammar); re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: std::chars_format::general must choose fixed vs scientific by output
+  LENGTH, preferring fixed on a tie - fixed is 10 chars here, scientific 15,
+  so fixed wins, and cel-cpp's FormatDouble (the same to_chars call) produces
+  "4294967295". Our wasm libc++ to_chars emits scientific instead, i.e. this
+  is a toolchain-level non-conformance rather than a bug in our kernel;
+  confirm against the wasi-sdk libc++ before rewriting our formatter. This
+  case cannot be settled through the differential oracle: the oracle's cel-cpp
+  build lacks <charconv> double-to-chars and falls back to %.17g, which is why
+  string(double) is excluded from the fuzz grammar. Sits beside
+  DoubleToStringShortestRoundTrip / DoubleToStringExponentForm, which pin the
+  cases that already work.
+issue: none
+)CELBUG";
   auto v = TryEval("string(4294967295.0)");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kString) << static_cast<int>(v->kind());
@@ -543,10 +738,26 @@ TEST(KnownBugs, PbtStringDoubleScientificForm) {
 }
 
 TEST(KnownBugs, OptionalSelectOnMapRejected) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified: checker-rejected, want 1): static subset "
-         "wrongly rejects .?field optional select (recurses into the synthetic "
-         "field-name child), parse_and_check.cc:631-641. Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0015
+severity: P1
+kind: missing-feature
+summary: the static subset wrongly rejects the whole .?field optional-select syntax
+repro: {'a': 1}.?a.value()
+bindings: none
+actual: a compile rejection. Re-confirmed 2026-07-25 through tools/cel eval: "ERROR: expression is not in the static subset: expr id=6 is dyn (no type_map entry)".
+expected: 1
+layer: compiler/frontend/parse_and_check.cc:631-641 (RejectDyn)
+blocked-by: none
+found-by: conformance corpus (optionals rows); re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: cel-cpp's HandleOptSelect ERASES the type of the synthetic
+  field-name argument (checker/type_checker_impl.cc:1168). RejectDyn then
+  recurses into that untyped child and flags "no type_map entry", which blocks
+  the entire `.?` syntax rather than any genuinely dynamic expression. The fix
+  is to teach RejectDyn to skip the synthetic field-name child of an optional
+  select, not to relax the dyn gate generally.
+issue: none
+)CELBUG";
   // `.?field` (optional select) is wrongly rejected by the static subset.
   // cel-cpp's HandleOptSelect erases the synthetic field-name arg's type
   // (type_checker_impl.cc:1168); cel2's RejectDyn recurses into that untyped
@@ -559,14 +770,30 @@ TEST(KnownBugs, OptionalSelectOnMapRejected) {
 }
 
 TEST(KnownBugs, DoubleFromStringRejectsWhitespace) {
-  GTEST_SKIP()
-      << "KNOWN BUG (verified): double('  3.14  ') needs BOTH "
-         "whitespace stripping AND correctly-rounded decimal->double. "
-         "The whitespace strip is trivial, but cel2's parse_double_str "
-         "(cel_convert.c) is 1 ULP off (3.14 -> 3.1399999999999997) — "
-         "same imprecise-decimal<->double family as "
-         "DoubleToStringShortestRoundTrip. Needs a correctly-rounded "
-         "decimal->double; not Tier-1. Delete to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0016
+severity: P1
+kind: missing-feature
+summary: double(<string>) does not strip surrounding ASCII whitespace, so a padded numeral errors
+repro: double('  3.14  ')
+bindings: none
+actual: an evaluation error. Re-confirmed 2026-07-25 through tools/cel eval, which prints `error: overflow`.
+expected: 3.14
+layer: runtime/cel_convert.c:350-362 (parse_double_str)
+blocked-by: none
+found-by: conformance corpus (conversions rows); re-confirmed 2026-07-25 through tools/cel eval
+fix-hint: cel-cpp's double(string) goes through absl::SimpleAtod, which strips
+  surrounding ASCII whitespace before parsing; parse_double_str does not skip
+  leading or trailing space. The strip itself is trivial. The ORIGINAL pin
+  message also claimed parse_double_str was 1 ULP off on 3.14
+  (3.1399999999999997) and tied this to CELW-0003; a 2026-07-25 re-probe
+  showed `double("3.14")` returning exactly 3.14, so that half of the claim
+  looks stale - but CELW-0003 (double of a 21-digit decimal string) still
+  reproduces, so the correctly-rounded-parse work is real and this pin should
+  be closed alongside it. Distinct from the documented hex-float gap
+  (m10-conversions.md:649), which is left as known.
+issue: none
+)CELBUG";
   // cel-cpp double(string) uses absl::SimpleAtod, which strips surrounding
   // ASCII whitespace before parsing; cel2's parse_double_str
   // (cel_convert.c:350-362) does not skip leading/trailing space, so
@@ -637,14 +864,19 @@ std::string MakeIntListInSource(int n) {
 // `[0..999_999]` source (~7.9 MB) is rejected at parse.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, ParserSourceCodepointLimitNotConfigurable) {
-  GTEST_SKIP()
-      << "KNOWN LIMIT (verified: returns INVALID_ARGUMENT / 'expression "
-         "size exceeds codepoint limit', want OK): cel-cpp parser "
-         "default cap of 100 k codepoints; DefaultParserOptions at "
-         "compiler/frontend/parse_and_check.cc:1079 doesn't override "
-         "it and no CompilerOptions knob exists.  Delete this line "
-         "when the cap is raised or exposed via CompilerOptions "
-         "(cleanup-backlog #15).";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: deferred-feature
+why-not-a-bug: this is an unexposed configuration knob, not a miscompile.
+  cel-cpp's parser caps source at 100 000 codepoints
+  (expression_size_codepoint_limit, third_party/cel-cpp/parser/options.h:37);
+  our DefaultParserOptions (compiler/frontend/parse_and_check.cc:1079) leaves
+  the upstream default in place and CompilerOptions exposes no override. The
+  rejection is LOUD and correct-shaped - verified INVALID_ARGUMENT
+  "expression size exceeds codepoint limit" - so nothing miscompiles; a
+  110 k-codepoint source is simply refused. Un-skip when the cap is raised or
+  surfaced through CompilerOptions.
+citation: doc/implementation-plan/cleanup-backlog.md #15; third_party/cel-cpp/parser/options.h:37
+)CELSKIP";
   // A 110 k-codepoint single string literal is the simplest probe;
   // no bindings required.  cel-cpp counts the surrounding quotes too
   // so 110 k content + 2 quotes pushes well past the cap.
@@ -676,8 +908,12 @@ TEST(KnownBugs, LiteralIntListInScan10KEvals) {
   const std::string source = MakeIntListInSource(kN);
   auto v = TryEvalActivated(
       source,
-      [](Compiler::Builder& b) { b.DeclareVariable("x", CelType::Int()); },
-      [](Activation& a) { a.Bind("x", Value::Int(kN - 2)); });
+      [](Compiler::Builder& b) {
+        b.DeclareVariable("x", CelType::Int());
+      },
+      [](Activation& a) {
+        a.Bind("x", Value::Int(kN - 2));
+      });
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
   EXPECT_TRUE(*v->AsBool());  // kN-2 is a member of [0..kN-1]
@@ -694,13 +930,29 @@ TEST(KnownBugs, LiteralIntListInScan10KEvals) {
 // large permission sets hit this.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, BoundStringListInScanArenaOomAt10K) {
-  GTEST_SKIP() << "KNOWN BUG (verified: returns FAILED_PRECONDITION / "
-                  "'arena OOM in CelMapLookupImpl' from inside cel_list_in, "
-                  "want OK + true).  10 k bound 50-byte strings exhaust the "
-                  "64 KiB per-Eval arena (runtime/cel_layout.h:16) during "
-                  "the linear scan.  Delete this line when cel_list_in "
-                  "stops materialising O(N) arena state per scan, OR the "
-                  "arena can grow on demand (cleanup-backlog #17).";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0017
+severity: P1
+kind: missing-feature
+summary: `x in xs` over a bound list of 10 k 50-byte strings exhausts the per-Eval arena mid-scan
+repro: perm in perms
+bindings: perm = <a 50-byte string>, perms = a bound list<string> of 10 000 unique 50-byte strings (the last of which is `perm`)
+actual: FAILED_PRECONDITION "arena OOM in CelMapLookupImpl", raised from inside cel_list_in's trampoline
+expected: OK, with the value true
+layer: runtime/cel_layout.h:16 (the per-Eval arena) plus the cel_list_in scan path in eval/internal/cel_host.cc
+blocked-by: none
+found-by: the in-operator eval benches (benchmark/eval corpus lists cells)
+fix-hint: this is a graceful error, not a crash, and it is distinct from the
+  literal-list case (which was fixed by the rodata-window raise): the source
+  list here is a BOUND variable, so the OOM happens during the scan, not
+  during list construction. Two independent fixes would each close it - stop
+  cel_list_in materialising O(N) arena state per scan, or let the arena grow
+  on demand. Production CEL-policy / IAM workloads with large permission sets
+  hit this shape directly. Sits adjacent to the host-origin aggregate family
+  (operations that must reach INSIDE an activation-bound aggregate); if that
+  family is reworked, re-measure this before working it separately.
+issue: none
+)CELBUG";
   constexpr size_t kN = 10'000;
   // Build N unique 50-byte strings deterministically.
   std::vector<Value> elements;
@@ -1065,14 +1317,233 @@ TEST(KnownBugs, PbtSplitComputedReceiverSlotAlias) {
 // duration->int overload from the checker + overload_table; then
 // `int(duration(...))` rejects at compile and this assertion holds.
 TEST(KnownBugs, PbtIntOfDurationOverPermissive) {
-  GTEST_SKIP() << "KNOWN BUG (verified: compiles + returns 3661, want a "
-                  "compile rejection): our checker admits int(duration), "
-                  "which cel-cpp rejects as no-matching-overload.  Remove "
-                  "the duration_to_int64 overload to fix.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0001
+severity: P1
+kind: over-permissive
+summary: we accept int(<duration>); cel-cpp rejects it as no-such-overload
+repro: int(duration("3661s"))
+actual: 3661
+expected: a compile-time rejection (no such CEL overload)
+layer: compiler/codegen/overload_table.cc (drop the duration_to_int64 seed) + the checker decl
+blocked-by: none
+found-by: e2e/fuzz mining the int target (2026-06-11)
+fix-hint: CEL's int() takes int/uint/double/string/timestamp, NOT duration
+  (cel-cpp runtime/standard/type_conversion_functions.cc,
+  RegisterIntConversionFunctions). We over-accept because overload_table.cc
+  carries a duration_to_int64 seed and our checker admits it. Harmless to
+  valid programs (a superset) but non-conformant. This is the mirror of
+  CELW-0002 — fix both together, they touch the same table.
+issue: none
+)CELBUG";
   auto v = TryEval(R"(int(duration("3661s")))");
   EXPECT_FALSE(v.ok())
       << "int(duration) should be rejected (no such CEL overload), got "
       << (v.ok() ? "a value" : v.status().ToString());
+}
+
+// PBT list_int (m36 slice 3, 2026-07-25).  FIXED — kept as the
+// regression guard.  List concatenation used to be broken for every
+// HOST-ORIGIN operand: `[1,2] + [3,4]` (both arena-built literals)
+// worked, but the moment either side was an activation-bound list the
+// result was a CEL error, where cel-cpp returns the concatenation:
+//
+//     [1, 2] + [3, 4]      -> ok (list)          <- arena + arena
+//     [1, 2] + xs          -> CEL-ERROR          <- arena + host
+//     xs + [1, 2]          -> CEL-ERROR          <- host  + arena
+//     xs + ys              -> CEL-ERROR          <- host  + host
+//
+// Found by e2e/fuzz the first time `add_list` was registered as a
+// FIRST-CLASS production (m36 slice 2).  It had been "covered" for
+// a year only through `filter`/`map` macro expansion, whose
+// accumulator concatenates two arena lists — the one origin
+// combination that worked.  Oracle: `([1, 2, 3] + xs)` with
+// xs=[1,2,3] returns a 6-element list (mining seed 36, list_int d4).
+//
+// Fix: `CelListConcatImpl` (eval/internal/cel_host.cc) — the
+// trampoline the dispatcher already routed every non-arena pairing to
+// — now LIFTS both operands into one fresh arena list instead of
+// poisoning TYPE_MISMATCH.  The concat production is back in the
+// fuzz grammar (RegisterAggregateOperators in grammar_aggregates.cc).
+TEST(KnownBugs, PbtListConcatHostOriginPoisons) {
+  // Every origin pairing, asserted down to the element values —
+  // "it's a list" was what let the arena+arena path masquerade as
+  // working coverage for a year.
+  auto declare = [](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()));
+    b.DeclareVariable("ys", CelType::List(CelType::Int()));
+  };
+  auto bind = [](Activation& a) {
+    a.Bind("xs", Value::List({Value::Int(3), Value::Int(4)}));
+    a.Bind("ys", Value::List({Value::Int(5)}));
+  };
+  struct Case {
+    const char* source;
+    std::vector<int64_t> want;
+  };
+  const std::vector<Case> cases = {
+      {"[1, 2] + [3, 4]", {1, 2, 3, 4}},  // arena + arena
+      {"[1, 2] + xs", {1, 2, 3, 4}},      // arena + host
+      {"xs + [1, 2]", {3, 4, 1, 2}},      // host  + arena
+      {"xs + ys", {3, 4, 5}},             // host  + host
+      {"xs + []", {3, 4}},                // host  + empty arena
+      {"[] + xs", {3, 4}},                // empty arena + host
+  };
+  for (const Case& c : cases) {
+    auto v = TryEvalActivated(c.source, declare, bind);
+    ASSERT_TRUE(v.ok()) << c.source << ": " << v.status();
+    ASSERT_EQ(v->kind(), Value::Kind::kList)
+        << c.source << ": " << static_cast<int>(v->kind());
+    auto backing = v->ListBacking();
+    ASSERT_TRUE(backing.ok()) << c.source << ": " << backing.status();
+    ASSERT_EQ((*backing)->Size(), c.want.size()) << c.source;
+    for (size_t i = 0; i < c.want.size(); ++i) {
+      auto elt = (*backing)->At(i, CelType::Int());
+      ASSERT_TRUE(elt.ok()) << c.source << " [" << i << "]: " << elt.status();
+      auto got = elt->AsInt();
+      ASSERT_TRUE(got.ok()) << c.source << " [" << i << "]: " << got.status();
+      EXPECT_EQ(*got, c.want[i]) << c.source << " [" << i << "]";
+    }
+  }
+}
+
+// Sibling of the concat bug above, same root cause (an operation that
+// must MATERIALISE a result could only read arena-backed lists), found
+// by probing every aggregate op against a bound operand:
+//
+//     xs.join("-")   -> CEL-ERROR (type_mismatch)
+//     xs.join()      -> CEL-ERROR (type_mismatch)
+//
+// Fix: `cel_string_join{,_sep}` resolve their operand through
+// `cel_list_arena_view`, which snapshots a host-backed list into the
+// arena (the same lift the comprehension prologue already used) before
+// the join walk.
+TEST(KnownBugs, PbtListJoinHostOriginPoisons) {
+  auto declare = [](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::String()));
+    b.DeclareVariable("empty", CelType::List(CelType::String()));
+  };
+  auto bind = [](Activation& a) {
+    a.Bind("xs", Value::List({Value::String("a"), Value::String("b")}));
+    a.Bind("empty", Value::List({}));
+  };
+  const std::vector<std::pair<const char*, const char*>> cases = {
+      {R"(xs.join("-"))", "a-b"},
+      {"xs.join()", "ab"},
+      {R"(empty.join("-"))", ""},
+      {"empty.join()", ""},
+      {R"((xs + ["c"]).join("-"))", "a-b-c"},
+  };
+  for (const auto& [source, want] : cases) {
+    auto v = TryEvalActivated(source, declare, bind);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    auto got = v->AsString();
+    ASSERT_TRUE(got.ok()) << source << ": " << got.status();
+    EXPECT_EQ(*got, want) << source;
+  }
+}
+
+// PBT list_string (m36 slice 4, 2026-07-25).  `double(<string>)`
+// rounds the WRONG WAY by one ULP for large magnitudes.
+//
+//   double("777777777777777777777")
+//     ours    777777777777777704960
+//     correct 777777777777777836032   (cel-cpp, and strtod/Python)
+//
+// The two differ by exactly 131072 == 2^17, which is one ULP at
+// this magnitude (the value sits between 2^69 and 2^70, so the
+// double spacing is 2^(70-53) = 2^17).  So our decimal->double
+// conversion truncates toward zero where IEEE-754 requires
+// round-to-nearest.  21 significant digits is past the 17 a double
+// can round-trip, which is exactly where a naive accumulate-then-
+// scale parse loses the tie-break.
+//
+// Found by mining `list_string` d4 seed 11, inside
+// `"%f".format([double("%o".format([i_max]))])` — the octal
+// rendering of INT64_MAX is a 21-digit numeric string, which is how
+// the fuzzer reached a magnitude the small numeric-string leaves
+// never do.  The divergence was invisible until the comparator
+// learned to escape non-printables (the same source carries an
+// embedded NUL, which truncated the rendered value so both sides
+// printed identically).
+TEST(KnownBugs, PbtDoubleFromLargeDecimalStringOffByOneUlp) {
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0003
+severity: P1
+kind: precision
+summary: double(<21-digit string>) rounds one ULP low
+repro: double("777777777777777777777")
+actual: 777777777777777704960
+expected: 777777777777777836032
+layer: the string->double parse behind string_to_double (runtime conversion path)
+blocked-by: none
+found-by: e2e/fuzz mine_divergences list_string seed=11 depth=4
+fix-hint: The two values differ by exactly 131072 == 2^17, which is one ULP
+  at this magnitude (the value lies between 2^69 and 2^70, so double spacing
+  is 2^(70-53)). We truncate toward zero where IEEE-754 requires
+  round-to-nearest-even. 21 significant digits is past the 17 a double can
+  round-trip, which is where a naive accumulate-then-scale parse loses the
+  tie-break; use a correctly-rounded decimal->binary conversion. Severity is
+  P1 not P0 because the error is in the last representable bit, not a
+  user-visible wrong answer, but it IS a silent conformance divergence.
+issue: none
+)CELBUG";
+  auto v = TryEval(R"(double("777777777777777777777"))");
+  ASSERT_TRUE(v.ok()) << v.status();
+  ASSERT_EQ(v->kind(), Value::Kind::kDouble);
+  EXPECT_EQ(*v->AsDouble(), 777777777777777836032.0);
+}
+
+// PBT duration (m36 slice 2, 2026-07-25).  `duration(<int>)` — the
+// MIRROR of PbtIntOfDurationOverPermissive above.  We compile it and
+// return that many seconds (`duration(1)` -> "1s"); cel-cpp's
+// RUNTIME errors "No matching overloads found : duration(int64)".
+//
+// The subtle part, and why reading cel-cpp source alone would have
+// gotten this wrong: cel-cpp's CHECKER *does* declare the overload
+// (`StandardOverloadIds::kIntToDuration` is added to the `duration`
+// FunctionDecl in checker/standard_library.cc:369), so a source
+// grep says "int->duration is standard CEL".  Its runtime never
+// registers an implementation, so the call type-checks and then
+// fails at evaluation.  cel-cpp is internally inconsistent here;
+// conformance is scored against the runtime, so OUR acceptance is
+// the non-conformant side.  (`timestamp(<int>)` is NOT affected —
+// its runtime impl exists, and the fuzzer mines it clean.)
+//
+// Found by e2e/fuzz mining the `duration` target at depth 4
+// (seed 4) immediately after the m36 slice-2 conversion
+// productions landed; reduced to `duration(1)`.  The production is
+// withheld from the grammar (like int(duration)) so the nightly
+// does not diverge on a bug we already track.  Fix: drop the
+// int64_to_duration overload from our checker + overload_table, or
+// wait for upstream to add the runtime impl and re-confirm with
+// the oracle.
+TEST(KnownBugs, PbtDurationFromIntOverPermissive) {
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0002
+severity: P1
+kind: over-permissive
+summary: we accept duration(<int>); cel-cpp's runtime rejects it
+repro: duration(1)
+actual: a duration value of 1s
+expected: an evaluation error (cel-cpp: "No matching overloads found : duration(int64)")
+layer: compiler/codegen/overload_table.cc (drop the int64_to_duration seed) + the checker decl
+blocked-by: none
+found-by: e2e/fuzz mine_divergences duration seed=4 depth=4
+fix-hint: cel-cpp is internally inconsistent here — its CHECKER declares
+  the overload (checker/standard_library.cc:369, kIntToDuration) but its
+  runtime never registers an implementation, so the call type-checks and
+  then fails at eval. Conformance is scored against the runtime, so OUR
+  acceptance is the non-conformant side. Remove the overload from our
+  checker + overload_table so it rejects at compile time. NOTE the
+  asymmetry: timestamp(<int>) IS declared AND implemented upstream, mines
+  clean, and must keep working.
+issue: none
+)CELBUG";
+  auto v = TryEval("duration(1)");
+  EXPECT_FALSE(v.ok())
+      << "duration(int) should be rejected (cel-cpp's runtime has no such "
+      << "overload), got " << (v.ok() ? "a value" : v.status().ToString());
 }
 
 // PBT int (M30 string grammar, 2026-06-11).  Two-arg
@@ -1099,9 +1570,34 @@ TEST(KnownBugs, PbtIntOfDurationOverPermissive) {
 // start != end`; but matching a likely upstream off-by-one is a
 // judgment call — left as a pin.
 TEST(KnownBugs, PbtSubstringEndEqualsSizeOverPermissive) {
-  GTEST_SKIP() << "KNOWN BUG (verified: returns \"alse\", oracle errors): "
-                  "two-arg substring(start, size) over-accepts vs cel-cpp.  "
-                  "See SubstringImpl off-by-one in cel-cpp string_value.cc.";
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0018
+severity: P1
+kind: over-permissive
+summary: two-arg substring(start, end) with end == size() returns the tail slice; cel-cpp errors
+repro: "false".substring(1, 5)
+bindings: none
+actual: "alse"
+expected: an evaluation error (cel-cpp: "<start> or <end> is greater than <string>.size()")
+layer: runtime/cel_string_ext (the two-arg substring kernel)
+blocked-by: none
+found-by: e2e/fuzz mining the int target (substring nested under lastIndexOf); oracle-confirmed via the since-removed SubstringProbe
+fix-hint: the root cause is UPSTREAM. In
+  third_party/cel-cpp/common/values/string_value.cc SubstringImpl (~line 705)
+  the `size_code_points == end` early-return only runs at the top of the
+  codepoint loop, and the loop exits the moment the string is consumed, so an
+  `end` equal to the full codepoint count is never matched and the post-loop
+  fallback only accepts start == end. The public StringValue::Substring
+  bounds-check (line 773) uses BYTE size with `>`, so end == size passes the
+  guard and reaches the buggy slice. Oracle: 'hello'.substring(0, 5),
+  'hello'.substring(1, 5) and this repro all ERROR upstream, while (0, 4) and
+  (5, 5) are values. We are the more-permissive - arguably more correct -
+  side, but conformance scores against cel-cpp. Matching a likely upstream
+  off-by-one is a judgment call, which is why this is pinned rather than
+  fixed; two-arg substring is withheld from the fuzz grammar
+  (compiler/../grammar_scalars.cc) so mining stays clean.
+issue: none
+)CELBUG";
   auto v = TryEval(R"("false".substring(1, 5))");
   EXPECT_FALSE(v.ok())
       << "substring(start, size) with start != size should error (matching "
@@ -1127,6 +1623,281 @@ TEST(KnownBugs, PbtModuloInt64MinByNegOneOverflows) {
       << "INT64_MIN % -1 should be an overflow error (matching cel-cpp), got "
          "value kind "
       << static_cast<int>(v->kind());
+}
+
+// ──────────────────────────────────────────────────────────────────
+// HOST-ORIGIN AGGREGATE FAMILY (2026-07-25 unimplemented sweep).
+//
+// Siblings of the concat/join pair above, same root shape: an
+// operation that has to look INSIDE an aggregate could only read
+// arena-built (literal) operands, and expressed "no host arm yet"
+// as a `return false` or a `poison(TYPE_MISMATCH)` rather than a
+// loud check.  Three of the five returned a plausible WRONG VALUE
+// with no error, which is the most severe class — `xss == xss`
+// returned `false`, violating reflexivity.
+//
+// The shared declare/bind fixture below is reused by every case so
+// the origin axis (arena literal vs `Activation::Bind`) is the only
+// thing that varies.
+// ──────────────────────────────────────────────────────────────────
+
+void DeclareHostAggregates(Compiler::Builder& b) {
+  b.DeclareVariable("xss", CelType::List(CelType::List(CelType::Int())));
+  b.DeclareVariable("yss", CelType::List(CelType::List(CelType::Int())));
+  b.DeclareVariable("zss", CelType::List(CelType::List(CelType::Int())));
+  b.DeclareVariable("empty_ss", CelType::List(CelType::List(CelType::Int())));
+  b.DeclareVariable("mins", CelType::List(CelType::List(CelType::Int())));
+  b.DeclareVariable("xs", CelType::List(CelType::Int()));
+  b.DeclareVariable("empty_xs", CelType::List(CelType::Int()));
+  b.DeclareVariable(
+      "mms", CelType::List(CelType::Map(CelType::String(), CelType::Int())));
+  b.DeclareVariable(
+      "mm", CelType::Map(CelType::String(), CelType::List(CelType::Int())));
+  b.DeclareVariable(
+      "nn", CelType::Map(CelType::String(), CelType::List(CelType::Int())));
+  b.DeclareVariable(
+      "pp", CelType::Map(CelType::String(), CelType::List(CelType::Int())));
+  b.DeclareVariable("empty_mm", CelType::Map(CelType::String(),
+                                             CelType::List(CelType::Int())));
+  b.DeclareVariable(
+      "deep_m", CelType::Map(CelType::String(),
+                             CelType::Map(CelType::String(), CelType::Int())));
+  b.DeclareVariable("ms", CelType::Map(CelType::String(), CelType::Int()));
+}
+
+constexpr int64_t kInt64Min = -9223372036854775807LL - 1;
+
+void BindHostAggregates(Activation& a) {
+  auto list12 = [] {
+    return Value::List({Value::Int(1), Value::Int(2)});
+  };
+  a.Bind("xss", Value::List({list12()}));
+  a.Bind("yss", Value::List({list12()}));
+  a.Bind("zss", Value::List({Value::List({Value::Int(1), Value::Int(3)})}));
+  a.Bind("empty_ss", Value::List({}));
+  a.Bind("mins", Value::List({Value::List({Value::Int(kInt64Min)})}));
+  a.Bind("xs", list12());
+  a.Bind("empty_xs", Value::List({}));
+  a.Bind("mms",
+         Value::List({Value::Map({{Value::String("a"), Value::Int(1)}})}));
+  a.Bind("mm",
+         Value::Map({{Value::String("a"), Value::List({Value::Int(1)})}}));
+  a.Bind("nn",
+         Value::Map({{Value::String("a"), Value::List({Value::Int(1)})}}));
+  a.Bind("pp",
+         Value::Map({{Value::String("a"), Value::List({Value::Int(2)})}}));
+  a.Bind("empty_mm", Value::Map({}));
+  a.Bind("deep_m",
+         Value::Map({{Value::String("a"),
+                      Value::Map({{Value::String("b"), Value::Int(7)}})}}));
+  a.Bind("ms", Value::Map({{Value::String("a"), Value::Int(1)}}));
+}
+
+absl::StatusOr<Value> EvalHostAggregate(absl::string_view source) {
+  return TryEvalActivated(source, DeclareHostAggregates, BindHostAggregates);
+}
+
+// Assert `source` evaluates to the boolean `want`.
+void ExpectBool(absl::string_view source, bool want) {
+  auto v = EvalHostAggregate(source);
+  ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+  auto got = v->AsBool();
+  ASSERT_TRUE(got.ok()) << source << ": " << got.status() << " (kind "
+                        << static_cast<int>(v->kind()) << ")";
+  EXPECT_EQ(*got, want) << source;
+}
+
+// F1 — list equality over host-origin operands with AGGREGATE
+// elements returned `false` for every pairing, including `xss == xss`.
+// Root: `EncodeBackingScalar` (eval/internal/cel_host.cc) encoded every
+// aggregate element to a `CEL_ERROR{TYPE_MISMATCH}` placeholder, and
+// `HostScalarSameKindEq`'s `default:` then compared two placeholders
+// unequal.  Arena twins (`[[1,2]] == [[1,2]]`) were always correct, so
+// the delta was purely operand origin.
+TEST(KnownBugs, PbtListEqNestedAggregateHostOrigin) {
+  struct Case {
+    const char* source;
+    bool want;
+  };
+  const std::vector<Case> cases = {
+      {"[[1, 2]] == [[1, 2]]", true},   // arena + arena (baseline)
+      {"xss == [[1, 2]]", true},        // host  + arena
+      {"[[1, 2]] == xss", true},        // arena + host
+      {"xss == yss", true},             // host  + host
+      {"xss == xss", true},             // reflexivity
+      {"xss == zss", false},            // nested + different
+      {"xss == [[1, 3]]", false},       // nested + different (arena rhs)
+      {"xss == [[1, 2], [3]]", false},  // different length
+      {"empty_ss == []", true},         // empty aggregate
+      {"[] == empty_ss", true},
+      {"empty_ss == xss", false},
+      // Boundary element: INT64_MIN must round-trip through the
+      // element encoder, not through a lossy double.
+      {"mins == [[-9223372036854775807 - 1]]", true},
+      {"mins == [[-9223372036854775807]]", false},
+      // Nested MAP elements take the same walk.
+      {R"(mms == [{"a": 1}])", true},
+      {R"(mms == [{"a": 2}])", false},
+      {R"([{"a": 1}] == mms)", true},
+  };
+  for (const Case& c : cases) {
+    ExpectBool(c.source, c.want);
+  }
+}
+
+// F1 (map half) — map equality over host-origin operands with
+// aggregate VALUES.  Same root cause: `SnapshotMapEntries` encoded
+// aggregate values through `EncodeBackingScalar`, so `mm == mm` was
+// `false`.
+TEST(KnownBugs, PbtMapEqNestedAggregateHostOrigin) {
+  struct Case {
+    const char* source;
+    bool want;
+  };
+  const std::vector<Case> cases = {
+      {R"({"a": [1]} == {"a": [1]})", true},  // arena + arena (baseline)
+      {R"(mm == {"a": [1]})", true},          // host  + arena
+      {R"({"a": [1]} == mm)", true},          // arena + host
+      {"mm == nn", true},                     // host  + host
+      {"mm == mm", true},                     // reflexivity
+      {"mm == pp", false},                    // nested + different
+      {R"(mm == {"a": [2]})", false},
+      {R"(mm == {"b": [1]})", false},  // key differs
+      {"empty_mm == {}", true},        // empty aggregate
+      {"mm == empty_mm", false},
+      // Nested MAP values.
+      {R"(deep_m == {"a": {"b": 7}})", true},
+      {R"(deep_m == {"a": {"b": 8}})", false},
+  };
+  for (const Case& c : cases) {
+    ExpectBool(c.source, c.want);
+  }
+}
+
+// F2 — `x in host_list` returned `false` for every aggregate needle.
+// Root: `BackingValueEqualsQuery`'s `default:` (eval/internal/
+// cel_host.cc) answered `false` for kList / kMap / kMessage backing
+// elements, so the scan could never match.  The asymmetry was the
+// tell: the *equality* walk had grown a real message arm, the `in`
+// scan never did.
+TEST(KnownBugs, PbtListInAggregateNeedleHostOrigin) {
+  struct Case {
+    const char* source;
+    bool want;
+  };
+  const std::vector<Case> cases = {
+      {"[1, 2] in [[1, 2]]", true},  // arena + arena (baseline)
+      {"[1, 2] in xss", true},       // arena needle, host haystack
+      {"xs in xss", true},           // host  needle, host haystack
+      {"xs in [[1, 2]]", true},      // host  needle, arena haystack
+      {"[1, 3] in xss", false},      // nested + different
+      {"[1, 2, 3] in xss", false},
+      {"[1, 2] in empty_ss", false},  // empty aggregate
+      {"empty_xs in xss", false},
+      // Boundary element.
+      {"[-9223372036854775807 - 1] in mins", true},
+      {"[-9223372036854775807] in mins", false},
+      // Map needle.
+      {R"({"a": 1} in mms)", true},
+      {R"({"a": 2} in mms)", false},
+      {"ms in mms", true},
+  };
+  for (const Case& c : cases) {
+    ExpectBool(c.source, c.want);
+  }
+}
+
+// F3 — `math.least(l)` / `math.greatest(l)` poisoned TYPE_MISMATCH for
+// a host-origin list (`runtime/cel_math_ext.c`'s `math_minmax_list`
+// accepted `CEL_LIST_ARENA` only).  Indistinguishable from a real type
+// error.  The 3-arg macro form always rewrites to an arena literal,
+// which is why this survived: only the single-list-argument form over
+// a bound variable reaches the host arm.
+TEST(KnownBugs, PbtMathMinMaxHostListPoisons) {
+  auto declare = [](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()));
+    b.DeclareVariable("empty_xs", CelType::List(CelType::Int()));
+    b.DeclareVariable("bounds", CelType::List(CelType::Int()));
+    b.DeclareVariable("us", CelType::List(CelType::Uint()));
+    b.DeclareVariable("ds", CelType::List(CelType::Double()));
+  };
+  auto bind = [](Activation& a) {
+    a.Bind("xs", Value::List({Value::Int(3), Value::Int(1), Value::Int(2)}));
+    a.Bind("empty_xs", Value::List({}));
+    a.Bind("bounds", Value::List({Value::Int(9223372036854775807LL),
+                                  Value::Int(kInt64Min)}));
+    a.Bind("us", Value::List({Value::Uint(1), Value::Uint(2)}));
+    a.Bind("ds", Value::List({Value::Double(1.5), Value::Double(0.5)}));
+  };
+  struct IntCase {
+    const char* source;
+    int64_t want;
+  };
+  const std::vector<IntCase> int_cases = {
+      {"math.least([3, 1, 2])", 1},       // arena (baseline)
+      {"math.least(xs)", 1},              // host
+      {"math.greatest(xs)", 3},           // host
+      {"math.least(bounds)", kInt64Min},  // boundary element
+      {"math.greatest(bounds)", 9223372036854775807LL},
+      {"math.least(xs + [0])", 0},  // host lifted through concat
+  };
+  for (const IntCase& c : int_cases) {
+    auto v = TryEvalActivated(c.source, declare, bind);
+    ASSERT_TRUE(v.ok()) << c.source << ": " << v.status();
+    auto got = v->AsInt();
+    ASSERT_TRUE(got.ok()) << c.source << ": " << got.status() << " (kind "
+                          << static_cast<int>(v->kind()) << ")";
+    EXPECT_EQ(*got, c.want) << c.source;
+  }
+  // uint / double element kinds take the same walk.
+  auto u = TryEvalActivated("math.greatest(us)", declare, bind);
+  ASSERT_TRUE(u.ok()) << u.status();
+  auto u_got = u->AsUint();
+  ASSERT_TRUE(u_got.ok()) << u_got.status();
+  EXPECT_EQ(*u_got, 2u);
+  auto d = TryEvalActivated("math.least(ds)", declare, bind);
+  ASSERT_TRUE(d.ok()) << d.status();
+  auto d_got = d->AsDouble();
+  ASSERT_TRUE(d_got.ok()) << d_got.status();
+  EXPECT_EQ(*d_got, 0.5);
+  // Empty aggregate: cel-cpp's math_ext.cc:106 returns
+  // "math.@min argument must not be empty" — an error VALUE, not a
+  // type mismatch and not a silent answer.
+  auto empty = TryEvalActivated("math.least(empty_xs)", declare, bind);
+  ASSERT_TRUE(empty.ok()) << empty.status();
+  EXPECT_TRUE(empty->IsError())
+      << "math.least(<empty host list>) should be an error, got kind "
+      << static_cast<int>(empty->kind());
+}
+
+// F4 — `"…".format(args)` refused a host-origin args list
+// (`runtime/cel_string_format.cc`), and `%s` rendering of a host list
+// or host map NESTED inside an arena args list returned `false`
+// (`runtime/cel_string_format_render.cc`'s `AppendListCanonical` /
+// `AppendMapCanonical`), which surfaced as INVALID_ARGUMENT.  Both
+// gates had to move: `"%s".format([xs])` hits only the second.
+TEST(KnownBugs, PbtStringFormatHostAggregatePoisons) {
+  const std::vector<std::pair<const char*, const char*>> cases = {
+      {R"("%s".format([[1, 2]]))", "[1, 2]"},  // arena (baseline)
+      {R"("%s".format([xs]))", "[1, 2]"},      // host list nested in arena args
+      {R"("%s".format([ms]))", "{a: 1}"},      // host map nested in arena args
+      {R"("%s".format([xss]))", "[[1, 2]]"},   // host list of host lists
+      {R"("%s".format([mm]))", "{a: [1]}"},    // host map of host lists
+      {R"("%s".format([empty_xs]))", "[]"},    // empty aggregate
+      {R"("%s".format([empty_mm]))", "{}"},
+      {R"("%s".format([mins]))", "[[-9223372036854775808]]"},  // boundary
+      {R"("%s".format(xs))", "1"},  // host list AS the args list
+      {R"("%s-%s".format(xs))", "1-2"},
+      {R"("%s".format([1, 2]))", "1"},  // arena args (baseline)
+  };
+  for (const auto& [source, want] : cases) {
+    auto v = EvalHostAggregate(source);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    auto got = v->AsString();
+    ASSERT_TRUE(got.ok()) << source << ": " << got.status() << " (kind "
+                          << static_cast<int>(v->kind()) << ")";
+    EXPECT_EQ(*got, want) << source;
+  }
 }
 
 }  // namespace

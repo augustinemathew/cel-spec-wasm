@@ -15,6 +15,7 @@
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_internal.h"
+#include "runtime/cel_list.h"
 
 // ════════════════════════════════════════════════════════════════
 // Scalar: rounding (double → double).  std::ceil / floor / round /
@@ -265,8 +266,7 @@ void cel_math_bit_not_at_v(uint32_t out_slot, uint32_t v_slot) {
 // Shared shift-offset validation: the count operand must be CEL_INT
 // and non-negative.  Returns the count (>= 0) via *shift and 1 on OK;
 // poisons `out` and returns 0 otherwise.
-static int math_shift_offset(CelValue* out, const CelValue* n,
-                             int64_t* shift) {
+static int math_shift_offset(CelValue* out, const CelValue* n, int64_t* shift) {
   if (n->kind != CEL_INT) {
     poison(out, CEL_ERR_TYPE_MISMATCH);
     return 0;
@@ -290,8 +290,7 @@ void cel_math_bit_shift_left_at_vv(uint32_t out_slot, uint32_t x_slot,
   // Shift in unsigned space to avoid signed-overflow UB; the bit
   // pattern is identical to cel-cpp's `lhs << rhs`.
   if (x->kind == CEL_INT) {
-    write_int(out, shift > 63 ? 0
-                              : (int64_t)((uint64_t)x->payload.i << shift));
+    write_int(out, shift > 63 ? 0 : (int64_t)((uint64_t)x->payload.i << shift));
   } else if (x->kind == CEL_UINT) {
     write_uint(out, shift > 63 ? 0u : x->payload.u << shift);
   } else {
@@ -309,8 +308,7 @@ void cel_math_bit_shift_right_at_vv(uint32_t out_slot, uint32_t x_slot,
   if (!math_shift_offset(out, n, &shift)) return;
   // LOGICAL shift on int too (no sign extension) — cel-cpp parity.
   if (x->kind == CEL_INT) {
-    write_int(out, shift > 63 ? 0
-                              : (int64_t)((uint64_t)x->payload.i >> shift));
+    write_int(out, shift > 63 ? 0 : (int64_t)((uint64_t)x->payload.i >> shift));
   } else if (x->kind == CEL_UINT) {
     write_uint(out, shift > 63 ? 0u : x->payload.u >> shift);
   } else {
@@ -361,43 +359,59 @@ void cel_math_max_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   math_minmax_binary(out_slot, a_slot, b_slot, /*want_greater=*/1);
 }
 
-static CelValue* math_arena_list_element(const CelValue* list, uint32_t i) {
-  ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() +
-                                            list->payload.arena_list.header_ptr);
+static CelValue* math_arena_list_element(uint32_t header_ptr, uint32_t i) {
+  ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() + header_ptr);
   return (CelValue*)(cel_memory_base_() + hdr->elements_offset +
                      ((size_t)i * sizeof(CelValue)));
 }
 
+// Element count of an arena list header, tolerating the header-less
+// shape (`header_ptr == 0`) that `cel_list_arena_view` vends when a
+// host snapshot had nothing to snapshot — offset 0 is never a real
+// allocation, so it must not be dereferenced.
+static uint32_t math_arena_list_count(uint32_t header_ptr) {
+  if (header_ptr == 0) return 0;
+  return ((ArenaListHeader*)(cel_memory_base_() + header_ptr))->count;
+}
+
 static void math_minmax_list(uint32_t out_slot, uint32_t list_slot,
                              int want_greater) {
-  CelValue* out = cel_value_at(out_slot);
   const CelValue* list = cel_value_at(list_slot);
-  if (absorb_3vl_unary(out, list)) return;
-  if (list->kind != CEL_LIST_ARENA) {
-    poison(out, CEL_ERR_TYPE_MISMATCH);
+  if (absorb_3vl_unary(cel_value_at(out_slot), list)) return;
+  if (list->kind != CEL_LIST_ARENA && list->kind != CEL_LIST_HOST) {
+    poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
     return;
   }
-  ArenaListHeader* hdr = (ArenaListHeader*)(cel_memory_base_() +
-                                            list->payload.arena_list.header_ptr);
-  const uint32_t count = hdr->count;
+  // Normalise origin: an arena operand passes through as itself, a
+  // host-backed one is snapshotted into the arena via
+  // `cel_host.cel_list_iter_open` — the same lift `list.join()` and
+  // the comprehension prologue take.  Every pointer must be
+  // re-derived afterwards: the snapshot allocates, and `arena_alloc`
+  // may `memory.grow` and relocate the linear-memory base.
+  const uint32_t view_slot = cel_list_arena_view(list_slot);
+  const uint32_t header_ptr =
+      cel_value_at(view_slot)->payload.arena_list.header_ptr;
+  const uint32_t count = math_arena_list_count(header_ptr);
   if (count == 0) {
-    poison(out, CEL_ERR_INVALID_ARGUMENT);  // "@min/@max must not be empty"
+    // cel-cpp `extensions/math_ext.cc:106` / `:152`:
+    // "math.@min argument must not be empty".
+    poison(cel_value_at(out_slot), CEL_ERR_INVALID_ARGUMENT);
     return;
   }
-  CelValue best = *math_arena_list_element(list, 0);
+  CelValue best = *math_arena_list_element(header_ptr, 0);
   for (uint32_t i = 0; i < count; ++i) {
-    const CelValue* e = math_arena_list_element(list, i);
+    const CelValue* e = math_arena_list_element(header_ptr, i);
     if (e->kind == CEL_ERROR || e->kind == CEL_UNKNOWN) {
-      *out = *e;  // 3VL propagation.
+      *cel_value_at(out_slot) = *e;  // 3VL propagation.
       return;
     }
     if (!is_numeric_kind(e->kind)) {
-      poison(out, CEL_ERR_TYPE_MISMATCH);
+      poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
       return;
     }
     if (i != 0 && math_minmax_replaces(&best, e, want_greater)) best = *e;
   }
-  *out = best;
+  *cel_value_at(out_slot) = best;
 }
 
 void cel_math_min_list_at_v(uint32_t out_slot, uint32_t list_slot) {

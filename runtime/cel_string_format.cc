@@ -40,6 +40,7 @@
 #include "absl/strings/string_view.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
+#include "runtime/cel_list.h"
 #include "runtime/cel_memory.h"
 #include "runtime/cel_string_format_internal.h"
 
@@ -224,18 +225,6 @@ inline absl::string_view BorrowSpan(const CelSpan& s) {
   return {reinterpret_cast<const char*>(cel_mem_base()) + s.ptr, s.len};
 }
 
-// Look up arena list header from a slot's payload.
-const ArenaListHeader* ArenaListHeaderOf(const CelValue* v) {
-  return reinterpret_cast<const ArenaListHeader*>(
-      cel_mem_base() + v->payload.arena_list.header_ptr);
-}
-
-const CelValue* ArenaListElement(const ArenaListHeader* hdr, uint32_t i) {
-  return reinterpret_cast<const CelValue*>(
-      cel_mem_base() + hdr->elements_offset +
-      (static_cast<size_t>(kCelListEntryStride) * i));
-}
-
 // Run a single directive against `arg`, appending to `buf`.
 // Returns false on kind-mismatch (caller poisons out).
 bool DispatchDirective(std::string& buf, const DirectiveOp& op,
@@ -267,34 +256,60 @@ bool DispatchDirective(std::string& buf, const DirectiveOp& op,
   return false;
 }
 
-// Copy a literal byte range from `fmt_src` to `buf`.
-void EmitLiteral(std::string& buf, absl::string_view fmt_src,
+// Copy a literal byte range of the format string to `buf`.  The
+// source view is re-derived from `fmt_span` on every call: rendering
+// an aggregate argument can lift a host-backed operand into the
+// arena, and `arena_alloc` may `memory.grow` and relocate the
+// linear-memory base out from under a cached `string_view`.
+void EmitLiteral(std::string& buf, const CelSpan& fmt_span,
                  const DirectiveOp& op) {
-  buf.append(fmt_src.data() + op.byte_off, op.len);
+  buf.append(BorrowSpan(fmt_span).data() + op.byte_off, op.len);
+}
+
+// Element count / element slot of an arena list, addressed by header
+// OFFSET rather than pointer so both survive a base relocation.
+// A zero header offset is the header-less empty shape (offset 0 is
+// never a real allocation) — count 0, never dereferenced.
+uint32_t ArenaListCountAt(uint32_t header_ptr) {
+  if (header_ptr == 0) return 0;
+  return reinterpret_cast<const ArenaListHeader*>(cel_mem_base() + header_ptr)
+      ->count;
+}
+
+uint32_t ArenaListElementSlot(uint32_t header_ptr, uint32_t i) {
+  const auto* hdr =
+      reinterpret_cast<const ArenaListHeader*>(cel_mem_base() + header_ptr);
+  return hdr->elements_offset +
+         (static_cast<uint32_t>(kCelListEntryStride) * i);
 }
 
 // Walk `ops` × args list to produce the formatted output in `buf`.
 // Returns true on success; on any mismatch (arg-count, kind), sets
 // `*err` to a non-zero CEL error code and returns false.
 //
+// Every linear-memory reference is held as an OFFSET and re-derived
+// per iteration — `%s` on an aggregate argument can allocate (see
+// EmitLiteral above).
+//
 // Arg-level ERROR / UNKNOWN absorb is handled upstream by the
 // kernel's pre-scan (see `cel_string_format_at_vv`), so this loop
 // can assume every dispatched arg is a regular value.
-bool RunFormat(std::string& buf, absl::string_view fmt_src,
-               const std::vector<DirectiveOp>& ops,
-               const ArenaListHeader* args_hdr, uint32_t* err) {
+bool RunFormat(std::string& buf, const CelSpan& fmt_span,
+               const std::vector<DirectiveOp>& ops, uint32_t args_header_ptr,
+               uint32_t* err) {
   uint32_t arg_index = 0;
   for (const auto& op : ops) {
     if (op.kind == DirectiveKind::kLiteral) {
-      EmitLiteral(buf, fmt_src, op);
+      EmitLiteral(buf, fmt_span, op);
       continue;
     }
-    if (arg_index >= args_hdr->count) {
+    if (arg_index >= ArenaListCountAt(args_header_ptr)) {
       *err = CEL_ERR_INVALID_ARGUMENT;
       return false;
     }
-    const CelValue* arg = ArenaListElement(args_hdr, arg_index++);
-    if (!DispatchDirective(buf, op, arg)) {
+    const uint32_t arg_slot =
+        ArenaListElementSlot(args_header_ptr, arg_index++);
+    if (!DispatchDirective(buf, op, cel_value_at(arg_slot))) {
       *err = CEL_ERR_INVALID_ARGUMENT;
       return false;
     }
@@ -320,9 +335,12 @@ bool RefreshCache(absl::string_view fmt) {
   return CachedParseOk();
 }
 
-// Copy `buf` into the arena and write `out` as CEL_STRING.
-void CommitResult(CelValue* out, const std::string& buf) {
+// Copy `buf` into the arena and write CEL_STRING into `out_slot`.
+// Takes the SLOT, not a pointer: `arena_alloc` may relocate the
+// linear-memory base, so the destination pointer is derived after.
+void CommitResult(uint32_t out_slot, const std::string& buf) {
   if (buf.empty()) {
+    CelValue* out = cel_value_at(out_slot);
     out->kind = CEL_STRING;
     out->payload.s.ptr = 0;
     out->payload.s.len = 0;
@@ -330,33 +348,50 @@ void CommitResult(CelValue* out, const std::string& buf) {
   }
   const uint32_t off = arena_alloc(static_cast<uint32_t>(buf.size()));
   if (off == 0) {
-    Poison(out, CEL_ERR_OVERFLOW);
+    Poison(cel_value_at(out_slot), CEL_ERR_OVERFLOW);
     return;
   }
   std::memcpy(cel_mem_base() + off, buf.data(), buf.size());
+  CelValue* out = cel_value_at(out_slot);
   out->kind = CEL_STRING;
   out->payload.s.ptr = off;
   out->payload.s.len = static_cast<uint32_t>(buf.size());
+}
+
+// Resolve the args operand to an arena list header offset, lifting a
+// host-backed args list (`"%s".format(boundList)`) into the arena via
+// `cel_list_arena_view` — the same normalisation `list.join()` and
+// the comprehension prologue take.  Returns false after poisoning
+// `out_slot` when the operand is not list-shaped.
+bool ResolveArgsHeader(uint32_t out_slot, uint32_t args_slot,
+                       uint32_t* header_ptr) {
+  const uint32_t kind = cel_value_at(args_slot)->kind;
+  if (kind != CEL_LIST_ARENA && kind != CEL_LIST_HOST) {
+    Poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
+    return false;
+  }
+  const uint32_t view_slot = cel_list_arena_view(args_slot);
+  *header_ptr = cel_value_at(view_slot)->payload.arena_list.header_ptr;
+  return true;
 }
 
 }  // namespace
 
 extern "C" void cel_string_format_at_vv(uint32_t out_slot, uint32_t s_slot,
                                         uint32_t args_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* s = cel_value_at(s_slot);
-  const CelValue* args = cel_value_at(args_slot);
-  if (Absorb3vlUnary(out, s)) return;
-  if (Absorb3vlUnary(out, args)) return;
-  if (s->kind != CEL_STRING || args->kind != CEL_LIST_ARENA) {
-    // CEL_LIST_HOST (proto-repeated) deferred — same policy as
-    // split/join.  Future work bullet in §10.
-    Poison(out, CEL_ERR_TYPE_MISMATCH);
+  if (Absorb3vlUnary(cel_value_at(out_slot), cel_value_at(s_slot))) return;
+  if (Absorb3vlUnary(cel_value_at(out_slot), cel_value_at(args_slot))) return;
+  if (cel_value_at(s_slot)->kind != CEL_STRING) {
+    Poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
     return;
   }
-  const absl::string_view fmt = BorrowSpan(s->payload.s);
-  if (!RefreshCache(fmt)) {
-    Poison(out, CEL_ERR_INVALID_ARGUMENT);
+  // Normalise args origin FIRST: the lift allocates, and everything
+  // below holds linear-memory references.
+  uint32_t args_header_ptr = 0;
+  if (!ResolveArgsHeader(out_slot, args_slot, &args_header_ptr)) return;
+  const CelSpan fmt_span = cel_value_at(s_slot)->payload.s;
+  if (!RefreshCache(BorrowSpan(fmt_span))) {
+    Poison(cel_value_at(out_slot), CEL_ERR_INVALID_ARGUMENT);
     return;
   }
   // Pre-scan args for ERROR / UNKNOWN; cel-cpp's Format
@@ -364,23 +399,23 @@ extern "C" void cel_string_format_at_vv(uint32_t out_slot, uint32_t s_slot,
   // dispatches, but spec semantics are "any arg-level ERROR /
   // UNKNOWN absorbs".  We absorb upfront so the cache hit on a
   // failed parse doesn't dominate the absorb path.
-  const ArenaListHeader* args_hdr = ArenaListHeaderOf(args);
-  for (uint32_t k = 0; k < args_hdr->count; ++k) {
-    const CelValue* a = ArenaListElement(args_hdr, k);
+  for (uint32_t k = 0; k < ArenaListCountAt(args_header_ptr); ++k) {
+    const CelValue* a = cel_value_at(ArenaListElementSlot(args_header_ptr, k));
     if (a->kind == CEL_ERROR || a->kind == CEL_UNKNOWN) {
-      *out = *a;
+      const CelValue absorbed = *a;
+      *cel_value_at(out_slot) = absorbed;
       return;
     }
   }
   std::string buf;
-  buf.reserve(fmt.size());
+  buf.reserve(fmt_span.len);
   uint32_t err = 0;
-  if (!RunFormat(buf, fmt, CachedOps(), args_hdr, &err)) {
-    Poison(out, err != 0 ? err : CEL_ERR_INVALID_ARGUMENT);
+  if (!RunFormat(buf, fmt_span, CachedOps(), args_header_ptr, &err)) {
+    Poison(cel_value_at(out_slot), err != 0 ? err : CEL_ERR_INVALID_ARGUMENT);
     return;
   }
   // cel-cpp doesn't error on extra args (it silently ignores
   // unconsumed list tail).  Mirror that — no check on
-  // `arg_index < args_hdr->count` after the loop.
-  CommitResult(out, buf);
+  // `arg_index < args count` after the loop.
+  CommitResult(out_slot, buf);
 }

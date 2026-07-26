@@ -720,10 +720,16 @@ ABSL_MUST_USE_RESULT absl::Status CelListEqImpl(uint32_t out_slot,
                                                 const TrampolineContext& ctx);
 
 // Cross-origin (one CEL_LIST_ARENA + one CEL_LIST_HOST) and
-// both-host concat materialise into a fresh arena list under
-// the runtime's `arena_alloc`.  Current ship state: mixed origins
-// POISON with TYPE_MISMATCH; full materialisation is follow-up work
-// tracked in the M5 doc.
+// both-host concat.  Both operands are LIFTED into one fresh arena
+// list allocated through the runtime's `arena_alloc`: arena elements
+// copy verbatim, host elements encode through the same marshaller the
+// comprehension-iter snapshot uses (scalars inline / arena, aggregate
+// elements interned as CEL_MESSAGE / CEL_LIST_HOST / CEL_MAP_HOST
+// handles).  The result is a CEL_LIST_ARENA, so downstream readers
+// stay on the arena fast path.  Arena OOM poisons CEL_ERR_OVERFLOW,
+// matching `cel_list_concat_arena`.  (The runtime dispatcher
+// short-circuits arena+arena in its own fast path before reaching
+// here.)
 ABSL_MUST_USE_RESULT absl::Status CelListConcatImpl(
     uint32_t out_slot, uint32_t a_slot, uint32_t b_slot,
     const TrampolineContext& ctx);
