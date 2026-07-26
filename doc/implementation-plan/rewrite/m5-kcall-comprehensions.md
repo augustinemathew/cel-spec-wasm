@@ -1079,14 +1079,54 @@ nested-aggregate equality story.
 > lift strategy above remains the plan for concat (which must
 > *produce* an arena value).
 
+> Plan-vs-execution delta (2026-07-25, unimplemented sweep F1/F2):
+> the "gracefully degrades to scalars in M5; aggregate-element
+> materialisation … lands at M6" deferral above was never closed and
+> was NOT graceful — aggregates encoded to a `CEL_ERROR{TYPE_MISMATCH}`
+> placeholder, and two placeholders compare unequal, so a host-origin
+> `list<list<T>>` / `map<K, list<V>>` was never equal to anything,
+> *itself included* (`xss == xss` → `false`).  Closed now:
+> `EncodeBackingElement` interns aggregate elements into the externref
+> table (CEL_LIST_HOST / CEL_MAP_HOST / CEL_MESSAGE handles) and a new
+> origin-agnostic `WireValueEq` recurses into `ListsEqual` /
+> `NormalizedMapEq` / `CompareProtoMessages`.  The same walk backs the
+> `in` scan (`BackingValueEqualsQuery`), which had the same gap.  Note
+> the code comment that cited `cel-host-surface.md` as defining a
+> "scalar-only" scope boundary was wrong — that doc contains no such
+> contract; the boundary was only ever this deferral.
+
 **M5.D step 2 ship state.**  The `_arena` fast paths handle the
 common same-origin cases.  The kHost trampolines implement
 host-only operations via the externref backings.  Cross-origin
-concat and cross-origin map equality currently POISON with
-`TYPE_MISMATCH`; the materialisation body lands as a follow-up
-in M6 (or earlier) without changing the dispatcher contract.
-Codegen does not need to know — every dispatcher call site sees
-the same `out_slot` slot-out shape.
+concat and cross-origin map equality POISONed with
+`TYPE_MISMATCH` as shipped; both have since been filled in
+without changing the dispatcher contract.  Codegen does not need
+to know — every dispatcher call site sees the same `out_slot`
+slot-out shape.
+
+> Plan-vs-execution delta (2026-07-25): cross-origin **list
+> concat** now materialises exactly as the lift strategy above
+> describes.  `CelListConcatImpl` allocates one fresh
+> ArenaListHeader + elements run through `ArenaAllocator::Alloc`,
+> copies an arena operand's run verbatim, and encodes a host
+> operand's elements with `EncodeFieldResult` — the SAME element
+> encoder the comprehension-iter snapshot
+> (`SnapshotHostListToArena`) uses, now factored into shared
+> `AllocArenaList` / `EncodeHostElementsIntoRun` helpers.
+> Aggregate elements did NOT need `EncodeBackingScalar` extended:
+> they intern into the externref table and travel as
+> CEL_MESSAGE / CEL_LIST_HOST / CEL_MAP_HOST handles, which every
+> downstream reader already dispatches on.  Arena OOM poisons
+> `CEL_ERR_OVERFLOW`, matching `cel_list_concat_arena`.
+>
+> The same gap in `list.join()` — the other operation that must
+> *produce* a value from a host backing — was fixed by routing
+> `cel_string_join{,_sep}` through `cel_list_arena_view`, which
+> already lifts a host list via `cel_host.cel_list_iter_open`.
+> Found by e2e/fuzz (`KnownBugs.PbtListConcatHostOriginPoisons`)
+> and by probing every aggregate op against a bound operand;
+> read-only traversals (`size` / `in` / `==` / comprehensions)
+> were already origin-agnostic.
 
 ## Future work (will be appended at close)
 
@@ -1094,9 +1134,12 @@ Filled in as M5 ships.  Anything surfaced during execution
 that wasn't in the as-written plan goes here per CLAUDE.md
 "Closing out a planning doc" rule.
 
-  - **Mixed-origin list concat / map equality materialisation.**
-    Strategy is documented above; bodies POISON with
-    `TYPE_MISMATCH` in M5.D step 2.  Lift-and-walk lands as a
-    M6 (or earlier) follow-up; same lift helper unblocks
-    nested-aggregate element equality in `CelListInImpl` /
-    `CelListEqImpl` / `CelMapEqImpl`.
+  - ~~**Mixed-origin list concat / map equality materialisation.**~~
+    DONE.  Map equality shipped as a both-sides snapshot
+    (`CelMapEqImpl`, 2026-06-10); list concat shipped as the
+    documented lift (`CelListConcatImpl`, 2026-07-25) along with
+    the same fix for `list.join()`.  Element equality for nested
+    aggregates in `CelListInImpl` / `CelListEqImpl` remains
+    scalar-only — the lift helper does not change that, since it
+    carries aggregate elements as externref handles rather than
+    flattening them.

@@ -121,6 +121,19 @@ void cel_list_eq_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 // originals are unchanged.
 void cel_list_concat_arena(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 
+// Resolve a list slot to a slot whose CelValue is arena-shaped
+// (`CEL_LIST_ARENA`).  Arena slots pass through unchanged; a
+// `CEL_LIST_HOST` slot is snapshotted into a fresh arena allocation
+// via `cel_host.cel_list_iter_open` and a new slot returned; a
+// poisoned or non-list slot vends a one-element view carrying the
+// poison, so the returned slot is ALWAYS walkable.  Defined in
+// `cel_runtime.c` (which carries the codegen-export marker — the
+// comprehension prologue calls it directly); declared here so sibling
+// runtime kernels that must walk a list of either origin (e.g.
+// `list.join()` in cel_string_ext_list.cc) can lift host lists with
+// the same helper instead of rejecting them.
+uint32_t cel_list_arena_view(uint32_t list_slot);
+
 // =====================================================================
 // kDynamic dispatchers for aggregate list ops.  Same
 // musttail-dispatch shape as `cel_list_at` (line 67): 3VL absorb,

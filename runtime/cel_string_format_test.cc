@@ -290,6 +290,9 @@ TEST(ParseFormatTest, RejectsPercentAfterPercentPercent) {
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <map>
+#include <utility>
+#include <vector>
 
 #include "absl/strings/str_cat.h"
 #include "runtime/cel_arena.h"
@@ -297,6 +300,82 @@ TEST(ParseFormatTest, RejectsPercentAfterPercentPercent) {
 #include "runtime/cel_memory.h"
 #include "runtime/cel_string_format.h"
 #include "runtime/string_ext_test_helpers.h"
+
+namespace {
+
+// ref_slot → the elements / entries a host-backed aggregate vends.
+// The scripted trampolines below materialise these into the arena
+// exactly as the production ones do (eval/internal/cel_host.cc
+// `SnapshotHostListToArena` / `SnapshotMapEntriesToArena`).
+std::map<uint32_t, std::vector<CelValue>>& FormatHostListTable() {
+  static auto* t = new std::map<uint32_t, std::vector<CelValue>>();
+  return *t;
+}
+std::map<uint32_t, std::vector<std::pair<CelValue, CelValue>>>&
+FormatHostMapTable() {
+  static auto* t =
+      new std::map<uint32_t, std::vector<std::pair<CelValue, CelValue>>>();
+  return *t;
+}
+
+}  // namespace
+
+extern "C" {
+
+// Strong overrides of the weak host-build stubs in cel_runtime.c.
+void cel_host_cel_list_iter_open(uint32_t out_slot, uint32_t list_slot) {
+  const std::vector<CelValue> elements =
+      FormatHostListTable()[cel_value_at(list_slot)->payload.ref_slot];
+  const uint32_t hdr_off =
+      arena_alloc(static_cast<uint32_t>(sizeof(ArenaListHeader)));
+  uint32_t elements_off = 0;
+  if (!elements.empty()) {
+    elements_off = arena_alloc(static_cast<uint32_t>(
+        static_cast<size_t>(kCelListEntryStride) * elements.size()));
+  }
+  auto* hdr = reinterpret_cast<ArenaListHeader*>(cel_mem_base() + hdr_off);
+  hdr->count = static_cast<uint32_t>(elements.size());
+  hdr->capacity = hdr->count;
+  hdr->elements_offset = elements_off;
+  hdr->_pad = 0;
+  for (size_t k = 0; k < elements.size(); ++k) {
+    *reinterpret_cast<CelValue*>(
+        cel_mem_base() + elements_off +
+        (static_cast<size_t>(kCelListEntryStride) * k)) = elements[k];
+  }
+  CelValue* out = cel_value_at(out_slot);
+  out->kind = CEL_LIST_ARENA;
+  out->payload.arena_list.header_ptr = hdr_off;
+}
+
+// MapIterState is `{u32 kind; u32 cursor; u32 payload; u32 count;}`
+// (cel_runtime.c); the HOST snapshot payload is `count` × 48-byte
+// entries, key at +0 and value at +24.
+void cel_host_cel_map_iter_open(uint32_t state_offset, uint32_t map_slot) {
+  constexpr uint32_t kHostKind = 1u;
+  constexpr uint32_t kPerEntry = 2u * sizeof(CelValue);
+  const std::vector<std::pair<CelValue, CelValue>> entries =
+      FormatHostMapTable()[cel_value_at(map_slot)->payload.ref_slot];
+  uint32_t snapshot_off = 0;
+  if (!entries.empty()) {
+    snapshot_off =
+        arena_alloc(static_cast<uint32_t>(entries.size()) * kPerEntry);
+    for (size_t i = 0; i < entries.size(); ++i) {
+      const uint32_t key_off =
+          snapshot_off + (static_cast<uint32_t>(i) * kPerEntry);
+      *reinterpret_cast<CelValue*>(cel_mem_base() + key_off) = entries[i].first;
+      *reinterpret_cast<CelValue*>(cel_mem_base() + key_off +
+                                   sizeof(CelValue)) = entries[i].second;
+    }
+  }
+  auto* state = reinterpret_cast<uint32_t*>(cel_mem_base() + state_offset);
+  state[0] = kHostKind;
+  state[1] = 0u;
+  state[2] = snapshot_off;
+  state[3] = static_cast<uint32_t>(entries.size());
+}
+
+}  // extern "C"
 
 namespace celwasm {
 namespace {
@@ -333,6 +412,39 @@ class FormatDispatcherTest : public StringExtFixture {
       ++k;
     }
     return list_slot;
+  }
+
+  // Build a CEL_MAP_ARENA holding `entries` (pairs of pre-populated
+  // CelValue slot offsets).  Entries are 48 bytes: key at +0, value
+  // at +24 — the layout `cel_runtime.c` writes.
+  uint32_t MakeArenaMap(
+      std::initializer_list<std::pair<uint32_t, uint32_t>> entries) {
+    const uint32_t map_slot =
+        arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    const uint32_t hdr_off =
+        arena_alloc(static_cast<uint32_t>(sizeof(ArenaMapHeader)));
+    const auto count = static_cast<uint32_t>(entries.size());
+    const uint32_t entries_off =
+        count == 0 ? 0u
+                   : arena_alloc(static_cast<uint32_t>(
+                         static_cast<size_t>(kCelMapEntryStride) * count));
+    auto* hdr = reinterpret_cast<ArenaMapHeader*>(cel_mem_base() + hdr_off);
+    hdr->count = count;
+    hdr->capacity = count;
+    hdr->entries_offset = entries_off;
+    uint32_t k = 0;
+    for (const auto& [key, val] : entries) {
+      uint8_t* entry = cel_mem_base() + entries_off +
+                       (static_cast<size_t>(kCelMapEntryStride) * k);
+      *reinterpret_cast<CelValue*>(entry) = *cel_value_at(key);
+      *reinterpret_cast<CelValue*>(entry + sizeof(CelValue)) =
+          *cel_value_at(val);
+      ++k;
+    }
+    CelValue* map = cel_value_at(map_slot);
+    map->kind = CEL_MAP_ARENA;
+    map->payload.arena_map.header_ptr = hdr_off;
+    return map_slot;
   }
 
   uint32_t MakeDouble(double d) {
@@ -757,6 +869,178 @@ TEST_F(FormatDispatcherTest, AcceptsTooManyArgs) {
   const uint32_t out = MakeOut();
   cel_string_format_at_vv(out, s, args);
   ExpectStr(out, "used");
+}
+
+// ── %s on an arena map — key-sorted canonical form. ──────────
+
+TEST_F(FormatDispatcherTest, StringFromArenaMapSortsByStringifiedKey) {
+  // cel-cpp's FormatMap builds a btree_map<stringified_key, value>,
+  // so iteration order is lexicographic on the key's string form.
+  const uint32_t inner =
+      MakeArenaMap({{MakeStr("b"), MakeInt(2)}, {MakeStr("a"), MakeInt(1)}});
+  const uint32_t s = MakeStr("%s");
+  const uint32_t out = MakeOut();
+  cel_string_format_at_vv(out, s, MakeArenaList({inner}));
+  ExpectStr(out, "{a: 1, b: 2}");
+}
+
+TEST_F(FormatDispatcherTest, StringFromEmptyArenaMap) {
+  const uint32_t inner = MakeArenaMap({});
+  const uint32_t s = MakeStr("%s");
+  const uint32_t out = MakeOut();
+  cel_string_format_at_vv(out, s, MakeArenaList({inner}));
+  ExpectStr(out, "{}");
+}
+
+TEST_F(FormatDispatcherTest, RejectsArenaMapWithUnformattableKey) {
+  // cel-cpp's FormatMap admits STRING / BOOL / INT / UINT keys only.
+  const uint32_t inner = MakeArenaMap({{MakeDouble(1.5), MakeInt(1)}});
+  const uint32_t s = MakeStr("%s");
+  const uint32_t out = MakeOut();
+  cel_string_format_at_vv(out, s, MakeArenaList({inner}));
+  ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HOST-ORIGIN aggregates.
+//
+// An activation-bound `list<T>` / `map<K, V>` (or a proto repeated /
+// map field) reaches the kernel as CEL_LIST_HOST / CEL_MAP_HOST —
+// its elements exist only on the host side until
+// `cel_list_arena_view` / `cel_map_iter_init` materialise them.
+// Two independent gates had to move:
+//
+//   - `"%s".format([xs])` — a host aggregate NESTED inside an arena
+//     args list, which drives `AppendListCanonical` /
+//     `AppendMapCanonical` (these returned `false`, surfacing as
+//     INVALID_ARGUMENT);
+//   - `"%s".format(xs)`   — the ARGS list itself being host-backed,
+//     which the dispatcher rejected as TYPE_MISMATCH.
+//
+// Both are pinned below, plus the arena twins so a regression on
+// either origin is visible in the same file.
+// ═══════════════════════════════════════════════════════════════
+
+class HostAggregateFormatTest : public FormatDispatcherTest {
+ protected:
+  void SetUp() override {
+    FormatDispatcherTest::SetUp();
+    FormatHostListTable().clear();
+    FormatHostMapTable().clear();
+  }
+
+  // A CEL_LIST_HOST slot whose scripted backing vends `elements`.
+  uint32_t MakeHostList(uint32_t ref_slot,
+                        std::initializer_list<uint32_t> slots) {
+    std::vector<CelValue>& elements = FormatHostListTable()[ref_slot];
+    for (uint32_t slot : slots)
+      elements.push_back(*cel_value_at(slot));
+    const uint32_t s = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    CelValue* v = cel_value_at(s);
+    v->kind = CEL_LIST_HOST;
+    v->payload.ref_slot = ref_slot;
+    return s;
+  }
+
+  // A CEL_MAP_HOST slot whose scripted backing vends `entries`.
+  uint32_t MakeHostMap(
+      uint32_t ref_slot,
+      std::initializer_list<std::pair<uint32_t, uint32_t>> entries) {
+    auto& stored = FormatHostMapTable()[ref_slot];
+    for (const auto& [k, v] : entries) {
+      stored.emplace_back(*cel_value_at(k), *cel_value_at(v));
+    }
+    const uint32_t s = arena_alloc(static_cast<uint32_t>(sizeof(CelValue)));
+    CelValue* cv = cel_value_at(s);
+    cv->kind = CEL_MAP_HOST;
+    cv->payload.ref_slot = ref_slot;
+    return s;
+  }
+
+  // `"%s".format([agg])` — the aggregate nested inside arena args.
+  void ExpectNested(uint32_t agg_slot, const char* want) {
+    const uint32_t out = MakeOut();
+    cel_string_format_at_vv(out, MakeStr("%s"), MakeArenaList({agg_slot}));
+    ExpectStr(out, want);
+  }
+};
+
+TEST_F(HostAggregateFormatTest, NestedHostListRenders) {
+  ExpectNested(MakeHostList(1, {MakeInt(1), MakeInt(2)}), "[1, 2]");
+}
+
+TEST_F(HostAggregateFormatTest, NestedArenaListRendersIdentically) {
+  ExpectNested(MakeArenaList({MakeInt(1), MakeInt(2)}), "[1, 2]");
+}
+
+TEST_F(HostAggregateFormatTest, NestedEmptyHostListRenders) {
+  ExpectNested(MakeHostList(1, {}), "[]");
+}
+
+TEST_F(HostAggregateFormatTest, NestedHostListOfHostListsRenders) {
+  const uint32_t inner = MakeHostList(1, {MakeInt(1), MakeInt(2)});
+  ExpectNested(MakeHostList(2, {inner}), "[[1, 2]]");
+}
+
+TEST_F(HostAggregateFormatTest, NestedHostListBoundaryIntegers) {
+  ExpectNested(MakeHostList(1, {MakeInt(-9223372036854775807LL - 1),
+                                MakeInt(9223372036854775807LL)}),
+               "[-9223372036854775808, 9223372036854775807]");
+}
+
+TEST_F(HostAggregateFormatTest, NestedHostMapRendersKeySorted) {
+  ExpectNested(
+      MakeHostMap(1, {{MakeStr("b"), MakeInt(2)}, {MakeStr("a"), MakeInt(1)}}),
+      "{a: 1, b: 2}");
+}
+
+TEST_F(HostAggregateFormatTest, NestedEmptyHostMapRenders) {
+  ExpectNested(MakeHostMap(1, {}), "{}");
+}
+
+TEST_F(HostAggregateFormatTest, NestedHostMapOfHostListsRenders) {
+  const uint32_t inner = MakeHostList(1, {MakeInt(1)});
+  ExpectNested(MakeHostMap(2, {{MakeStr("a"), inner}}), "{a: [1]}");
+}
+
+TEST_F(HostAggregateFormatTest, RejectsHostMapWithUnformattableKey) {
+  const uint32_t out = MakeOut();
+  const uint32_t m = MakeHostMap(1, {{MakeDouble(1.5), MakeInt(1)}});
+  cel_string_format_at_vv(out, MakeStr("%s"), MakeArenaList({m}));
+  ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
+}
+
+TEST_F(HostAggregateFormatTest, HostListAsTheArgsListItself) {
+  // `"%s".format(xs)` — the args slot is host-backed, so each
+  // directive consumes one ELEMENT of the bound list.
+  const uint32_t args = MakeHostList(1, {MakeInt(1), MakeStr("two")});
+  const uint32_t out = MakeOut();
+  cel_string_format_at_vv(out, MakeStr("%s-%s"), args);
+  ExpectStr(out, "1-two");
+}
+
+TEST_F(HostAggregateFormatTest, EmptyHostArgsListWithNoDirectives) {
+  const uint32_t out = MakeOut();
+  cel_string_format_at_vv(out, MakeStr("literal"), MakeHostList(1, {}));
+  ExpectStr(out, "literal");
+}
+
+TEST_F(HostAggregateFormatTest, EmptyHostArgsListWithADirectiveRejects) {
+  const uint32_t out = MakeOut();
+  cel_string_format_at_vv(out, MakeStr("%s"), MakeHostList(1, {}));
+  ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
+}
+
+TEST_F(HostAggregateFormatTest, NonListArgsOperandStillPoisonsTypeMismatch) {
+  const uint32_t out = MakeOut();
+  cel_string_format_at_vv(out, MakeStr("%s"), MakeInt(7));
+  ExpectError(out, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(HostAggregateFormatTest, PoisonedElementOfHostArgsListAbsorbs) {
+  const uint32_t out = MakeOut();
+  cel_string_format_at_vv(out, MakeStr("%s"), MakeHostList(1, {MakeError()}));
+  ExpectError(out, CEL_ERR_DIVIDE_BY_ZERO);
 }
 
 TEST_F(FormatDispatcherTest, AbsorbsErrorArg) {

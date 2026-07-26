@@ -407,9 +407,14 @@ remain valid until `arena_reset` at the next Eval).
 >   (`splits.empty() || !sep.empty() || pos < len` → push trailing
 >   piece).  Locks the "empty haystack + non-empty sep → `[""]`"
 >   spec case.
-> - Host-backed lists (`CEL_LIST_HOST`) error with
->   `CEL_ERR_TYPE_MISMATCH` for now — deferred to a follow-up if a
->   user needs `join()` over proto-repeated fields.
+> - Host-backed lists (`CEL_LIST_HOST`) errored with
+>   `CEL_ERR_TYPE_MISMATCH` as shipped.  **Fixed 2026-07-25:**
+>   `cel_string_join{,_sep}` now resolve their operand through
+>   `cel_list_arena_view`, which snapshots a host list into the
+>   arena via `cel_host.cel_list_iter_open` — the same lift the
+>   comprehension prologue uses — so `boundList.join(",")` and
+>   `proto.repeated_string.join(",")` work.  Arena operands still
+>   pass through as identity (no host trip).
 >
 > 22 new tests (`cel_string_ext_list_test.cc`) — split spec rows +
 > boundary matrix (empty haystack, empty sep code-point split,
@@ -894,11 +899,12 @@ up at Slice D in a fresh session.
     `splitN(s, sep, n)` alias.  If a user demands it, trivial
     to add.
   - **Host-backed list `join` / `format(%s, [host_list])`.**
-    M12 errors with `CEL_ERR_TYPE_MISMATCH` when handed a
+    M12 errored with `CEL_ERR_TYPE_MISMATCH` when handed a
     `CEL_LIST_HOST` (proto-repeated field, Activation::Bind
-    list).  Adding a host-trampoline arm to walk those would
-    let `proto.repeated_string.join(",")` and similar shapes
-    work; deferred until a user asks.
+    list).  **`join` fixed 2026-07-25** by lifting the operand
+    through `cel_list_arena_view`; `format`'s `%s`-over-a-bound-
+    list arm is untouched and still literal-list only (see the
+    static-subset bullet below).
   - **Static-subset relaxation for non-literal `format` args.**
     The Slice F admission only covers `"...".format([...])`
     literal-list args.  Variables / comprehension results

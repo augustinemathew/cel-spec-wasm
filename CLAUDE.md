@@ -567,6 +567,11 @@ untracked FAIL.**  A reader (or `grep`) must be able to see, for any
 behavior, either a passing test that pins it or a skipped test that
 names why it isn't supported yet.
 
+Two halves, and both are mandatory: rules 1-5 say how a bug is
+**tracked**, rule 6 says how it is **handled**.  Tracking without
+handling is how a P0 lives on behind a tidy `GTEST_SKIP` —
+see the exemplar at the end of this section.
+
 **1. One test case per bug / per conformance row.**  When you fix a
 bug or unlock a conformance row, add a `TEST`/`TEST_F`/`TEST_P` that
 exercises the *exact* failing input (for conformance, the literal
@@ -614,6 +619,183 @@ current-vs-expected gap — either fix it (case passes) or, if it's a
 genuine harness/scope limitation, convert it to a reasoned
 `GTEST_SKIP` AND record it in `cleanup-backlog.md`.  Do not leave a
 bare FAIL with no test documenting it.
+
+**5. The regression test MUST be observed FAILING before you pin
+it, and the skip message is a MACHINE-PARSEABLE `CELBUG` block.**
+Write the case asserting the SPEC-CORRECT behaviour, run it against
+current code, and confirm it fails for the reason you think it does
+— then add the `GTEST_SKIP` carrying the block below.  Prose skip
+messages are no longer acceptable: the pin file is the bug tracker,
+so it has to be readable by a script (and by an agent sent to fix
+it), not just by a human scrolling.
+
+```cpp
+GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0002
+severity: P1
+kind: over-permissive
+summary: we accept duration(<int>); cel-cpp's runtime rejects it
+repro: duration(1)
+bindings: none
+actual: a duration value of 1s
+expected: an evaluation error ("No matching overloads found : duration(int64)")
+layer: compiler/codegen/overload_table.cc (drop the int64_to_duration seed)
+blocked-by: none
+found-by: e2e/fuzz mine_divergences duration seed=4 depth=4
+fix-hint: cel-cpp's CHECKER declares the overload
+  (checker/standard_library.cc:369) but its runtime never registers an
+  impl, so it type-checks then fails at eval.  Conformance scores against
+  the runtime, so OUR acceptance is the non-conformant side.
+issue: none
+)CELBUG";
+```
+
+**Use the `R"CELBUG( … )CELBUG"` delimiter, not a bare `R"( … )"`.**
+A plain raw string ends at the first `)"`, and pin text quotes
+upstream error messages that routinely contain one (e.g.
+`… duration(int64)")`), which silently truncates the block and then
+fails to compile several lines later.
+
+Fields.  Required: `id` `severity` `kind` `summary` `repro` `actual`
+`expected` `layer` `blocked-by` `fix-hint`.  Optional: `bindings`
+(the activation needed to run `repro`), `found-by` (fuzz seed /
+conformance row / manual — the provenance that lets anyone
+re-reproduce), `issue`, `status`.
+
+  - `id` — `CELW-NNNN`, monotonically assigned, never reused.  Stable
+    independently of any tracker; `scripts/bug_pins.py list` shows the
+    highest in use.
+  - `severity` — `P0` / `P1` / `P2` exactly as rule 6 defines them.
+  - `kind` — `wrong-value` `missing-feature` `crash` `over-permissive`
+    `diagnostics` `precision`.
+  - `repro` — the SHORTEST expression that fails, reduced from
+    whatever found it.  A 400-character fuzz source is not a repro.
+  - `layer` — file (and symbol) where the fix goes, so the reader
+    doesn't re-derive it.
+  - `blocked-by` — `none`, or a comma-separated list of `CELW-` ids
+    that must land first.  This is what makes the queue orderable;
+    `bug_pins.py validate` fails on a dangling reference.
+  - `fix-hint` — what a fixer needs that the diff won't tell them:
+    the upstream citation, the wrong assumption, the trap to avoid.
+    Continuation lines are indented and may contain colons.
+
+Tooling — `scripts/bug_pins.py`:
+
+```
+scripts/bug_pins.py list         # the queue, severity-ordered
+scripts/bug_pins.py validate     # CI gate: malformed / duplicate id / dangling blocked-by
+scripts/bug_pins.py json         # for other tools
+scripts/bug_pins.py issue CELW-0002   # render a tracker-ready issue body
+scripts/bug_pins.py unmigrated   # skips still carrying prose messages
+```
+
+GitHub issues are currently DISABLED on `augustinemathew/cel-wasm`,
+so `issue:` is `none` everywhere and the pin file IS the tracker.
+If issues are enabled later, `bug_pins.py issue <ID>` renders the
+body and the `issue:` field records the number — no format change
+needed, and the pins stay the source of truth either way.
+
+**Not every skip is a bug — use `CELSKIP` for the ones that
+aren't.**  Roughly two thirds of this repo's skips are the system
+working as designed: a static-subset (`RejectDyn`) rejection, a
+scope boundary a milestone doc permanently decided, or a limitation
+of the test harness rather than the product.  Those get the lighter
+block, and they stay OUT of the bug queue so the queue stays
+trustworthy:
+
+```cpp
+GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: an empty map literal types as map(dyn, dyn), and the static
+  subset rejects dyn before codegen runs; the runtime path is covered by
+  runtime/cel_map_test.cc
+citation: doc/implementation-plan/rewrite/design.md (RejectDyn)
+)CELSKIP";
+```
+
+`reason` is one of `by-design` / `harness-limit` /
+`deferred-feature`; `why-not-a-bug` and `citation` are required —
+a claim of "by design" without a pointer to the decision is just an
+unexamined skip.  `bug_pins.py skips` lists them;
+`bug_pins.py validate` checks them.
+
+**How to write a pin — the procedure.**
+
+  1. **Reduce the reproducer first.**  Whatever found it (a 400-char
+     fuzz source, a conformance row) is not the repro.  Bisect down
+     to the shortest expression that still fails, and probe the
+     neighbours — the difference between "concat is broken" and
+     "concat is broken whenever an operand is host-origin" is the
+     difference between an unactionable pin and a fixable one.
+  2. **Run it and watch it fail**, for the reason you think.  Copy
+     the real observed output into `actual` verbatim; never
+     paraphrase it from memory.
+  3. **Decide bug or not-a-bug.**  If the current behaviour is
+     correct-by-design, write `CELSKIP` with a citation and stop.
+  4. **Assign severity** by rule 6 — and remember that *silently
+     wrong outranks loudly wrong*.
+  5. **Pick the next free `id`** (`bug_pins.py list` shows the
+     highest in use) and set `blocked-by` if another pin must land
+     first.
+  6. **Write `fix-hint` for someone who has not read this
+     conversation** — the upstream citation, the wrong assumption
+     that caused it, the trap to avoid.  Assume the reader is an
+     agent that will be handed this text and nothing else.
+  7. **Run `scripts/bug_pins.py validate`** before you commit.
+  8. **If it is a P0, rule 6 applies** — dispatch the fix; the pin
+     is not the deliverable.
+
+A pin whose assertion was reasoned out rather than executed is a
+guess, and a pin that passes by accident is worse than no pin — it
+reads as coverage while testing nothing.  If the failure is not
+obvious, write a throwaway characterisation probe first (a
+temporary `TEST` that prints the actual result for several nearby
+inputs), read it, then delete the probe and write the real pin from
+what you saw.  That is how the host-origin family below was
+characterised: probing `arena+arena`, `arena+host`, `host+arena`,
+`host+host` turned "concat is broken" into "every host-origin
+operand fails," which is what made the fix tractable.
+
+**6. Triage every bug by severity — a P0 gets FIXED, never just
+pinned.**  Pinning is how a bug is *tracked*, not how it is
+*handled*.  Classify on the spot:
+
+  - **P0** — missing functionality reachable from ordinary input,
+    a silently WRONG value, or a crash / trap.  **Do not
+    pin-and-move-on.**  Fix it in the same session, or **dispatch an
+    agent to fix it** (Agent tool, `subagent_type: general-purpose`,
+    same briefing discipline as "Periodic code review" below: name
+    the definition of done, the layers to touch, and the verification
+    command).  A P0 may be pinned *in addition*, so the regression is
+    guarded once fixed — but the pin is never the deliverable.
+  - **P1** — wrong only on unusual input, or an over-permissiveness
+    where we accept what cel-cpp rejects (e.g.
+    `PbtIntOfDurationOverPermissive`).  Pin + a `cleanup-backlog.md`
+    entry.
+  - **P2** — cosmetic, diagnostics, or a message-text mismatch.  Pin
+    or backlog.
+
+**Silently wrong beats loudly wrong for severity**: a path that
+returns a plausible value with no error is P0 even when the input
+is unusual, because nothing downstream can detect it.
+
+**Withholding a fuzz production is a TEMPORARY companion to a fix,
+never a substitute.**  When the differential fuzzer finds a P0 and
+you withhold its grammar production to keep the nightly green, the
+same change must dispatch or perform the fix — otherwise you have
+removed the only thing that was going to find it again.
+
+*The exemplar (2026-07-25).*  `CelListConcatImpl` was a stub that
+poisoned `TYPE_MISMATCH`, so `[1,2] + xs` errored for any bound
+`xs`.  It survived two months (introduced 2026-05-25, found
+2026-07-25) because: (a) the stub failed silently, so
+it looked like a legitimate type error; (b) `add_list` had no
+first-class grammar production, so the fuzzer only ever reached it
+through macro expansion, where both operands are arena-built; and
+(c) nothing in this section obliged anyone to FIX rather than pin.
+A follow-up sweep found four more of the same family — including
+`xss == xss` returning `false`, a reflexivity violation.  All were
+P0 by the rule above.
 
 ## Compilation limits
 

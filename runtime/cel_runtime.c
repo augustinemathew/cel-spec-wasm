@@ -1255,10 +1255,9 @@ void cel_list_eq(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
     *cel_value_at(out_slot) = *b;
     return;
   }
-  // Both arena → fast path; otherwise the host trampoline materialises
+  // Both arena → fast path; otherwise the host trampoline normalizes
   // both sides via the appropriate backing methods.  Cross-origin
-  // (one arena, one host) routes to the host trampoline, which
-  // currently POISONs with TYPE_MISMATCH.
+  // (one arena, one host) routes to the host trampoline too.
   if (a->kind == CEL_LIST_ARENA && b->kind == CEL_LIST_ARENA) {
     __attribute__((musttail)) return cel_list_eq_arena(out_slot, a_slot,
                                                        b_slot);
@@ -1288,8 +1287,8 @@ void cel_list_concat(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
                                                            b_slot);
   }
   // Mixed-origin or both-host: route to the host trampoline, which
-  // currently POISONs with TYPE_MISMATCH (full materialisation is not
-  // yet wired).  See CelListConcatImpl.
+  // lifts both operands into one fresh arena list and returns that.
+  // See CelListConcatImpl.
   if ((a->kind == CEL_LIST_ARENA || a->kind == CEL_LIST_HOST) &&
       (b->kind == CEL_LIST_ARENA || b->kind == CEL_LIST_HOST)) {
     __attribute__((musttail)) return cel_host_cel_list_concat(out_slot, a_slot,

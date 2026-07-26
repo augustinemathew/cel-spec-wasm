@@ -405,6 +405,140 @@ TEST(CelMapEqImplTest, NonMapOperandPoisonsTypeMismatch) {
   EXPECT_EQ(out.payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
+// ─── Nested-aggregate VALUES ───────────────────────────────────────
+//
+// Map keys are scalar by construction, but VALUES may be lists /
+// maps / messages, and the set-equality walk must recurse into them
+// origin-agnostically.  Before that, a host-side aggregate value
+// encoded to a `CEL_ERROR{TYPE_MISMATCH}` placeholder and two
+// placeholders compared UNEQUAL — so `mm == mm` was `false`.
+
+// `{"a": [1]}` with the value list host-backed.
+CelValue MakeHostMapOfLists(Fixture& f, absl::string_view key,
+                            const std::vector<int64_t>& values) {
+  std::vector<celwasm::Value> inner;
+  inner.reserve(values.size());
+  for (int64_t i : values) {
+    inner.push_back(celwasm::Value::Int(i));
+  }
+  return MakeHostMap(f, {{celwasm::Value::String(std::string(key)),
+                          celwasm::Value::List(std::move(inner))}});
+}
+
+// Builds a CEL_LIST_ARENA list in the fake memory (16-byte
+// ArenaListHeader + count×24-byte elements run), sharing the
+// fixture's staging cursor with the map builder — both are bumps.
+CelValue MakeArenaListValue(Fixture& f, const std::vector<CelValue>& elements) {
+  const uint32_t header_off = f.map_cursor;
+  ArenaListHeader hdr{};
+  hdr.count = static_cast<uint32_t>(elements.size());
+  hdr.capacity = hdr.count;
+  hdr.elements_offset = header_off + static_cast<uint32_t>(sizeof(hdr));
+  std::memcpy(f.mem.data() + header_off, &hdr, sizeof(hdr));
+  uint32_t off = hdr.elements_offset;
+  for (const CelValue& e : elements) {
+    f.mem.WriteCelValue(off, e);
+    off += static_cast<uint32_t>(kCelListEntryStride);
+  }
+  f.map_cursor = off;
+  CelValue cv{};
+  cv.kind = CEL_LIST_ARENA;
+  cv.payload.arena_list.header_ptr = header_off;
+  return cv;
+}
+
+// `{"a": [1]}` built entirely in linear memory.
+CelValue MakeArenaMapOfLists(Fixture& f, absl::string_view key,
+                             const std::vector<int64_t>& values) {
+  std::vector<CelValue> inner;
+  inner.reserve(values.size());
+  for (int64_t i : values) {
+    inner.push_back(MakeInt(i));
+  }
+  const CelValue key_cv = MakeString(f, key);
+  return MakeArenaMap(f, {{key_cv, MakeArenaListValue(f, inner)}});
+}
+
+TEST(CelMapEqImplNestedTest, HostVsArenaNestedListValuesCompareEqual) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostMapOfLists(f, "a", {1}),
+                         MakeArenaMapOfLists(f, "a", {1})),
+                   true);
+}
+
+TEST(CelMapEqImplNestedTest, ArenaVsHostNestedListValuesCompareEqual) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeArenaMapOfLists(f, "a", {1}),
+                         MakeHostMapOfLists(f, "a", {1})),
+                   true);
+}
+
+TEST(CelMapEqImplNestedTest, HostVsHostNestedListValuesCompareEqual) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostMapOfLists(f, "a", {1}),
+                         MakeHostMapOfLists(f, "a", {1})),
+                   true);
+}
+
+TEST(CelMapEqImplNestedTest, ReflexivityHoldsForAHostNestedMap) {
+  // `mm == mm` — the same wire operand on both sides.
+  Fixture f;
+  CelValue mm = MakeHostMapOfLists(f, "a", {1});
+  ExpectBoolResult(RunEq(f, mm, mm), true);
+}
+
+TEST(CelMapEqImplNestedTest, DifferingNestedValueComparesFalse) {
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostMapOfLists(f, "a", {1}),
+                         MakeHostMapOfLists(f, "a", {2})),
+                   false);
+  // Same values, different key.
+  ExpectBoolResult(RunEq(f, MakeHostMapOfLists(f, "a", {1}),
+                         MakeHostMapOfLists(f, "b", {1})),
+                   false);
+}
+
+TEST(CelMapEqImplNestedTest, EmptyNestedValuesCompareEqual) {
+  Fixture f;
+  ExpectBoolResult(
+      RunEq(f, MakeHostMapOfLists(f, "a", {}), MakeArenaMapOfLists(f, "a", {})),
+      true);
+  ExpectBoolResult(RunEq(f, MakeHostMapOfLists(f, "a", {}),
+                         MakeArenaMapOfLists(f, "a", {1})),
+                   false);
+}
+
+TEST(CelMapEqImplNestedTest, Int64MinNestedValueRoundTrips) {
+  constexpr int64_t kMin = -9223372036854775807LL - 1;
+  Fixture f;
+  ExpectBoolResult(RunEq(f, MakeHostMapOfLists(f, "a", {kMin}),
+                         MakeArenaMapOfLists(f, "a", {kMin})),
+                   true);
+  ExpectBoolResult(RunEq(f, MakeHostMapOfLists(f, "a", {kMin}),
+                         MakeArenaMapOfLists(f, "a", {kMin + 1})),
+                   false);
+}
+
+TEST(CelMapEqImplNestedTest, NestedMapValuesCompareByValue) {
+  Fixture f;
+  auto nested = [](int64_t v) {
+    return celwasm::Value::Map(
+        {{celwasm::Value::String("b"), celwasm::Value::Int(v)}});
+  };
+  CelValue a = MakeHostMap(f, {{celwasm::Value::String("a"), nested(7)}});
+  CelValue b = MakeHostMap(f, {{celwasm::Value::String("a"), nested(7)}});
+  CelValue c = MakeHostMap(f, {{celwasm::Value::String("a"), nested(8)}});
+  ExpectBoolResult(RunEq(f, a, b), true);
+  ExpectBoolResult(RunEq(f, a, c), false);
+}
+
+TEST(CelMapEqImplNestedTest, AggregateVsScalarValueComparesFalse) {
+  Fixture f;
+  CelValue arena_scalar = MakeArenaMap(f, {{MakeString(f, "a"), MakeInt(1)}});
+  ExpectBoolResult(RunEq(f, MakeHostMapOfLists(f, "a", {1}), arena_scalar),
+                   false);
+}
+
 TEST(CelMapEqImplTest, MissingRefSlotReturnsNonOkStatus) {
   Fixture f;
   CelValue bogus{};
