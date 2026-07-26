@@ -36,37 +36,21 @@ using ::absl_testing::IsOk;
 using ::testing::HasSubstr;
 using ::testing::Not;
 
-CelfnType Prim(CelfnType::Kind k) {
-  CelfnType t;
-  t.kind = k;
-  return t;
+CelType ListOf(CelType e) {
+  return CelType::List(std::move(e));
 }
-CelfnType ListOf(CelfnType e) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kList;
-  t.list_element.push_back(std::move(e));
-  return t;
+CelType MapOf(CelType k, CelType v) {
+  return CelType::Map(std::move(k), std::move(v));
 }
-CelfnType MapOf(CelfnType k, CelfnType v) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kMap;
-  t.map_kv.push_back(std::move(k));
-  t.map_kv.push_back(std::move(v));
-  return t;
-}
-CelfnType ProtoOf(std::string fqn) {
-  CelfnType t;
-  t.kind = CelfnType::Kind::kProto;
-  t.proto_fqn = std::move(fqn);
-  return t;
+CelType ProtoOf(std::string fqn) {
+  return CelType::Message(std::move(fqn));
 }
 
-FunctionLibrary OneFn(absl::string_view fn_name, CelfnType ret,
+FunctionLibrary OneFn(absl::string_view fn_name, CelType ret,
                       std::vector<CelfnParam> params) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddForeignComponent(fn_name, std::move(ret), std::move(params))
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddPlugin(fn_name, std::move(ret), std::move(params))
+                    .Build();
   ABSL_CHECK_OK(lib_or);
   return *std::move(lib_or);
 }
@@ -106,8 +90,8 @@ TEST(EmitCodecH, EmptyNamespaceEmitsAtGlobalScope) {
 // the codec when those primitives appear nested inside a list/map.
 
 TEST(EmitCodecH, IntPrimitiveAloneEmitsNoCodecBody) {
-  auto lib = OneFn("ident", Prim(CelfnType::Kind::kInt),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib =
+      OneFn("ident", CelType::Int(), {CelfnParam{false, CelType::Int(), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   // No lift/lower for int alone — pass-through.
@@ -118,12 +102,13 @@ TEST(EmitCodecH, IntPrimitiveAloneEmitsNoCodecBody) {
 // ── String ────────────────────────────────────────────────────────
 
 TEST(EmitCodecH, StringLiftReturnsStringView) {
-  auto lib = OneFn("ident", Prim(CelfnType::Kind::kString),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kString), "x"}});
+  auto lib = OneFn("ident", CelType::String(),
+                   {CelfnParam{false, CelType::String(), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(
-      *t, HasSubstr("inline std::string_view lift(const customfn_string_t& s)"));
+      *t,
+      HasSubstr("inline std::string_view lift(const customfn_string_t& s)"));
   EXPECT_THAT(*t, HasSubstr("return {reinterpret_cast<const char*>(s.ptr), "
                             "s.len};"));
 }
@@ -132,8 +117,8 @@ TEST(EmitCodecH, StringLowerUsesAuthorStringDupN) {
   // Lower for string uses customfn_string_dup_n (the only out-path the
   // canonical ABI accepts without manual cabi_realloc bookkeeping —
   // m26 §3.5.1).  The author NEVER calls _free on the result.
-  auto lib = OneFn("ident", Prim(CelfnType::Kind::kString),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kString), "x"}});
+  auto lib = OneFn("ident", CelType::String(),
+                   {CelfnParam{false, CelType::String(), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline void lower(customfn_string_t* ret, "
@@ -144,8 +129,8 @@ TEST(EmitCodecH, StringLowerUsesAuthorStringDupN) {
 // ── Bytes — list<u8> ─────────────────────────────────────────────
 
 TEST(EmitCodecH, BytesLiftReturnsVectorU8) {
-  auto lib = OneFn("ident", Prim(CelfnType::Kind::kBytes),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kBytes), "x"}});
+  auto lib = OneFn("ident", CelType::Bytes(),
+                   {CelfnParam{false, CelType::Bytes(), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::vector<uint8_t> lift(const "
@@ -153,8 +138,8 @@ TEST(EmitCodecH, BytesLiftReturnsVectorU8) {
 }
 
 TEST(EmitCodecH, BytesLowerUsesCabiRealloc) {
-  auto lib = OneFn("ident", Prim(CelfnType::Kind::kBytes),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kBytes), "x"}});
+  auto lib = OneFn("ident", CelType::Bytes(),
+                   {CelfnParam{false, CelType::Bytes(), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline void lower(customfn_list_u8_t* ret, const "
@@ -165,9 +150,8 @@ TEST(EmitCodecH, BytesLowerUsesCabiRealloc) {
 // ── list<T> ──────────────────────────────────────────────────────
 
 TEST(EmitCodecH, ListIntLiftReturnsVectorInt) {
-  auto lib =
-      OneFn("ident", ListOf(Prim(CelfnType::Kind::kInt)),
-            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "x"}});
+  auto lib = OneFn("ident", ListOf(CelType::Int()),
+                   {CelfnParam{false, ListOf(CelType::Int()), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::vector<int64_t> lift(const "
@@ -176,9 +160,8 @@ TEST(EmitCodecH, ListIntLiftReturnsVectorInt) {
 }
 
 TEST(EmitCodecH, ListStringLiftRecursesThroughStringElement) {
-  auto lib =
-      OneFn("ident", ListOf(Prim(CelfnType::Kind::kString)),
-            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kString)), "x"}});
+  auto lib = OneFn("ident", ListOf(CelType::String()),
+                   {CelfnParam{false, ListOf(CelType::String()), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::vector<std::string> lift(const "
@@ -190,7 +173,7 @@ TEST(EmitCodecH, ListStringLiftRecursesThroughStringElement) {
 TEST(EmitCodecH, NestedListOfListOfIntEmitsBothLifts) {
   // list<list<int>> needs lift(customfn_list_s64_t) AND
   // lift(customfn_list_list_s64_t).  The latter calls the former.
-  CelfnType nested = ListOf(ListOf(Prim(CelfnType::Kind::kInt)));
+  CelType nested = ListOf(ListOf(CelType::Int()));
   auto lib = OneFn("ident", nested, {CelfnParam{false, nested, "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
@@ -202,13 +185,9 @@ TEST(EmitCodecH, NestedListOfListOfIntEmitsBothLifts) {
 // ── map<K,V> — list<tuple<K,V>> ───────────────────────────────────
 
 TEST(EmitCodecH, MapStringIntLiftReturnsStdMap) {
-  auto lib = OneFn(
-      "ident",
-      MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
-      {CelfnParam{
-          false,
-          MapOf(Prim(CelfnType::Kind::kString), Prim(CelfnType::Kind::kInt)),
-          "x"}});
+  auto lib =
+      OneFn("ident", MapOf(CelType::String(), CelType::Int()),
+            {CelfnParam{false, MapOf(CelType::String(), CelType::Int()), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::map<std::string, int64_t> lift(const "
@@ -220,8 +199,8 @@ TEST(EmitCodecH, MapStringIntLiftReturnsStdMap) {
 TEST(EmitCodecH, DurationUsesExportsPrefix) {
   // Per m26 §3.5.1 the record type is `exports_<pkg_normalized>_<iface>_<r>_t`.
   // `cel:customfn` normalizes to `cel_customfn`.
-  auto lib = OneFn("ident", Prim(CelfnType::Kind::kDuration),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kDuration), "x"}});
+  auto lib = OneFn("ident", CelType::Duration(),
+                   {CelfnParam{false, CelType::Duration(), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("exports_cel_customfn_fns_duration_t"));
@@ -230,8 +209,8 @@ TEST(EmitCodecH, DurationUsesExportsPrefix) {
 }
 
 TEST(EmitCodecH, TimestampUsesExportsPrefix) {
-  auto lib = OneFn("ident", Prim(CelfnType::Kind::kTimestamp),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kTimestamp), "x"}});
+  auto lib = OneFn("ident", CelType::Timestamp(),
+                   {CelfnParam{false, CelType::Timestamp(), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("exports_cel_customfn_fns_timestamp_t"));
@@ -256,12 +235,10 @@ TEST(EmitCodecH, ProtoEmitsParseAndSerialize) {
 TEST(EmitCodecH, SharedTypeAcrossDeclsEmittedOnce) {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddForeignComponent(
-              "f1", Prim(CelfnType::Kind::kInt),
-              {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kInt)), "xs"}})
-          .AddForeignComponent(
-              "f2", ListOf(Prim(CelfnType::Kind::kInt)),
-              {CelfnParam{false, Prim(CelfnType::Kind::kString), "k"}})
+          .AddPlugin("f1", CelType::Int(),
+                     {CelfnParam{false, ListOf(CelType::Int()), "xs"}})
+          .AddPlugin("f2", ListOf(CelType::Int()),
+                     {CelfnParam{false, CelType::String(), "k"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto t = EmitCodecH(*lib_or, kMod, kPkg);
@@ -280,8 +257,8 @@ TEST(EmitCodecH, SharedTypeAcrossDeclsEmittedOnce) {
 
 TEST(EmitCodecH, UnusedTypesAreNotEmitted) {
   // Decl uses only int; bytes / strings / records absent.
-  auto lib = OneFn("ident", Prim(CelfnType::Kind::kInt),
-                   {CelfnParam{false, Prim(CelfnType::Kind::kInt), "x"}});
+  auto lib =
+      OneFn("ident", CelType::Int(), {CelfnParam{false, CelType::Int(), "x"}});
   auto t = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, Not(HasSubstr("customfn_list_string_t")));
@@ -292,9 +269,8 @@ TEST(EmitCodecH, UnusedTypesAreNotEmitted) {
 // ── Output stability ────────────────────────────────────────────
 
 TEST(EmitCodecH, ByteForByteDeterministic) {
-  auto lib =
-      OneFn("ident", ListOf(Prim(CelfnType::Kind::kString)),
-            {CelfnParam{false, ListOf(Prim(CelfnType::Kind::kString)), "x"}});
+  auto lib = OneFn("ident", ListOf(CelType::String()),
+                   {CelfnParam{false, ListOf(CelType::String()), "x"}});
   auto a = EmitCodecH(lib, kMod, kPkg);
   auto b = EmitCodecH(lib, kMod, kPkg);
   ASSERT_THAT(a, IsOk());

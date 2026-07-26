@@ -1230,9 +1230,9 @@ absl::Status MarshalActivation(wasmtime_context_t* absl_nonnull ctx,
   auto string_bytes =
       TotalHostStringBytes(abi, activation, impl->host_env.bindings);
   if (!string_bytes.ok()) return string_bytes.status();
-  const uint32_t need = *string_bytes +
-                        (kUnknownDescriptorBytes *
-                         CountUnknownVariables(abi, impl->host_env.bindings));
+  const uint32_t need =
+      *string_bytes + (kUnknownDescriptorBytes *
+                       CountUnknownVariables(abi, impl->host_env.bindings));
   if (need > 0) {
     const absl::string_view first_name = abi.variables_size() > 0
                                              ? abi.variables(0).name()

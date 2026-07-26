@@ -1,11 +1,17 @@
 #include "abi/cel_abi_emit.h"
 
 #include <cstdint>
+#include <vector>
 
 #include "abi/cel_abi.pb.h"
+#include "abi/celfn_wire.h"
 #include "abi/runtime_catalogue.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "compiler/celfn/function_library.h"
 #include "compiler/codegen/layout_pass.h"
+#include "compiler/codegen/module.h"
 
 namespace celwasm {
 
@@ -96,6 +102,45 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
   }
 
   return abi;
+}
+
+namespace {
+
+// The wasm import-module name shared by every host- and
+// plugin-backed custom fn (`CelfnDecl::module_name` for kHost /
+// kPlugin; see compiler/celfn/function_library.h).
+constexpr absl::string_view kCelFnModule = "cel_fn";
+
+const CelfnDecl* FindDeclByOverloadId(
+    absl::Span<const FunctionLibrary> libraries, absl::string_view id) {
+  for (const FunctionLibrary& lib : libraries) {
+    for (const CelfnDecl& decl : lib.decls()) {
+      if (decl.overload_id == id) return &decl;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+std::vector<celwasm::abi::RequiredFunction> BuildRequiredFunctions(
+    absl::Span<const WasmModule::FunctionImportName> imports,
+    absl::Span<const FunctionLibrary> libraries) {
+  std::vector<celwasm::abi::RequiredFunction> rows;
+  for (const WasmModule::FunctionImportName& import : imports) {
+    if (import.module != kCelFnModule) continue;
+    const CelfnDecl* decl = FindDeclByOverloadId(libraries, import.base);
+    ABSL_CHECK(decl != nullptr)
+        << "BuildRequiredFunctions: cel_fn import `" << import.base
+        << "` has no matching decl across the registered function "
+           "libraries — codegen installed the import from those libraries, "
+           "so a miss is an overload-table wiring bug";
+    // A cel_fn import resolving to a kCelDefined decl is the same
+    // wiring-invariant violation — RequiredFunctionFromDecl CHECKs it.
+    rows.push_back(RequiredFunctionFromDecl(*decl));
+  }
+  return rows;
 }
 
 }  // namespace celwasm

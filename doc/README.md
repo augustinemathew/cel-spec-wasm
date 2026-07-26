@@ -24,8 +24,8 @@ functions:
 | [`user-guide/faq.md`](user-guide/faq.md) | Common questions: what's supported, the static-subset boundary, link modes, gotchas. |
 | [`user-guide/security-model.md`](user-guide/security-model.md) | What the sandbox guarantees, who you trust, the known limits — read before deploying untrusted input. |
 | [`user-guide/writing-host-functions.md`](user-guide/writing-host-functions.md) | Deep dive: `@host` functions (typed + context APIs), your C++ lambdas. |
-| [`user-guide/writing-component-functions.md`](user-guide/writing-component-functions.md) | Deep dive: `@component` functions (sandboxed Component-Model backend). |
-| [`../examples/`](../examples/) | Runnable `cc_binary` examples, hello-world through component functions — gated by `//examples:examples_smoke_test`, so the code runs. |
+| [`user-guide/writing-plugins.md`](user-guide/writing-plugins.md) | Deep dive: `@plugin` functions (sandboxed wasm plugins). |
+| [`../examples/`](../examples/) | Runnable `cc_binary` examples, hello-world through plugin functions — gated by `//examples:examples_smoke_test`, so the code runs. |
 | [`../tools/cel/README.md`](../tools/cel/README.md) | The `cel` CLI (eval / check / compile / generate). |
 | [`langdef.md`](langdef.md) | The CEL language definition (mirrors upstream cel-spec — fix upstream, not here). |
 | [`intro.md`](intro.md), [`extensions/`](extensions/) | CEL introduction + extension specs (also upstream mirrors). |
@@ -45,7 +45,7 @@ verified against the code it describes.
 | [`design/02-evaluator.md`](design/02-evaluator.md) | The evaluator: Plan (instantiate + JIT), Eval, activation marshaling, result decode. |
 | [`design/03-abi-and-memory.md`](design/03-abi-and-memory.md) | The wire contracts: `cel.abi` schema, slot layout, the linear-memory map, the reserved-window discipline. |
 | [`design/04-runtime.md`](design/04-runtime.md) | The `runtime/` kernel: the chained arena, slot accessors, host trampolines, the stripped-runtime static-link variant. |
-| [`design/05-custom-functions.md`](design/05-custom-functions.md) | The `.celfn` custom-function subsystem: `@host` / `@component` backends, the IDL, dispatch. |
+| [`design/05-custom-functions.md`](design/05-custom-functions.md) | The `.celfn` custom-function subsystem: `@host` / `@plugin` backends, the IDL, dispatch. |
 | [`design/06-testing-strategy.md`](design/06-testing-strategy.md) | The testing system: the per-component matrix, conformance, the oracle, property-based testing, the closeout gate. |
 | [`design/07-benchmarking.md`](design/07-benchmarking.md) | The benchmark methodology: the corpus, the three-way harness, the honest win/loss framing. |
 | [`design/diagrams/`](design/diagrams/) | Rendered SVGs (pipeline, dependency graph, memory map, trust boundary) + `render.py`. |
@@ -63,7 +63,7 @@ Working on the compiler itself:
 | [`implementation-plan/per-component-test-coverage.md`](implementation-plan/per-component-test-coverage.md) | Per-component required test scenarios + the milestone-closeout gate. |
 | [`implementation-plan/rewrite/feature-pipeline-checklist.md`](implementation-plan/rewrite/feature-pipeline-checklist.md) | Which files/tests/ABI to touch (in order) when adding a feature. |
 | [`../conformance/README.md`](../conformance/README.md) | Conformance harness + the **live** pass/skip/fail headline; how to run both link modes. |
-| [`../benchmark/README.md`](../benchmark/README.md) | Comparative + regression-localisation benchmarks (eval corpus, compiler, kernel, component tiers). |
+| [`../benchmark/README.md`](../benchmark/README.md) | Comparative + regression-localisation benchmarks (eval corpus, compiler, kernel, plugin tiers). |
 
 Transverse working docs under
 [`implementation-plan/`](implementation-plan/):

@@ -109,19 +109,51 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "run_embed_decls",
+    srcs = ["run_embed_decls.cc"],
+    hdrs = ["run_embed_decls.h"],
+    deps = [
+        "//abi:plugin_validate",
+        "//abi:wasm_binary",
+        "//compiler/celfn:function_library",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
 cc_test(
     name = "abi_describe_test",
     size = "small",
     srcs = ["abi_describe_test.cc"],
     deps = [
         ":abi_describe",
-        "@com_google_absl//absl/log:absl_check",
         "//compiler:compiler",
         "//compiler:program",
         "//compiler/ir:annotations",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "run_embed_decls_test",
+    size = "small",
+    srcs = ["run_embed_decls_test.cc"],
+    deps = [
+        ":run_embed_decls",
+        "//abi:plugin",
+        "//abi:wasm_binary",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -132,6 +164,7 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":abi_describe",
+        ":run_embed_decls",
         ":run_generate",
         ":value_format",
         ":var_parser",

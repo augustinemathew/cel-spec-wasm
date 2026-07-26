@@ -24,6 +24,11 @@ cel generate --idl PATH --out_dir DIR
                                 emit custom-function bindings (fns.wit,
                                 codec.h, generated_stub.cc, user_fns.h)
                                 from a .idl file
+cel embed-decls --plugin PATH --idl PATH --out PATH
+                                embed the .idl declaration text into a
+                                Component-Model plugin as its cel.fns
+                                custom section (the cel_wasm_plugin
+                                macro's final step)
 ```
 
 ## Exit codes

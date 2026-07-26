@@ -5,16 +5,22 @@
 
 #include "compiler/compiler.h"
 
+#include <cstdint>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "abi/plugin.h"
+#include "abi/wasm_binary.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/string_view.h"
+#include "bazel/link_mode_test_helpers.h"
 #include "compiler/program.h"
+#include "google/protobuf/message.h"
+#include "gtest/gtest.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
-#include "google/protobuf/message.h"
-#include "bazel/link_mode_test_helpers.h"
-#include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
@@ -66,7 +72,8 @@ TEST(CompilerCompileTest, CompileBadSourceReturnsInvalidArgument) {
   ASSERT_TRUE(compiler_or.ok()) << compiler_or.status();
   Compiler compiler = *std::move(compiler_or);
 
-  auto prog_or = compiler.Compile("this is not a CEL expression !!", LinkModeOpts());
+  auto prog_or =
+      compiler.Compile("this is not a CEL expression !!", LinkModeOpts());
   EXPECT_EQ(prog_or.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
@@ -183,6 +190,32 @@ TEST(CompilerBuilderDeclareVariableTest, RejectsUnknownType) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+// kNull / kOptional are signature-only kinds
+// (CelType::IsDeclarableAsVariable is false): representable in
+// custom-fn signatures, never as a declared variable type.  The
+// rejection names the variable and the kind.
+TEST(CompilerBuilderDeclareVariableTest, RejectsNullType) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("n", CelType::Null());
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`n`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`null`"));
+}
+
+TEST(CompilerBuilderDeclareVariableTest, RejectsOptionalType) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("o", CelType::Optional(CelType::Int()));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`o`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`optional`"));
+}
+
 // Compile with a declared variable — M2.B.1 lights the kIdent arm
 // of expr_lower.  The declaration flows through the checker, the
 // resolver assigns the variable a slot, expr_lower emits the
@@ -230,24 +263,23 @@ TEST(CompilerCompileDeclaredVariableTest, UndeclaredVariableFailsAtChecker) {
   EXPECT_THAT(prog_or, StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-// ─── M13 Slice C.2 — Compiler::Builder::AddLibrary / AddFunction ───
+// ─── M13 Slice C.2 — Compiler::Builder::DeclareFunctions / AddFunction ───
 
-TEST(CompilerBuilderAddLibraryTest, EmptyLibraryBuildsOk) {
+TEST(CompilerBuilderDeclareFunctionsTest, EmptyLibraryBuildsOk) {
   auto lib_or = celwasm::FunctionLibrary::Builder().Build();
   ASSERT_THAT(lib_or, IsOk());
   auto b = Compiler::NewBuilder();
-  b.AddLibrary(*std::move(lib_or));
+  b.DeclareFunctions(*std::move(lib_or));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   EXPECT_EQ(c->function_libraries().size(), 1u);
   EXPECT_EQ(c->function_libraries()[0].decls().size(), 0u);
 }
 
-TEST(CompilerBuilderAddLibraryTest, LibraryWithHostFnPropagatesToCompiler) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kString;
+TEST(CompilerBuilderDeclareFunctionsTest,
+     LibraryWithHostFnPropagatesToCompiler) {
+  const celwasm::CelType ret = celwasm::CelType::Bool();
+  const celwasm::CelType arg = celwasm::CelType::String();
   std::vector<celwasm::CelfnParam> params{
       celwasm::CelfnParam{/*is_receiver=*/true, arg, "s"}};
   auto lib_or = celwasm::FunctionLibrary::Builder()
@@ -255,7 +287,7 @@ TEST(CompilerBuilderAddLibraryTest, LibraryWithHostFnPropagatesToCompiler) {
                     .Build();
   ASSERT_THAT(lib_or, IsOk());
   auto b = Compiler::NewBuilder();
-  b.AddLibrary(*std::move(lib_or));
+  b.DeclareFunctions(*std::move(lib_or));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   ASSERT_EQ(c->function_libraries().size(), 1u);
@@ -292,19 +324,18 @@ TEST(CompilerBuilderAddFunctionTest, FirstParseErrorWins) {
   EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(CompilerBuilderAddLibraryTest, CrossLibraryDuplicateOverloadIdRejected) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kString;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kString;
+TEST(CompilerBuilderDeclareFunctionsTest,
+     CrossLibraryDuplicateOverloadIdRejected) {
+  const celwasm::CelType ret = celwasm::CelType::String();
+  const celwasm::CelType arg = celwasm::CelType::String();
   auto make_lib = [&]() {
     return *celwasm::FunctionLibrary::Builder()
                 .AddHost("upper", ret, {celwasm::CelfnParam{true, arg, "s"}})
                 .Build();
   };
   auto b = Compiler::NewBuilder();
-  b.AddLibrary(make_lib());
-  b.AddLibrary(make_lib());
+  b.DeclareFunctions(make_lib());
+  b.DeclareFunctions(make_lib());
   auto build_or = std::move(b).Build();
   EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(build_or.status().message()),
@@ -337,25 +368,23 @@ TEST(CompilerBuilderAddFunctionTest, CompileReceiverHostFnResolvesAndLowers) {
   EXPECT_EQ(bytes[3], 0x6d);
 }
 
-// kForeignComponent decls are dispatched via the host-callback path
+// kPlugin decls are dispatched via the host-callback path
 // (cel_fn) per m24 §2-§3 — a Component-Model-backed fn is invisible
 // to the compiler / checker / overload table at the call site (the
 // emitted wasm import is `(import "cel_fn" "<helper>" …)`, identical
 // to a kHost decl).  These tests pin that contract.
-TEST(CompilerBuilderAddLibraryTest, ForeignComponentDeclRoutesViaCelFn) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kString;
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddForeignComponent(
-                        "allow", ret,
-                        {celwasm::CelfnParam{/*is_receiver=*/false, arg, "u"}})
-                    .Build();
+TEST(CompilerBuilderDeclareFunctionsTest, PluginDeclRoutesViaCelFn) {
+  const celwasm::CelType ret = celwasm::CelType::Bool();
+  const celwasm::CelType arg = celwasm::CelType::String();
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddPlugin("allow", ret,
+                     {celwasm::CelfnParam{/*is_receiver=*/false, arg, "u"}})
+          .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("u", CelType::String());
-  b.AddLibrary(*std::move(lib_or));
+  b.DeclareFunctions(*std::move(lib_or));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   auto prog_or = c->Compile("allow(u)");
@@ -369,29 +398,27 @@ TEST(CompilerBuilderAddLibraryTest, ForeignComponentDeclRoutesViaCelFn) {
   const std::string blob(reinterpret_cast<const char*>(bytes.data()),
                          bytes.size());
   EXPECT_NE(blob.find("cel_fn"), std::string::npos)
-      << "kForeignComponent decl did not produce a `cel_fn` import — "
+      << "kPlugin decl did not produce a `cel_fn` import — "
          "routing regressed";
   EXPECT_NE(blob.find("allow_string"), std::string::npos)
       << "helper name not present in emitted imports";
 }
 
-TEST(CompilerBuilderAddLibraryTest,
-     ForeignComponentDeclAdmitsProtoAndRoutesViaCelFn) {
-  // m24 §8 admits proto(...) on kForeignComponent (cross as bytes).
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kProto;
-  arg.proto_fqn = "celwasm.testdata.Customer";
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddForeignComponent(
-                        "is_premium", ret,
-                        {celwasm::CelfnParam{/*is_receiver=*/false, arg, "c"}})
-                    .Build();
+TEST(CompilerBuilderDeclareFunctionsTest,
+     PluginDeclAdmitsProtoAndRoutesViaCelFn) {
+  // m24 §8 admits proto(...) on kPlugin (cross as bytes).
+  const celwasm::CelType ret = celwasm::CelType::Bool();
+  const celwasm::CelType arg =
+      celwasm::CelType::Message("celwasm.testdata.Customer");
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddPlugin("is_premium", ret,
+                     {celwasm::CelfnParam{/*is_receiver=*/false, arg, "c"}})
+          .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
   b.DeclareVariable("c", CelType::Message("celwasm.testdata.Customer"));
-  b.AddLibrary(*std::move(lib_or));
+  b.DeclareFunctions(*std::move(lib_or));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   auto prog_or = c->Compile("is_premium(c)");
@@ -404,56 +431,220 @@ TEST(CompilerBuilderAddLibraryTest,
             std::string::npos);
 }
 
-TEST(CompilerBuilderAddLibraryTest,
-     ForeignComponentAndHostCoexistAndShareCelFnNamespace) {
-  // Two decls with distinct overload-ids, one kHost + one kForeignComponent,
+TEST(CompilerBuilderDeclareFunctionsTest,
+     PluginAndHostCoexistAndShareCelFnNamespace) {
+  // Two decls with distinct overload-ids, one kHost + one kPlugin,
   // both routing via cel_fn — must coexist in one library.
-  celwasm::CelfnType b_t;
-  b_t.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType s_t;
-  s_t.kind = celwasm::CelfnType::Kind::kString;
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddHost("upper", s_t, {celwasm::CelfnParam{true, s_t, "s"}})
-                    .AddForeignComponent(
-                        "allow", b_t,
-                        {celwasm::CelfnParam{false, s_t, "u"}})
-                    .Build();
+  const celwasm::CelType b_t = celwasm::CelType::Bool();
+  const celwasm::CelType s_t = celwasm::CelType::String();
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("upper", s_t, {celwasm::CelfnParam{true, s_t, "s"}})
+          .AddPlugin("allow", b_t, {celwasm::CelfnParam{false, s_t, "u"}})
+          .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   ASSERT_EQ(lib_or->decls().size(), 2u);
-  EXPECT_EQ(lib_or->decls()[0].backend,
-            celwasm::CelfnDecl::Backend::kHost);
-  EXPECT_EQ(lib_or->decls()[1].backend,
-            celwasm::CelfnDecl::Backend::kForeignComponent);
+  EXPECT_EQ(lib_or->decls()[0].backend, celwasm::CelfnDecl::Backend::kHost);
+  EXPECT_EQ(lib_or->decls()[1].backend, celwasm::CelfnDecl::Backend::kPlugin);
   // Both decls should claim module_name=="cel_fn" (the call-site
-  // import-module is the same for kHost and kForeignComponent).
+  // import-module is the same for kHost and kPlugin).
   EXPECT_EQ(lib_or->decls()[0].module_name, "cel_fn");
   EXPECT_EQ(lib_or->decls()[1].module_name, "cel_fn");
 }
 
-TEST(CompilerBuilderAddLibraryTest,
-     ForeignComponentDuplicateOverloadIdRejected) {
+TEST(CompilerBuilderDeclareFunctionsTest, PluginDuplicateOverloadIdRejected) {
   // Same overload-id collision detection as @host — registering the
-  // same helper twice (one @host + one kForeignComponent) must fail.
-  celwasm::CelfnType b_t;
-  b_t.kind = celwasm::CelfnType::Kind::kBool;
-  celwasm::CelfnType s_t;
-  s_t.kind = celwasm::CelfnType::Kind::kString;
-  auto lib_or = celwasm::FunctionLibrary::Builder()
-                    .AddHost("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
-                    .AddForeignComponent(
-                        "clash", b_t,
-                        {celwasm::CelfnParam{false, s_t, "x"}})
-                    .Build();
+  // same helper twice (one @host + one kPlugin) must fail.
+  const celwasm::CelType b_t = celwasm::CelType::Bool();
+  const celwasm::CelType s_t = celwasm::CelType::String();
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
+          .AddPlugin("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
+          .Build();
   EXPECT_THAT(lib_or, StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(std::string(lib_or.status().message()),
               testing::HasSubstr("duplicate"));
 }
 
-TEST(CompilerBuilderAddLibraryTest, MultipleLibrariesWithDistinctOverloadsOk) {
-  celwasm::CelfnType ret;
-  ret.kind = celwasm::CelfnType::Kind::kString;
-  celwasm::CelfnType arg;
-  arg.kind = celwasm::CelfnType::Kind::kString;
+// ─── m35 B2 — Compiler::Builder::Use(Plugin) ─────────────────────
+//
+// `Use(plugin)` is exactly `DeclareFunctions(plugin.library())` —
+// the compile side needs no wasm engine, so the fixtures below are
+// hand-framed plugin bytes (Component-Model preamble + a `cel.fns`
+// custom section built with the production framing writer), the
+// same shape abi/plugin_test.cc pins.
+
+// `\0asm` + version/layer word 0x0001000d — a minimal CM component.
+constexpr uint8_t kComponentPreamble[] = {0x00, 0x61, 0x73, 0x6d,
+                                          0x0d, 0x00, 0x01, 0x00};
+
+Plugin MakePlugin(absl::string_view celfn_text) {
+  std::vector<uint8_t> bytes(kComponentPreamble,
+                             kComponentPreamble + sizeof(kComponentPreamble));
+  const std::vector<uint8_t> section = BuildCustomSection(
+      "cel.fns",
+      {reinterpret_cast<const uint8_t*>(celfn_text.data()), celfn_text.size()});
+  bytes.insert(bytes.end(), section.begin(), section.end());
+  auto plugin_or = Plugin::Load(bytes);
+  EXPECT_THAT(plugin_or, IsOk()) << plugin_or.status();
+  return *std::move(plugin_or);
+}
+
+TEST(CompilerBuilderUseTest, UseRegistersDeclsAndCallSiteTypeChecks) {
+  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int())
+      .DeclareVariable("y", CelType::Int())
+      .Use(plugin);
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  ASSERT_EQ(c->function_libraries().size(), 1u);
+  EXPECT_EQ(c->function_libraries()[0].decls()[0].overload_id, "add_int_int");
+  // The call site type-checks against the plugin's declaration and
+  // lowers to a `cel_fn.add_int_int` import.
+  auto prog_or = c->Compile("add(x, y)", LinkModeOpts());
+  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
+  const std::string blob(
+      reinterpret_cast<const char*>(prog_or->wasm_bytes().data()),
+      prog_or->wasm_bytes().size());
+  EXPECT_NE(blob.find("add_int_int"), std::string::npos);
+}
+
+TEST(CompilerBuilderUseTest, CallSiteTypeMismatchFailsAtCompile) {
+  // The declared signature is enforced at the call site — the wrong
+  // argument type fails Compile (checker InvalidArgument), which is
+  // the whole point of declarations flowing from the artifact.
+  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("s", CelType::String()).Use(plugin);
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  EXPECT_THAT(c->Compile("add(s, s)", LinkModeOpts()),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(CompilerBuilderUseTest, DuplicateOverloadIdAcrossTwoUsesFailsAtBuild) {
+  const Plugin p1 = MakePlugin("int @plugin.add(int a, int b);\n");
+  const Plugin p2 = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto b = Compiler::NewBuilder();
+  b.Use(p1).Use(p2);
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("add_int_int"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("more than one library"));
+}
+
+TEST(CompilerBuilderUseTest, DuplicateOverloadIdAcrossUseAndAddFunction) {
+  // A Use'd plugin decl and a text-path AddFunction decl that
+  // synthesise the same overload-id collide at Build(), same as any
+  // cross-library duplicate.
+  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto b = Compiler::NewBuilder();
+  b.Use(plugin);
+  b.AddFunction("int @host.add(int a, int b);");
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("add_int_int"));
+}
+
+// ─── m35 B2 — unmappable decl types rejected at Build() ──────────
+//
+// `FunctionLibrary::Builder` admits `type` / `optional<T>` on
+// programmatically-built kHost decls, but the checker-side mapping
+// (`DeclTypeToCheckerType`) has no `cel::Type` for either
+// (cleanup-backlog #44).  Build() must reject with a clean
+// InvalidArgument naming the decl and the type — never crash.
+
+TEST(CompilerBuilderUnmappableTypeTest, TypeReturnRejectedNamingDeclAndType) {
+  auto lib_or = celwasm::FunctionLibrary::Builder()
+                    .AddHost("weird", CelType::Type(), {})
+                    .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareFunctions(*std::move(lib_or));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`weird`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`type`"));
+}
+
+TEST(CompilerBuilderUnmappableTypeTest,
+     OptionalParamRejectedNamingDeclAndType) {
+  const CelType opt = CelType::Optional(CelType::Int());
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("maybe", CelType::Int(),
+                   {celwasm::CelfnParam{/*is_receiver=*/false, opt, "x"}})
+          .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareFunctions(*std::move(lib_or));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`maybe`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`optional<int>`"));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("parameter `x`"));
+}
+
+TEST(CompilerBuilderUnmappableTypeTest, NestedUnmappableInsideListRejected) {
+  // The check is structural: `list<optional<string>>` is just as
+  // unmappable as a bare `optional<...>`.
+  const CelType lst = CelType::List(CelType::Optional(CelType::String()));
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder().AddHost("nested", lst, {}).Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareFunctions(*std::move(lib_or));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`optional<string>`"));
+}
+
+TEST(CompilerBuilderUnmappableTypeTest, DiagnosticUsesCelfnGrammarSpelling) {
+  // The rejected type is rendered via THE `.celfn` grammar renderer
+  // (abi/celfn_wire.h::RenderType) — `Duration` capitalised,
+  // `map<K, V>` with a space — the same spellings Plan messages and
+  // emit tests pin, not an ad-hoc per-call-site respelling.
+  const CelType opt =
+      CelType::Optional(CelType::Map(CelType::String(), CelType::Duration()));
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("later", CelType::Int(),
+                   {celwasm::CelfnParam{/*is_receiver=*/false, opt, "x"}})
+          .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
+  auto b = Compiler::NewBuilder();
+  b.DeclareFunctions(*std::move(lib_or));
+  auto build_or = std::move(b).Build();
+  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(std::string(build_or.status().message()),
+              testing::HasSubstr("`optional<map<string, Duration>>`"));
+}
+
+TEST(CompilerBuilderUnmappableTypeTest, MappableDeclStillBuildsAndCompiles) {
+  // Positive twin: every mappable kind passes the gate untouched.
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("s", CelType::String());
+  b.AddFunction("bool @host.is_number(this string s);");
+  auto c = std::move(b).Build();
+  ASSERT_THAT(c, IsOk());
+  EXPECT_THAT(c->Compile("s.is_number()", LinkModeOpts()), IsOk());
+}
+
+TEST(CompilerBuilderDeclareFunctionsTest,
+     MultipleLibrariesWithDistinctOverloadsOk) {
+  const celwasm::CelType ret = celwasm::CelType::String();
+  const celwasm::CelType arg = celwasm::CelType::String();
   auto lib1 = *celwasm::FunctionLibrary::Builder()
                    .AddHost("upper", ret, {celwasm::CelfnParam{true, arg, "s"}})
                    .Build();
@@ -461,8 +652,8 @@ TEST(CompilerBuilderAddLibraryTest, MultipleLibrariesWithDistinctOverloadsOk) {
                    .AddHost("lower", ret, {celwasm::CelfnParam{true, arg, "s"}})
                    .Build();
   auto b = Compiler::NewBuilder();
-  b.AddLibrary(std::move(lib1));
-  b.AddLibrary(std::move(lib2));
+  b.DeclareFunctions(std::move(lib1));
+  b.DeclareFunctions(std::move(lib2));
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   EXPECT_EQ(c->function_libraries().size(), 2u);

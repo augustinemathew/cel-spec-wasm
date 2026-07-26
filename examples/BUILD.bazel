@@ -5,7 +5,8 @@
 #   bazel run //examples:01_hello_world
 #
 # Examples depend ONLY on the sanctioned public targets
-# (//compiler:{compiler,program}, //eval:*, //shared:type) — they
+# (//compiler:{compiler,program}, //eval:*, //shared:type,
+# //abi:plugin) — they
 # double as a compile-time check that the public surface is sufficient
 # for real embedders.  `:examples_smoke_test` runs every binary and
 # asserts on its output, so the examples (and the doc snippets built
@@ -14,7 +15,7 @@
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
-load("//bazel:cel_wasm_component.bzl", "cel_wasm_component")
+load("//bazel:cel_wasm_plugin.bzl", "cel_wasm_plugin")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -155,22 +156,22 @@ cc_binary(
 )
 
 # The sandboxed custom function for example 09: adder.idl +
-# adder_fns.cc → adder_component.wasm (a Component-Model component
+# adder_fns.cc → adder_plugin.wasm (a Component-Model component
 # with its own linear memory).
-cel_wasm_component(
-    name = "adder_component",
+cel_wasm_plugin(
+    name = "adder_plugin",
     idl = "adder.idl",
     user_fns = ["adder_fns.cc"],
 )
 
 cc_binary(
-    name = "09_component_functions",
-    srcs = ["09_component_functions.cc"],
-    data = [":adder_component"],
+    name = "09_plugin_functions",
+    srcs = ["09_plugin_functions.cc"],
+    data = [":adder_plugin"],
     deps = [
+        "//abi:plugin",
         "//compiler:compiler",
         "//compiler:program",
-        "//compiler/celfn:function_library",
         "//eval:activation",
         "//eval:engine",
         "//eval:instance",
@@ -196,6 +197,6 @@ sh_test(
         ":06_proto_messages",
         ":07_error_handling",
         ":08_function_errors_and_unknowns",
-        ":09_component_functions",
+        ":09_plugin_functions",
     ],
 )

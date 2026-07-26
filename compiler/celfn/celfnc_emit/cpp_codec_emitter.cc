@@ -30,7 +30,7 @@
 namespace celwasm::celfnc_emit {
 namespace {
 
-// Author-side struct name for a CelfnType subtree, mirroring what
+// Author-side struct name for a CelType subtree, mirroring what
 // wit-bindgen 0.57 emits (m26 §3.5.1, verified empirically via the
 // probe at /tmp/witgen).  Records collapse to a single name per
 // kind (kDuration → "duration", kTimestamp → "timestamp") because
@@ -46,12 +46,12 @@ struct StructName {
   bool is_proto = false;
 };
 
-// Argkind-of-types helper — recurses through list_element / map_kv,
-// mirroring CelfnType::Argkind but synthesising the C struct name
+// Argkind-of-types helper — recurses through the list / map element
+// types, mirroring ArgkindSlug but synthesising the C struct name
 // instead of the overload-id suffix.
-std::string SuffixFor(const CelfnType& t) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+std::string SuffixFor(const CelType& t) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kBool:
       return "bool";
     case K::kInt:
@@ -67,7 +67,7 @@ std::string SuffixFor(const CelfnType& t) {
     case K::kNull:
       return "u8";  // option<u8>
     case K::kList:
-      return absl::StrCat("list_", SuffixFor(t.list_element[0]));
+      return absl::StrCat("list_", SuffixFor(t.list_element()));
     case K::kMap:
       // m24 §6: map<K,V> wire shape is list<tuple<K,V>>; the
       // wit-bindgen C struct is `customfn_list_tuple2_<k>_<v>_t`,
@@ -75,16 +75,18 @@ std::string SuffixFor(const CelfnType& t) {
       // element type, used only as the element type of the outer
       // list).  Empirically verified against the /tmp/witgen probe
       // output during m26 design (m26 §3.5.1).
-      return absl::StrCat("list_tuple2_", SuffixFor(t.map_kv[0]), "_",
-                          SuffixFor(t.map_kv[1]));
-    case K::kProto:
+      return absl::StrCat("list_tuple2_", SuffixFor(t.map_key()), "_",
+                          SuffixFor(t.map_value()));
+    case K::kMessage:
       return "u8";  // same shape as list<u8>
     case K::kDuration:
     case K::kTimestamp:
     case K::kOptional:
     case K::kType:
+    case K::kUnknown:
       // Records use a different naming scheme (exports_*_t).
-      // optional / type never reach here in v1 — rejected upstream.
+      // optional / type never reach here in v1 — rejected upstream;
+      // kUnknown cannot appear in a Builder-finalised decl.
       return "<unreachable>";
   }
   return "<unreachable>";
@@ -99,9 +101,9 @@ std::string NormalizePkgForExportsPrefix(absl::string_view pkg) {
 
 // C struct name for a top-level type used by a decl.  Recursion happens
 // in SuffixFor; this just wraps with the right prefix.
-StructName StructFor(const CelfnType& t, absl::string_view exports_prefix) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+StructName StructFor(const CelType& t, absl::string_view exports_prefix) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kBool:
     case K::kInt:
     case K::kUint:
@@ -120,7 +122,7 @@ StructName StructFor(const CelfnType& t, absl::string_view exports_prefix) {
     case K::kList:
     case K::kMap:
       return {absl::StrCat("customfn_", SuffixFor(t)) + "_t", false};
-    case K::kProto:
+    case K::kMessage:
       return {"customfn_list_u8_t", true};
     case K::kDuration:
       return {absl::StrCat(exports_prefix, "duration_t"), false};
@@ -128,15 +130,16 @@ StructName StructFor(const CelfnType& t, absl::string_view exports_prefix) {
       return {absl::StrCat(exports_prefix, "timestamp_t"), false};
     case K::kOptional:
     case K::kType:
+    case K::kUnknown:
       return {"<unreachable>", false};
   }
   return {"<unreachable>", false};
 }
 
 // C++ container-side type the codec lifts to / lowers from.
-absl::StatusOr<std::string> CppTypeFor(const CelfnType& t) {
-  using K = CelfnType::Kind;
-  switch (t.kind) {
+absl::StatusOr<std::string> CppTypeFor(const CelType& t) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
     case K::kBool:
       return std::string("bool");
     case K::kInt:
@@ -163,26 +166,28 @@ absl::StatusOr<std::string> CppTypeFor(const CelfnType& t) {
     case K::kTimestamp:
       return std::string("::google::protobuf::Timestamp");
     case K::kList: {
-      auto inner = CppTypeFor(t.list_element[0]);
+      auto inner = CppTypeFor(t.list_element());
       if (!inner.ok()) return inner.status();
       return absl::StrCat("std::vector<", *inner, ">");
     }
     case K::kMap: {
-      auto k = CppTypeFor(t.map_kv[0]);
-      auto v = CppTypeFor(t.map_kv[1]);
+      auto k = CppTypeFor(t.map_key());
+      auto v = CppTypeFor(t.map_value());
       if (!k.ok()) return k.status();
       if (!v.ok()) return v.status();
       return absl::StrCat("std::map<", *k, ", ", *v, ">");
     }
-    case K::kProto:
+    case K::kMessage:
       // Caller knows the proto type; codec uses lift_proto<M> template.
       return std::string("M");
     case K::kOptional:
     case K::kType:
       return absl::FailedPreconditionError(absl::StrCat(
-          "codec emitter saw a permanently-rejected CelfnType::Kind (",
-          (t.kind == K::kOptional ? "optional" : "type"),
+          "codec emitter saw a permanently-rejected CelType::Kind (",
+          (t.kind() == K::kOptional ? "optional" : "type"),
           "); Builder::Build() should have rejected upstream"));
+    case K::kUnknown:
+      break;
   }
   return absl::InternalError("CppTypeFor: unknown kind");
 }
@@ -192,43 +197,43 @@ absl::StatusOr<std::string> CppTypeFor(const CelfnType& t) {
 // repeats across multiple decls.
 class TypeCollector {
  public:
-  void Visit(const CelfnType& t) {
-    using K = CelfnType::Kind;
-    switch (t.kind) {
+  void Visit(const CelType& t) {
+    using K = CelType::Kind;
+    switch (t.kind()) {
       case K::kList:
-        if (!t.list_element.empty()) Visit(t.list_element[0]);
+        Visit(t.list_element());
         break;
       case K::kMap:
-        if (t.map_kv.size() == 2) {
-          Visit(t.map_kv[0]);
-          Visit(t.map_kv[1]);
-        }
+        Visit(t.map_key());
+        Visit(t.map_value());
         break;
       default:
         break;
     }
     // Add after inner — topological order.
-    if (t.kind == K::kBool || t.kind == K::kInt || t.kind == K::kUint ||
-        t.kind == K::kDouble) {
+    if (t.kind() == K::kBool || t.kind() == K::kInt || t.kind() == K::kUint ||
+        t.kind() == K::kDouble) {
       return;  // pass-through, no codec needed
     }
-    if (t.kind == K::kOptional || t.kind == K::kType) {
+    if (t.kind() == K::kOptional || t.kind() == K::kType) {
       // upstream-rejected; let the emit pass surface the error.
       return;
     }
-    const std::string key = absl::StrCat(static_cast<int>(t.kind), ":",
-                                         SuffixFor(t), ":", t.proto_fqn);
+    const std::string key =
+        absl::StrCat(static_cast<int>(t.kind()), ":", SuffixFor(t), ":",
+                     t.kind() == K::kMessage ? t.message_fully_qualified_name()
+                                             : absl::string_view());
     if (seen_.insert(key).second) {
       ordered_.push_back(t);
     }
   }
-  const std::vector<CelfnType>& ordered() const {
+  const std::vector<CelType>& ordered() const {
     return ordered_;
   }
 
  private:
   std::set<std::string> seen_;
-  std::vector<CelfnType> ordered_;
+  std::vector<CelType> ordered_;
 };
 
 // ── Per-type emission templates ──
@@ -279,33 +284,31 @@ constexpr absl::string_view kProtoTpl =
 // $0 = record struct name (e.g. exports_cel_customfn_fns_duration_t).
 constexpr absl::string_view kDurationTpl =
     R"cpp(inline ::google::protobuf::Duration lift(const $0& r) {
-  ::google::protobuf::Duration d;
-  d.set_seconds(r.seconds);
-  d.set_nanos(r.nanos);
-  return d;
-}
+            ::google::protobuf::Duration d;
+            d.set_seconds(r.seconds);
+            d.set_nanos(r.nanos);
+            return d;
+          }
 
-inline void lower($0* ret, const ::google::protobuf::Duration& d) {
-  ret->seconds = d.seconds();
-  ret->nanos = d.nanos();
-}
-
-)cpp";
+          inline void lower($0* ret, const ::google::protobuf::Duration& d) {
+            ret->seconds = d.seconds();
+            ret->nanos = d.nanos();
+          }
+    )cpp";
 
 constexpr absl::string_view kTimestampTpl =
     R"cpp(inline ::google::protobuf::Timestamp lift(const $0& r) {
-  ::google::protobuf::Timestamp t;
-  t.set_seconds(r.seconds);
-  t.set_nanos(r.nanos);
-  return t;
-}
+            ::google::protobuf::Timestamp t;
+            t.set_seconds(r.seconds);
+            t.set_nanos(r.nanos);
+            return t;
+          }
 
-inline void lower($0* ret, const ::google::protobuf::Timestamp& t) {
-  ret->seconds = t.seconds();
-  ret->nanos = t.nanos();
-}
-
-)cpp";
+          inline void lower($0* ret, const ::google::protobuf::Timestamp& t) {
+            ret->seconds = t.seconds();
+            ret->nanos = t.nanos();
+          }
+    )cpp";
 
 constexpr absl::string_view kNullTpl =
     R"cpp(inline std::monostate lift(const customfn_option_u8_t& /*o*/) {
@@ -372,15 +375,15 @@ constexpr absl::string_view kMapLiftTpl =
     )cpp";
 
 // Emit lift+lower for a single type that needs them.
-absl::Status EmitOne(const CelfnType& t, absl::string_view exports_prefix,
+absl::Status EmitOne(const CelType& t, absl::string_view exports_prefix,
                      std::string* out) {
-  using K = CelfnType::Kind;
+  using K = CelType::Kind;
   StructName s = StructFor(t, exports_prefix);
   auto cpp_or = CppTypeFor(t);
   if (!cpp_or.ok()) return cpp_or.status();
   const std::string& cpp = *cpp_or;
 
-  switch (t.kind) {
+  switch (t.kind()) {
     case K::kString:
       absl::StrAppend(out, kStringTpl);
       return absl::OkStatus();
@@ -389,7 +392,7 @@ absl::Status EmitOne(const CelfnType& t, absl::string_view exports_prefix,
       absl::StrAppend(out, kBytesTpl);
       return absl::OkStatus();
 
-    case K::kProto:
+    case K::kMessage:
       absl::StrAppend(out, kProtoTpl);
       return absl::OkStatus();
 
@@ -402,10 +405,10 @@ absl::Status EmitOne(const CelfnType& t, absl::string_view exports_prefix,
       return absl::OkStatus();
 
     case K::kList: {
-      const auto& inner = t.list_element[0];
+      const auto& inner = t.list_element();
       const bool scalar_inner =
-          inner.kind == K::kBool || inner.kind == K::kInt ||
-          inner.kind == K::kUint || inner.kind == K::kDouble;
+          inner.kind() == K::kBool || inner.kind() == K::kInt ||
+          inner.kind() == K::kUint || inner.kind() == K::kDouble;
       const absl::string_view tpl = scalar_inner ? kListFlatTpl : kListRecTpl;
       absl::SubstituteAndAppend(out, tpl, cpp, s.c_name);
       return absl::OkStatus();
@@ -414,15 +417,16 @@ absl::Status EmitOne(const CelfnType& t, absl::string_view exports_prefix,
     case K::kMap: {
       // Inline the per-element key + value lift expressions; the
       // template wraps them in the r.emplace(...) call site.
-      const bool key_string = t.map_kv[0].kind == K::kString;
+      const bool key_string = t.map_key().kind() == K::kString;
       const std::string key_expr =
           key_string
               ? "std::string(reinterpret_cast<const char*>(m.ptr[i].f0.ptr), "
                 "m.ptr[i].f0.len)"
               : "m.ptr[i].f0";
-      const bool val_scalar =
-          t.map_kv[1].kind == K::kBool || t.map_kv[1].kind == K::kInt ||
-          t.map_kv[1].kind == K::kUint || t.map_kv[1].kind == K::kDouble;
+      const bool val_scalar = t.map_value().kind() == K::kBool ||
+                              t.map_value().kind() == K::kInt ||
+                              t.map_value().kind() == K::kUint ||
+                              t.map_value().kind() == K::kDouble;
       const std::string val_expr =
           val_scalar ? "m.ptr[i].f1" : "lift(m.ptr[i].f1)";
       absl::SubstituteAndAppend(out, kMapLiftTpl, cpp, s.c_name, key_expr,
@@ -445,6 +449,8 @@ absl::Status EmitOne(const CelfnType& t, absl::string_view exports_prefix,
     case K::kType:
       return absl::FailedPreconditionError(
           "codec emit reached a permanently-rejected kind");
+    case K::kUnknown:
+      break;
   }
   return absl::InternalError("EmitOne: unknown kind");
 }
@@ -456,7 +462,7 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
                                        absl::string_view wit_package_name) {
   TypeCollector tc;
   for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kForeignComponent) continue;
+    if (d.backend != CelfnDecl::Backend::kPlugin) continue;
     tc.Visit(d.return_type);
     for (const auto& p : d.params) {
       tc.Visit(p.type);
@@ -473,8 +479,8 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
   bool needs_proto_duration = false;
   bool needs_proto_timestamp = false;
   for (const auto& t : tc.ordered()) {
-    if (t.kind == CelfnType::Kind::kDuration) needs_proto_duration = true;
-    if (t.kind == CelfnType::Kind::kTimestamp) needs_proto_timestamp = true;
+    if (t.kind() == CelType::Kind::kDuration) needs_proto_duration = true;
+    if (t.kind() == CelType::Kind::kTimestamp) needs_proto_timestamp = true;
   }
 
   std::string out;
@@ -511,9 +517,9 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
   // codec.h's lower(...) bodies call `cabi_realloc(...)` for every
   // list / bytes / proto path — emit the forward decl here so we
   // don't depend on header changes from wit-bindgen.
-  absl::StrAppend(
-      &out, "extern \"C\" void* cabi_realloc(void* ptr, size_t old_size, "
-            "size_t align, size_t new_size);\n\n");
+  absl::StrAppend(&out,
+                  "extern \"C\" void* cabi_realloc(void* ptr, size_t old_size, "
+                  "size_t align, size_t new_size);\n\n");
 
   if (!cpp_namespace.empty()) {
     absl::StrAppend(&out, "namespace ", cpp_namespace, "::codec {\n\n");

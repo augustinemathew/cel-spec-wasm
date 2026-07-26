@@ -56,5 +56,5 @@
   <!-- captions -->
   <text x="522" y="196" text-anchor="middle" font-size="12" fill="#0969da">compile in one process &#183; ship the bytes &#183; evaluate in another</text>
   <text x="836" y="196" text-anchor="middle" font-size="12" fill="#1a7f37">bounded memory &#183; no syscalls &#183; no I/O</text>
-  <text x="836" y="214" text-anchor="middle" font-size="12" fill="#1a7f37">@component functions isolated here too</text>
+  <text x="836" y="214" text-anchor="middle" font-size="12" fill="#1a7f37">@plugin functions isolated here too</text>
 </svg>

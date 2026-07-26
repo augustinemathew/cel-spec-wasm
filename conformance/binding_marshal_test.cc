@@ -20,7 +20,6 @@ namespace {
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
 using ::cel::expr::Decl;
-using ::cel::expr::ExprValue;
 using ::cel::expr::Value;
 using ::cel::expr::conformance::test::SimpleTest;
 

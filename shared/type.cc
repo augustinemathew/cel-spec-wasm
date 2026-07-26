@@ -54,6 +54,11 @@ CelType CelType::Type() {
   t.kind_ = Kind::kType;
   return t;
 }
+CelType CelType::Null() {
+  CelType t;
+  t.kind_ = Kind::kNull;
+  return t;
+}
 
 CelType CelType::Message(std::string fully_qualified_name) {
   CelType t;
@@ -74,6 +79,13 @@ CelType CelType::Map(CelType key, CelType value) {
   t.kind_ = Kind::kMap;
   t.map_kv_ = std::make_shared<std::pair<CelType, CelType>>(std::move(key),
                                                             std::move(value));
+  return t;
+}
+
+CelType CelType::Optional(CelType element) {
+  CelType t;
+  t.kind_ = Kind::kOptional;
+  t.optional_element_ = std::make_shared<CelType>(std::move(element));
   return t;
 }
 
@@ -100,6 +112,17 @@ const CelType& CelType::map_value() const {
   return map_kv_->second;
 }
 
+const CelType& CelType::optional_element() const {
+  ABSL_CHECK(kind_ == Kind::kOptional)
+      << "optional_element on a " << CelTypeKindName(kind_);
+  return *optional_element_;
+}
+
+bool CelType::IsDeclarableAsVariable() const {
+  return kind_ != Kind::kUnknown && kind_ != Kind::kNull &&
+         kind_ != Kind::kOptional;
+}
+
 bool CelType::operator==(const CelType& other) const {
   if (kind_ != other.kind_) return false;
   // Scalars (kBool / kInt / ... / kType) carry no extra state; the
@@ -116,6 +139,9 @@ bool CelType::operator==(const CelType& other) const {
   if (kind_ == Kind::kMap) {
     return map_kv_->first == other.map_kv_->first &&
            map_kv_->second == other.map_kv_->second;
+  }
+  if (kind_ == Kind::kOptional) {
+    return *optional_element_ == *other.optional_element_;
   }
   return true;
 }
@@ -148,6 +174,10 @@ absl::string_view CelTypeKindName(CelType::Kind k) {
       return "timestamp";
     case CelType::Kind::kType:
       return "type";
+    case CelType::Kind::kNull:
+      return "null";
+    case CelType::Kind::kOptional:
+      return "optional";
   }
   ABSL_CHECK(false) << "unhandled CelType::Kind = " << static_cast<int>(k);
 }

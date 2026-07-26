@@ -26,7 +26,7 @@ moduleDirective
 
 fileItem
     : hostFnDecl
-    | componentFnDecl
+    | pluginFnDecl
     | bareHostDecl
     | nativeFnDecl
     ;
@@ -38,12 +38,12 @@ hostFnDecl
     : type '@' 'host' '.' Identifier '(' params? ')' ';'
     ;
 
-// `<type> @component.<name>(<params>) ;` — Component-Model-backed.
+// `<type> @plugin.<name>(<params>) ;` — plugin-backed (Component-Model wasm).
 // No body.  Dispatched via the `cel_fn` host-callback path (m24 §2);
-// marshaled through a per-fn typed WIT export of a Component-Model
-// component registered via `Engine::AddComponent(bytes, lib)`.
-componentFnDecl
-    : type '@' 'component' '.' Identifier '(' params? ')' ';'
+// marshaled through a per-fn typed WIT export of the Component-Model
+// plugin registered via `Engine::AddPlugin(bytes, lib)`.
+pluginFnDecl
+    : type '@' 'plugin' '.' Identifier '(' params? ')' ';'
     ;
 
 // Diagnostic-only production.  Matches `type 'host' '.' Identifier
@@ -59,9 +59,9 @@ bareHostDecl
     ;
 
 // `<type> @native.<name>(<params>) = <cel-expr> ;` — CEL-defined.  Has
-// body.  Symmetric with the `@host.` / `@component.` prefixes above:
-// `@host` is C++-backed, `@component` is component-wasm-backed,
-// `@native` is CEL-body-backed.  `native`, like `host` / `component`,
+// body.  Symmetric with the `@host.` / `@plugin.` prefixes above:
+// `@host` is C++-backed, `@plugin` is sandboxed-wasm-backed,
+// `@native` is CEL-body-backed.  `native`, like `host` / `plugin`,
 // tokenizes as a keyword and is therefore reserved as an identifier.
 nativeFnDecl
     : type '@' 'native' '.' Identifier '(' params? ')' '=' celExprBody ';'

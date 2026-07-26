@@ -43,6 +43,7 @@ cc_test(
     deps = [
         ":compile",
         "//abi:cel_abi_cc_proto",
+        "//abi:wasm_binary",
         "//testdata:e2e_fixture_cc_proto",
         "@binaryen//:binaryen",
         "@com_google_absl//absl/status",

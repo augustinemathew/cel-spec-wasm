@@ -9,9 +9,8 @@ cc_binary(
     srcs = ["dump_samples.cc"],
     tags = ["manual"],
     deps = [
-        ":generator",
+        ":catalog",
         ":grammar",
-        ":grammar_aggregates",
         ":targets",
         "//shared:type",
         "@com_google_absl//absl/strings:string_view",
@@ -36,11 +35,9 @@ cc_test(
     ],
 )
 
-# Typed attribute grammar — the data model for the CEL source
-# generator.  See `doc/implementation-plan/rewrite/m27-pbt-cel-
-# generator.md` §"The data model".  No fuzztest dep — the grammar
-# is plain data that grammar_test (L1) and the future generator
-# / property layers consume.
+# The engine: the typed-attribute grammar data model (Production /
+# GrammarBuilder / Validate) AND the type-directed walker
+# (GenCtx / GenerateExpr) that generates source from it.
 cc_library(
     name = "grammar",
     srcs = ["grammar.cc"],
@@ -48,73 +45,33 @@ cc_library(
     deps = [
         "//shared:type",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
     ],
 )
 
-# Slice B catalog — scalar-only typed-attribute grammar.  See
-# `grammar_scalars.h` for the activation + production list.
+# The catalog — WHAT generated expressions look like.  Data rows
+# grouped by family (catalog_<family>.cc); catalog.cc's
+# BuildGrammar() composes them in a fixed, generation-affecting
+# order.  See `catalog.h`.
 cc_library(
-    name = "grammar_scalars",
-    srcs = ["grammar_scalars.cc"],
-    hdrs = ["grammar_scalars.h"],
+    name = "catalog",
+    srcs = [
+        "catalog.cc",
+        "catalog_aggregates.cc",
+        "catalog_leaves.cc",
+        "catalog_ops.cc",
+        "catalog_strings.cc",
+        "catalog_temporal.cc",
+    ],
+    hdrs = ["catalog.h"],
     deps = [
         ":grammar",
         "//shared:type",
         "@com_google_absl//absl/log:absl_check",
-    ],
-)
-
-# Slice C catalog — Slice B + list / map literals, size, _in_,
-# comprehension macros over scalar lists and maps.
-# kStructExpr / kSelectExpr / has() / Customer activation are
-# deferred to Slice C2.  See `grammar_aggregates.h`.
-cc_library(
-    name = "grammar_aggregates",
-    srcs = ["grammar_aggregates.cc"],
-    hdrs = ["grammar_aggregates.h"],
-    deps = [
-        ":grammar",
-        ":grammar_scalars",
-        "//shared:type",
-        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
-    ],
-)
-
-# Type-directed CEL source generator.  Walks a Grammar honouring
-# depth budget + leaf eligibility + per-production weights.
-cc_library(
-    name = "generator",
-    srcs = ["generator.cc"],
-    hdrs = ["generator.h"],
-    deps = [
-        ":grammar",
-        ":grammar_scalars",
-        "//shared:type",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/strings",
-    ],
-)
-
-cc_test(
-    name = "generator_test",
-    size = "small",
-    srcs = ["generator_test.cc"],
-    deps = [
-        ":generator",
-        ":grammar",
-        ":grammar_scalars",
-        "//compiler/frontend:parse_and_check",
-        "//compiler/ir:annotations",
-        "//compiler/ir:typed_ast",
-        "//shared:type",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -131,9 +88,8 @@ cc_library(
     srcs = ["oracle_harness.cc"],
     hdrs = ["oracle_harness.h"],
     deps = [
-        ":generator",
+        ":catalog",
         ":grammar",
-        ":grammar_aggregates",
         "//compiler:compiler",
         "//eval:activation",
         "//eval:engine",
@@ -149,13 +105,6 @@ cc_library(
     ],
 )
 
-# Loop-driven divergence miner.  Walks sequential seeds for one
-# target type, prints each oracle divergence it finds along with
-# the source / ours / oracle values.  Use when fuzztest's
-# unit-test mode buffers the EXPECT_EQ output and the message
-# never reaches the test log.  Run as `bazel run //e2e/fuzz:
-# mine_divergences -- <target> <max_seeds> <depth> [stop_after]`.
-# Recursive type-driven ours-vs-oracle value comparison (scalars,
 # Single source of truth for the mineable target set (CLI name ->
 # CelType).  mine_divergences + dump_samples both derive their
 # `ParseTarget` from this so the two CLIs (and the scripts/fuzz.sh
@@ -183,29 +132,37 @@ cc_test(
     ],
 )
 
-# lists, maps, nested) + printable renders for divergence logs.
+# The ONE verdict path: classify a generate→eval-both-sides
+# round-trip, compare payloads, render the outcome.  Every driver
+# (miner, property test) judges through RunOne so they cannot
+# disagree about what a failure is.  Payload comparison is
+# `conformance::CompareValue` — the same comparator the conformance
+# gate scores with; there is deliberately only one in the repo.
 cc_library(
-    name = "compare",
+    name = "verdict",
     testonly = True,
-    srcs = ["compare.cc"],
-    hdrs = ["compare.h"],
+    srcs = ["verdict.cc"],
+    hdrs = ["verdict.h"],
     deps = [
-        "//eval:cel_host",
-        "//eval:value",
+        ":oracle_harness",
+        "//conformance:runner",
         "//shared:type",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
-        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 
 cc_test(
-    name = "compare_test",
-    size = "small",
-    srcs = ["compare_test.cc"],
+    name = "verdict_test",
+    size = "medium",
+    srcs = ["verdict_test.cc"],
     deps = [
-        ":compare",
+        ":oracle_harness",
+        ":verdict",
         "//eval:value",
         "//shared:type",
+        "@com_google_absl//absl/status",
         "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
         "@com_google_googletest//:gtest_main",
     ],
@@ -217,14 +174,10 @@ cc_binary(
     srcs = ["mine_divergences.cc"],
     tags = ["manual"],
     deps = [
-        ":compare",
-        ":oracle_harness",
         ":targets",
-        "//eval:value",
+        ":verdict",
         "//shared:type",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
-        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
     ],
 )
 
@@ -249,12 +202,8 @@ cc_test(
     # dies before main.  macOS links this fine either way.
     linkstatic = True,
     deps = [
-        ":oracle_harness",
-        "//eval:value",
+        ":verdict",
         "//shared:type",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/strings:string_view",
-        "@com_google_cel_spec//proto/cel/expr:value_cc_proto",
         "@com_google_googletest//:gtest",
         "@fuzztest//fuzztest",
         "@fuzztest//fuzztest:fuzztest_gtest_main",
@@ -266,9 +215,8 @@ cc_test(
     size = "large",
     srcs = ["grammar_test.cc"],
     deps = [
+        ":catalog",
         ":grammar",
-        ":grammar_scalars",
-        ":grammar_aggregates",
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:typed_ast",
         "//shared:type",

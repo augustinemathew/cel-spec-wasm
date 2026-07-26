@@ -41,7 +41,7 @@ expect_contains "fn plain value"   "quota(\"alice\")  =>  int: 100"     08_funct
 expect_contains "fn error value"   "error value: invalid_argument" 08_function_errors_and_unknowns
 expect_contains "fn unknown"       "(the unknown was absorbed)"  08_function_errors_and_unknowns
 expect_contains "fn status trap"   "Eval failed with status:"    08_function_errors_and_unknowns
-expect_contains "component add"    "add(a, b) * 2  =>  84"       09_component_functions
+expect_contains "plugin add"    "add(a, b) * 2  =>  84"       09_plugin_functions
 
 if [[ "${fail}" -ne 0 ]]; then
   exit 1

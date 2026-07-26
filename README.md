@@ -264,21 +264,22 @@ your process?
 
 - **`@host` — trusted.** Your own C++, in your address space. An
   in-memory cache lookup, a call into a library you already ship.
-- **`@component` — untrusted.** Code you didn't write. A
-  customer-authored scoring function, a partner's plugin. It runs in its
-  own WebAssembly sandbox and can be hot-swapped at runtime.
+- **`@plugin` — untrusted.** Code you didn't write. A
+  customer-authored scoring function, a partner's plugin. It runs in
+  its own WebAssembly sandbox; updating it is handing new bytes to a
+  fresh `Engine` — no re-link, no redeploy.
 
-| | `@host` — trusted C++ | `@component` — sandboxed wasm |
+| | `@host` — trusted C++ | `@plugin` — sandboxed wasm |
 | --- | --- | --- |
 | Runs | in your address space, as a C++ lambda | in an isolated wasm instance with its own linear memory |
 | Author language | C++ | anything with a `wasm32-wasip2` toolchain (C++ today; TinyGo planned) |
 | Can read host memory / syscall | yes — whatever the C++ does | no — cannot escape the sandbox or perform I/O |
-| Update | re-link your binary | hot-swap: hand new bytes to `AddComponent` |
+| Update | re-link your binary | hand new bytes to a fresh `Engine` (`Engine::Use`) |
 | Per-call cost | ~110 ns | ~450 ns |
 
 ```celfn
 int  @host.length(string s);                           // trusted C++ path
-bool @component.allow(string subject, string action);  // sandboxed wasm path
+bool @plugin.allow(string subject, string action);     // sandboxed wasm path
 ```
 
 Both flavors share the `.celfn` IDL; the `@<prefix>` selects the
@@ -292,12 +293,21 @@ engine.BindFunction("int @host.length(string s);",
                     });
 ```
 
+A plugin is a **self-describing artifact**: the `cel_wasm_plugin` build
+macro embeds its declarations in the `.wasm` itself, so one
+`Plugin::Load(bytes)` yields an object that registers on both sides —
+`Compiler::Builder::Use(plugin)` for type-checking,
+`Engine::Use(plugin)` for sandboxed dispatch. No hand-written mirror of
+the declarations to drift. At `Plan`, the engine verifies every
+function the program calls exists with an exactly matching signature,
+then instantiates only the plugins that program needs.
+
 Loading not-yet-reviewed third-party code safely is the point. A stock
 in-process CEL runtime cannot do it. Guides:
 [host functions](doc/user-guide/writing-host-functions.md) ·
-[component functions](doc/user-guide/writing-component-functions.md);
+[plugin functions](doc/user-guide/writing-plugins.md);
 runnable: [`examples/04`](examples/04_host_functions.cc),
-[`examples/09`](examples/09_component_functions.cc).
+[`examples/09`](examples/09_plugin_functions.cc).
 
 ## Correctness
 
@@ -341,7 +351,7 @@ Known gaps, each pinned by a skipped-with-reason test
 - **Bindings beyond C++ are designed, not built.** The `.wasm` +
   `cel.abi` carry everything a Go/TS/Rust shim needs.
 - **Hardening continues.** Differential fuzzing and a sanitizer gate
-  ship today. Allocator caps, CPU-time limits for component functions,
+  ship today. Allocator caps, CPU-time limits for plugin functions,
   and a release-versioning policy are still to come. See the
   [security model](doc/user-guide/security-model.md).
 

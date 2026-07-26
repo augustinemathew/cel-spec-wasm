@@ -52,13 +52,16 @@ def dependency_graph():
         c.node('eval_int', 'eval/internal\ncel_host · abi_decode · wasmtime glue',
                fillcolor=EMERALD)
     g.node('shared', 'shared\nCelType', fillcolor=SKY)
-    g.node('abi', 'abi\ncel.abi emit · runtime catalogue', fillcolor='#0284C7')
+    g.node('abi', 'abi\ncel.abi emit · Plugin · wasm_binary\nruntime catalogue', fillcolor='#0284C7')
     g.node('runtime', 'runtime\ncel_runtime.c → .wasm kernel', fillcolor=AMBER,
            fontcolor='#451A03')
     for a, b in [('compiler_pub', 'frontend'), ('compiler_pub', 'celfn'),
                  ('frontend', 'ir'), ('codegen', 'ir'), ('compiler_pub', 'codegen'),
                  ('frontend', 'shared'), ('compiler_pub', 'shared'),
                  ('codegen', 'abi'), ('codegen', 'runtime'),
+                 ('compiler_pub', 'abi'),   # Compiler::Builder::Use(const Plugin&)
+                 ('eval_pub', 'abi'),       # Engine::Use(const Plugin&)
+                 ('abi', 'celfn'),          # Plugin::Load → ParseCelfnSource
                  ('eval_pub', 'compiler_pub'), ('eval_pub', 'celfn'),
                  ('eval_pub', 'eval_int'), ('eval_pub', 'runtime'),
                  ('eval_int', 'abi'), ('eval_int', 'ir'), ('eval_pub', 'shared')]:

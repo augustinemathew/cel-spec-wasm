@@ -201,15 +201,16 @@ absl::StatusOr<std::string> ParseQuotedString(Cursor& c) {
         for (int i = 0; i < 2; ++i) {
           const char h = c.src[c.pos++];
           v <<= 4;
-          if (h >= '0' && h <= '9')
+          if (h >= '0' && h <= '9') {
             v |= (h - '0');
-          else if (h >= 'a' && h <= 'f')
+          } else if (h >= 'a' && h <= 'f') {
             v |= (h - 'a' + 10);
-          else if (h >= 'A' && h <= 'F')
+          } else if (h >= 'A' && h <= 'F') {
             v |= (h - 'A' + 10);
-          else
+          } else {
             return absl::InvalidArgumentError(absl::StrCat(
                 "invalid hex digit '", std::string(1, h), "' in \\x escape"));
+          }
         }
         out.push_back(static_cast<char>(v));
         break;
@@ -499,12 +500,13 @@ absl::StatusOr<Value> ParseMessage(
 
   // Strip explicit format prefix if present.
   std::optional<MsgFormat> explicit_fmt;
-  if (absl::ConsumePrefix(&rest, "txtpb:"))
+  if (absl::ConsumePrefix(&rest, "txtpb:")) {
     explicit_fmt = MsgFormat::kTextproto;
-  else if (absl::ConsumePrefix(&rest, "json:"))
+  } else if (absl::ConsumePrefix(&rest, "json:")) {
     explicit_fmt = MsgFormat::kJson;
-  else if (absl::ConsumePrefix(&rest, "pb:"))
+  } else if (absl::ConsumePrefix(&rest, "pb:")) {
     explicit_fmt = MsgFormat::kBinary;
+  }
 
   // File reference vs inline body.
   std::string body;
@@ -564,6 +566,8 @@ absl::StatusOr<Value> ParseAtomForType(
       return ParseMessage(c, t, pool, factory);
     case CelType::Kind::kType:
     case CelType::Kind::kUnknown:
+    case CelType::Kind::kNull:
+    case CelType::Kind::kOptional:
       return absl::InvalidArgumentError(
           absl::StrCat("--var: cannot bind a value of type `",
                        ::celwasm::CelTypeKindName(t.kind()), "`"));

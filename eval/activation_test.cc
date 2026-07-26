@@ -65,7 +65,9 @@ TEST(ActivationTest, BindReturnsReferenceForFluency) {
 
 TEST(ActivationTest, BindLazyRoundTrips) {
   Activation act;
-  act.BindLazy("x", []() -> absl::StatusOr<Value> { return Value::Int(7); });
+  act.BindLazy("x", []() -> absl::StatusOr<Value> {
+    return Value::Int(7);
+  });
   EXPECT_EQ(ResolvedInt(act, "x"), 7);
 }
 
@@ -126,9 +128,8 @@ TEST(ActivationTest, BindLazyErrorPropagatesVerbatim) {
   act.BindLazy("x", []() -> absl::StatusOr<Value> {
     return absl::InvalidArgumentError("host value did not convert");
   });
-  EXPECT_THAT(act.Resolve("x"),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       "host value did not convert"));
+  EXPECT_THAT(act.Resolve("x"), StatusIs(absl::StatusCode::kInvalidArgument,
+                                         "host value did not convert"));
 }
 
 TEST(ActivationTest, FailingBinderIsRetriedRatherThanCachingTheFailure) {
@@ -160,13 +161,17 @@ TEST(ActivationTest, BindOverwritesLazyBinding) {
 TEST(ActivationTest, BindLazyOverwritesEagerBinding) {
   Activation act;
   act.Bind("x", Value::Int(1));
-  act.BindLazy("x", []() -> absl::StatusOr<Value> { return Value::Int(2); });
+  act.BindLazy("x", []() -> absl::StatusOr<Value> {
+    return Value::Int(2);
+  });
   EXPECT_EQ(ResolvedInt(act, "x"), 2);
 }
 
 TEST(ActivationTest, BindOverwritesAnAlreadyMemoizedLazyValue) {
   Activation act;
-  act.BindLazy("x", []() -> absl::StatusOr<Value> { return Value::Int(1); });
+  act.BindLazy("x", []() -> absl::StatusOr<Value> {
+    return Value::Int(1);
+  });
   EXPECT_EQ(ResolvedInt(act, "x"), 1);  // memoize it
   act.Bind("x", Value::Int(2));
   EXPECT_EQ(ResolvedInt(act, "x"), 2) << "stale memo must be dropped";
@@ -174,9 +179,13 @@ TEST(ActivationTest, BindOverwritesAnAlreadyMemoizedLazyValue) {
 
 TEST(ActivationTest, BindLazyOverwritesAnAlreadyMemoizedLazyValue) {
   Activation act;
-  act.BindLazy("x", []() -> absl::StatusOr<Value> { return Value::Int(1); });
+  act.BindLazy("x", []() -> absl::StatusOr<Value> {
+    return Value::Int(1);
+  });
   EXPECT_EQ(ResolvedInt(act, "x"), 1);
-  act.BindLazy("x", []() -> absl::StatusOr<Value> { return Value::Int(2); });
+  act.BindLazy("x", []() -> absl::StatusOr<Value> {
+    return Value::Int(2);
+  });
   EXPECT_EQ(ResolvedInt(act, "x"), 2);
 }
 
@@ -202,7 +211,9 @@ TEST(ActivationTest, LazyBindersAreIndependentPerName) {
 TEST(ActivationTest, IsMovable) {
   Activation act;
   act.Bind("x", Value::Int(1));
-  act.BindLazy("y", []() -> absl::StatusOr<Value> { return Value::Int(2); });
+  act.BindLazy("y", []() -> absl::StatusOr<Value> {
+    return Value::Int(2);
+  });
   Activation moved = std::move(act);
   EXPECT_EQ(ResolvedInt(moved, "x"), 1);
   EXPECT_EQ(ResolvedInt(moved, "y"), 2);

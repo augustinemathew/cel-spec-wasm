@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "absl/base/attributes.h"
@@ -140,6 +141,21 @@ class WasmModule {
   // (Binaryen copies into its own arena).
   void AddActiveDataSegment(uint32_t offset, absl::Span<const uint8_t> bytes,
                             absl::string_view memory_name = "memory");
+
+  // One function import's external name pair — the names the host
+  // sees in `(import "module" "base" (func ...))`.
+  struct FunctionImportName {
+    std::string module;
+    std::string base;
+  };
+
+  // Lists the module's function imports (external module + base
+  // names), in module function-index order.  Defined functions are
+  // excluded.  Read-only — does not mutate the module.  Callers that
+  // need the POST-optimize import surface (e.g. the cel.abi
+  // required-functions table) must call this after `Optimize`, which
+  // drops unused imports at level >= 1.
+  std::vector<FunctionImportName> ListFunctionImports() const;
 
   // Runs Binaryen's own validator.  Returns OK iff valid.  Binaryen
   // writes human-readable diagnostics to stderr on failure before this

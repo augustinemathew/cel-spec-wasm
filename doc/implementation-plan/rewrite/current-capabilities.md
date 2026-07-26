@@ -93,9 +93,11 @@ Source of truth: trampoline registrations in
   `cel_wkt_unwrap_time`, `cel_wkt_unwrap_wrapper`.
 - **Custom/foreign fns:** `HostCall` + `BindTyped*` (m21 host-call
   adapter); `@host` documented in `compiler.h` / `engine.h`.
-  `@component` / `AddComponent` (m24 foreign-fn via Component Model)
-  **lives on branch `claude/cel-foreign-fn-abi`, not on this branch** —
-  verify which surface is actually present on HEAD.
+  `@plugin` / `AddPlugin` (m24 foreign-fn via Component Model,
+  renamed from `@component` / `AddComponent` by the m35 R sweep) are
+  on HEAD — `eval/engine.h::AddPlugin`, plus the m35 one-noun
+  surface: `Plugin::Load` (`abi/plugin.h`), `Engine::Use`
+  (`eval/engine.h`), `Compiler::Builder::Use` (`compiler/compiler.h`).
 
 ## 6. Compile-time options
 

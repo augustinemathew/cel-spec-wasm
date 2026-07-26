@@ -80,7 +80,7 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
 
 ---
 
-## Arithmetic — 🟡 (`grammar_scalars.cc`: RegisterArithmetic, RegisterFallibleArithmetic)
+## Arithmetic — 🟡 (`catalog_ops.cc`: RegisterArithmetic, RegisterFallibleArithmetic)
 
 - [x] `add_int64` `add_uint64` `add_double`
 - [x] `subtract_int64` `subtract_uint64` `subtract_double`
@@ -95,7 +95,7 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
 - [ ] `subtract_duration_duration` `subtract_timestamp_duration`
       `subtract_timestamp_timestamp`
 
-## Comparison — 🟡 (`grammar_scalars.cc`: RegisterBoolProducers)
+## Comparison — 🟡 (`catalog_ops.cc`: RegisterBoolProducers)
 
 - [x] same-type numeric `{less,less_equals,greater,greater_equals,
       equals,not_equals}_{int64,uint64,double}`
@@ -119,11 +119,11 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
 ## size / in / type
 
 - [x] `size_string` `size_bytes` `size_list` `size_map`
-      (`grammar_aggregates.cc`: RegisterSizeProductions)
+      (`catalog_aggregates.cc`: RegisterSizeProductions)
 - [x] `in_list` `in_map` (RegisterInProductions)
 - [ ] `type` (the `type(x)` reflection function)
 
-## String functions — 🟡 (`grammar_scalars.cc`: RegisterStringFunctions; `split` in aggregates)
+## String functions — 🟡 (`catalog_strings.cc`: RegisterStringFunctions; `split` in aggregates)
 
 - [x] `contains_string` `starts_with_string` `ends_with_string`
 - [x] `matches` `matches_string`
@@ -135,23 +135,23 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
       size()` slice (a SubstringImpl off-by-one), we return the value;
       the grammar can't avoid `end == size`.  Pinned as
       `PbtSubstringEndEqualsSizeOverPermissive`.
-- [x] `string_split_string` (`grammar_aggregates.cc`)
+- [x] `string_split_string` (`catalog_aggregates.cc`)
 - [ ] `string_index_of_string_int` `string_last_index_of_string_int`
       (two-arg pos forms — resurface `IndexOfPosBoundIsByteNotCodepoint`)
 - [ ] `string_replace_string_string_int` (`replace` with limit)
 - [ ] `string_split_string_int` (`split` with limit)
 - [x] `string_char_at` `string_lower_ascii` `string_upper_ascii`
-      `string_trim` `string_reverse` (`grammar_scalars.cc`)
+      `string_trim` `string_reverse` (`catalog_strings.cc`)
 - [x] `strings_quote`
-- [x] `list_join` `list_join_string` (`grammar_aggregates.cc`)
-- [x] `string_format` (`grammar_scalars.cc`: RegisterStringFormat) —
+- [x] `list_join` `list_join_string` (`catalog_aggregates.cc`)
+- [x] `string_format` (`catalog_strings.cc`: RegisterStringFormat) —
       directive→type-matched productions (`%d`/`%x`/`%o` int, `%s`
       string, `%b` bool, `%f`/`%e` double, two-arg combos). The
       type-MISMATCHED combos (`%f` of int/string) are deliberately
       absent — cel-cpp errors, we don't; pinned as
       `FormatFixedRejectsInt` / `FormatFixedAcceptsNanToken`.
 
-## Type conversions — 🟡 (`grammar_scalars.cc`: RegisterMixedTotalOps + RegisterConversions)
+## Type conversions — 🟡 (`catalog_ops.cc`: RegisterMixedTotalOps + RegisterConversions)
 
 - [x] `int64_to_double` `uint64_to_double` (`double(int)` / `double(uint)`)
 - [x] `int64_to_uint64` `uint64_to_int64` `double_to_int64`
@@ -190,7 +190,7 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
       cel-cpp rejects it; over-permissiveness pinned as
       `PbtIntOfDurationOverPermissive`.
 
-## math_ext — ✅ (`grammar_scalars.cc`: RegisterMathExt; oracle gained MathCompilerLibrary + RegisterMathExtensionFunctions)
+## math_ext — ✅ (`catalog_ops.cc`: RegisterMathExt; oracle gained MathCompilerLibrary + RegisterMathExtensionFunctions)
 
 - [x] `math_abs_{int,uint,double}` `math_sign_{int,uint,double}`
 - [x] `math_ceil_double` `math_floor_double` `math_round_double`
@@ -213,7 +213,7 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
 - [ ] `net_ip_*` (family, isCanonical, isLoopback, isGlobalUnicast, …)
 - [ ] `net_cidr_*` (ip, masked, prefixLength, containsIP, containsCIDR, …)
 
-## timestamp accessors — 🟡 (`grammar_scalars.cc`: RegisterTemporal; standard lib, no oracle ext)
+## timestamp accessors — 🟡 (`catalog_temporal.cc`: RegisterTemporal; standard lib, no oracle ext)
 
 - [x] no-tz forms: `timestamp_to_{year,month,day_of_month,
       day_of_month_1_based,day_of_week,day_of_year,hours,minutes,
@@ -225,7 +225,7 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
       `Asia/Tokyo`, … — and offset forms `-05:00`, `+09:30`), so the
       generated call exercises real cctz tz logic instead of an
       invalid-tz error.  `RegisterTimestampAccessors` in
-      `grammar_scalars.cc`.
+      `catalog_*.cc`.
 - Note: max-range timestamp leaf withheld until
   `MaxRangeTimestampConstruction` (known_bugs) is fixed.
 
@@ -234,7 +234,7 @@ for the full reproducer + cel-cpp citation + fix recipe on each.
 - [x] `duration_to_{hours,minutes,seconds,milliseconds}`
 - [x] `duration_to_int64` `duration_to_string` (int()/string())
 
-## encoders (base64) — ✅ (`grammar_scalars.cc`: RegisterStringFunctions; oracle gained EncodersCompilerLibrary + RegisterEncodersFunctions)
+## encoders (base64) — ✅ (`catalog_strings.cc`: RegisterStringFunctions; oracle gained EncodersCompilerLibrary + RegisterEncodersFunctions)
 
 - [x] `base64_encode_bytes` (`base64.encode(bytes)` → String, total)
 - [x] `base64_decode_string` (`base64.decode(string)` → Bytes,

@@ -430,12 +430,20 @@ namespace {
 // `link_mode` is the wire-format marker for the mode this module was
 // emitted under — embedder-tooling metadata, not an engine routing
 // input (see doc/implementation-plan/rewrite/m28-configurable-linking.md
-// §6).
+// §6).  `libraries` feeds the required-functions table, which is
+// derived from `module`'s CURRENT import surface — the caller must
+// invoke this after the optimize pass so the table equals the final
+// `cel_fn` import list (m35-plugin-ergonomics.md §5.2).
 absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
                                  absl::Span<const FieldRefRow> field_refs,
-                                 celwasm::abi::LinkMode link_mode) {
+                                 celwasm::abi::LinkMode link_mode,
+                                 absl::Span<const FunctionLibrary> libraries) {
   auto abi_or = BuildCelAbi(layout, field_refs, link_mode);
   if (!abi_or.ok()) return abi_or.status();
+  for (celwasm::abi::RequiredFunction& row :
+       BuildRequiredFunctions(module.ListFunctionImports(), libraries)) {
+    *abi_or->add_required_functions() = std::move(row);
+  }
   std::string abi_bytes;
   if (!abi_or->SerializeToString(&abi_bytes)) {
     return absl::InternalError("compile: failed to serialize cel.abi proto");
@@ -480,12 +488,16 @@ absl::StatusOr<CompiledArtifact> RunFrontAndLayout(
   };
 }
 
-// Validate + optionally optimize + optionally serialize the emitted
-// module.  Back half of the pipeline.  Order matters: validate FIRST
-// (proves the module is well-formed before the optimizer touches it),
-// then optimize (mutates IR — would invalidate validator state),
-// then serialize.
-absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
+// Validate + optionally optimize the emitted module.  Order matters:
+// validate FIRST (proves the module is well-formed before the
+// optimizer touches it), then optimize (mutates IR — would
+// invalidate validator state).  Deliberately split from
+// `SerializeModule`: the `cel.abi` attach happens BETWEEN the two,
+// because the required-functions table must reflect the
+// POST-optimize import surface (Binaryen drops unused imports at
+// O1+; see m35-plugin-ergonomics.md §5.2).
+absl::Status ValidateAndOptimize(CompiledArtifact& out,
+                                 const CompileOptions& opts) {
   if (opts.validate) {
     auto v = out.module.Validate();
     if (!v.ok()) return v;
@@ -494,6 +506,14 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
     auto o = out.module.Optimize(opts.optimize_level);
     if (!o.ok()) return o;
   }
+  return absl::OkStatus();
+}
+
+// Serialize the finished module into `out.wasm_bytes` (when
+// requested).  Runs LAST — after optimize and after the `cel.abi`
+// attach, so the emitted bytes carry the final section contents.
+absl::Status SerializeModule(CompiledArtifact& out,
+                             const CompileOptions& opts) {
   if (opts.serialize) {
     auto bytes_or = out.module.Serialize();
     if (!bytes_or.ok()) return bytes_or.status();
@@ -511,7 +531,7 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
 //   - `wasm_import_function_name` = same as `overload_id` (one wasm import
 //     per decl; the IDL guarantees uniqueness).
 //   - `wasm_import_module_type`   = `kCelFn` (the host-callback module) for
-//     `kHost` and `kForeignComponent` (a Component-Model backend is a host
+//     `kHost` and `kPlugin` (a Component-Model backend is a host
 //     fn at the call site — m24 §2-§3); `kUser` for `kCelDefined`.
 //   - `wasm_import_module_name`   = the decl's per-module alias for
 //     `kCelDefined` (`kUser`); empty otherwise.
@@ -519,7 +539,7 @@ absl::Status FinaliseModule(CompiledArtifact& out, const CompileOptions& opts) {
 //     args, as recorded on `CelfnDecl::num_args`).
 bool DispatchesViaCelFn(CelfnDecl::Backend backend) {
   return backend == CelfnDecl::Backend::kHost ||
-         backend == CelfnDecl::Backend::kForeignComponent;
+         backend == CelfnDecl::Backend::kPlugin;
 }
 
 absl::StatusOr<OverloadTable> BuildOverloadTable(
@@ -613,13 +633,21 @@ absl::StatusOr<CompiledArtifact> LowerExportAndFinalise(
 
   out.module.ExportFunction(opts.eval_internal_name, opts.eval_export_name);
 
+  // Validate + optimize BEFORE attaching `cel.abi`: the section's
+  // required-functions table is derived from the post-optimize
+  // import surface, and must equal the final module's `cel_fn`
+  // import list (m35-plugin-ergonomics.md §5.2).  Every other
+  // section field is optimization-independent, so the move is
+  // behavior-neutral for them (pinned by the emit/decode
+  // round-trip tests).
+  if (auto s = ValidateAndOptimize(out, opts); !s.ok()) return s;
   if (auto s = AttachCelAbiSection(out.module, out.layout,
                                    absl::MakeConstSpan(out.eval_fn.field_refs),
-                                   link_mode);
+                                   link_mode, opts.function_libraries);
       !s.ok()) {
     return s;
   }
-  if (auto s = FinaliseModule(out, opts); !s.ok()) return s;
+  if (auto s = SerializeModule(out, opts); !s.ok()) return s;
   return out;
 }
 

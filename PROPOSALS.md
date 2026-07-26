@@ -18,7 +18,7 @@ and no module version for weeks after both landed.
 
 ## API changes
 
-1. **`Engine::AddComponent(bytes, FunctionLibrary)` takes an
+1. **`Engine::AddPlugin(bytes, FunctionLibrary)` takes an
    internal-visibility type** (cleanup-backlog #32). A public method
    whose parameter type (`//compiler/celfn:function_library`,
    `//:internal`) external code cannot legally depend on. Options:

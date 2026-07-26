@@ -5,6 +5,7 @@
 //   cel check   <expr> [--var name:Type] [--proto ... | --descriptor_set ...]
 //   cel compile <expr> --output <out.wasm> [--O 0..3] ...
 //   cel generate --idl <fns.idl> --out_dir <dir> [--language cpp] ...
+//   cel embed-decls --plugin <in.wasm> --idl <fns.idl> --out <out.wasm>
 //
 // See tools/cel/var_parser.h for the `--var` literal
 // grammar and tools/cel/value_format.h for `--format`.
@@ -46,6 +47,7 @@
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "tools/cel/abi_describe.h"
+#include "tools/cel/run_embed_decls.h"
 #include "tools/cel/run_generate.h"
 #include "tools/cel/value_format.h"
 #include "tools/cel/var_parser.h"
@@ -94,13 +96,18 @@ ABSL_FLAG(std::string, language, "cpp",
 ABSL_FLAG(std::string, out_dir, "",
           "`cel generate` only: directory to write generated files into "
           "(fns.wit, codec.h, generated_stub.cc, user_fns.h).");
-ABSL_FLAG(std::string, package, "",
-          "`cel generate` only: optional WIT package name override.  "
-          "Default: `<module>:fns` derived from the IDL `Module` directive.");
 ABSL_FLAG(std::vector<std::string>, include, {},
           "`cel generate` only: comma-separated #include paths to inject "
           "at the top of the generated user_fns.h + generated_stub.cc.  "
           "Typical use: `--include=acme/user.pb.h` for proto-typed fns.");
+
+// `cel embed-decls` flags (`--idl` is shared with `cel generate`).
+ABSL_FLAG(std::string, plugin, "",
+          "`cel embed-decls` only: path to the input Component-Model "
+          ".wasm plugin binary.");
+ABSL_FLAG(std::string, out, "",
+          "`cel embed-decls` only: path to write the output .wasm (the "
+          "input plugin with the cel.fns declaration section embedded).");
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 
 namespace celwasm::tools::cel {
@@ -242,6 +249,46 @@ absl::StatusOr<PoolBundle> BuildPool() {
 // Populate `celwasm::CompileOptions` from the global flag state +
 // the parsed --var declarations.  Variable specs flow through as
 // `name:TypeSpec` strings (the form parse_and_check.cc consumes).
+// `CelType` → the spec string `parse_and_check` consumes.  Lifted out
+// of BuildCompileOptions so both stay under the function-size gate;
+// recursive for the container kinds.
+std::string FormatTypeSpec(const ::celwasm::CelType& t) {
+  switch (t.kind()) {
+    case ::celwasm::CelType::Kind::kBool:
+      return "bool";
+    case ::celwasm::CelType::Kind::kInt:
+      return "int";
+    case ::celwasm::CelType::Kind::kUint:
+      return "uint";
+    case ::celwasm::CelType::Kind::kDouble:
+      return "double";
+    case ::celwasm::CelType::Kind::kString:
+      return "string";
+    case ::celwasm::CelType::Kind::kBytes:
+      return "bytes";
+    case ::celwasm::CelType::Kind::kDuration:
+      return "duration";
+    case ::celwasm::CelType::Kind::kTimestamp:
+      return "timestamp";
+    case ::celwasm::CelType::Kind::kType:
+      return "type";
+    case ::celwasm::CelType::Kind::kMessage:
+      return std::string(t.message_fully_qualified_name());
+    case ::celwasm::CelType::Kind::kList:
+      return absl::StrCat("list<", FormatTypeSpec(t.list_element()), ">");
+    case ::celwasm::CelType::Kind::kMap:
+      return absl::StrCat("map<", FormatTypeSpec(t.map_key()), ",",
+                          FormatTypeSpec(t.map_value()), ">");
+    case ::celwasm::CelType::Kind::kUnknown:
+    case ::celwasm::CelType::Kind::kNull:
+    case ::celwasm::CelType::Kind::kOptional:
+      // kNull / kOptional are signature-only kinds; the --var
+      // type-spec parser never produces them.
+      break;
+  }
+  ABSL_CHECK(false) << "unhandled CelType in --var spec";
+}
+
 absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
     absl::string_view source_desc, const std::vector<ParsedVar>& vars) {
   celwasm::CompileOptions opts;
@@ -259,46 +306,12 @@ absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
   } else if (!fds_path.empty()) {
     opts.check.schema = celwasm::SchemaDescriptorSet{fds_path};
   }
+  // CelType → spec-string round-trip.  We could thread the original
+  // spec from the --var flag, but reusing the formatter keeps a single
+  // source of truth and the cost is dust.
   for (const auto& v : vars) {
-    // CelType → spec-string round-trip.  We could thread the
-    // original spec from the --var flag, but reusing the CelType-
-    // formatter keeps a single source of truth and the cost is
-    // dust (a few dozen StrCats per Compile).
-    auto FormatType = [](const auto& self,
-                         const ::celwasm::CelType& t) -> std::string {
-      switch (t.kind()) {
-        case ::celwasm::CelType::Kind::kBool:
-          return "bool";
-        case ::celwasm::CelType::Kind::kInt:
-          return "int";
-        case ::celwasm::CelType::Kind::kUint:
-          return "uint";
-        case ::celwasm::CelType::Kind::kDouble:
-          return "double";
-        case ::celwasm::CelType::Kind::kString:
-          return "string";
-        case ::celwasm::CelType::Kind::kBytes:
-          return "bytes";
-        case ::celwasm::CelType::Kind::kDuration:
-          return "duration";
-        case ::celwasm::CelType::Kind::kTimestamp:
-          return "timestamp";
-        case ::celwasm::CelType::Kind::kType:
-          return "type";
-        case ::celwasm::CelType::Kind::kMessage:
-          return std::string(t.message_fully_qualified_name());
-        case ::celwasm::CelType::Kind::kList:
-          return absl::StrCat("list<", self(self, t.list_element()), ">");
-        case ::celwasm::CelType::Kind::kMap:
-          return absl::StrCat("map<", self(self, t.map_key()), ",",
-                              self(self, t.map_value()), ">");
-        case ::celwasm::CelType::Kind::kUnknown:
-          break;
-      }
-      ABSL_CHECK(false) << "unhandled CelType in --var spec";
-    };
     opts.check.variable_specs.push_back(
-        absl::StrCat(v.name, ":", FormatType(FormatType, v.type)));
+        absl::StrCat(v.name, ":", FormatTypeSpec(v.type)));
   }
   return opts;
 }
@@ -709,6 +722,9 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  inspect  print what a <prog.wasm> declares\n"
      << "  generate emit custom-function bindings (fns.wit, codec.h,\n"
      << "           generated_stub.cc, user_fns.h) from a .idl file\n"
+     << "  embed-decls\n"
+     << "           embed .idl declaration text into a Component-Model\n"
+     << "           plugin as the cel.fns custom section\n"
      << "common flags:\n"
      << "  --var name:Type=value    (repeatable) declare + bind\n"
      << "  --var name:Type          (repeatable) declare only\n"
@@ -723,7 +739,10 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  --idl PATH               required: .idl input\n"
      << "  --out_dir PATH           required: output dir\n"
      << "  --language LANG          cpp (default); go (planned)\n"
-     << "  --package PKG            WIT package name override\n";
+     << "embed-decls flags:\n"
+     << "  --plugin PATH            required: input CM component .wasm\n"
+     << "  --idl PATH               required: .idl declaration text\n"
+     << "  --out PATH               required: output .wasm path\n";
 }
 
 // True when `--help` / `-h` / `help` appears anywhere in argv, so that
@@ -739,7 +758,13 @@ bool WantsHelp(absl::Span<char* const> argv) {
 
 bool IsKnownSubcommand(absl::string_view s) {
   return s == "eval" || s == "check" || s == "compile" || s == "generate" ||
-         s == "run" || s == "inspect";
+         s == "run" || s == "inspect" || s == "embed-decls";
+}
+
+// `generate` and `embed-decls` take no positional argument; their
+// inputs arrive via flags (--idl / --plugin / --out).
+bool TakesNoPositional(absl::string_view s) {
+  return s == "generate" || s == "embed-decls";
 }
 
 // True for subcommands whose positional argument is a path to a
@@ -783,25 +808,34 @@ int RunGenerateSubcommand() {
   opts.idl_path = absl::GetFlag(FLAGS_idl);
   opts.language = absl::GetFlag(FLAGS_language);
   opts.out_dir = absl::GetFlag(FLAGS_out_dir);
-  opts.package_name = absl::GetFlag(FLAGS_package);
   opts.extra_includes = absl::GetFlag(FLAGS_include);
   return RunGenerate(opts);
 }
 
+int RunEmbedDeclsSubcommand() {
+  EmbedDeclsOptions opts;
+  opts.plugin_path = absl::GetFlag(FLAGS_plugin);
+  opts.idl_path = absl::GetFlag(FLAGS_idl);
+  opts.out_path = absl::GetFlag(FLAGS_out);
+  return RunEmbedDecls(opts);
+}
+
 // Validate the positional count for `subcommand` and dispatch.
-// `positional[0]` is argv[0]; expression-taking subcommands need
-// exactly one more.
+// `positional[0]` is argv[0]; expression- and program-taking
+// subcommands need exactly one more.
 int Dispatch(absl::string_view subcommand, absl::Span<char* const> positional,
              absl::string_view argv0) {
-  if (subcommand == "generate") {
+  if (TakesNoPositional(subcommand)) {
     if (positional.size() != 1) {
-      std::cerr << "ERROR: `generate` takes no positional argument; "
-                   "use --idl PATH instead.  Got "
+      std::cerr << "ERROR: `" << subcommand
+                << "` takes no positional argument; use its flags "
+                   "instead.  Got "
                 << (positional.size() - 1) << " unexpected.\n";
       PrintUsage(std::cerr, argv0);
       return kExitUsage;
     }
-    return RunGenerateSubcommand();
+    return subcommand == "generate" ? RunGenerateSubcommand()
+                                    : RunEmbedDeclsSubcommand();
   }
   if (positional.size() != 2) {
     std::cerr << "ERROR: expected exactly one positional "
@@ -816,6 +850,7 @@ int Dispatch(absl::string_view subcommand, absl::Span<char* const> positional,
   if (subcommand == "compile") return RunCompile(arg);
   if (subcommand == "run") return RunProgram(arg);
   if (subcommand == "inspect") return RunInspect(arg);
+  // Unreachable: IsKnownSubcommand rejects anything else up front.
   ABSL_CHECK(false) << "subcommand `" << subcommand << "` slipped the gate";
 }
 

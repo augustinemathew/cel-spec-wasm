@@ -3,15 +3,18 @@
 #include <string>
 #include <utility>
 
+#include "abi/celfn_wire.h"
+#include "abi/plugin.h"
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "compiler/internal/compile.h"
 #include "compiler/program.h"
 #include "shared/type.h"
-#include "compiler/internal/compile.h"
 
 namespace celwasm {
 
@@ -63,11 +66,14 @@ std::string CelTypeToSpec(const CelType& t) {
       return absl::StrCat("map<", CelTypeToSpec(t.map_key()), ",",
                           CelTypeToSpec(t.map_value()), ">");
     case CelType::Kind::kUnknown:
-      // Not reachable in happy paths — Build() rejects kUnknown
-      // declarations up front.  If we land here it's a caller who
-      // default-constructed a CelType and shoved it past Build().
-      ABSL_CHECK(false)
-          << "CelTypeToSpec: kUnknown CelType reached the spec encoder";
+    case CelType::Kind::kNull:
+    case CelType::Kind::kOptional:
+      // Not reachable in happy paths — Build() rejects every
+      // non-declarable kind up front (IsDeclarableAsVariable).  If we
+      // land here the gate regressed; crash naming the kind.
+      ABSL_CHECK(false) << "CelTypeToSpec: non-declarable CelType kind `"
+                        << CelTypeKindName(t.kind())
+                        << "` reached the spec encoder";
   }
   // Closed enum; any new kind reaching here without a case arm is
   // an invariant violation.
@@ -75,9 +81,85 @@ std::string CelTypeToSpec(const CelType& t) {
                     << static_cast<int>(t.kind());
 }
 
+// Renders a declaration `CelType` for diagnostics via THE `.celfn`
+// grammar renderer (abi/celfn_wire.h), so the spelling (`Duration`,
+// `map<K, V>`, `optional<T>`, …) can never drift from the one Plan
+// messages and emit tests pin.
+std::string RenderDeclTypeForDiagnostic(const CelType& t) {
+  return RenderType(TypeFromCelType(t));
+}
+
+// Returns the first sub-type of `t` that the checker-side mapping
+// (`DeclTypeToCheckerType`, compiler/frontend/parse_and_check.cc) has
+// no `cel::Type` for — `type` and `optional<T>` (cleanup-backlog
+// #44) — or nullptr when `t` is fully mappable.  The switch is the
+// mapping's kind coverage restated over the closed enum, so a new
+// `CelType::Kind` fails to compile here until classified.
+const CelType* absl_nullable FindUnmappableType(const CelType& t) {
+  switch (t.kind()) {
+    case CelType::Kind::kBool:
+    case CelType::Kind::kInt:
+    case CelType::Kind::kUint:
+    case CelType::Kind::kDouble:
+    case CelType::Kind::kString:
+    case CelType::Kind::kBytes:
+    case CelType::Kind::kNull:
+    case CelType::Kind::kDuration:
+    case CelType::Kind::kTimestamp:
+    case CelType::Kind::kMessage:
+      return nullptr;
+    case CelType::Kind::kType:
+    case CelType::Kind::kOptional:
+      // With one vocabulary these are representable in a declaration,
+      // but the checker still has no `cel::TypeType` /
+      // `cel::OptionalType` wiring for custom-fn CALL-SITE typing
+      // (cleanup-backlog #44) — so the Build()-time rejection stays.
+      return &t;
+    case CelType::Kind::kList:
+      return FindUnmappableType(t.list_element());
+    case CelType::Kind::kMap: {
+      if (const auto* bad = FindUnmappableType(t.map_key())) return bad;
+      return FindUnmappableType(t.map_value());
+    }
+    case CelType::Kind::kUnknown:
+      break;
+  }
+  ABSL_CHECK(false) << "FindUnmappableType: kUnknown CelType cannot appear in "
+                       "a Builder-finalised decl";
+}
+
+// Reject function declarations whose types the type-checker cannot
+// map.  `FunctionLibrary::Builder` admits `type` / `optional<T>` on
+// programmatically-built kHost/kCelDefined decls (only the kPlugin
+// surface rejects them), and `DeclTypeToCheckerType` has no
+// `cel::Type` for either — without this gate the failure is an
+// ABSL_CHECK crash inside Compile() (cleanup-backlog #44).  Naming
+// the decl + type here turns it into a clean InvalidArgument at
+// Build().
+absl::Status ValidateDeclTypesMappable(const CelfnDecl& d) {
+  if (const auto* bad = FindUnmappableType(d.return_type)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Compiler::Builder::Build: declaration `", d.fn_name,
+        "` (overload-id `", d.overload_id, "`) return type uses `",
+        RenderDeclTypeForDiagnostic(*bad),
+        "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
+  }
+  for (const auto& p : d.params) {
+    if (const auto* bad = FindUnmappableType(p.type)) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Compiler::Builder::Build: declaration `", d.fn_name,
+          "` (overload-id `", d.overload_id, "`) parameter `", p.name,
+          "` uses `", RenderDeclTypeForDiagnostic(*bad),
+          "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
+    }
+  }
+  return absl::OkStatus();
+}
+
 // Validate one variable declaration.  Reject:
-//   - kUnknown type (default-constructed CelType — caller forgot to
-//     pick a kind)
+//   - any non-declarable kind (IsDeclarableAsVariable is false for
+//     kUnknown — the default-constructed sentinel — and for the
+//     signature-only kNull / kOptional kinds)
 //   - empty message FQN (CelType::Message("") slipped through)
 absl::Status ValidateDecl(const VariableDeclaration& decl) {
   if (decl.name.empty()) {
@@ -89,6 +171,13 @@ absl::Status ValidateDecl(const VariableDeclaration& decl) {
         "Compiler::Builder::DeclareVariable: variable `", decl.name,
         "` has CelType::Kind::kUnknown (default-constructed CelType "
         "— pick an explicit kind)"));
+  }
+  if (!decl.type.IsDeclarableAsVariable()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Compiler::Builder::DeclareVariable: variable `",
+                     decl.name, "` has non-declarable CelType kind `",
+                     CelTypeKindName(decl.type.kind()),
+                     "` — `null` and `optional<T>` are signature-only kinds"));
   }
   if (decl.type.kind() == CelType::Kind::kMessage &&
       decl.type.message_fully_qualified_name().empty()) {
@@ -111,10 +200,14 @@ Compiler::Builder& Compiler::Builder::DeclareVariable(const std::string& name,
   return *this;
 }
 
-Compiler::Builder& Compiler::Builder::AddLibrary(
+Compiler::Builder& Compiler::Builder::DeclareFunctions(
     celwasm::FunctionLibrary library) {
   function_libraries_.push_back(std::move(library));
   return *this;
+}
+
+Compiler::Builder& Compiler::Builder::Use(const Plugin& plugin) {
+  return DeclareFunctions(plugin.library());
 }
 
 Compiler::Builder& Compiler::Builder::AddFunction(
@@ -149,11 +242,11 @@ absl::StatusOr<Compiler> Compiler::Builder::Build() && {
     }
   }
 
-  // M13 Slice C.2 — duplicate overload-id detection ACROSS libraries.
-  // Within a single library, `FunctionLibrary::Builder::Build` already
-  // rejected duplicates; the cross-library check here catches the case
-  // where two separate `AddLibrary` calls each declare the same
-  // overload-id.
+  // Duplicate overload-id detection ACROSS libraries.  Within a
+  // single library, `FunctionLibrary::Builder::Build` already
+  // rejected duplicates; the cross-library check here catches the
+  // case where two separate `DeclareFunctions` calls each declare
+  // the same overload-id.
   absl::flat_hash_set<std::string> seen_overload_ids;
   for (const auto& lib : function_libraries_) {
     for (const auto& d : lib.decls()) {
@@ -162,6 +255,7 @@ absl::StatusOr<Compiler> Compiler::Builder::Build() && {
             "Compiler::Builder::Build: overload-id `", d.overload_id,
             "` is declared by more than one library"));
       }
+      if (auto s = ValidateDeclTypesMappable(d); !s.ok()) return s;
     }
   }
 

@@ -29,7 +29,8 @@ std::vector<uint8_t> CompileBytes(
     absl::string_view source,
     CompilerOptions::LinkMode mode = CompilerOptions::LinkMode::kStatic) {
   auto b = Compiler::NewBuilder();
-  for (const auto& [name, type] : vars) b.DeclareVariable(name, type);
+  for (const auto& [name, type] : vars)
+    b.DeclareVariable(name, type);
   auto compiler = std::move(b).Build();
   ABSL_CHECK_OK(compiler);
   CompilerOptions opts;
@@ -108,8 +109,7 @@ TEST(DescribeProgramTest, RejectsBytesThatAreNotWasm) {
 // ---------- Rendering -------------------------------------------------------
 
 TEST(FormatProgramFactsTest, RendersVarsAndLinkLine) {
-  auto facts = DescribeProgram(
-      CompileBytes({{"a", CelType::Int()}}, "a + 1"));
+  auto facts = DescribeProgram(CompileBytes({{"a", CelType::Int()}}, "a + 1"));
   ASSERT_THAT(facts, IsOk());
   const std::string out = FormatProgramFacts(*facts);
   EXPECT_TRUE(absl::StrContains(out, "vars:  a:int")) << out;
