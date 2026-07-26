@@ -65,6 +65,10 @@ graph TD
     lint**: lint (PCH build + clang-tidy) serializes behind bazel
     and contends with agent builds — `scripts/lint.sh --branch`
     runs exactly once, at the final gate (G).
+  - **No per-slice test runs either** (user call, late in the
+    milestone): agents verify compile-only (`bazel build`); the
+    full test pass — `$PROJ`, manual-tagged catalog, conformance —
+    runs exactly once, at the final gate (G).
   - No broad process kills; agents scope any cleanup to their own
     PIDs (shared machine).
 
