@@ -12,9 +12,9 @@
 #include "compiler/compiler.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/program.h"
-#include "tools/cel/program_report.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "tools/cel/program_report.h"
 
 namespace celwasm::abi {
 namespace {
@@ -52,7 +52,7 @@ TEST(DescribeProgramTest, ReportsDeclaredScalarVars) {
   // Declaration order follows cel.abi's local_index, not the source.
   std::vector<std::string> rendered;
   for (const auto& v : facts->vars) {
-    rendered.push_back(v.name + ":" + v.type_name);
+    rendered.push_back(v.name + ":" + v.type_spec);
   }
   EXPECT_THAT(rendered, ::testing::UnorderedElementsAre("a:int", "s:string"));
 }
@@ -76,9 +76,9 @@ TEST(DescribeProgramTest, ReportsLinkModeAndAbiVersions) {
   EXPECT_FALSE(dyn->static_linked);
 }
 
-// An aggregate variable is reported by its bare repr — the wire has no
-// element/key/value types to print.
-TEST(DescribeProgramTest, AggregateVarReportsBareRepr) {
+// The full declared type reaches the wire, so a consumer sees the
+// element / key / value types rather than the bare kind.
+TEST(DescribeProgramTest, AggregateVarReportsItsFullType) {
   const auto bytes =
       CompileBytes({{"xs", CelType::List(CelType::Int())}}, "size(xs) > 0");
   auto facts = DescribeProgram(bytes);
@@ -86,8 +86,61 @@ TEST(DescribeProgramTest, AggregateVarReportsBareRepr) {
   ASSERT_EQ(facts->vars.size(), 1u);
   EXPECT_EQ(facts->vars[0].name, "xs");
   EXPECT_EQ(facts->vars[0].repr, Repr::kList);
-  EXPECT_EQ(facts->vars[0].type_name, "list")
-      << "cel.abi carries no element type; it must not be invented";
+  EXPECT_TRUE(facts->vars[0].has_full_type);
+  EXPECT_EQ(facts->vars[0].type_spec, "list<int>");
+}
+
+TEST(DescribeProgramTest, MapVarReportsKeyAndValueTypes) {
+  const auto bytes = CompileBytes(
+      {{"m", CelType::Map(CelType::String(), CelType::Int())}}, "m['k'] > 0");
+  auto facts = DescribeProgram(bytes);
+  ASSERT_THAT(facts, IsOk());
+  ASSERT_EQ(facts->vars.size(), 1u);
+  EXPECT_EQ(facts->vars[0].type_spec, "map<string,int>");
+}
+
+TEST(DescribeProgramTest, ScalarVarsCarryTheirTypeToo) {
+  auto facts = DescribeProgram(CompileBytes(
+      {{"a", CelType::Int()}, {"s", CelType::String()}}, "a > 0 && s != ''"));
+  ASSERT_THAT(facts, IsOk());
+  for (const auto& v : facts->vars) {
+    EXPECT_TRUE(v.has_full_type) << v.name;
+    EXPECT_EQ(v.type_spec, v.name == "a" ? "int" : "string");
+  }
+}
+
+// The type renders in the `--var` grammar, not the `.celfn` one, so it
+// can be pasted straight back into a binding.  `proto(acme.User)`
+// would not parse as a --var type.
+TEST(DescribeProgramTest, TypeSpecUsesTheVarGrammarNotCelfn) {
+  auto facts = DescribeProgram(CompileBytes(
+      {{"xs", CelType::List(CelType::Duration())}}, "size(xs) > 0"));
+  ASSERT_THAT(facts, IsOk());
+  ASSERT_EQ(facts->vars.size(), 1u);
+  EXPECT_EQ(facts->vars[0].type_spec, "list<duration>")
+      << "the .celfn grammar would spell this list<Duration>";
+}
+
+// Back-compat: an entry with no `type` on the wire keeps the bare
+// repr and must not claim a full type — a guessed element type would
+// parse a literal wrongly.
+TEST(TypeSpecForBindingTest, FallsBackToReprWhenTheWireCarriesNoType) {
+  DeclaredVar scalar{"a", Repr::kInt, "int", /*has_full_type=*/false};
+  auto spec = TypeSpecForBinding(scalar);
+  ASSERT_THAT(spec, IsOk());
+  EXPECT_EQ(*spec, "int");
+
+  DeclaredVar aggregate{"xs", Repr::kList, "list", /*has_full_type=*/false};
+  auto agg = TypeSpecForBinding(aggregate);
+  EXPECT_THAT(agg, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_TRUE(absl::StrContains(agg.status().message(), "--var xs:<Type>="));
+}
+
+TEST(TypeSpecForBindingTest, PrefersTheWireTypeWhenPresent) {
+  DeclaredVar v{"xs", Repr::kList, "list<int>", /*has_full_type=*/true};
+  auto spec = TypeSpecForBinding(v);
+  ASSERT_THAT(spec, IsOk());
+  EXPECT_EQ(*spec, "list<int>");
 }
 
 TEST(DescribeProgramTest, ModuleWithoutAbiSectionIsDescribableNotAnError) {
@@ -98,7 +151,8 @@ TEST(DescribeProgramTest, ModuleWithoutAbiSectionIsDescribableNotAnError) {
   ASSERT_THAT(facts, IsOk());
   EXPECT_FALSE(facts->has_abi_section);
   EXPECT_TRUE(facts->vars.empty());
-  EXPECT_TRUE(absl::StrContains(::celwasm::tools::cel::FormatProgramFacts(*facts), "no cel.abi"));
+  EXPECT_TRUE(absl::StrContains(
+      ::celwasm::tools::cel::FormatProgramFacts(*facts), "no cel.abi"));
 }
 
 TEST(DescribeProgramTest, RejectsBytesThatAreNotWasm) {
@@ -122,7 +176,8 @@ TEST(DescribeProgramTest, ReportsRequiredHostFunction) {
   ASSERT_THAT(program, IsOk());
   const auto bytes = program->wasm_bytes();
 
-  auto facts = DescribeProgram(std::vector<uint8_t>(bytes.begin(), bytes.end()));
+  auto facts =
+      DescribeProgram(std::vector<uint8_t>(bytes.begin(), bytes.end()));
   ASSERT_THAT(facts, IsOk());
   ASSERT_EQ(facts->required_fns.size(), 1u);
   EXPECT_EQ(facts->required_fns[0].name, "upper");
@@ -158,13 +213,15 @@ TEST(FormatProgramFactsTest, RendersVarsAndLinkLine) {
 TEST(FormatProgramFactsTest, RendersNoneWhenNoVarsAreDeclared) {
   auto facts = DescribeProgram(CompileBytes({}, "1 + 2"));
   ASSERT_THAT(facts, IsOk());
-  EXPECT_TRUE(absl::StrContains(::celwasm::tools::cel::FormatProgramFacts(*facts), "vars:"));
-  EXPECT_TRUE(absl::StrContains(::celwasm::tools::cel::FormatProgramFacts(*facts), "none"));
+  EXPECT_TRUE(absl::StrContains(
+      ::celwasm::tools::cel::FormatProgramFacts(*facts), "vars:"));
+  EXPECT_TRUE(absl::StrContains(
+      ::celwasm::tools::cel::FormatProgramFacts(*facts), "none"));
 }
 
 // ---------- Repr → type spec ------------------------------------------------
 
-TEST(ScalarTypeSpecForReprTest, MapsEveryScalarRepr) {
+TEST(TypeSpecForBindingTest, MapsEveryScalarReprWhenNoWireType) {
   const std::vector<std::pair<Repr, std::string>> cases = {
       {Repr::kBool, "bool"},         {Repr::kInt, "int"},
       {Repr::kUint, "uint"},         {Repr::kDouble, "double"},
@@ -172,7 +229,8 @@ TEST(ScalarTypeSpecForReprTest, MapsEveryScalarRepr) {
       {Repr::kDuration, "duration"}, {Repr::kTimestamp, "timestamp"},
   };
   for (const auto& [repr, want] : cases) {
-    auto spec = ScalarTypeSpecForRepr(repr, "v");
+    auto spec = TypeSpecForBinding(
+        DeclaredVar{"v", repr, want, /*has_full_type=*/false});
     ASSERT_THAT(spec, IsOk()) << want;
     EXPECT_EQ(*spec, want);
   }
@@ -181,10 +239,11 @@ TEST(ScalarTypeSpecForReprTest, MapsEveryScalarRepr) {
 // The reprs whose full type is not on the wire must refuse, and the
 // message must name the escape hatch — this is the only guidance a
 // user gets when `--var m={...}` fails.
-TEST(ScalarTypeSpecForReprTest, RejectsReprsWithNoCompleteWireType) {
+TEST(TypeSpecForBindingTest, RejectsAggregateReprsWithNoWireType) {
   for (Repr repr : {Repr::kList, Repr::kMap, Repr::kMessage, Repr::kEnum,
                     Repr::kType, Repr::kUnknown}) {
-    auto spec = ScalarTypeSpecForRepr(repr, "m");
+    auto spec = TypeSpecForBinding(
+        DeclaredVar{"m", repr, "?", /*has_full_type=*/false});
     EXPECT_THAT(spec, StatusIs(absl::StatusCode::kInvalidArgument));
     EXPECT_TRUE(absl::StrContains(spec.status().message(), "--var m:<Type>="))
         << "repr=" << static_cast<int>(repr)

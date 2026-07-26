@@ -125,6 +125,16 @@ expect "run evaluates a precompiled program" "43" \
 expect "run accepts the explicit typed form too" "43" \
   "${CEL}" run "${rt_wasm}" --var "a:int=6" --var "b:int=7"
 
+# Aggregates bind by value now that cel.abi carries the full type —
+# no `name:Type=value` re-declaration needed.
+agg_wasm="${TEST_TMPDIR:-/tmp}/agg.wasm"
+"${CEL}" compile "size(xs)" --var "xs:list<int>" \
+    --output "${agg_wasm}" >/dev/null 2>&1
+expect "inspect shows the full element type" "vars:       xs:list<int>" \
+  bash -c "\"${CEL}\" inspect \"${agg_wasm}\" | head -1"
+expect "run binds an aggregate by value alone" "3" \
+  "${CEL}" run "${agg_wasm}" --var "xs=[1, 2, 3]"
+
 expect_exit "run: undeclared --var"        2 \
   "${CEL}" run "${rt_wasm}" --var "a=6" --var "b=7" --var "nope=1"
 expect_exit "run: unbound declared var"    2 "${CEL}" run "${rt_wasm}" --var "a=6"

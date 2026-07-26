@@ -3399,6 +3399,19 @@ See `rewrite/m36-cli-runtime-and-lazy-binding.md`.
   - [x] `--plugin` extraction stays scoped to `run`, so `embed-decls`
         keeps its own single-valued `--plugin` flag.
 
+**`cel.abi.VariableEntry.type`** (`abi/program_facts_test.cc`)
+
+  - [x] Scalar, list, map, and message variables all carry their full
+        declared type to the wire.
+  - [x] The type renders in the `--var` grammar (`list<duration>`), not
+        the `.celfn` one (`list<Duration>`), so it pastes back into a
+        binding.
+  - [x] An entry with no `type` on the wire falls back to the bare
+        repr: scalars still bind, aggregates refuse and name the
+        explicit form.  A type is never invented from `repr`.
+  - [x] e2e: `run --var xs=[1, 2, 3]` binds an aggregate with no
+        re-declaration (`cel_smoke_test.sh`).
+
 **Value rendering** (`tools/cel/value_format_test.cc`)
 
   - [x] An error whose message equals its code name renders once; an

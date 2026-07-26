@@ -44,7 +44,17 @@ namespace celwasm::abi {
 struct DeclaredVar {
   std::string name;
   Repr repr = Repr::kUnknown;
-  std::string type_name;
+  // The declared type in the `--var` type-spec grammar
+  // (`list<int>`, `map<string,int>`, `acme.User`) when the program
+  // carries one, so it can be printed *and* pasted straight into a
+  // `--var name:<type>=<value>` binding.
+  //
+  // Programs emitted before `cel.abi.VariableEntry.type` existed carry
+  // no type; `type_spec` is then the bare repr name (`list`) and
+  // `has_full_type` is false.  Never invent a type from `repr` — a
+  // wrong element type parses a literal wrongly.
+  std::string type_spec;
+  bool has_full_type = false;
 };
 
 // One custom function the program will demand at `Plan`.
@@ -73,17 +83,16 @@ struct ProgramFacts {
   bool has_abi_section = false;
 };
 
-// The type-spec token a `--var name=value` binding parses against,
-// for a variable whose only type information is its repr — i.e. what
-// `run` splices in to reconstruct the full `name:Type=value` form the
-// var parser consumes.
+// The type spec a `--var name=value` binding parses against — what
+// `run` splices in to rebuild the `name:Type=value` form the var
+// parser consumes.
 //
-// Returns InvalidArgument for reprs with no complete spelling on the
-// wire (list/map/message/enum, and `type` which the var grammar does
-// not accept); those need the explicit `--var name:Type=value` form,
-// and the error says so.
-absl::StatusOr<std::string> ScalarTypeSpecForRepr(Repr repr,
-                                                  absl::string_view var_name);
+// Uses `var.type_spec` when the program carries a full type.  Falls
+// back to the repr name for older artifacts, which works for scalars
+// and returns InvalidArgument for aggregates — whose element/key/value
+// types are genuinely unknown there — naming the explicit
+// `--var name:Type=value` form as the way out.
+absl::StatusOr<std::string> TypeSpecForBinding(const DeclaredVar& var);
 
 // Decode `wasm_bytes`.  InvalidArgument if the bytes are not a wasm
 // module or the section is malformed; a missing `cel.abi` section is

@@ -96,7 +96,21 @@ message VariableEntry {
   uint32 local_index = 2;
   uint32 slot_offset = 3;
   uint32 repr = 4;
-  // reserved 5;  // future: full `Type` for variable introspection
+  // The variable's declared type, in full.
+  //
+  // `repr` is the wire *kind* the marshal encodes against (kList,
+  // kMap, kMessage); it deliberately says nothing about a list's
+  // element type, a map's key/value types, or a message's FQN.  This
+  // field carries the rest, so a consumer can describe or bind a
+  // variable without the source declaration in hand — `cel inspect`
+  // prints `xs:list<int>` rather than `xs:list`, and `cel run
+  // --var xs=[1,2,3]` parses the literal against the real type.
+  //
+  // Additive: programs emitted before this field carry no `type`, and
+  // consumers fall back to the bare `repr` rather than inventing one.
+  // The marshal path never reads it — `repr` still drives encoding —
+  // so no `runtime_abi_version` bump.
+  Type type = 5;
 }
 
 // One row of the field intern table.  Populated by codegen at

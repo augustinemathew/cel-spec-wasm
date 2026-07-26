@@ -16,7 +16,7 @@ std::string FormatProgramFacts(const ::celwasm::abi::ProgramFacts& facts) {
   std::vector<std::string> rendered;
   rendered.reserve(facts.vars.size());
   for (const ::celwasm::abi::DeclaredVar& v : facts.vars) {
-    rendered.push_back(absl::StrCat(v.name, ":", v.type_name));
+    rendered.push_back(absl::StrCat(v.name, ":", v.type_spec));
   }
   // Split by what the caller can actually do about each: a plugin
   // function is satisfiable with a wasm artifact, an @host function

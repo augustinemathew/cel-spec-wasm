@@ -124,7 +124,7 @@ using ::celwasm::abi::DeclaredVar;
 using ::celwasm::abi::DescribeProgram;
 using ::celwasm::abi::ProgramFacts;
 using ::celwasm::abi::RequiredFn;
-using ::celwasm::abi::ScalarTypeSpecForRepr;
+using ::celwasm::abi::TypeSpecForBinding;
 
 // Process exit codes.  The contract is documented in tools/cel/README.md
 // and pinned by cel_smoke_test.sh; keep the three in sync.
@@ -568,7 +568,7 @@ absl::StatusOr<std::string> ResolveVarSpec(const ProgramFacts& facts,
   const absl::string_view name(flag.data(), eq);
   for (const DeclaredVar& v : facts.vars) {
     if (v.name != name) continue;
-    auto type_spec = ScalarTypeSpecForRepr(v.repr, name);
+    auto type_spec = TypeSpecForBinding(v);
     if (!type_spec.ok()) return type_spec.status();
     return absl::StrCat(name, ":", *type_spec, flag.substr(eq));
   }

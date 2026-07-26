@@ -437,8 +437,9 @@ namespace {
 absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
                                  absl::Span<const FieldRefRow> field_refs,
                                  celwasm::abi::LinkMode link_mode,
-                                 absl::Span<const FunctionLibrary> libraries) {
-  auto abi_or = BuildCelAbi(layout, field_refs, link_mode);
+                                 absl::Span<const FunctionLibrary> libraries,
+                                 absl::Span<const celwasm::Variable> declared) {
+  auto abi_or = BuildCelAbi(layout, field_refs, link_mode, declared);
   if (!abi_or.ok()) return abi_or.status();
   for (celwasm::abi::RequiredFunction& row :
        BuildRequiredFunctions(module.ListFunctionImports(), libraries)) {
@@ -643,7 +644,8 @@ absl::StatusOr<CompiledArtifact> LowerExportAndFinalise(
   if (auto s = ValidateAndOptimize(out, opts); !s.ok()) return s;
   if (auto s = AttachCelAbiSection(out.module, out.layout,
                                    absl::MakeConstSpan(out.eval_fn.field_refs),
-                                   link_mode, opts.function_libraries);
+                                   link_mode, opts.function_libraries,
+                                   absl::MakeConstSpan(out.ast.variables()));
       !s.ok()) {
     return s;
   }

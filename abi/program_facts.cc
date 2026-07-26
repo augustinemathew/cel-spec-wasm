@@ -16,6 +16,52 @@
 
 namespace celwasm::abi {
 
+namespace {
+
+// `abi::Type` → the `--var` type-spec grammar.
+//
+// Deliberately not `RenderType` from celfn_wire: that renders the
+// `.celfn` grammar (`proto(acme.User)`, `Duration`), which the var
+// parser does not accept.  Two grammars, two renderers — this one
+// exists to be pasted back into a `--var` flag.
+std::string RenderVarTypeSpec(const Type& t) {
+  switch (t.kind()) {
+    case Type::KIND_BOOL:
+      return "bool";
+    case Type::KIND_INT:
+      return "int";
+    case Type::KIND_UINT:
+      return "uint";
+    case Type::KIND_DOUBLE:
+      return "double";
+    case Type::KIND_STRING:
+      return "string";
+    case Type::KIND_BYTES:
+      return "bytes";
+    case Type::KIND_DURATION:
+      return "duration";
+    case Type::KIND_TIMESTAMP:
+      return "timestamp";
+    case Type::KIND_TYPE:
+      return "type";
+    case Type::KIND_PROTO:
+      return t.proto_fqn();
+    case Type::KIND_LIST:
+      return absl::StrCat(
+          "list<", t.params_size() == 1 ? RenderVarTypeSpec(t.params(0)) : "?",
+          ">");
+    case Type::KIND_MAP:
+      return absl::StrCat(
+          "map<", t.params_size() == 2 ? RenderVarTypeSpec(t.params(0)) : "?",
+          ",", t.params_size() == 2 ? RenderVarTypeSpec(t.params(1)) : "?",
+          ">");
+    default:
+      // Open-set wire data is described, never rejected.
+      break;
+  }
+  return absl::StrCat("<kind ", static_cast<int>(t.kind()), ">");
+}
+
 absl::StatusOr<std::string> ScalarTypeSpecForRepr(Repr repr,
                                                   absl::string_view var_name) {
   switch (repr) {
@@ -50,6 +96,8 @@ absl::StatusOr<std::string> ScalarTypeSpecForRepr(Repr repr,
       var_name, ":<Type>=<value>`"));
 }
 
+}  // namespace
+
 absl::StatusOr<ProgramFacts> DescribeProgram(
     absl::Span<const uint8_t> wasm_bytes) {
   ProgramFacts facts;
@@ -69,8 +117,12 @@ absl::StatusOr<ProgramFacts> DescribeProgram(
   facts.vars.reserve(abi->variables_size());
   for (const VariableEntry& v : abi->variables()) {
     const Repr repr = DecodeRepr(v.repr());
-    facts.vars.push_back(
-        DeclaredVar{v.name(), repr, std::string(ReprName(repr))});
+    DeclaredVar out{v.name(), repr, std::string(ReprName(repr)), false};
+    if (v.has_type()) {
+      out.type_spec = RenderVarTypeSpec(v.type());
+      out.has_full_type = true;
+    }
+    facts.vars.push_back(std::move(out));
   }
   facts.required_fns.reserve(abi->required_functions_size());
   for (const RequiredFunction& fn : abi->required_functions()) {
@@ -79,6 +131,11 @@ absl::StatusOr<ProgramFacts> DescribeProgram(
                    fn.backend() == RequiredFunction::HOST});
   }
   return facts;
+}
+
+absl::StatusOr<std::string> TypeSpecForBinding(const DeclaredVar& var) {
+  if (var.has_full_type) return var.type_spec;
+  return ScalarTypeSpecForRepr(var.repr, var.name);
 }
 
 }  // namespace celwasm::abi

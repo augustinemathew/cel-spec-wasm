@@ -84,22 +84,26 @@ name the program doesn't declare is a usage error that lists the ones
 it does, and leaving a declared variable unbound is caught before
 evaluation rather than partway through it.
 
-Aggregates are the exception. `cel.abi` carries a variable's *kind*
-but not its full type — there is no element type for a list, no
-key/value types for a map, no message FQN — so those need the explicit
-form, and the error says so:
+Aggregates and messages bind the same way — `cel.abi` carries each
+variable's full declared type, so the element, key/value, and message
+FQN all travel with the artifact:
 
 ```bash
-cel run list.wasm --var "xs=[1, 2, 3]"
-# ERROR: --var xs: the program declares `xs` as list, whose full type is
-#        not carried in the program's cel.abi; bind it with the explicit
-#        form `--var xs:<Type>=<value>`
-
-cel run list.wasm --var "xs:list<int>=[1, 2, 3]"     # → works
+cel run list.wasm --var "xs=[1, 2, 3]"               # list<int>
+cel run req.wasm  --proto req.proto \
+                  --var 'r=json:{"user":"ada"}'      # acme.Request
 ```
 
-`inspect` prints kinds for the same reason: an aggregate shows as
-`xs:list`, never `xs:list<int>`.
+`inspect` prints the same spellings, in the `--var` grammar, so a line
+of its output pastes straight into a binding:
+
+```
+vars:       xs:list<int>, m:map<string,int>, r:acme.Request
+```
+
+Artifacts compiled before that field existed carry only the kind. Those
+still bind for scalars; an aggregate needs the explicit
+`--var name:Type=value` form, and the error says so.
 
 **What `run` cannot do:** evaluate a program that calls `@host` custom
 functions. Those are C++ in *your* process, and no generic binary can

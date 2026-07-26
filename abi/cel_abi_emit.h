@@ -22,6 +22,7 @@
 #include "compiler/codegen/expr_lower.h"
 #include "compiler/codegen/layout_pass.h"
 #include "compiler/codegen/module.h"
+#include "compiler/ir/typed_ast.h"
 
 namespace celwasm {
 
@@ -40,9 +41,16 @@ namespace celwasm {
 //     doc/implementation-plan/rewrite/m28-configurable-linking.md §6)
 // The version field is set to 1 (bumped on any breaking schema
 // change).
+// `declared` supplies each free variable's full declared type, matched
+// by name onto `layout.variables`.  The layout carries only `repr`
+// (the wire kind the marshal encodes against); the declared `CelType`
+// is what lets a consumer print `xs:list<int>` or parse a literal
+// against the real type.  Pass an empty span to omit types — entries
+// then carry `repr` alone, exactly as before the field existed.
 ABSL_MUST_USE_RESULT absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
     const StaticLayout& layout, absl::Span<const FieldRefRow> field_refs,
-    celwasm::abi::LinkMode link_mode);
+    celwasm::abi::LinkMode link_mode,
+    absl::Span<const celwasm::Variable> declared = {});
 
 // Build the `required_functions[]` table from the FINAL module's
 // import surface: one row per `cel_fn` import in `imports` (module

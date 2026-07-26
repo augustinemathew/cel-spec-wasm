@@ -357,13 +357,12 @@ cel inspect expr.wasm                        # vars, required fns, link mode
 cel run     expr.wasm --var "a=6" --var "b=7"    # → 43
 ```
 
-On `run`, `--var` supplies **values only** — the type comes from the
-program's `cel.abi`, so declarations are never repeated. An aggregate
-variable still needs the explicit `--var name:Type=value` form, because
-`cel.abi` carries a variable's kind but not its full type (no element
-type for a list, no key/value types for a map, no message FQN); the
-error message says so when you hit it. `inspect` prints kinds for the
-same reason — `xs:list`, never `xs:list<int>`.
+On `run`, `--var` supplies **values only** — each variable's full
+declared type travels with the program in its `cel.abi` section, so
+declarations are never repeated, and aggregates and messages bind the
+same way as scalars. `inspect` prints those types in the `--var`
+grammar, so a line of its output pastes straight into a binding:
+`xs:list<int>`, `m:map<string,int>`, `r:acme.Request`.
 
 A program that calls `@host` functions cannot be run by the stock CLI —
 those implementations are C++ in your process. The program records its

@@ -279,6 +279,7 @@ cc_library(
     srcs = ["cel_abi_emit.cc"],
     hdrs = ["cel_abi_emit.h"],
     deps = [
+        "//compiler/ir:typed_ast",
         ":cel_abi_cc_proto",
         ":celfn_wire",
         ":runtime_catalogue",
