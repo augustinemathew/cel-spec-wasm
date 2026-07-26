@@ -138,6 +138,42 @@ git commit
 Conventional messages: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`.
 Keep the subject under 72 chars; use the body for rationale.
 
+#### The commit gate
+
+`scripts/install-hooks.sh` installs a `pre-commit` hook that checks one
+thing: whether the change leaves the repo's own claims true. It runs in
+two layers.
+
+**Fast checks** (`scripts/check_commit_hygiene.sh`) — greps over the
+staged diff, sub-second and offline. They flag a public header changed
+with no doc staged, a `tools/cel` change missing either of its two
+tellings (`tools/cel/README.md` is GitHub-only; `doc/` is the published
+site), a new milestone reference in a comment, a bare
+`ABSL_CHECK(false)`, wasm framing knowledge outside `abi/`, and a new
+source file with no paired `_test.cc`.
+
+**Agent review** (`scripts/review_staged_change.sh`) — asks a model the
+questions a grep cannot: is the doc update accurate or merely present?
+Did this falsify a sentence in a file the diff never touched? It is
+time-bounded and skips itself when offline or unauthenticated.
+
+**Neither blocks by default.** Drift findings are fuzzy, and a gate with
+false positives gets bypassed with `--no-verify` on its third bad call,
+after which it catches nothing. Advisory findings you actually read beat
+a hard gate you have trained yourself to skip.
+
+| Variable | Effect |
+|---|---|
+| `CEL_HOOK_SKIP=1` | skip the gate entirely |
+| `CEL_HOOK_STRICT=1` | make the fast checks blocking |
+| `CEL_COMMIT_REVIEW=0` | skip the agent, keep the fast checks |
+| `CEL_REVIEW_TIMEOUT=N` | seconds to allow the agent (default 90) |
+
+`scripts/check_commit_hygiene_test.sh` pins each rule against a real
+commit in this repo's history — a gate that silently stops firing reads
+as "clean" forever, so the rules are regression-tested like any other
+code.
+
 ## Function-size enforcement
 
 `readability-function-size` is the main size gate. When clang-tidy
