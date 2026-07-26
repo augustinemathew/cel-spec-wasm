@@ -128,6 +128,7 @@ cc_library(
     deps = [
         ":cel_abi_cc_proto",
         "//compiler/celfn:function_library",
+        "//shared:type",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/strings",
     ],
@@ -141,6 +142,7 @@ cc_test(
         ":cel_abi_cc_proto",
         ":celfn_wire",
         "//compiler/celfn:function_library",
+        "//shared:type",
         "@com_google_googletest//:gtest_main",
     ],
 )

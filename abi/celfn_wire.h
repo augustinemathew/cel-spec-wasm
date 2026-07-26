@@ -37,8 +37,19 @@
 
 #include "abi/cel_abi.pb.h"
 #include "compiler/celfn/function_library.h"
+#include "shared/type.h"
 
 namespace celwasm {
+
+// Translate a `CelType` (the one C++ type vocabulary, shared/type.h)
+// into its wire `Type` spelling.  Recursive: `list<T>` / `map<K, V>`
+// / `optional<T>` element types land in `params` (per the Type.Kind
+// comments).  `kMessage`'s fully-qualified name lands in `proto_fqn`.
+//
+// Total over every representable `CelType::Kind`; `kUnknown` (the
+// default-constructed sentinel) is a builder-invariant violation and
+// CHECK-fails.
+celwasm::abi::Type TypeFromCelType(const CelType& type);
 
 // Translate a compile-time `CelfnType` into its wire `Type`
 // spelling.  Recursive: `list<T>` / `map<K, V>` / `optional<T>`
@@ -83,8 +94,7 @@ std::string RenderSignature(const celwasm::abi::RequiredFunction& fn);
 // is_receiver.  A `kCelDefined` decl has no `cel_fn` wire backend
 // (its imports are per-module aliases) — passing one is a caller
 // invariant violation and CHECK-fails.
-celwasm::abi::RequiredFunction RequiredFunctionFromDecl(
-    const CelfnDecl& decl);
+celwasm::abi::RequiredFunction RequiredFunctionFromDecl(const CelfnDecl& decl);
 
 }  // namespace celwasm
 

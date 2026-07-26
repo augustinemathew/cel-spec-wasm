@@ -8,6 +8,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "compiler/celfn/function_library.h"
+#include "shared/type.h"
 
 namespace celwasm {
 
@@ -47,12 +48,89 @@ Type::Kind WireKindForScalar(CelfnType::Kind kind) {
       break;
   }
   ABSL_CHECK(false) << "WireKindForScalar: composite CelfnType kind "
-                    << static_cast<int>(kind)
-                    << " reached the scalar mapping";
+                    << static_cast<int>(kind) << " reached the scalar mapping";
+  return Type::KIND_UNSPECIFIED;
+}
+
+// Scalar (non-composite) kind mapping over the unified vocabulary.
+// Composite kinds (kMessage / kList / kMap / kOptional) are handled
+// by the caller — reaching here with one is an invariant violation.
+Type::Kind WireKindForCelScalar(CelType::Kind kind) {
+  switch (kind) {
+    case CelType::Kind::kBool:
+      return Type::KIND_BOOL;
+    case CelType::Kind::kInt:
+      return Type::KIND_INT;
+    case CelType::Kind::kUint:
+      return Type::KIND_UINT;
+    case CelType::Kind::kDouble:
+      return Type::KIND_DOUBLE;
+    case CelType::Kind::kString:
+      return Type::KIND_STRING;
+    case CelType::Kind::kBytes:
+      return Type::KIND_BYTES;
+    case CelType::Kind::kNull:
+      return Type::KIND_NULL;
+    case CelType::Kind::kDuration:
+      return Type::KIND_DURATION;
+    case CelType::Kind::kTimestamp:
+      return Type::KIND_TIMESTAMP;
+    case CelType::Kind::kType:
+      return Type::KIND_TYPE;
+    case CelType::Kind::kUnknown:
+    case CelType::Kind::kMessage:
+    case CelType::Kind::kList:
+    case CelType::Kind::kMap:
+    case CelType::Kind::kOptional:
+      break;
+  }
+  ABSL_CHECK(false) << "WireKindForCelScalar: non-scalar CelType kind `"
+                    << CelTypeKindName(kind) << "` reached the scalar mapping";
   return Type::KIND_UNSPECIFIED;
 }
 
 }  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+Type TypeFromCelType(const CelType& type) {
+  Type wire;
+  switch (type.kind()) {
+    case CelType::Kind::kMessage:
+      wire.set_kind(Type::KIND_PROTO);
+      wire.set_proto_fqn(std::string(type.message_fully_qualified_name()));
+      return wire;
+    case CelType::Kind::kList:
+      wire.set_kind(Type::KIND_LIST);
+      *wire.add_params() = TypeFromCelType(type.list_element());
+      return wire;
+    case CelType::Kind::kMap:
+      wire.set_kind(Type::KIND_MAP);
+      *wire.add_params() = TypeFromCelType(type.map_key());
+      *wire.add_params() = TypeFromCelType(type.map_value());
+      return wire;
+    case CelType::Kind::kOptional:
+      wire.set_kind(Type::KIND_OPTIONAL);
+      *wire.add_params() = TypeFromCelType(type.optional_element());
+      return wire;
+    case CelType::Kind::kBool:
+    case CelType::Kind::kInt:
+    case CelType::Kind::kUint:
+    case CelType::Kind::kDouble:
+    case CelType::Kind::kString:
+    case CelType::Kind::kBytes:
+    case CelType::Kind::kNull:
+    case CelType::Kind::kDuration:
+    case CelType::Kind::kTimestamp:
+    case CelType::Kind::kType:
+      wire.set_kind(WireKindForCelScalar(type.kind()));
+      return wire;
+    case CelType::Kind::kUnknown:
+      break;
+  }
+  ABSL_CHECK(false) << "TypeFromCelType: kUnknown CelType (default-constructed "
+                       "sentinel) has no wire spelling";
+  return wire;
+}
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 std::string RenderType(const Type& type) {
@@ -85,14 +163,13 @@ std::string RenderType(const Type& type) {
                                                  : std::string("?"),
                           ">");
     case Type::KIND_MAP:
-      return absl::StrCat(
-          "map<",
-          type.params_size() > 0 ? RenderType(type.params(0))
-                                 : std::string("?"),
-          ", ",
-          type.params_size() > 1 ? RenderType(type.params(1))
-                                 : std::string("?"),
-          ">");
+      return absl::StrCat("map<",
+                          type.params_size() > 0 ? RenderType(type.params(0))
+                                                 : std::string("?"),
+                          ", ",
+                          type.params_size() > 1 ? RenderType(type.params(1))
+                                                 : std::string("?"),
+                          ">");
     case Type::KIND_OPTIONAL:
       return absl::StrCat("optional<",
                           type.params_size() > 0 ? RenderType(type.params(0))
@@ -167,8 +244,7 @@ bool TypeEquals(const Type& a, const Type& b) {
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-celwasm::abi::RequiredFunction RequiredFunctionFromDecl(
-    const CelfnDecl& decl) {
+celwasm::abi::RequiredFunction RequiredFunctionFromDecl(const CelfnDecl& decl) {
   celwasm::abi::RequiredFunction row;
   row.set_overload_id(decl.overload_id);
   row.set_fn_name(decl.fn_name);
