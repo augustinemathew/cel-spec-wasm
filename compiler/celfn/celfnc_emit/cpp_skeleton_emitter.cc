@@ -3,11 +3,9 @@
 #include "compiler/celfn/celfnc_emit/cpp_skeleton_emitter.h"
 
 #include <cctype>
-#include <set>
 #include <string>
 #include <vector>
 
-#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -170,6 +168,25 @@ $1)tpl";
 // $2 = comma-joined parameter declarations.
 constexpr absl::string_view kFnDeclTpl = "$0 $1($2);\n";
 
+// Assemble the optional-include slot (proto Duration / Timestamp +
+// author --extra_includes), trailing-blank-line-terminated when
+// non-empty.
+std::string BuildOptionalIncludes(const IncludeProbe& probe,
+                                  const std::vector<std::string>& extras) {
+  std::string incs;
+  if (probe.needs_proto_duration) {
+    absl::StrAppend(&incs, "#include \"google/protobuf/duration.pb.h\"\n");
+  }
+  if (probe.needs_proto_timestamp) {
+    absl::StrAppend(&incs, "#include \"google/protobuf/timestamp.pb.h\"\n");
+  }
+  for (const auto& inc : extras) {
+    absl::StrAppend(&incs, "#include \"", inc, "\"\n");
+  }
+  if (!incs.empty()) absl::StrAppend(&incs, "\n");
+  return incs;
+}
+
 }  // namespace
 
 absl::StatusOr<std::string> EmitUserFnsH(
@@ -179,27 +196,13 @@ absl::StatusOr<std::string> EmitUserFnsH(
   for (const auto& d : lib.decls()) {
     if (d.backend != CelfnDecl::Backend::kPlugin) continue;
     ProbeType(d.return_type, &probe);
-    for (const auto& p : d.params)
+    for (const auto& p : d.params) {
       ProbeType(p.type, &probe);
+    }
   }
 
-  // Assemble the optional-include slot (proto Duration / Timestamp
-  // + author --extra_includes), trailing-blank-line-terminated when
-  // non-empty.
-  std::string optional_incs;
-  if (probe.needs_proto_duration) {
-    absl::StrAppend(&optional_incs,
-                    "#include \"google/protobuf/duration.pb.h\"\n");
-  }
-  if (probe.needs_proto_timestamp) {
-    absl::StrAppend(&optional_incs,
-                    "#include \"google/protobuf/timestamp.pb.h\"\n");
-  }
-  for (const auto& inc : extra_includes) {
-    absl::StrAppend(&optional_incs, "#include \"", inc, "\"\n");
-  }
-  if (!optional_incs.empty()) absl::StrAppend(&optional_incs, "\n");
-
+  const std::string optional_incs =
+      BuildOptionalIncludes(probe, extra_includes);
   const absl::string_view variant_inc =
       probe.needs_variant ? "#include <variant>\n" : "";
 
