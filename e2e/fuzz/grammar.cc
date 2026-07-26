@@ -53,6 +53,12 @@ std::string TypeCanonical(const CelType& t) {
                           TypeCanonical(t.map_value()), ">");
     case CelType::Kind::kUnknown:
       return "<unknown>";
+    case CelType::Kind::kNull:
+    case CelType::Kind::kOptional:
+      // Signature-only kinds — the fuzz grammar's variable-type
+      // generator never produces them.
+      ABSL_CHECK(false) << "TypeCanonical: non-declarable CelType kind `"
+                        << CelTypeKindName(t.kind()) << "`";
   }
   return "<unhandled-CelType-kind>";
 }

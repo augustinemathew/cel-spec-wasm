@@ -66,11 +66,14 @@ std::string CelTypeToSpec(const CelType& t) {
       return absl::StrCat("map<", CelTypeToSpec(t.map_key()), ",",
                           CelTypeToSpec(t.map_value()), ">");
     case CelType::Kind::kUnknown:
-      // Not reachable in happy paths — Build() rejects kUnknown
-      // declarations up front.  If we land here it's a caller who
-      // default-constructed a CelType and shoved it past Build().
-      ABSL_CHECK(false)
-          << "CelTypeToSpec: kUnknown CelType reached the spec encoder";
+    case CelType::Kind::kNull:
+    case CelType::Kind::kOptional:
+      // Not reachable in happy paths — Build() rejects every
+      // non-declarable kind up front (IsDeclarableAsVariable).  If we
+      // land here the gate regressed; crash naming the kind.
+      ABSL_CHECK(false) << "CelTypeToSpec: non-declarable CelType kind `"
+                        << CelTypeKindName(t.kind())
+                        << "` reached the spec encoder";
   }
   // Closed enum; any new kind reaching here without a case arm is
   // an invariant violation.

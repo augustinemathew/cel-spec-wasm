@@ -564,6 +564,8 @@ absl::StatusOr<Value> ParseAtomForType(
       return ParseMessage(c, t, pool, factory);
     case CelType::Kind::kType:
     case CelType::Kind::kUnknown:
+    case CelType::Kind::kNull:
+    case CelType::Kind::kOptional:
       return absl::InvalidArgumentError(
           absl::StrCat("--var: cannot bind a value of type `",
                        ::celwasm::CelTypeKindName(t.kind()), "`"));

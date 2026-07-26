@@ -286,6 +286,10 @@ absl::StatusOr<celwasm::CompileOptions> BuildCompileOptions(
           return absl::StrCat("map<", self(self, t.map_key()), ",",
                               self(self, t.map_value()), ">");
         case ::celwasm::CelType::Kind::kUnknown:
+        case ::celwasm::CelType::Kind::kNull:
+        case ::celwasm::CelType::Kind::kOptional:
+          // kNull / kOptional are signature-only kinds; the --var
+          // type-spec parser never produces them.
           break;
       }
       ABSL_CHECK(false) << "unhandled CelType in --var spec";
