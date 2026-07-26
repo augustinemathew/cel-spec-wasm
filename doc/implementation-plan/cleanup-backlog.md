@@ -62,6 +62,26 @@ struck through or removed.
       Why P2: native lib is test/bench-only; production (wasm) path
       errors gracefully.
 
+- [ ] **#53** — unify the C++ type vocabularies: `CelfnType`
+      (compiler/celfn, the celfn grammar's type AST — adds
+      `null`/`optional<T>`/`proto`-by-name/`type`) vs
+      `shared/CelType::Kind` (declared-variable vocabulary) are two
+      C++ spellings of one concept, glued by `CelfnTypeToCelType`
+      and mirrored by the wire `Type` proto (née FnType, generalized
+      2026-07-25 per user review).  Unification direction: widen
+      `shared/CelType` with the celfn-only shapes (flagged
+      non-declarable-as-variable), make the celfn grammar produce
+      it, delete `CelfnTypeToCelType`, mirror the ONE enum on the
+      wire.  Collapses the converter layer the m35 review measured
+      and the user flagged ("many representations of the type
+      across the repo").  Scope: public `shared/` vocabulary +
+      every converter + grammar glue — its own milestone slice,
+      not a drive-by.
+      Surfaced: 2026-07-25 m35 PR review (user comments on
+      cel_abi.proto + cel_abi_emit_test).
+      Why P1: every future declarable-type feature pays the
+      three-vocabulary tax until this lands.
+
 - [ ] **#51** — pre-existing wasm32-wasip2 cross-compile break:
       `//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin_proto`
       (manual) fails to build — `@abseil-cpp` `synchronization/
