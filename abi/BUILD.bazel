@@ -315,3 +315,42 @@ cc_test(
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+# Artifact introspection: what a compiled Program declares and what it
+# requires to run, read straight from its `cel.abi` section.  No
+# wasmtime, no Engine — usable by tools, bindings, and build-time
+# checks alike.
+cc_library(
+    name = "program_facts",
+    srcs = ["program_facts.cc"],
+    hdrs = ["program_facts.h"],
+    visibility = ["//:internal"],
+    deps = [
+        ":cel_abi_cc_proto",
+        ":celfn_wire",
+        "//compiler/ir:annotations",
+        "//eval:abi_decode",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_test(
+    name = "program_facts_test",
+    size = "small",
+    srcs = ["program_facts_test.cc"],
+    deps = [
+        ":program_facts",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//compiler/ir:annotations",
+        "//tools/cel:program_report",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

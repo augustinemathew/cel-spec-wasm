@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "abi/plugin.h"
+#include "abi/program_facts.h"
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/log/absl_check.h"
@@ -46,7 +48,7 @@
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
-#include "tools/cel/abi_describe.h"
+#include "tools/cel/program_report.h"
 #include "tools/cel/run_embed_decls.h"
 #include "tools/cel/run_generate.h"
 #include "tools/cel/value_format.h"
@@ -115,8 +117,14 @@ namespace {
 
 using ::celwasm::Activation;
 using ::celwasm::Engine;
+using ::celwasm::Plugin;
 using ::celwasm::Program;
 using ::celwasm::Value;
+using ::celwasm::abi::DeclaredVar;
+using ::celwasm::abi::DescribeProgram;
+using ::celwasm::abi::ProgramFacts;
+using ::celwasm::abi::RequiredFn;
+using ::celwasm::abi::ScalarTypeSpecForRepr;
 
 // Process exit codes.  The contract is documented in tools/cel/README.md
 // and pinned by cel_smoke_test.sh; keep the three in sync.
@@ -328,6 +336,10 @@ absl::Status BindActivation(const std::vector<ParsedVar>& vars,
 // Hand-collected `--var` / `--format` values, populated by
 // `ExtractRepeated` in `main()` before absl flag parsing.
 std::vector<std::string>& VarFlags() {
+  static auto* v = new std::vector<std::string>{};
+  return *v;
+}
+std::vector<std::string>& PluginFlags() {
   static auto* v = new std::vector<std::string>{};
   return *v;
 }
@@ -606,18 +618,68 @@ absl::Status BindDeclaredVars(const ProgramFacts& facts,
   return CheckAllDeclaredVarsBound(facts, owned);
 }
 
-// Turn wasmtime's opaque missing-import message into the actionable
-// one.  A program that calls @host / @component functions cannot run
-// under the stock CLI: those are C++ in the embedder's process.
-std::string ExplainPlanFailure(absl::string_view message) {
-  static constexpr absl::string_view kCelFn = "cel_fn";
-  if (!absl::StrContains(message, kCelFn)) return std::string(message);
-  return absl::StrCat(
-      message,
-      "\n  the program imports a custom function from `cel_fn`; the CLI "
-      "cannot supply @host / @component implementations — use the C++ API "
-      "(Engine::AddFunction / AddComponent), or redefine the function as "
-      "@native");
+// Refuse a program the CLI provably cannot run, before Plan, naming
+// the functions responsible.
+//
+// `@host` implementations are C++ in the embedder's process, so no
+// generic binary can supply them.  The program says so itself:
+// `cel.abi.required_functions` records every `cel_fn` import with its
+// backend, so this is a straight read rather than a guess at
+// wasmtime's link-failure text.
+absl::Status RejectIfHostFunctionsRequired(const ProgramFacts& facts) {
+  std::vector<std::string> host;
+  for (const RequiredFn& fn : facts.required_fns) {
+    if (fn.is_host) host.push_back(fn.signature);
+  }
+  if (host.empty()) return absl::OkStatus();
+  return absl::FailedPreconditionError(absl::StrCat(
+      "this program requires @host function(s) the CLI cannot supply: ",
+      absl::StrJoin(host, ", "),
+      "\n  @host implementations are C++ in your process — evaluate via "
+      "the C++ API (Engine::AddFunction), or redefine the function with a "
+      "@plugin backend so it travels with the artifact and `--plugin` can "
+      "supply it"));
+}
+
+// A plugin function, unlike an @host one, IS satisfiable from the
+// command line: the implementation is a wasm artifact, so `--plugin`
+// can hand it over.  Report the shortfall before Plan so the message
+// names what to pass rather than surfacing as a link failure.
+// Read and parse every `--plugin` artifact.  Split out of the run
+// prologue so both stay under the function-size gate.
+absl::StatusOr<std::vector<Plugin>> LoadPluginFlags() {
+  std::vector<Plugin> out;
+  out.reserve(PluginFlags().size());
+  for (const std::string& path : PluginFlags()) {
+    auto bytes = ReadFileBytes(path);
+    if (!bytes.ok()) return bytes.status();
+    auto plugin = Plugin::Load(*bytes);
+    if (!plugin.ok()) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("--plugin ", path, ": ", plugin.status().message()));
+    }
+    out.push_back(*std::move(plugin));
+  }
+  return out;
+}
+
+absl::Status CheckPluginsSatisfied(const ProgramFacts& facts,
+                                   const std::vector<Plugin>& loaded) {
+  if (facts.required_fns.empty()) return absl::OkStatus();
+  std::size_t plugin_fns = 0;
+  for (const RequiredFn& fn : facts.required_fns) {
+    if (!fn.is_host) ++plugin_fns;
+  }
+  if (plugin_fns == 0 || !loaded.empty()) return absl::OkStatus();
+  std::vector<std::string> names;
+  for (const RequiredFn& fn : facts.required_fns) {
+    if (!fn.is_host) names.push_back(fn.signature);
+  }
+  return absl::FailedPreconditionError(absl::StrCat(
+      "this program requires plugin function(s) but no --plugin was given: ",
+      absl::StrJoin(names, ", "),
+      "\n  supply the plugin artifact with `--plugin <file.wasm>` "
+      "(repeatable)"));
 }
 
 // Everything `run` needs before it can Plan: the program bytes, the
@@ -630,6 +692,9 @@ struct LoadedProgram {
   // Value::Message references the message by const&.
   std::vector<ParsedVar> owned;
   Activation activation;
+  // Held for the whole run: `Engine::Use` reads the declarations out
+  // of each plugin at registration time.
+  std::vector<Plugin> plugins;
 };
 
 absl::StatusOr<LoadedProgram> LoadProgramAndBind(absl::string_view path) {
@@ -639,6 +704,11 @@ absl::StatusOr<LoadedProgram> LoadProgramAndBind(absl::string_view path) {
   out.bytes = *std::move(bytes);
   auto facts = DescribeProgram(out.bytes);
   if (!facts.ok()) return facts.status();
+  if (auto s = RejectIfHostFunctionsRequired(*facts); !s.ok()) return s;
+  auto plugins = LoadPluginFlags();
+  if (!plugins.ok()) return plugins.status();
+  out.plugins = *std::move(plugins);
+  if (auto s = CheckPluginsSatisfied(*facts, out.plugins); !s.ok()) return s;
   auto pool = BuildPool();
   if (!pool.ok()) return pool.status();
   out.pool = *std::move(pool);
@@ -669,10 +739,15 @@ int RunProgram(absl::string_view path) {
     std::cerr << "ERROR: engine: " << engine.status().message() << "\n";
     return kExitExprFailure;
   }
+  for (const Plugin& plugin : loaded->plugins) {
+    if (auto s = engine->Use(plugin); !s.ok()) {
+      std::cerr << "ERROR: --plugin: " << s.message() << "\n";
+      return kExitUsage;
+    }
+  }
   auto instance = engine->Plan(program);
   if (!instance.ok()) {
-    std::cerr << "ERROR: plan: "
-              << ExplainPlanFailure(instance.status().message()) << "\n";
+    std::cerr << "ERROR: plan: " << instance.status().message() << "\n";
     return kExitExprFailure;
   }
   auto value = loaded->owned.empty() ? instance->Eval()
@@ -729,6 +804,9 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  --var name:Type=value    (repeatable) declare + bind\n"
      << "  --var name:Type          (repeatable) declare only\n"
      << "  --var name=value         (run) bind; type comes from cel.abi\n"
+     << "  --plugin PATH            (run, repeatable) plugin .wasm "
+        "supplying\n"
+     << "                           @plugin functions the program requires\n"
      << "  --proto PATH             .proto source for message types\n"
      << "  --descriptor_set PATH    FileDescriptorSet for message types\n"
      << "  --container PKG          name-resolution container\n"
@@ -782,7 +860,7 @@ bool TakesProgramPath(absl::string_view s) {
 // "expression failed" code.  Reporting them here keeps flag errors
 // classified as usage.  Returns nullopt when a flag was unrecognized.
 std::optional<std::vector<char*>> ParseFlagsAfterSubcommand(
-    absl::Span<char* const> argv) {
+    absl::Span<char* const> argv, absl::string_view subcommand) {
   std::vector<char*> rest;
   rest.reserve(argv.size() - 1);
   rest.push_back(argv[0]);
@@ -791,6 +869,12 @@ std::optional<std::vector<char*>> ParseFlagsAfterSubcommand(
   }
   rest = ExtractRepeated(rest, "var", VarFlags());
   rest = ExtractRepeated(rest, "format", FormatFlags());
+  // `--plugin` is repeatable on `run` but a single absl flag on
+  // `embed-decls`.  Peel it out only for `run`, or the extraction
+  // would consume the value before absl ever sees it.
+  if (subcommand == "run") {
+    rest = ExtractRepeated(rest, "plugin", PluginFlags());
+  }
 
   std::vector<char*> positional;
   std::vector<absl::UnrecognizedFlag> unrecognized;
@@ -875,7 +959,7 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
     return cli::kExitUsage;
   }
 
-  auto positional = cli::ParseFlagsAfterSubcommand(args);
+  auto positional = cli::ParseFlagsAfterSubcommand(args, subcommand);
   if (!positional.has_value()) {
     cli::PrintUsage(std::cerr, argv[0]);
     return cli::kExitUsage;

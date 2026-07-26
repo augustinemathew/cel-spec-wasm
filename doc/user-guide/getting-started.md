@@ -49,8 +49,10 @@ bazel-bin/tools/cel/cel compile 'a * b + 1' \
     --var a:int --var b:int --output /tmp/expr.wasm
 
 bazel-bin/tools/cel/cel inspect /tmp/expr.wasm
-# vars:  a:int, b:int
-# link:  static (cel.abi v1, runtime abi v4)
+# vars:       a:int, b:int
+# plugin fns: none
+# host fns:   none
+# link:       static (cel.abi v1, runtime abi v4)
 
 bazel-bin/tools/cel/cel run /tmp/expr.wasm --var a=6 --var b=7
 # => 43

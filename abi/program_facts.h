@@ -1,24 +1,27 @@
-// Describe a compiled `.wasm` from its `cel.abi` section.
+// Describe a compiled `.wasm` from its `cel.abi` section: what it
+// declares, and what it requires to run.
 //
-// Shared by `cel inspect` (which prints the description) and `cel run`
-// (which uses it to type `--var` values), so the two cannot disagree
-// about what an artifact declares.
+// Lives beside the other artifact-introspection libraries
+// (`abi/plugin.h`, `abi/wasm_binary.h`) rather than in a tool, because
+// nothing about it is CLI-specific — any embedder, binding, or
+// build-time check that wants to know "what does this artifact need?"
+// asks here.  `tools/cel` keeps only the rendering of these facts to a
+// terminal.
 //
 // Reads the `cel.abi` custom section directly — no wasmtime, no
 // `Engine` — so `inspect` works on a program this build could not
 // actually run.
 //
-// Scope note: this reports what a program *declares*, not everything
-// it *requires*.  The list of custom functions and foreign modules a
-// program demands is not on the wire today; `cel.abi` field 8
-// (`required_functions`, specified in `rewrite/m35-component-
-// ergonomics.md` §5.1) adds it, emitted from the post-optimize import
-// surface and verified at `Engine::Plan`.  Reporting those belongs
-// here once that field lands; deriving them independently by walking
-// the wasm import section would be a second, weaker source of truth.
+// Both the declared variables and the required custom functions come
+// from `cel.abi` — the latter from `required_functions` (field 8),
+// emitted from the post-optimize import surface and verified at
+// `Engine::Plan`.  Reading them here rather than walking the wasm
+// import section keeps one source of truth: the section is authored
+// from the final module, so it stays correct across optimize levels
+// (Binaryen drops unused imports at O1+).
 
-#ifndef CELWASM_TOOLS_CEL_ABI_DESCRIBE_H_
-#define CELWASM_TOOLS_CEL_ABI_DESCRIBE_H_
+#ifndef CELWASM_ABI_PROGRAM_FACTS_H_
+#define CELWASM_ABI_PROGRAM_FACTS_H_
 
 #include <cstdint>
 #include <string>
@@ -29,7 +32,7 @@
 #include "absl/types/span.h"
 #include "compiler/ir/annotations.h"
 
-namespace celwasm::tools::cel {
+namespace celwasm::abi {
 
 // One declared free variable.
 //
@@ -44,9 +47,24 @@ struct DeclaredVar {
   std::string type_name;
 };
 
-// What a program declares.
+// One custom function the program will demand at `Plan`.
+struct RequiredFn {
+  std::string name;       // source-level name
+  std::string signature;  // `.celfn` spelling, via abi::RenderSignature
+  // `@host` functions are C++ in the embedder's process; the CLI
+  // cannot supply them.  Plugin functions are satisfiable with a
+  // wasm artifact.
+  bool is_host = false;
+};
+
+// What a program declares, and what it requires to run.
 struct ProgramFacts {
   std::vector<DeclaredVar> vars;
+  // From `cel.abi.required_functions`; empty for a program that calls
+  // no custom functions, and for programs compiled before the field
+  // existed (the check no-ops rather than claiming "none" falsely —
+  // see `has_required_fn_table`).
+  std::vector<RequiredFn> required_fns;
   bool static_linked = false;
   uint32_t abi_version = 0;
   uint32_t runtime_abi_version = 0;
@@ -73,9 +91,6 @@ absl::StatusOr<std::string> ScalarTypeSpecForRepr(Repr repr,
 absl::StatusOr<ProgramFacts> DescribeProgram(
     absl::Span<const uint8_t> wasm_bytes);
 
-// Render `facts` as the `cel inspect` report.
-std::string FormatProgramFacts(const ProgramFacts& facts);
+}  // namespace celwasm::abi
 
-}  // namespace celwasm::tools::cel
-
-#endif  // CELWASM_TOOLS_CEL_ABI_DESCRIBE_H_
+#endif  // CELWASM_ABI_PROGRAM_FACTS_H_

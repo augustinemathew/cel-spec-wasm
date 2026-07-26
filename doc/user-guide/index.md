@@ -353,7 +353,7 @@ bytes and `run` picks them back up:
 
 ```bash
 cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm
-cel inspect expr.wasm                        # vars:  a:int, b:int
+cel inspect expr.wasm                        # vars, required fns, link mode
 cel run     expr.wasm --var "a=6" --var "b=7"    # → 43
 ```
 
@@ -365,10 +365,11 @@ type for a list, no key/value types for a map, no message FQN); the
 error message says so when you hit it. `inspect` prints kinds for the
 same reason — `xs:list`, never `xs:list<int>`.
 
-A program that calls `@host` / `@component` functions cannot be run by
-the stock CLI — those implementations are C++ in your process — and
-`run` reports that explicitly rather than failing with a wasm link
-error.
+A program that calls `@host` functions cannot be run by the stock CLI —
+those implementations are C++ in your process. The program records its
+own requirements in `cel.abi` (`required_functions`), so `run` refuses
+up front and names them, and `inspect` shows the split ahead of time:
+`plugin fns:` travel with the artifact, `host fns:` do not.
 
 Flags: `--var name:Type[=value]` (typed binding — the literal parser is
 type-directed), `--proto <file>` / `--descriptor_set <file>` (schema for

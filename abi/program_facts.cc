@@ -1,20 +1,20 @@
-#include "tools/cel/abi_describe.h"
+#include "abi/program_facts.h"
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
 #include "abi/cel_abi.pb.h"
+#include "abi/celfn_wire.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "compiler/ir/annotations.h"
 #include "eval/internal/abi_decode.h"
 
-namespace celwasm::tools::cel {
+namespace celwasm::abi {
 
 absl::StatusOr<std::string> ScalarTypeSpecForRepr(Repr repr,
                                                   absl::string_view var_name) {
@@ -65,30 +65,20 @@ absl::StatusOr<ProgramFacts> DescribeProgram(
   facts.has_abi_section = true;
   facts.abi_version = abi->version();
   facts.runtime_abi_version = abi->runtime_abi_version();
-  facts.static_linked = abi->link_mode() == celwasm::abi::LINK_MODE_STATIC;
+  facts.static_linked = abi->link_mode() == LINK_MODE_STATIC;
   facts.vars.reserve(abi->variables_size());
-  for (const celwasm::abi::VariableEntry& v : abi->variables()) {
+  for (const VariableEntry& v : abi->variables()) {
     const Repr repr = DecodeRepr(v.repr());
     facts.vars.push_back(
         DeclaredVar{v.name(), repr, std::string(ReprName(repr))});
   }
+  facts.required_fns.reserve(abi->required_functions_size());
+  for (const RequiredFunction& fn : abi->required_functions()) {
+    facts.required_fns.push_back(
+        RequiredFn{fn.fn_name(), ::celwasm::RenderSignature(fn),
+                   fn.backend() == RequiredFunction::HOST});
+  }
   return facts;
 }
 
-std::string FormatProgramFacts(const ProgramFacts& facts) {
-  if (!facts.has_abi_section) {
-    return "vars:  <none — this module carries no cel.abi section>\n";
-  }
-  std::vector<std::string> rendered;
-  rendered.reserve(facts.vars.size());
-  for (const DeclaredVar& v : facts.vars) {
-    rendered.push_back(absl::StrCat(v.name, ":", v.type_name));
-  }
-  return absl::StrCat(
-      "vars:  ", rendered.empty() ? "none" : absl::StrJoin(rendered, ", "),
-      "\n", "link:  ", facts.static_linked ? "static" : "dynamic",
-      " (cel.abi v", facts.abi_version, ", runtime abi v",
-      facts.runtime_abi_version, ")\n");
-}
-
-}  // namespace celwasm::tools::cel
+}  // namespace celwasm::abi

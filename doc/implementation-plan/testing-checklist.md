@@ -3390,8 +3390,14 @@ See `rewrite/m36-cli-runtime-and-lazy-binding.md`.
         `--var`, bad `--var` value, bad `--format`, wrong positional
         count.
   - [x] A CEL error goes to stderr and leaves stdout empty.
-  - [ ] `cel run` / `cel inspect` round trip — pending those
-        subcommands.
+  - [x] `cel run` / `cel inspect` round trip — compile, inspect,
+        then evaluate the artifact with no recompile
+        (`cel_smoke_test.sh`).
+  - [x] `run` usage errors: undeclared `--var`, unbound declared var,
+        bad value for the declared repr, missing file, non-wasm input.
+  - [x] `run` on a precompiled program: a CEL error still exits 1.
+  - [x] `--plugin` extraction stays scoped to `run`, so `embed-decls`
+        keeps its own single-valued `--plugin` flag.
 
 **Value rendering** (`tools/cel/value_format_test.cc`)
 

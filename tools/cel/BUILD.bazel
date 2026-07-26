@@ -95,17 +95,13 @@ cc_library(
 )
 
 cc_library(
-    name = "abi_describe",
-    srcs = ["abi_describe.cc"],
-    hdrs = ["abi_describe.h"],
+    name = "program_report",
+    srcs = ["program_report.cc"],
+    hdrs = ["program_report.h"],
+    visibility = ["//:internal"],
     deps = [
-        "//abi:cel_abi_cc_proto",
-        "//compiler/ir:annotations",
-        "//eval:abi_decode",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
+        "//abi:program_facts",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -122,23 +118,6 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-    ],
-)
-
-cc_test(
-    name = "abi_describe_test",
-    size = "small",
-    srcs = ["abi_describe_test.cc"],
-    deps = [
-        ":abi_describe",
-        "//compiler:compiler",
-        "//compiler:program",
-        "//compiler/ir:annotations",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -163,7 +142,7 @@ cc_binary(
     srcs = ["cel.cc"],
     visibility = ["//visibility:public"],
     deps = [
-        ":abi_describe",
+        ":program_report",
         ":run_embed_decls",
         ":run_generate",
         ":value_format",

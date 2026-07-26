@@ -58,8 +58,10 @@ actually run.
 Output as shipped:
 
 ```
-vars:  a:int, b:int
-link:  static (cel.abi v1, runtime abi v4)
+vars:       a:int, b:int
+plugin fns: none
+host fns:   none
+link:       static (cel.abi v1, runtime abi v4)
 ```
 
 **Variable types are kinds, not full types.** `cel.abi`'s
@@ -67,33 +69,25 @@ link:  static (cel.abi v1, runtime abi v4)
 field 5 is reserved for a full `CelType` and unused. So an aggregate
 shows as `xs:list`, never `xs:list<int>`. Stated rather than faked.
 
-> **Plan-vs-execution delta — the import walk was built, then
-> reverted.** The first cut added `DecodeImportsFromWasm` to
-> `abi_decode` and classified import namespaces (`cel`, `cel_host`,
-> `cel_env`, `wasi_snapshot_preview1` = engine-supplied; `cel_fn` =
-> host functions; anything else = a foreign-module alias), so `inspect`
-> could also print `requires:` and `host fns:` lines. That was reverted
-> on finding `m35-component-ergonomics.md` specifies both halves
-> better:
+> **Plan-vs-execution delta — the import walk was built, reverted,
+> and then made unnecessary.** The first cut added
+> `DecodeImportsFromWasm` to `abi_decode` and classified import
+> namespaces so `inspect` could report required functions. It was
+> reverted on finding m35 specified both halves better, and m35 then
+> landed (merged 2026-07-26): `//abi:wasm_binary` consolidates all
+> wasm binary-format knowledge, and `cel.abi` field 8
+> (`required_functions`) carries the required-function table with full
+> signatures and a HOST/PLUGIN backend tag, emitted from the
+> post-optimize import surface. `inspect` and `run` now read that
+> field via `abi::RenderSignature`, so the CLI and `Engine::Plan`
+> agree by construction. A byte-level import walk would have been a
+> second, weaker source of truth — and would have desynced at
+> optimize levels ≥1, where Binaryen drops unused imports.
 >
->   - **§4** consolidates *all* wasm binary-format knowledge into
->     `//abi:wasm_binary` (absl-only, below both `compiler/` and
->     `eval/`). Its 2026-07-25 sweep counted five existing copies of the
->     framing logic and declares a sixth a review finding; `abi_decode`
->     refactors onto it in slice A1.
->   - **§5.1** puts the required-function table *on the wire* as
->     `cel.abi` field 8 (`required_functions`) with full signatures and
->     a HOST/COMPONENT backend tag, emitted from the **post-optimize**
->     import surface and verified at `Engine::Plan`. Deriving the same
->     facts from a byte-level import walk would be a second, weaker
->     source of truth — and would miss the optimize-level nuance §5.2
->     calls out.
->
-> So `inspect` reports declarations today; the `requires:` /
-> `host fns:` lines land with field 8. One thing the reverted probe did
-> establish and is worth keeping: a **static**-linked program also
-> imports `wasi_snapshot_preview1` (the adopted runtime's own libc
-> imports), which any future classifier must treat as engine-supplied.
+> One fact from the reverted probe is still worth recording: a
+> **static**-linked program also imports `wasi_snapshot_preview1` (the
+> adopted runtime's own libc imports), so any future import-based
+> classifier must treat that namespace as engine-supplied.
 
 ## 3. `cel run <prog.wasm>`
 

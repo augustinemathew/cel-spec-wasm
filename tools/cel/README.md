@@ -70,8 +70,10 @@ recompile, and `inspect` tells you what it needs first.
 cel compile "a * b + 1" --var "a:int" --var "b:int" --output expr.wasm
 
 cel inspect expr.wasm
-# vars:  a:int, b:int
-# link:  static (cel.abi v1, runtime abi v4)
+# vars:       a:int, b:int
+# plugin fns: none
+# host fns:   none
+# link:       static (cel.abi v1, runtime abi v4)
 
 cel run expr.wasm --var "a=6" --var "b=7"    # → 43
 ```
@@ -99,11 +101,21 @@ cel run list.wasm --var "xs:list<int>=[1, 2, 3]"     # → works
 `inspect` prints kinds for the same reason: an aggregate shows as
 `xs:list`, never `xs:list<int>`.
 
-**What `run` cannot do:** evaluate a program that calls `@host` or
-`@component` custom functions. Those are C++ in *your* process, and no
-generic binary can supply them — use the C++ API (`Engine::AddFunction`
-/ `AddComponent`) instead. The CLI says so explicitly rather than
-failing with a raw wasm link error.
+**What `run` cannot do:** evaluate a program that calls `@host` custom
+functions. Those are C++ in *your* process, and no generic binary can
+supply them. The program declares its own requirements in `cel.abi`, so
+`run` refuses up front and names them:
+
+```
+ERROR: this program requires @host function(s) the CLI cannot supply:
+       string upper(this string)
+  @host implementations are C++ in your process — evaluate via the C++
+  API (Engine::AddFunction / Engine::Use), or redefine the function
+  with a @plugin backend so it travels with the artifact
+```
+
+`inspect` shows the same split ahead of time: `plugin fns:` are
+satisfiable with a wasm artifact, `host fns:` are not.
 
 ## Scalar arithmetic
 

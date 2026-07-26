@@ -109,8 +109,15 @@ rt_wasm="${TEST_TMPDIR:-/tmp}/roundtrip.wasm"
     --output "${rt_wasm}" >/dev/null 2>&1
 
 expect "inspect reports declared vars" \
-  "vars:  a:int, b:int" \
+  "vars:       a:int, b:int" \
   bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | head -1"
+
+# A plain expression requires no custom functions; both rows read
+# `none` and nothing warns about runnability.
+expect "inspect reports no required fns" "plugin fns: none" \
+  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | sed -n 2p"
+expect "inspect reports no host fns" "host fns:   none" \
+  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | sed -n 3p"
 
 expect "run evaluates a precompiled program" "43" \
   "${CEL}" run "${rt_wasm}" --var "a=6" --var "b=7"
@@ -126,6 +133,19 @@ expect_exit "run: bad value for repr"      2 \
 expect_exit "run: missing file"            2 "${CEL}" run /nonexistent.wasm
 expect_exit "inspect: missing file"        2 "${CEL}" inspect /nonexistent.wasm
 expect_exit "inspect: not a wasm module"   2 "${CEL}" inspect "$0"
+
+# `--plugin` is repeatable on `run` but a single absl flag on
+# `embed-decls`.  Peeling it out of argv for every subcommand would
+# consume embed-decls' value before absl saw it — this pins that the
+# extraction stays scoped to `run`.
+embed_out="$("${CEL}" embed-decls --plugin "${rt_wasm}" \
+  --idl /nonexistent.idl --out /tmp/ignored.wasm 2>&1 || true)"
+case "${embed_out}" in
+  *"--plugin is required"*)
+    echo "FAIL: embed-decls lost its --plugin value to run's extractor"
+    fail=1
+    ;;
+esac
 
 # A CEL error from a precompiled program follows the same contract as
 # `eval`: stderr, exit 1.

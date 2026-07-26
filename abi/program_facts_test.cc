@@ -1,4 +1,4 @@
-#include "tools/cel/abi_describe.h"
+#include "abi/program_facts.h"
 
 #include <cstdint>
 #include <string>
@@ -12,10 +12,11 @@
 #include "compiler/compiler.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/program.h"
+#include "tools/cel/program_report.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-namespace celwasm::tools::cel {
+namespace celwasm::abi {
 namespace {
 
 using ::absl_testing::IsOk;
@@ -97,7 +98,7 @@ TEST(DescribeProgramTest, ModuleWithoutAbiSectionIsDescribableNotAnError) {
   ASSERT_THAT(facts, IsOk());
   EXPECT_FALSE(facts->has_abi_section);
   EXPECT_TRUE(facts->vars.empty());
-  EXPECT_TRUE(absl::StrContains(FormatProgramFacts(*facts), "no cel.abi"));
+  EXPECT_TRUE(absl::StrContains(::celwasm::tools::cel::FormatProgramFacts(*facts), "no cel.abi"));
 }
 
 TEST(DescribeProgramTest, RejectsBytesThatAreNotWasm) {
@@ -106,20 +107,59 @@ TEST(DescribeProgramTest, RejectsBytesThatAreNotWasm) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+// ---------- Required functions (cel.abi field 8) ----------------------------
+
+// A program that calls an @host custom fn records it in
+// `required_functions`, which is what tells an operator the artifact
+// is not runnable by the stock CLI.
+TEST(DescribeProgramTest, ReportsRequiredHostFunction) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("s", CelType::String());
+  b.AddFunction("string @host.upper(this string s);");
+  auto compiler = std::move(b).Build();
+  ASSERT_THAT(compiler, IsOk());
+  auto program = compiler->Compile("s.upper()");
+  ASSERT_THAT(program, IsOk());
+  const auto bytes = program->wasm_bytes();
+
+  auto facts = DescribeProgram(std::vector<uint8_t>(bytes.begin(), bytes.end()));
+  ASSERT_THAT(facts, IsOk());
+  ASSERT_EQ(facts->required_fns.size(), 1u);
+  EXPECT_EQ(facts->required_fns[0].name, "upper");
+  EXPECT_TRUE(facts->required_fns[0].is_host);
+  EXPECT_FALSE(facts->required_fns[0].signature.empty());
+
+  const std::string out = ::celwasm::tools::cel::FormatProgramFacts(*facts);
+  EXPECT_TRUE(absl::StrContains(out, "upper")) << out;
+  EXPECT_TRUE(absl::StrContains(out, "not runnable by `cel run`")) << out;
+}
+
+TEST(DescribeProgramTest, ReportsNoRequiredFunctionsForAPlainExpression) {
+  auto facts = DescribeProgram(CompileBytes({}, "1 + 2"));
+  ASSERT_THAT(facts, IsOk());
+  EXPECT_TRUE(facts->required_fns.empty());
+  const std::string out = ::celwasm::tools::cel::FormatProgramFacts(*facts);
+  EXPECT_TRUE(absl::StrContains(out, "host fns:")) << out;
+  EXPECT_TRUE(absl::StrContains(out, "none")) << out;
+  EXPECT_FALSE(absl::StrContains(out, "not runnable")) << out;
+}
+
 // ---------- Rendering -------------------------------------------------------
 
 TEST(FormatProgramFactsTest, RendersVarsAndLinkLine) {
   auto facts = DescribeProgram(CompileBytes({{"a", CelType::Int()}}, "a + 1"));
   ASSERT_THAT(facts, IsOk());
-  const std::string out = FormatProgramFacts(*facts);
-  EXPECT_TRUE(absl::StrContains(out, "vars:  a:int")) << out;
-  EXPECT_TRUE(absl::StrContains(out, "link:  static")) << out;
+  const std::string out = ::celwasm::tools::cel::FormatProgramFacts(*facts);
+  EXPECT_TRUE(absl::StrContains(out, "a:int")) << out;
+  EXPECT_TRUE(absl::StrContains(out, "link:")) << out;
+  EXPECT_TRUE(absl::StrContains(out, "static")) << out;
 }
 
 TEST(FormatProgramFactsTest, RendersNoneWhenNoVarsAreDeclared) {
   auto facts = DescribeProgram(CompileBytes({}, "1 + 2"));
   ASSERT_THAT(facts, IsOk());
-  EXPECT_TRUE(absl::StrContains(FormatProgramFacts(*facts), "vars:  none"));
+  EXPECT_TRUE(absl::StrContains(::celwasm::tools::cel::FormatProgramFacts(*facts), "vars:"));
+  EXPECT_TRUE(absl::StrContains(::celwasm::tools::cel::FormatProgramFacts(*facts), "none"));
 }
 
 // ---------- Repr → type spec ------------------------------------------------
@@ -153,4 +193,4 @@ TEST(ScalarTypeSpecForReprTest, RejectsReprsWithNoCompleteWireType) {
 }
 
 }  // namespace
-}  // namespace celwasm::tools::cel
+}  // namespace celwasm::abi
