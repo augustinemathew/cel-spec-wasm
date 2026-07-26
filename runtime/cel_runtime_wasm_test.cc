@@ -713,10 +713,20 @@ TEST(CelRuntimeWasmTest, ArenaGrowPreservesChunkOneBytes) {
   // side; this test exists to also pin it on the linear-memory
   // bytes.
   if (off1 + 32u >= mem_size) {
-    GTEST_SKIP() << "first arena chunk at offset " << off1
-                 << " exceeds host-visible memory window " << mem_size
-                 << " (wasmtime/dlmalloc growth not reflected); cursor "
-                    "semantics already covered by sibling tests";
+    GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: this is a CONDITIONAL skip on a host-visibility limitation of
+  the test harness, taken only when dlmalloc happens to place the arena's
+  first chunk outside the window wasmtime's C API currently exposes (a
+  memory.grow not yet reflected into wasmtime_memory_data_size). When the
+  chunk lands inside the window - the common case - the test runs and asserts
+  the sentinel normally, so this is not a permanently-dead row. Skipping is
+  strictly better than a spurious failure, and the no-overwrite contract is
+  also pinned from the bookkeeping side by ArenaMultiGrow... and
+  ArenaResetFreesChainedChunks...
+citation: runtime/cel_arena.c:171 (grow path leaves chunk-1 bytes untouched)
+)CELSKIP" << " [chunk offset "
+                 << off1 << ", host-visible window " << mem_size << "]";
   }
   // Sentinel: 0xAB across the last 8 bytes of the chunk-1 alloc.
   const uint32_t sentinel_off = off1 + 24u;

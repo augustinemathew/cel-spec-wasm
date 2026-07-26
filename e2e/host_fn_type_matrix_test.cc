@@ -726,34 +726,55 @@ TEST(HostFnTypeMatrix, WktWrapperAsProtoIdlSpellingRejected) {
 // named blocker" rule.
 
 TEST(HostFnTypeMatrix, WktAnyHostFnArg) {
-  GTEST_SKIP() << "no celfn IDL spelling for google.protobuf.Any host-fn args "
-                  "(function_library.cc:256-322 admits only the 12 IDL "
-                  "types: bool/int/uint/double/string/bytes/null/Duration/"
-                  "Timestamp/proto(<user fqn>)/list/map). Any is auto-peeled "
-                  "at field-read (cel_host.cc:172, 488), not a separate "
-                  "host-fn arg type. Un-skip if/when the IDL admits Any "
-                  "as a proto-spelled arg.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: there is no celfn IDL spelling for google.protobuf.Any as a
+  host-fn argument - compiler/celfn/function_library.cc:256-322 admits exactly
+  12 IDL types (bool, int, uint, double, string, bytes, null, Duration,
+  Timestamp, proto(<user fqn>), list, map). Any is not a separate host-fn arg
+  type in this design: it is AUTO-PEELED at field read
+  (eval/internal/cel_host.cc:172, 488), so a host fn only ever sees the
+  unwrapped payload. Un-skip if/when the IDL admits Any as a proto-spelled
+  arg.
+citation: doc/implementation-plan/rewrite/m21-host-call-adapter.md (the 12 IDL-expressible types); compiler/celfn/function_library.cc:256-322
+)CELSKIP";
 }
 
 TEST(HostFnTypeMatrix, WktStructHostFnArg) {
-  GTEST_SKIP() << "no celfn IDL spelling for google.protobuf.Struct host-fn "
-                  "args (function_library.cc:256-322). Struct is auto-peeled "
-                  "to map<string,dyn> at field-read (cel_host.cc:223-289 "
-                  "UnpackJsonStruct). Un-skip if/when the IDL admits Struct.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: there is no celfn IDL spelling for google.protobuf.Struct as a
+  host-fn argument (compiler/celfn/function_library.cc:256-322 admits only the
+  12 IDL types). Struct is AUTO-PEELED to map<string, dyn> at field read
+  (eval/internal/cel_host.cc:223-289, UnpackJsonStruct), so a host fn receives
+  the peeled map rather than the wrapper. Un-skip if/when the IDL admits
+  Struct.
+citation: doc/implementation-plan/rewrite/m21-host-call-adapter.md (the 12 IDL-expressible types); compiler/celfn/function_library.cc:256-322
+)CELSKIP";
 }
 
 TEST(HostFnTypeMatrix, WktValueHostFnArg) {
-  GTEST_SKIP() << "no celfn IDL spelling for google.protobuf.Value host-fn "
-                  "args (function_library.cc:256-322). Value is auto-peeled "
-                  "to the matching scalar/list/map at field-read. Un-skip "
-                  "if/when the IDL admits Value.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: there is no celfn IDL spelling for google.protobuf.Value as a
+  host-fn argument (compiler/celfn/function_library.cc:256-322 admits only the
+  12 IDL types). Value is AUTO-PEELED at field read to whichever scalar, list
+  or map it carries, so a host fn receives the peeled value rather than the
+  wrapper. Un-skip if/when the IDL admits Value.
+citation: doc/implementation-plan/rewrite/m21-host-call-adapter.md (the 12 IDL-expressible types); compiler/celfn/function_library.cc:256-322
+)CELSKIP";
 }
 
 TEST(HostFnTypeMatrix, WktListValueHostFnArg) {
-  GTEST_SKIP() << "no celfn IDL spelling for google.protobuf.ListValue "
-                  "host-fn args (function_library.cc:256-322). ListValue is "
-                  "auto-peeled to list<dyn> at field-read. Un-skip if/when "
-                  "the IDL admits ListValue.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: there is no celfn IDL spelling for google.protobuf.ListValue as
+  a host-fn argument (compiler/celfn/function_library.cc:256-322 admits only
+  the 12 IDL types). ListValue is AUTO-PEELED to list<dyn> at field read, so a
+  host fn receives the peeled list rather than the wrapper. Un-skip if/when
+  the IDL admits ListValue.
+citation: doc/implementation-plan/rewrite/m21-host-call-adapter.md (the 12 IDL-expressible types); compiler/celfn/function_library.cc:256-322
+)CELSKIP";
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -1220,22 +1241,30 @@ TEST(HostFnTypeMatrix, ContextReturnUnknownThenComposedWithFunction) {
 }
 
 TEST(HostFnTypeMatrix, ExplicitTypeArgNotApplicable) {
-  GTEST_SKIP() << "the `type` Value type is out of scope for the host-call "
-                  "adapter per m21-host-call-adapter.md line 67 ('the type-"
-                  "type is out of scope; the adapter targets the 12 IDL-"
-                  "expressible types'). No celfn IDL keyword for `type` "
-                  "(function_library.cc:256-322). A Value::Type can only "
-                  "reach a host fn via the ArgValue/ReturnValue escape "
-                  "hatch — covered by TypedValueEscapeHatchRoundTrips below.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: the `type` Value type is explicitly out of scope for the
+  host-call adapter - m21-host-call-adapter.md line 67 states "the type-type
+  is out of scope; the adapter targets the 12 IDL-expressible types" - and
+  there is correspondingly no celfn IDL keyword for it
+  (compiler/celfn/function_library.cc:256-322). A Value::Type can still reach
+  a host fn through the ArgValue / ReturnValue escape hatch, which is covered
+  by TypedValueEscapeHatchRoundTrips below.
+citation: doc/implementation-plan/rewrite/m21-host-call-adapter.md line 67
+)CELSKIP";
 }
 
 TEST(HostFnTypeMatrix, ExplicitOptionalArgNotApplicable) {
-  GTEST_SKIP() << "no celfn IDL spelling for optional<T> "
-                  "(function_library.cc:256-322 has no `optional` keyword). "
-                  "Optionals are a compile-time concept routed through "
-                  "operator/short-circuit codegen (m14-optionals); they "
-                  "do not appear at the host-fn boundary as a callable "
-                  "param type. Un-skip if/when the IDL admits optional<T>.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: there is no celfn IDL spelling for optional<T>
+  (compiler/celfn/function_library.cc:256-322 has no `optional` keyword).
+  Optionals are a COMPILE-TIME concept in this design, routed through
+  operator / short-circuit codegen per m14-optionals; they never appear at the
+  host-fn boundary as a callable parameter type. Un-skip if/when the IDL
+  admits optional<T>.
+citation: doc/implementation-plan/rewrite/m14-optionals.md; doc/implementation-plan/rewrite/m21-host-call-adapter.md (the 12 IDL-expressible types)
+)CELSKIP";
 }
 
 // ═════════════════════════════════════════════════════════════════════
