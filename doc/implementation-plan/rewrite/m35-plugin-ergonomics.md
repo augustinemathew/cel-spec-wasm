@@ -1,7 +1,20 @@
 # m35 — Plugin ergonomics: self-describing wasm plugins, `Use`, Plan-time verification
 
-Status: plan — revised 2026-07-25 after an interactive API-design
-session with the user; supersedes the 2026-07-22 draft in place.
+Status: **shipped 2026-07-25** (all active slices R/A/V/B/S/N + the
+in-PR type unification; PR #24).  As-shipped deltas vs the plan as
+first drafted: the `Plugin` noun replaced `Component` repo-wide
+(§1.1); slices R (rename) and S (doc site) were added mid-flight;
+slice N was user-scoped to compile-path benches only; the wire
+`FnType` was generalized to `Type` (variables adopt it later); the
+hand-rolled SHA-256 was replaced by BoringSSL (user review); and the
+CelfnType→CelType unification (cleanup-backlog #53) was executed
+inside this milestone by user decision — dated callouts throughout
+mark each delta in place.  Closeout gates: $PROJ 155/155, full
+manual-tagged suite, conformance 2035/2035 both legs.  Deferred:
+slices C (`Swap`, §8) and D (C ABI, §10).
+
+Plan history: revised 2026-07-25 after an interactive API-design
+session with the user; superseded the 2026-07-22 draft in place.
 Naming settled 2026-07-25 (second session): the public noun is
 **`Plugin`**, replacing the draft's `Component`, as a **full-family,
 repo-wide rename** (§1.1) — the file was renamed from
@@ -1026,8 +1039,11 @@ cleanup-backlog #52.
         wasmtime header citation).
   - [x] rename-sweep miss: `current-capabilities.md:96` — now names
         the `@plugin` / `AddPlugin` + one-noun surface on HEAD.
-  - [ ] Slice N (compile-path benches, user-scoped) + B4/G gates —
-        in flight.
+  - [x] Slice N (compile-path benches, user-scoped) + B4/G gates —
+        done 2026-07-25 (final gate: $PROJ 155/155, full manual-tagged
+        suite via run_full_suite.sh, conformance 2035/2035 both legs
+        on the unified tree; lint --branch clean modulo the tracked
+        exceedances + infra gaps recorded in lint-backlog.md).
 
 ## 12. Slices
 

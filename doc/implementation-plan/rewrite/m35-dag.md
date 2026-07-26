@@ -1,8 +1,11 @@
 # m35 — execution DAG
 
-Status: live tracking doc for executing `m35-plugin-ergonomics.md`
-(created 2026-07-25).  Updated as nodes complete; deleted or frozen
-at milestone closeout.  Node definitions live in the plan doc §12 —
+Status: FROZEN 2026-07-25 — the milestone shipped; this is the
+as-executed record.  (Was: live tracking doc, created 2026-07-25.)
+Late additions executed beyond the original graph: in-PR review
+fixes (BoringSSL sha256, FnType→Type generalization, bench-tier
+move) and the user-directed CelfnType→CelType unification
+(backlog #53), all gated in G.  Node definitions live in the plan doc §12 —
 this file adds only ordering, parallelism, and status.
 
 Goal state: full e2e green (unit + e2e + manual-tagged + conformance
@@ -86,10 +89,10 @@ graph TD
 | 3 | B0 + B1 + B2 (one agent — B and V3 share eval/engine.cc, so serialized) | agent-B | done (8ff6ce4 DeclareFunctions; 42ab8dc Engine::Use static check + hash; 0140dd4 Builder::Use + #44 hardening; 3c3f843 one-noun e2e both link modes; 108/108, R36 resolved) |
 | 3 | V3 + V4 (check + selective instantiation; after B — §5.3 messages cite Engine::Use) | agent-V34 | done (869621a required_fn_check + BindFunction typed capture + e2e negatives; ff1a97d selective instantiation + §6.4 pins incl. verified-failing-before proof; gates: //eval+//e2e 88/88 + all 17 manual-tagged, bazel build //... 303 targets, conformance 2035/2035 both legs; deltas recorded in plan §5.3/§6.4 callouts: BindFunction-mismatch message shape, legacy-hash rendering `hash unavailable; registered via AddPlugin`, empty-table = legacy instantiate-all) |
 | 4 | B3 examples + demo e2e | agent-B3 | done (24d70e3; mirror + SetWitInterface deleted, smoke green) |
-| 4 | N benchmarks | agent-N | pending |
+| 4 | N benchmarks (user-scoped: compile-path only) | agent-N | done (605e9e7; moved to benchmark/compiler in 5cf512a per PR review) |
 | 5 | S1–S5 doc site (parallel per page group) | agent-S | done (a8d828d, cb90689, b5ab6ef, 0690648, 75074a5, dc42913, 57eb983; all quoted strings grep-verified; diagrams regenerated) |
-| 6 | B4 closeout (testing-checklist, plan-doc status) | orchestrator | pending |
-| 6 | G gates: lint --branch, bazel test $PROJ, manual-tagged suite, conformance monotonic, push | orchestrator | pending |
+| 6 | B4 closeout (testing-checklist, plan-doc status) | orchestrator | done (checklist M35 + unification sections; plan status → shipped; backlog #51/#52/#53 filed, #53 executed in-PR) |
+| 6 | G gates: lint --branch, bazel test $PROJ, manual-tagged suite, conformance monotonic, push | orchestrator | done ($PROJ 155/155; run_full_suite.sh green; conformance 2035/2035 both legs; lint clean modulo lint-backlog-tracked exceedances + infra gaps; pushed to PR #24) |
 
 Carry-forward notes for closeout (B4):
   - Pre-existing breakage found during A3 (NOT m35's): manual target
