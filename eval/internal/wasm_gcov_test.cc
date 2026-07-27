@@ -50,7 +50,7 @@ std::vector<uint8_t> ReadFileBytes(const std::string& path) {
 
 uint32_t U32At(const std::vector<uint8_t>& b, size_t word) {
   uint32_t v = 0;
-  std::memcpy(&v, b.data() + word * 4, 4);
+  std::memcpy(&v, b.data() + (word * 4), 4);
   return v;
 }
 
