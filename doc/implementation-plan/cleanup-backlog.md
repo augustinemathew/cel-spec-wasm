@@ -1199,7 +1199,7 @@ struck through or removed.
       inner-cell-offset recursion pin); trampoline matrix in
       `eval/internal/cel_host_test.cc` (`CelMessageIsZeroTest`, 11
       cases incl. only-unknown-fields and non-proto-backing poison);
-      e2e in `e2e/m14_test.cc`
+      e2e in `e2e/optional_test.cc`
       (`ProtoOptionalFieldE2ETest.{OfNonZeroValueOnNonZeroMessageHasValue,
       OfNonZeroValueOnZeroMessageIsNone,
       OptionalOfNonZeroValueStructOptionalOfNonZeroValueMapOptindexField}`,
@@ -1300,7 +1300,7 @@ struck through or removed.
       straight to the comprehension result slot and skip the loop
       (3VL absorption, mirroring how `+` / index / select already
       absorb).  Pinned by GTEST_SKIP in
-      `e2e/m2_partial_eval_test.cc::ListPrimitivePartialEvalTest`
+      `e2e/partial_eval_test.cc::ListPrimitivePartialEvalTest`
       `.ComprehensionOverUnknownListIsUnknown`, carrying the assertion
       it will make once fixed.
       Surfaced: 2026-05-25 partial-eval whole-variable-unknown work.
@@ -1332,7 +1332,7 @@ struck through or removed.
       error-range-dominates-unknown-body, concrete-range +
       3VL-body controls — all match cel-cpp
       `comprehension_step.cc:165-169` / `:350-354`).  Tests: the 2
-      pinned `GTEST_SKIP`s in `e2e/m2_partial_eval_test.cc` deleted
+      pinned `GTEST_SKIP`s in `e2e/partial_eval_test.cc` deleted
       (`ComprehensionOverUnknownListIsUnknown`,
       `ShadowedRangeVarUnknownIsUnknown`); new
       `ComprehensionUnknownRangeE2E` / `ComprehensionErrorRangeE2E`
@@ -2006,14 +2006,14 @@ follow-up cleanup, not a current regression.
       returned, leaving the bound `ProtoBacking` pointers dangling.
       `ReadField` then dereferenced freed memory and jumped to garbage.
       It looked PartialEval-specific only because the matrix's message
-      cases used that helper while `m4_test`'s message case keeps
+      cases used that helper while `list_test`'s message case keeps
       `c0`/`c1` in test-body scope; plain `Eval` through the same
       helper crashes identically.  Fix: hoist the bound messages to
       fixture members so they outlive every Eval (commit message cites
       this entry).  The 4 GTEST_SKIPs are removed and the cases pass —
       the container-root reads stay CONCRETE as the file header
       documents.  Surfaced + fixed: 2026-05-25 partial-eval matrix work.
-      Files: `e2e/m2_partial_eval_test.cc`.
+      Files: `e2e/partial_eval_test.cc`.
 
 - [x] **#8** — `compiler/codegen/expr_lower.cc` had two
       `ABSL_CHECK(false)` stubs that Slice A of M14 converted to

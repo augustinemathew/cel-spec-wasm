@@ -63,7 +63,7 @@ message Customer {
 
   // M4 — proto repeated field.  Scalar-element only; an exhaustive
   // matrix per cpp_type lives in `host_fixture_proto3.proto`'s
-  // `rep_*` fields.  Used by `m4_test.cc` to exercise the
+  // `rep_*` fields.  Used by `list_test.cc` to exercise the
   // `cel_host.cel_list_at` dispatch path on `customer.tags[i]`.
   repeated string tags = 12;
 

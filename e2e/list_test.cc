@@ -1,7 +1,7 @@
 // M4 e2e test suite — the spec of "done" for the
 // list literals + indexing milestone.
 //
-// Mirrors the m2_test.cc shape: every test asserts a capability
+// Mirrors the ident_select_test.cc shape: every test asserts a capability
 // M4 must land; running this binary before the implementation
 // catches up should fail.  Greening the suite is the milestone
 // exit per `m4-list-literals.md` §6.2.
@@ -60,7 +60,7 @@ using ::celwasm::testdata::HostMsg3;
       return 0;
     }();
 
-// Shared Engine — same shape as m2_test's GlobalEngine.
+// Shared Engine — same shape as ident_select_test's GlobalEngine.
 using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
@@ -458,7 +458,7 @@ why-not-a-bug: a bound list<string> inherits the host-arena gap that
   Related: the host-origin aggregate family (operations that must reach INSIDE
   an activation-bound aggregate) touches the same surface - re-check this row
   when that work lands, since it may become a defect rather than a deferral.
-citation: doc/implementation-plan/rewrite/m4-list-literals.md; e2e/m4_test.cc IdentE2ETest::String (the sibling skip naming the same gap)
+citation: doc/implementation-plan/rewrite/m4-list-literals.md; e2e/list_test.cc IdentE2ETest::String (the sibling skip naming the same gap)
 )CELSKIP";
 }
 

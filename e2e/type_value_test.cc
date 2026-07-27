@@ -1,7 +1,7 @@
 // M9 e2e test suite — the spec of "done" for the type subsystem
 // (`type(x)` standard function + type-identifier idents like
 // `int` / `bool` / `<message-fqn>` standalone + CEL_TYPE
-// equality).  Mirrors the m7_test shape: every test asserts a
+// equality).  Mirrors the proto_literal_test shape: every test asserts a
 // capability `m9-type-subsystem.md` says M9 must light up;
 // running this binary today (with `cel.abi.type_names[]` not yet
 // in the ABI, `Value::Kind::kType` not yet on the public surface,
@@ -11,7 +11,7 @@
 //
 // The 47-row `type_deduction.textproto` cohort is unlocked via
 // the `typed_result:` runner matcher in M9.F (harness-only) and
-// is NOT exercised here — m9_test asserts user-visible
+// is NOT exercised here — type_value_test asserts user-visible
 // capabilities, not harness behaviour.  Those rows are covered
 // by `conformance/runner_test.cc`.
 //

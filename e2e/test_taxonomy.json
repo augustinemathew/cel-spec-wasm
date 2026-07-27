@@ -1,0 +1,264 @@
+{
+  "schema_version": 1,
+  "_comment": "Machine-readable classification of every e2e suite by language/pipeline surface.  Human-readable mirror: e2e/README.md.  Kept in sync with e2e/BUILD.bazel by //e2e:taxonomy_validate_test.  Consumed by scripts/coverage/ to join per-suite coverage with surface cells.",
+  "surfaces": {
+    "lang/literals": "scalar literals, string/bytes escapes, syntax edges",
+    "lang/idents": "identifier resolution, activation binding",
+    "lang/select": "field select on protos/maps, has()",
+    "lang/operators.arith": "arithmetic operators over int/uint/double",
+    "lang/operators.compare": "ordering comparisons per kind and cross-numeric",
+    "lang/operators.equality": "polymorphic equality / inequality",
+    "lang/operators.logic": "&&, ||, !, ternary, 3VL error absorption",
+    "lang/strings": "string/bytes built-ins: concat, size, contains, receiver ops",
+    "lang/lists": "list literals, indexing, size, in, concat, repeated fields",
+    "lang/maps": "map literals, lookup, in, size, key typing",
+    "lang/comprehensions": "all/exists/exists_one/map/filter, two-var forms, transformList/Map/MapEntry, cel.bind",
+    "lang/optionals": ".?, [?], optional.*, or/orValue, optMap/optFlatMap",
+    "lang/conversions": "bool()/int()/uint()/double()/string()/bytes() and inter-conversions",
+    "lang/type-values": "type(x), type idents, type equality",
+    "lang/time": "timestamp/duration constructors, arithmetic, ordering, accessors, TZ",
+    "lang/enums": "enum values, enum<->int, strong-typed enum semantics",
+    "lang/proto.literal": "proto message literal construction (kStructExpr)",
+    "lang/proto.field": "proto field read semantics, defaults, presence",
+    "lang/proto.any": "google.protobuf.Any pack/unpack/equality",
+    "lang/proto.wrappers": "the 9 wrapper WKTs, auto-wrap/unwrap",
+    "lang/proto.wkt": "Value/Struct/ListValue-valued fields, null pruning",
+    "lang/partial-eval": "unknowns, attribute patterns, partial-eval propagation",
+    "ext/strings": "strings extension library",
+    "ext/math": "math extension library",
+    "ext/encoders": "encoders (base64) extension library",
+    "ext/network": "network (IP/CIDR) extension library",
+    "pipeline/limits": "fixed compilation limits: pass just inside, loud reject just past",
+    "pipeline/link-modes": "dynamic vs static LinkMode parity",
+    "pipeline/static-init": "__wasm_call_ctors / static initializer forcing functions",
+    "pipeline/static-aggregates": "compile-time materialized const lists/maps in rodata",
+    "pipeline/map-index": "runtime SwissTable map index parity",
+    "pipeline/optimize": "Binaryen optimize_level output parity",
+    "pipeline/persistence": "Program bytes round-trip across process/cache boundary",
+    "pipeline/activation-marshal": "host->wasm activation marshalling at capacity boundaries",
+    "pipeline/slots": "codegen slot allocation/reuse discipline",
+    "pipeline/arena": "eval arena lifecycle, reset, OOM/poison propagation",
+    "host/custom-fns": "@host custom functions via AddFunction/AddTypedFunction/BindFunction",
+    "host/foreign-fns": "wasm-component foreign functions",
+    "host/plugins": "plugin registration, dispatch, verification",
+    "meta/known-bugs": "confirmed-defect registry, CELBUG pins",
+    "meta/differential": "property-based differential testing against cel-cpp"
+  },
+  "suites": {
+    "ident_select_test": {
+      "source": "ident_select_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/idents", "lang/select", "lang/proto.field", "lang/partial-eval"]
+    },
+    "partial_eval_test": {
+      "source": "partial_eval_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/partial-eval"]
+    },
+    "operators_test": {
+      "source": "operators_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/operators.arith", "lang/operators.compare", "lang/operators.equality", "lang/operators.logic", "lang/strings", "lang/literals"]
+    },
+    "list_test": {
+      "source": "list_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/lists"]
+    },
+    "map_index_test": {
+      "source": "map_index_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/maps", "pipeline/map-index"]
+    },
+    "comprehension_test": {
+      "source": "comprehension_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/comprehensions"]
+    },
+    "conversion_test": {
+      "source": "conversion_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/conversions"]
+    },
+    "type_value_test": {
+      "source": "type_value_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/type-values"]
+    },
+    "time_test": {
+      "source": "time_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/time"]
+    },
+    "proto_literal_test": {
+      "source": "proto_literal_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/proto.literal"]
+    },
+    "any_test": {
+      "source": "any_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/proto.any"]
+    },
+    "wrapper_test": {
+      "source": "wrapper_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/proto.wrappers"]
+    },
+    "wkt_field_set_test": {
+      "source": "wkt_field_set_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/proto.wkt"]
+    },
+    "optional_test": {
+      "source": "optional_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/optionals"]
+    },
+    "string_ext_test": {
+      "source": "string_ext_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["ext/strings"]
+    },
+    "math_ext_test": {
+      "source": "math_ext_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["ext/math"]
+    },
+    "encoders_ext_test": {
+      "source": "encoders_ext_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["ext/encoders"]
+    },
+    "network_ext_test": {
+      "source": "network_ext_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["ext/network"]
+    },
+    "e2e_limits": {
+      "source": "limits_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["pipeline/limits"]
+    },
+    "static_link_test": {
+      "source": "static_link_test.cc",
+      "link_modes": ["single"],
+      "manual": false,
+      "surfaces": ["pipeline/link-modes"]
+    },
+    "static_init_test": {
+      "source": "static_init_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["pipeline/static-init", "lang/time", "lang/conversions"]
+    },
+    "static_aggregate_test": {
+      "source": "static_aggregate_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["pipeline/static-aggregates", "lang/lists", "lang/maps"]
+    },
+    "optimize_test": {
+      "source": "optimize_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["pipeline/optimize"]
+    },
+    "program_roundtrip_test": {
+      "source": "program_roundtrip_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["pipeline/persistence"]
+    },
+    "activation_boundary_test": {
+      "source": "activation_boundary_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["pipeline/activation-marshal", "pipeline/arena"]
+    },
+    "slot_aliasing_test": {
+      "source": "slot_aliasing_test.cc",
+      "link_modes": ["single"],
+      "manual": false,
+      "surfaces": ["pipeline/slots"]
+    },
+    "arena_message_aggregate_eq_test": {
+      "source": "arena_message_aggregate_eq_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/operators.equality", "pipeline/arena"]
+    },
+    "proto2_extension_list_eq_test": {
+      "source": "proto2_extension_list_eq_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/proto.field", "lang/operators.equality"]
+    },
+    "proto_arena_lazy_copy_test": {
+      "source": "proto_arena_lazy_copy_test.cc",
+      "link_modes": ["single"],
+      "manual": false,
+      "surfaces": ["lang/proto.field", "pipeline/arena"]
+    },
+    "host_fn_test": {
+      "source": "host_fn_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": true,
+      "surfaces": ["host/custom-fns"]
+    },
+    "host_fn_type_matrix_test": {
+      "source": "host_fn_type_matrix_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": true,
+      "surfaces": ["host/custom-fns"]
+    },
+    "foreign_fn_type_matrix_test": {
+      "source": "foreign_fn_type_matrix_test.cc",
+      "link_modes": ["single"],
+      "manual": true,
+      "surfaces": ["host/foreign-fns"]
+    },
+    "plugin_dispatch_test": {
+      "source": "plugin_dispatch_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": true,
+      "surfaces": ["host/plugins"]
+    },
+    "known_bugs_test": {
+      "source": "known_bugs_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["meta/known-bugs"]
+    }
+  },
+  "external_workloads": {
+    "conformance": {
+      "target": "//conformance:run_conformance",
+      "surfaces": ["lang/literals", "lang/idents", "lang/select", "lang/operators.arith", "lang/operators.compare", "lang/operators.equality", "lang/operators.logic", "lang/strings", "lang/lists", "lang/maps", "lang/comprehensions", "lang/optionals", "lang/conversions", "lang/type-values", "lang/time", "lang/enums", "lang/proto.literal", "lang/proto.field", "lang/proto.any", "lang/proto.wrappers", "lang/proto.wkt", "ext/strings", "ext/math", "ext/encoders", "ext/network"],
+      "_comment": "The cel-spec corpus runner; per-fixture surface mapping lives in the fixture file names themselves."
+    },
+    "fuzz": {
+      "target": "//e2e/fuzz:cel_oracle_property_test",
+      "surfaces": ["meta/differential"]
+    }
+  }
+}

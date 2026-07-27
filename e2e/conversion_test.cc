@@ -1,7 +1,7 @@
 // M10 e2e test suite — the spec of "done" for type-conversion
 // overloads (`bool(x)` / `int(x)` / `uint(x)` / `double(x)` /
 // `string(x)` / `bytes(x)` and their inter-conversions).  Mirrors
-// the m9_test shape: every test asserts a capability
+// the type_value_test shape: every test asserts a capability
 // `m10-conversions.md` says M10 must light up; running this
 // binary today (with every conversion id still in
 // `OverloadTable::kExplicitlyUnimplementedIds`) should fail every

@@ -1231,7 +1231,7 @@ bool BodyContainsBlockNamePrefix(BinaryenExpressionRef expr,
 // iter_range CelValue is CEL_UNKNOWN / CEL_ERROR — list AND map
 // sources.  Shape locked by
 // `rewrite/wat/70_comprehension_unknown_range.wat`; behavior pinned
-// e2e in m2_partial_eval_test.cc's range-absorption matrices.
+// e2e in partial_eval_test.cc's range-absorption matrices.
 TEST(ExprLowerComprehensionTest, ListSourceEmitsRangeAbsorptionBlock) {
   Pipeline p = RunPipeline("[1, 2, 3].exists(v, v > 1)");
   WasmModule m;
@@ -1657,7 +1657,7 @@ TEST(ExprLowerOptionalLiteralTest, NonOptionalListLiteralEmitsOnlyPlainAppend) {
 
 // `Foo{?field: opt_value}` proto-literal optional entries route
 // through the new `cel_set_field_at_if_present` kernel.  Per-shape
-// codegen verification lives at the e2e level (`m14_test.cc`)
+// codegen verification lives at the e2e level (`optional_test.cc`)
 // because the codegen-test `RunPipeline` doesn't register the
 // conformance proto descriptors needed for `cel.expr.conformance.*`
 // names to type-check.  The wat_runner test

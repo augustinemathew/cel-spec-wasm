@@ -14,7 +14,7 @@
 // the checker rejects every `math.*` reference, so the target is
 // `tags = ["manual"]` in BUILD to keep it out of
 // the project-package test sweep / CI.  When Slice D wires the
-// pipeline, remove the `tags = ["manual"]` line from the `m16_test`
+// pipeline, remove the `tags = ["manual"]` line from the `math_ext_test`
 // target in `e2e/BUILD.bazel` and this suite becomes a
 // live acceptance gate.
 //

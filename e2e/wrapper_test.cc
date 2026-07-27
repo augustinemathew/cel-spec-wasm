@@ -1,6 +1,6 @@
 // M8 e2e test suite — the spec of "done" for wrapper types
 // (`google.protobuf.{Bool,Int32,Int64,UInt32,UInt64,Float,Double,
-// String,Bytes}Value`).  Mirrors the m7b_test shape: every test
+// String,Bytes}Value`).  Mirrors the time_test shape: every test
 // asserts a capability `m8-wrapper-types.md` says M8 must light up.
 // All M8 arms (M8.B → M8.C → M8.A → M8.D, per the as-shipped
 // sequencing in `m8-wrapper-types.md` §5) have shipped, so every
@@ -124,7 +124,7 @@ absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
 // All e2e helpers below are unused while every test SKIPs.  Once the
 // first arm ships and a test body uses them, the `[[maybe_unused]]`
 // is dropped.  This file is the spec-of-done; the helpers stand
-// ready for slice-by-slice migration (mirrors m7b_test.cc).
+// ready for slice-by-slice migration (mirrors time_test.cc).
 
 using ::celwasm::e2e::CompilePlan;
 
@@ -139,7 +139,7 @@ using ::celwasm::e2e::EvalOk;
 }
 
 // Build a Compiler that declares a single variable of the given type.
-// Mirrors `CompilerWithVar` in m7b_test.cc.
+// Mirrors `CompilerWithVar` in time_test.cc.
 [[maybe_unused]] Compiler CompilerWithVar(absl::string_view name,
                                           const CelType& type) {
   auto compiler_or = BuildCompiler([&](Compiler::Builder& b) {

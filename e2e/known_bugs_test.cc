@@ -87,7 +87,7 @@ absl::StatusOr<Value> TryEval(absl::string_view source) {
 //   cel2 currently -> true    (lossy (double)9007199254740993 == ...992.0)
 //
 // `dyn(...)` is required only to clear the static-subset checker for a
-// cross-type `in` (cf. m5_test.cc); the bug is in the runtime kernel.
+// cross-type `in` (cf. operators_test.cc); the bug is in the runtime kernel.
 //
 // Fix: route map_keys_equal / `in` / lookup through a lossless-eq
 // predicate (mirror LosslessConvertibleToInt/Uint), leaving

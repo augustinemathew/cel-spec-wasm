@@ -155,7 +155,7 @@ Remaining before this milestone can close:
      every Plan: run at least `//eval:wasm_gcov_test`,
      `//eval:engine_test_{dynamic,static}`,
      `//eval:instance_test_{dynamic,static}`, a dynamic+static e2e pair,
-     and `//e2e:m28_static_link_test` un-flagged, then the normal
+     and `//e2e:static_link_test` un-flagged, then the normal
      `$PROJ` + conformance gates.
   2. **`scripts/lint.sh --branch`** over the diff.
   3. **The full measurement run** (§4) over all dynamic e2e binaries +

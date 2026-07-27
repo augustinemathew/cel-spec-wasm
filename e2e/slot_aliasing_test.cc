@@ -361,7 +361,7 @@ INSTANTIATE_TEST_SUITE_P(
 //    (every operator + receiver-form + free-form + dyn
 //    passthrough + type conversions), kListExpr (empty, single,
 //    multi, nested, optional elements), kMapExpr (same shape
-//    matrix as List), kStructExpr is covered in m7_test, and
+//    matrix as List), kStructExpr is covered in proto_literal_test, and
 //    kComprehensionExpr (every macro: exists / exists_one / all
 //    / map / filter / has).
 // ──────────────────────────────────────────────────────────────
@@ -413,9 +413,9 @@ const SlotCase kCallExprCases[] = {
     {"call_and_short_circuit_false", "false && (1/0 == 0)",
      "compiler rejects `1/0` at constant-folding (static subset gate "
      "trips before codegen); short-circuit semantics for `&&` are pinned "
-     "by `m5_test::LogicalAndShortCircuits`"},
+     "by `operators_test::LogicalAndShortCircuits`"},
     {"call_or_short_circuit_true", "true || (1/0 == 0)",
-     "same as call_and_short_circuit_false; `m5_test::LogicalOr"
+     "same as call_and_short_circuit_false; `operators_test::LogicalOr"
      "ShortCircuits` covers `||`"},
     {"call_not", "!false"},
     // Indexing form
@@ -474,7 +474,7 @@ const SlotCase kSelectExprCases[] = {
     {"select_has_via_map_present", R"(has({"k": a}.k))",
      "static subset rejects has() on map literal (operand type is "
      "map, not message/optional); equivalent codegen path is "
-     "exercised by m7_test::HasOnMessageField"},
+     "exercised by proto_literal_test::HasOnMessageField"},
     {"select_has_via_map_absent", R"(!has({"k": a}.missing))",
      "same as select_has_via_map_present"},
     {"select_has_chained_present", R"(has({"a": {"b": 1}}.a.b))",
@@ -485,7 +485,7 @@ const SlotCase kSelectExprCases[] = {
     // the chained-select slot lifecycle on bound messages.
     {"select_dot_map_first", R"({"x": a, "y": b}.x == 2)",
      "static subset rejects dot-access on map literal; "
-     "`m7_test::SelectChain` covers chained Selects on messages"},
+     "`proto_literal_test::SelectChain` covers chained Selects on messages"},
     {"select_dot_map_last", R"({"x": a, "y": b}.y == 3)",
      "same as select_dot_map_first"},
     {"select_dot_chained_map_literal",
@@ -602,8 +602,8 @@ INSTANTIATE_TEST_SUITE_P(
 // ──────────────────────────────────────────────────────────────
 // 8. Slot-aliasing risk shapes — one parametric row per shape
 //    in the Explore agent's S1..S20 catalog (the ones reachable
-//    without proto / optional types, which live in m7_test and
-//    m14_test respectively).
+//    without proto / optional types, which live in proto_literal_test and
+//    optional_test respectively).
 // ──────────────────────────────────────────────────────────────
 
 const SlotCase kAliasingShapeCases[] = {

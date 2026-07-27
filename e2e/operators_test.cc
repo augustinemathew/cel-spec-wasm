@@ -1,9 +1,8 @@
-// M5 e2e test suite — the spec of "done" for the general kCall
-// arm (M5.F) wired into Compile → Plan → Eval.
+// Operators e2e suite — the built-in operator/overload surface
+// through Compile → Plan → Eval.
 //
-// Mirrors the m2_test / m4_test shape: every test asserts a
-// capability M5.F lights up.  Each fixture group covers one
-// pipeline-traversal axis:
+// Mirrors the ident_select_test / list_test shape.  Each fixture
+// group covers one pipeline-traversal axis:
 //
 //   - ScalarArithmetic   — int/uint/double arithmetic.
 //   - SameKindCompare    — `<` / `<=` / `>` / `>=` per kind.
@@ -13,12 +12,10 @@
 //                          expression over the bound CelValue.
 //   - ProtoFieldArithmetic — proto field reads feed into arithmetic.
 //   - BoolOrdering       — langdef §"Booleans": false < true.
-//   - PendingDispatcher  — `size([1,2,3])` etc. surface
-//                          Unimplemented per `kPendingRuntimeExports`.
-//
-// `equals` / `not_equals` (langdef §"Equality") are M5.B step 2b
-// and intentionally absent here — the polymorphic dispatcher lands
-// after M5.D step 2.
+//   - FullPipelineSmoke  — the `"foo" + "bar"` vertical-slice pair
+//                          (single eval + 1024-eval arena-reset lock),
+//                          folded in from the retired
+//                          mvp_concat_test.cc.
 
 #include <cstdint>
 #include <functional>
@@ -812,7 +809,7 @@ TEST_F(ControlFlowUnknownE2ETest, TernaryUnknownCondPropagatesUnknown) {
 
 // Note: the both-UNKNOWN merge e2e cases (decoded result carries
 // BOTH attribute identities) live in
-// `e2e/m2_partial_eval_test.cc::MergedUnknownProvenanceTest`; the
+// `e2e/partial_eval_test.cc::MergedUnknownProvenanceTest`; the
 // merge's sorted/dedup invariant is unit-pinned in
 // `cel_3vl_test.cc::UnknownMerge*`.
 
@@ -1624,6 +1621,59 @@ TEST_F(MessageEqualityE2ETest, MessageReflexiveEquality) {
   act.Bind("c", Value::Message(m));
   EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c == c"), act).AsBool(), true);
   EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c != c"), act).AsBool(), false);
+}
+
+// ── FullPipelineSmoke — folded in from the retired mvp_concat_test.cc ──
+//
+// `"foo" + "bar"` exercises the full pipeline in one expression:
+// frontend parse/check, kConst rodata packing, the kCall arm for
+// `_+_` on strings (`cel_string_concat_at_vv`), the runtime arena
+// allocation for the concat payload, and the host decoder reading
+// the result span out of wasmtime memory.  Referenced by
+// `doc/implementation-plan/rewrite/wasi/DESIGN.md` §2 as the
+// canonical vertical-slice smoke.
+
+TEST(FullPipelineSmokeE2ETest, StringConcatFooBar) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  auto program = compiler->Compile(R"("foo" + "bar")", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  auto value = instance->Eval();
+  ASSERT_TRUE(value.ok()) << value.status();
+  ASSERT_EQ(value->kind(), Value::Kind::kString);
+  auto s = value->AsString();
+  ASSERT_TRUE(s.ok()) << s.status();
+  EXPECT_EQ(*s, "foobar");
+}
+
+// Multi-eval lock — proves `arena_reset` works across Evals: the
+// Instance lives across many Evals and the codegen prologue rewinds
+// the arena each time.  Without correct reset, the second Eval's
+// allocations would either overflow (cursor accumulates) or read
+// stale bytes from the first Eval's output.  1024 iterations is well
+// past the 64 KiB arena capacity had the cursor not been reset
+// (each concat allocates ~32 payload bytes + a header).
+TEST(FullPipelineSmokeE2ETest, StringConcatRepeatedAcrossManyEvals) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  auto program = compiler->Compile(R"("foo" + "bar")", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  for (int i = 0; i < 1024; ++i) {
+    auto value = instance->Eval();
+    ASSERT_TRUE(value.ok()) << "iter " << i << ": " << value.status();
+    ASSERT_EQ(value->kind(), Value::Kind::kString) << "iter " << i;
+    auto s = value->AsString();
+    ASSERT_TRUE(s.ok()) << "iter " << i << ": " << s.status();
+    EXPECT_EQ(*s, "foobar") << "iter " << i;
+  }
 }
 
 }  // namespace

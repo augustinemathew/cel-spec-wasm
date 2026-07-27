@@ -42,7 +42,7 @@
 // differs from a naive "whole-var unknown propagates" expectation, the
 // test asserts the ACTUAL (concrete) result and the comment names why.
 // Int leaves / keys / values throughout to avoid the host-arena
-// string-marshal gap (e2e/m4_test.cc BoundStringListUnimplemented).
+// string-marshal gap (e2e/list_test.cc BoundStringListUnimplemented).
 
 #include <functional>
 #include <string>
@@ -81,7 +81,7 @@ using ::celwasm::testdata::Customer;
     }();
 
 // ──────────────────────────────────────────────────────────────
-//  Harness — mirrors e2e/m2_test.cc.
+//  Harness — mirrors e2e/ident_select_test.cc.
 // ──────────────────────────────────────────────────────────────
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;

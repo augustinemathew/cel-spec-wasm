@@ -2969,7 +2969,7 @@ substitutions and one runtime-API simplification.  See
     element) and `[1, "two"]` (heterogeneous) as `list<dyn>`;
     our static-subset gate only catches explicit `dyn(...)`
     calls, not implicit dyn from these list inferences.  Two
-    tests in `m4_test.cc::ListRejectionE2ETest` lock the current
+    tests in `list_test.cc::ListRejectionE2ETest` lock the current
     pass-through behaviour with TODOs.  Likely a small
     standalone slice before M5 (since comprehensions will
     introduce more inference paths where dyn could leak).
@@ -3582,7 +3582,7 @@ imports.
 `cel_list_at_impl_test` (Layer-2 trampolines), expanded
 `expr_lower_test` / `resolve_pass_test` / `layout_pass_test`
 (codegen pipeline), and new e2e suites `m3_test.cc` (16 tests) +
-`m4_test.cc` (41 tests, incl. ListRejectionE2ETest locking
+`list_test.cc` (41 tests, incl. ListRejectionE2ETest locking
 `RejectDyn` gaps).  WAT traces 06–15 in
 `doc/implementation-plan/rewrite/wat/` exercised by
 `wat_runner_test`.
@@ -4008,7 +4008,7 @@ landed.  At swap, all `compiler/...` paths become
   - [ ] `RejectDyn` tightening — catch implicit dyn from
         heterogeneous `[1, "two"]` and bare `[]` list
         literals (the two TODO tests in
-        `m4_test::ListRejectionE2ETest` flip when this lands).
+        `list_test::ListRejectionE2ETest` flip when this lands).
   - [ ] String / bytes activation marshalling — host-arena
         allocator that survives `cel_reset` so
         `Activation::Bind("s", Value::String(...))` works

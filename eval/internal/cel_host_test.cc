@@ -1045,7 +1045,7 @@ TEST(Layer2CrossBackingTest, JsonLikeBackingDispatches) {
 // because cel-cpp's checker types every selection through an Any-
 // typed field as `dyn` and rejects v2 lowering — the e2e path can't
 // reach the same assertion.  See m7a-any.md §11 / §10.3 + the
-// `m7a_test.cc` AnyPackE2ETest section header.
+// `any_test.cc` AnyPackE2ETest section header.
 
 namespace {
 

@@ -3,7 +3,7 @@
 // macros over list / map sources, and the `comprehensions_v2`
 // two-iter-var / `transformMap` / `transformMapEntry` cohort).
 //
-// Mirrors the m7_test / m8_test shape: every test asserts a
+// Mirrors the proto_literal_test / wrapper_test shape: every test asserts a
 // capability the comprehension plan says M5.B must light up.  The
 // M5.B slices have shipped per `m5-comprehensions-followon.md` §5;
 // the few remaining GTEST_SKIPs each cite their concrete blocker
@@ -13,7 +13,7 @@
 // suffix because M5.B is the comprehension follow-on per
 // `m5-comprehensions-followon.md` §0.  No other M5 surface is
 // covered here — arithmetic / comparison rows live in
-// `m5_test.cc`.
+// `operators_test.cc`.
 //
 // Fixtures grouped by slice (one section per arm):
 //

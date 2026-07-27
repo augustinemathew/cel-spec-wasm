@@ -24,7 +24,7 @@ namespace {
 
 // Force generated-pool registration of descriptors referenced by the
 // proto-literal `?field:` tests below.  Runs once at static init;
-// mirrors the m8_test shape but scoped to just the proto3
+// mirrors the wrapper_test shape but scoped to just the proto3
 // TestAllTypes needed by the Slice E tests.
 [[maybe_unused]] const int
     kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
@@ -302,7 +302,7 @@ TEST(OptionalE2ETest, OptFlatMapBodyMayReturnNone) {
 // semantics — `has()` returns false on an unset field).  Runtime
 // kernel: `cel_set_field_at_if_present`.  All three rows use
 // `cel.expr.conformance.proto3.TestAllTypes` which is registered
-// in the Compiler builder via the same descriptor pool m8_test
+// in the Compiler builder via the same descriptor pool wrapper_test
 // uses.
 
 TEST(OptionalE2ETest, ProtoLiteralOptionalFieldSomeMaterialises) {

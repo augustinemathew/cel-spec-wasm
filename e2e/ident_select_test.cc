@@ -706,7 +706,7 @@ TEST(AttributePatternParseTest, ConsecutiveDotsIsInvalid) {
 //  The end-to-end Eval flow (`customer.tags[0]` returns "tag0")
 //  becomes runnable once M4.F (codegen for kCallExpr `_[_]` on
 //  lists) + M4.H (Eval-side activation marshal of HostList →
-//  CEL_LIST_HOST) land.  m4_test.cc::ProtoRepeatedE2ETest carries
+//  CEL_LIST_HOST) land.  list_test.cc::ProtoRepeatedE2ETest carries
 //  the broader e2e coverage; this single test stays here as the
 //  m2-envelope graduation marker.  Indexing returns string —
 //  decoded back via the host trampoline's EncodeFieldResult.

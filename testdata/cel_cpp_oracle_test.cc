@@ -309,7 +309,7 @@ TEST(OptionalOfNonZeroValueMessage, NonZeroMessageAgrees) {
 }
 
 // ── Partial-eval oracle: pins cel-cpp's unknown-attribute semantics,
-//    the empirical reference that e2e/m2_partial_eval_test.cc asserts
+//    the empirical reference that e2e/partial_eval_test.cc asserts
 //    OUR pipeline against.  (Reading cel-cpp source is not enough —
 //    these RUN cel-cpp with unknown processing on.) ──
 

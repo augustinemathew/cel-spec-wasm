@@ -486,7 +486,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
 - [x] **Rewrite M5.A** — implicit dyn from container element types
       rejected: `[]` (typed `list<dyn>`), `[1, "two"]` (heterogeneous
       list), bare `{}` (`map<dyn, dyn>`).  Locked via
-      `m4_test.cc::ListRejectionE2ETest::{BareEmptyListLiteralRejected,
+      `list_test.cc::ListRejectionE2ETest::{BareEmptyListLiteralRejected,
       HeterogeneousListRejected}` and `compile_test::CompileMapTest::
       EmptyMapLiteralRejected`.  Recursion covers `list_type`,
       `map_type` (key + value), and `abstract_type.parameter_types`.
@@ -575,7 +575,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
       dispatchers (`size_list` / `size_map` / `add_list` / `in_list` /
       `in_map`) surface as Unimplemented.  Conformance: 207 → 391
       PASS.  Locked in `compiler/codegen/expr_lower_test.cc`
-      (9 new lowering tests) + `e2e/m5_test.cc`
+      (9 new lowering tests) + `e2e/operators_test.cc`
       (32 e2e tests across arithmetic, comparison, string ops,
       bytes, bound vars, proto fields, pending guards).
 
@@ -594,7 +594,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
       `lists.textproto` 23 → 27.  Locked in
       `compiler/codegen/expr_lower_test.cc` (3 re-pick tests),
       `runtime/cel_aggregate_arena_test.cc` (8
-      polymorphic membership tests), `e2e/m5_test.cc`
+      polymorphic membership tests), `e2e/operators_test.cc`
       (`CrossNumericOrderingE2ETest` — 152 tests across the full
       operand-kind × operator × dyn-position matrix + boundary +
       NaN matrix + membership matrix + same-kind regression
@@ -649,7 +649,7 @@ variant to the right `Repr`. `RejectDyn` tests live in
       Per-fixture: macros 0→38 PASS, macros2 0→39 PASS,
       bindings_ext 0→7 PASS, namespace 4→6 PASS, block_ext
       37 FAIL → 25 SKIP + 12 FAIL.  Locked in
-      `e2e/m5b_test.cc` (54 tests across 9
+      `e2e/comprehension_test.cc` (54 tests across 9
       fixture classes — exists/all/exists_one, map/filter,
       map-iter, two-iter-var, cel.bind, transformMap,
       transformMapEntry, nested, consumer; per-fixture
@@ -1132,12 +1132,12 @@ under `compiler/`) is tracked here.
   - [x] `kIdent` emits `local.get` (workspace slot) —
         `compiler/codegen/expr_lower_test.cc`
   - [x] `Instance::Eval(Activation)` per scalar kind —
-        `e2e/m2_test.cc::IdentE2ETest::{Bool,Int,Uint,
+        `e2e/ident_select_test.cc::IdentE2ETest::{Bool,Int,Uint,
         Double,String,Bytes}`
   - [x] Unbound declared variable → `FailedPrecondition` —
-        `m2_test.cc::IdentE2ETest::UnboundDeclaredVariableFailsPrecondition`
+        `ident_select_test.cc::IdentE2ETest::UnboundDeclaredVariableFailsPrecondition`
   - [x] Back-to-back Eval rebinds ident cleanly —
-        `m2_test.cc::IdentE2ETest::BackToBackEvalRebindsIdent`
+        `ident_select_test.cc::IdentE2ETest::BackToBackEvalRebindsIdent`
   - [x] `cel.abi.variables[]` serialised with name /
         local_index / slot_offset / repr —
         `abi/cel_abi_emit_test.cc`
@@ -1149,16 +1149,16 @@ under `compiler/`) is tracked here.
   - [x] `kSelect` lowering × every proto scalar field kind
         (string / int32 / int64 / uint32 / uint64 / double / bool
         / bytes) —
-        `m2_test.cc::SelectE2ETest::Select{String,Int32,Int64,
+        `ident_select_test.cc::SelectE2ETest::Select{String,Int32,Int64,
         Uint32,Uint64,Double,Bool,Bytes}`
   - [x] Nested select (message → message → scalar) —
-        `m2_test.cc::SelectE2ETest::SelectNestedMessageField`,
+        `ident_select_test.cc::SelectE2ETest::SelectNestedMessageField`,
         `SelectSelfRecursiveInnerField`,
         `SelectThreeHopSelfRecursive`
   - [x] Proto3 unset-scalar reads back as zero-default —
-        `m2_test.cc::SelectE2ETest::SelectUnsetProto3StringReturnsDefault`
+        `ident_select_test.cc::SelectE2ETest::SelectUnsetProto3StringReturnsDefault`
   - [x] Back-to-back Eval with different message bindings —
-        `m2_test.cc::SelectE2ETest::BackToBackEvalWithDifferentMessages`
+        `ident_select_test.cc::SelectE2ETest::BackToBackEvalWithDifferentMessages`
   - [x] Unit kSelect lowering shape —
         `eval/instance_test.cc::InstanceSelectEvalTest::{
         IntFieldOnMessageRoundTrips, BoolFieldOnMessageRoundTrips,
@@ -1167,18 +1167,18 @@ under `compiler/`) is tracked here.
         `cel_abi_emit_test::FieldRefsEmittedDenselyWithSentinelAtZero`
   - [x] Envelope boundary: `kSelect` on REPEATED field returns
         `CEL_ERR_TYPE_UNSUPPORTED` —
-        `m2_test.cc::EnvelopeBoundaryE2ETest::SelectRepeatedFieldReturnsUnsupportedError`
+        `ident_select_test.cc::EnvelopeBoundaryE2ETest::SelectRepeatedFieldReturnsUnsupportedError`
 
 **Slice M2.D — `has()` dispatch via `test_only`**
 
   - [x] `has()` × populated scalar / message field —
-        `m2_test.cc::HasE2ETest::{StringFieldSetReturnsTrue,
+        `ident_select_test.cc::HasE2ETest::{StringFieldSetReturnsTrue,
         NestedMessageSetReturnsTrue}`
   - [x] `has()` × unset field returns false —
-        `m2_test.cc::HasE2ETest::{StringFieldUnsetReturnsFalse,
+        `ident_select_test.cc::HasE2ETest::{StringFieldUnsetReturnsFalse,
         NestedMessageUnsetReturnsFalse}`
   - [x] `has()` on nested / two-hop paths —
-        `m2_test.cc::HasE2ETest::{TwoHopHasSet,
+        `ident_select_test.cc::HasE2ETest::{TwoHopHasSet,
         TwoHopHasUnsetLeafReturnsFalse}`
   - [x] Unit `has()` dispatch shape —
         `instance_test::InstanceSelectEvalTest::{HasMessageFieldSetReturnsTrue,
@@ -1192,21 +1192,21 @@ under `compiler/`) is tracked here.
         single-segment, dotted, wildcard-mid / trailing, array /
         map keys, leading / trailing / consecutive dot rejection)
   - [x] `PartialEval` × leaf unknown short-circuit —
-        `m2_test.cc::UnknownE2ETest::LeafUnknownShortCircuits`
+        `ident_select_test.cc::UnknownE2ETest::LeafUnknownShortCircuits`
   - [x] `PartialEval` × nested-chain absorbs at first unknown
         hop —
-        `m2_test.cc::UnknownE2ETest::NestedChainAbsorbsAtFirstUnknownHop`
+        `ident_select_test.cc::UnknownE2ETest::NestedChainAbsorbsAtFirstUnknownHop`
   - [x] `PartialEval` × wildcard mid-path matches —
-        `m2_test.cc::UnknownE2ETest::WildcardMidPathMatches`
+        `ident_select_test.cc::UnknownE2ETest::WildcardMidPathMatches`
   - [x] `PartialEval` × non-matching pattern passes through to
         real value —
-        `m2_test.cc::UnknownE2ETest::NonMatchingPatternsPassThrough`
+        `ident_select_test.cc::UnknownE2ETest::NonMatchingPatternsPassThrough`
   - [x] Eval vs PartialEval parity with empty pattern set —
-        `m2_test.cc::UnknownE2ETest::EvalVsPartialEvalParityWithNoPatterns`
+        `ident_select_test.cc::UnknownE2ETest::EvalVsPartialEvalParityWithNoPatterns`
   - [x] `has()` absorbs UNKNOWN at target —
-        `m2_test.cc::UnknownE2ETest::HasAbsorbsUnknownAtTarget`
+        `ident_select_test.cc::UnknownE2ETest::HasAbsorbsUnknownAtTarget`
   - [x] Root-ident unknown short-circuits `kSelect` —
-        `m2_test.cc::UnknownE2ETest::RootIdentUnknownShortCircuitsSelect`
+        `ident_select_test.cc::UnknownE2ETest::RootIdentUnknownShortCircuitsSelect`
   - [x] Unit `PartialEval` behaviour —
         `instance_test::InstancePartialEvalTest::{MatchingPatternAbsorbsSelectToUnknown,
         NonMatchingPatternFallsThroughToRealValue,
@@ -1426,7 +1426,7 @@ direct user direction.  Past-count `set` poisons.  See
         authored and run through `wat_runner_test` (the kDynamic
         dispatcher trace SKIPs end-to-end on a wasmtime c-api
         panic; production paths cover that arm).
-  - [x] M4.G e2e completion: `m2_test::SelectRepeatedFieldReturnsHostList`
+  - [x] M4.G e2e completion: `ident_select_test::SelectRepeatedFieldReturnsHostList`
         flipped from SKIP to a green `customer.tags[0] == "tag0"`
         end-to-end test.
   - [x] M4.H activation marshaller + Eval decoder:
@@ -1448,14 +1448,14 @@ direct user direction.  Past-count `set` poisons.  See
         resolution; M5 keeps the gate in place); fixes a crash that
         previously aborted the conformance binary on
         comprehension-bearing list_value tests.
-  - [x] M4.J e2e suite — `e2e/m4_test.cc` (16 tests
+  - [x] M4.J e2e suite — `e2e/list_test.cc` (16 tests
         across `ListLiteralE2ETest`, `ProtoRepeatedE2ETest`,
         `ProtoRepeatedHostMsg3E2ETest`).  `Customer` proto
         gained `repeated string tags = 12` for the kHost-list
         e2e flows.  `map-list-dispatch.md §11` reconciliation
         checklist fully ticked; header flipped to "fully
         reconciled into design.md 2026-04-25".
-        `scripts/run_full_suite.sh` MANUAL_TARGETS += `//e2e:m4_test`.
+        `scripts/run_full_suite.sh` MANUAL_TARGETS += `//e2e:list_test`.
 
 **M2.C.0b interim** (interleaved with M3 work)
 
@@ -1494,7 +1494,7 @@ that previously stomped any pre-eval `cel_alloc` allocations.  See
         `instance_test.cc::InstanceActivationStringEncoderTest::
         KindMismatchRejected`
   - [x] E2E composing string-bound activation with `+` / `size()` →
-        `e2e/m5_test.cc::StringBytesActivationE2ETest::
+        `e2e/operators_test.cc::StringBytesActivationE2ETest::
         {BindStringPlusLiteral,BindBytesSize,BindEmptyString,
         BindEmbeddedNul,BindMultibyteUtf8,BindTwoStringsConcat,
         RebindAcrossEvalsRewindsArena,BindBytesWithNul}`
@@ -1549,7 +1549,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
         §"Field Selection" (was returning default-instance backing).
         `api/internal/cel_host.cc`.
   - [x] `wat/40_kstruct_make_message.wat` + `wat-traces.md` §40.
-  - [x] E2E: `e2e/m7_test.cc::ProtoLiteralEmptyE2ETest`
+  - [x] E2E: `e2e/proto_literal_test.cc::ProtoLiteralEmptyE2ETest`
         — 9/9 PASS (proto3 zero/explicit-default/null-submessage,
         proto2 explicit-default×3, Customer empty).
 
@@ -1569,7 +1569,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
   - [x] `CelSetFieldTrampoline` Layer-3 (3-arg, reuses
         `HostThreeArgTrampoline`).  `api/internal/cel_host_wasmtime.cc`.
   - [x] `wat/41_kstruct_set_scalar.wat` + `wat-traces.md` §41.
-  - [x] E2E: `m7_test.cc::ProtoLiteralScalarE2ETest` — parameterized
+  - [x] E2E: `proto_literal_test.cc::ProtoLiteralScalarE2ETest` — parameterized
         scalar matrix (10 cpp_types × boundary values) + sint/fixed/
         sfixed wire variants + ident/computed-expr source operands +
         multi-entry literals; all PASS.
@@ -1595,7 +1595,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
   - [x] Descriptor-mismatch guard at every CopyFrom site so
         `TestAllTypes{single_any: BoolValue{...}}`-shape rows fail
         per-row instead of CHECK-aborting the conformance run.
-  - [x] E2E: `m7_test.cc::ProtoLiteralRepeatedE2ETest` (8/8 PASS) +
+  - [x] E2E: `proto_literal_test.cc::ProtoLiteralRepeatedE2ETest` (8/8 PASS) +
         `ProtoLiteralMapE2ETest` (7/7 PASS) +
         `ProtoLiteralOneofE2ETest` (proto2 + proto3 oneof clear-on-set,
         all 6 PASS) + `ProtoLiteralActivationE2ETest`
@@ -1614,7 +1614,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
         carrying the int constant, NOT a Constant in-place.
         Inline rewrite is the simplest correct path (cf. cel-cpp's
         runtime/reference_resolver — same approach).
-  - [x] E2E: `m7_test.cc::ProtoLiteralEnumE2ETest` (4/4 PASS) —
+  - [x] E2E: `proto_literal_test.cc::ProtoLiteralEnumE2ETest` (4/4 PASS) —
         `Foo.Kind.KIND_SEVEN` standalone, RHS-of-field-set, unset
         reads as 0, int round-trip via `Foo{kind: 7}.kind == 7`.
 
@@ -1627,10 +1627,10 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
   - [x] Threaded `ExternrefTable* refs` parameter through
         `SetScalarField` + every call site (singular dispatch +
         `InsertArenaMapEntry`).
-  - [x] E2E: `m7_test.cc::ProtoLiteralNestedE2ETest` (4/5 PASS;
+  - [x] E2E: `proto_literal_test.cc::ProtoLiteralNestedE2ETest` (4/5 PASS;
         1 SKIP for the M8-blocked `Int32Value{value:5}.value`
         wrapper-typed-expression-in-scalar-context test).
-  - [x] Equality unblock: `m7_test.cc::ProtoLiteralEqualityE2ETest`
+  - [x] Equality unblock: `proto_literal_test.cc::ProtoLiteralEqualityE2ETest`
         passes (the cohort the M5.B `cel_message_eq` kernel was
         waiting for, blocked since 2026-04-24 on M7.A construction).
 
@@ -1651,7 +1651,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
         — pending.
   - [ ] `scripts/run_full_suite.sh` closeout gate run — pending; manual
         verification done via `bazel test //... --test_output=errors
-        --build_tests_only` (44/45 PASS — the 45th is `m7_test`'s 1
+        --build_tests_only` (44/45 PASS — the 45th is `proto_literal_test`'s 1
         deliberate SKIP for M8 wrapper).
 
 ### Rewrite M10 — type conversions (slices A–E shipped 2026-05-14)
@@ -1659,7 +1659,7 @@ delta and remaining unblockers captured in `m7-proto-literals.md` §9.
 `m10-conversions.md` slices A–E delivered the type-conversion
 overload surface: `bool` / `int` / `uint` / `double` / `string` /
 `bytes` inter-conversions plus identity arms, all pure-runtime
-helpers (no host trampolines).  `m10_test.cc` 87/87 PASS;
+helpers (no host trampolines).  `conversion_test.cc` 87/87 PASS;
 conformance `975 → 1058 PASS` (+83).
 
 **M10.A — identity overloads (6 seeds)**
@@ -1676,7 +1676,7 @@ conformance `975 → 1058 PASS` (+83).
         doesn't match the `_at_v` suffix convention, so the
         arity-lookup loop never declared the import.  Added it to
         `kDispatchers` with arity 2.
-  - [x] `m10_test.cc::IdentityE2ETest` 6/6 PASS.
+  - [x] `conversion_test.cc::IdentityE2ETest` 6/6 PASS.
 
 **M10.B — numeric inter-conversions (6 kernels)**
 
@@ -1691,7 +1691,7 @@ conformance `975 → 1058 PASS` (+83).
         `<math.h>` in freestanding wasm32).
   - [x] BUILD exports (6) + engine.cc binds (6) + OverloadTable
         seeds (6).
-  - [x] `m10_test.cc::IntFamilyE2ETest` / `UintFamilyE2ETest` /
+  - [x] `conversion_test.cc::IntFamilyE2ETest` / `UintFamilyE2ETest` /
         `DoubleFamilyE2ETest` — admit + reject (overflow / NaN /
         Inf / negative-into-uint).
   - [x] `overload_table_test::UsedImportsSilentlySkipsUnknownIds`
@@ -1713,7 +1713,7 @@ conformance `975 → 1058 PASS` (+83).
         (exact-byte match against cel-cpp's 10-row truth table).
   - [x] BUILD exports (4) + engine.cc binds (4) + OverloadTable
         seeds (4).
-  - [x] `m10_test.cc::StringParseE2ETest` (~20 admit + reject)
+  - [x] `conversion_test.cc::StringParseE2ETest` (~20 admit + reject)
         + `StringParseBoolE2ETest` (parameterized truth-table).
 
 **M10.D — number / bool → string formatting (4 kernels)**
@@ -1747,7 +1747,7 @@ conformance `975 → 1058 PASS` (+83).
         `DoubleToStringExponentForm` (`string(1e10)`).
   - [x] BUILD exports (4) + engine.cc binds (4) + OverloadTable
         seeds (4).
-  - [x] `m10_test.cc::NumberFormatE2ETest` 10/10 PASS.
+  - [x] `conversion_test.cc::NumberFormatE2ETest` 10/10 PASS.
 
 **M10.E — bytes ↔ string + UTF-8 validation (2 kernels)**
 
@@ -1763,7 +1763,7 @@ conformance `975 → 1058 PASS` (+83).
         (`0xF4 0x90..0xBF +`, `0xF5..0xFF` leader).
   - [x] BUILD exports (2) + engine.cc binds (2) + OverloadTable
         seeds (2).
-  - [x] `m10_test.cc::BytesFamilyE2ETest` 8/8 PASS (ascii /
+  - [x] `conversion_test.cc::BytesFamilyE2ETest` 8/8 PASS (ascii /
         empty / UTF-8 round-trip + invalid-leading / orphan-cont
         / truncated / surrogate / overlong-NUL rejection).
   - [x] Two stale rows from `IntFamilyE2ETest`'s parameterized
@@ -1773,7 +1773,7 @@ conformance `975 → 1058 PASS` (+83).
 
 **M10.F — closeout**
 
-  - [x] `m9_test.cc` regression in `cel_runtime_wasm_test` /
+  - [x] `type_value_test.cc` regression in `cel_runtime_wasm_test` /
         `wat_runner_test` (the M9.B
         `cel_host::resolve_message_type_name` import wasn't
         declared in the C-API test harnesses) cleared by adding
@@ -1799,7 +1799,7 @@ end-to-end: runtime helper `cel_type_of_at_v` + 12-row primitive
 type-name table, `InlineTypeIdentifierReferences` frontend rewrite,
 `Repr::kType` packing path, host trampoline for `type(<message>)`,
 polymorphic `cel_equals` arm, plus the runner's `kTypeValue` matcher
-and `typed_result:` harness routing.  Greens the `m9_test.cc`
+and `typed_result:` harness routing.  Greens the `type_value_test.cc`
 capability matrix and unlocks the `type_value:` envelope cohort
 (largest scope-not-yet-shipped bucket pre-M9 per §1 of the plan).
 
@@ -2091,7 +2091,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         `cel_host_test.cc::CelSetFieldAnyPackTest` (round-trip,
         empty payload, cross-syntax, CopyFrom branch, M8 mismatch
         rejection, null-clear ordering, repeated-host, map-host).
-  - [x] **E2E coverage** — `e2e/m7a_test.cc`:
+  - [x] **E2E coverage** — `e2e/any_test.cc`:
         AnyPackShape (4 parameterised + 1 TEST_F), AnyUnpack (6),
         AnyTypeOf (2), AnyReject (5 — probe-B error envelope),
         AnyEquality (9 — Any-vs-typed, symmetric, two-field-reads,
@@ -2162,7 +2162,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         (parse failures); `CelDurTs` payload arm reused for both
         kinds; 28 OverloadTable seeds added (kBuiltinSeeds:
         108 → 156).  `InstallOverloadImports` learned `kCelHost`.
-  - [x] **E2E coverage** — `e2e/m7b_test.cc`:
+  - [x] **E2E coverage** — `e2e/time_test.cc`:
         176 / 180 rows passing.  Round-trip × §6.1 boundary grid,
         arithmetic × §6.3 grid, ordering × LexCompareGrid,
         accessors × §6.4 quirk grid (41 rows), parse admit/reject
@@ -2184,7 +2184,7 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         end-to-end across the three boundaries (construction-side
         auto-wrap, read-side auto-peel + Any-chain, kStructExpr
         tail-unwrap).  All 9 wrapper kinds covered.
-  - [x] **e2e — 86-test matrix in `e2e/m8_test.cc`.**
+  - [x] **e2e — 86-test matrix in `e2e/wrapper_test.cc`.**
         80 PASS / 6 SKIP (skipped rows are reject-matrix cases that
         sit outside M8's scope per §6.3 of the plan).  Sections:
         `WrapperLiteralUnwrapE2ETest` (M8.C — 29 tests covering
@@ -2365,7 +2365,7 @@ bindings (Slice F).
         wasm exports + `engine.cc::kRuntimeExports` table
         extensions; literal-list `format` arg static-subset
         admission.  34 e2e tests in
-        `e2e/m12_test.cc`.  Conformance baseline
+        `e2e/string_ext_test.cc`.  Conformance baseline
         bumped 1382 → 1476.
 
 ## Rewrite M16 — math_ext extension (shipped 2026-05-24)
@@ -2397,7 +2397,7 @@ FAIL); corpus-wide +194 (1576 → 1770 after merging M14).
         `parse_and_check.cc`; 20 wasm exports + catalogue entries;
         targeted static-subset admission for `dyn`-typed cross-type
         / mixed-list `math.@min`/`@max`.  67-case e2e in
-        `e2e/m16_test.cc`.  Baseline → 1770 (post-M14 merge).
+        `e2e/math_ext_test.cc`.  Baseline → 1770 (post-M14 merge).
 ### Rewrite M14 — CEL `optional<T>` (shipped 2026-05-22)
 
 `m14-optionals.md` shipped `optional<T>` end-to-end:
@@ -2462,7 +2462,7 @@ on the CEL_MESSAGE zero-predicate trap (filed for follow-up).
         `MapExprEntry.optional()` / `ListExprElement.optional()`;
         6 new codegen tests in `expr_lower_test.cc` cover
         all-optional / mixed / regression-only-plain patterns.
-        12 new e2e tests in `m14_test.cc` cover literal-entry
+        12 new e2e tests in `optional_test.cc` cover literal-entry
         materialisation/omission plus `optMap`/`optFlatMap`
         Some/None branches — confirming Shape-C cel.bind
         detector admits the macros with zero new comprehension
@@ -2482,7 +2482,7 @@ on the CEL_MESSAGE zero-predicate trap (filed for follow-up).
         same short-circuit assertion via a wat_runner stub.
         Frontend gate lifted (`CheckSubsetStruct`), codegen
         branched on `f.optional()` in `EmitKStructExpr`.  3 new
-        e2e tests in `m14_test.cc` covering Some-materialises,
+        e2e tests in `optional_test.cc` covering Some-materialises,
         None-leaves-unset, and mixed-entry shapes.
   - [x] **Slice D — closeout.**  `.baseline` bumped 1572 → 1576.
         Status flipped to shipped in `m14-optionals.md` §0.
@@ -2519,7 +2519,7 @@ ids, `absl::Base64{Escape,Unescape}`, `"invalid base64 data"`).
         `parse_and_check.cc`; 2 overload seeds in
         `overload_table.cc` (249 → 251); 2 `K_AT_V` catalogue
         entries; 2 `wasm_exports.txt` lines; `:cel_base64_ext`
-        wired into `cel_runtime_wasm.bin`.  `m17_test.cc` e2e
+        wired into `cel_runtime_wasm.bin`.  `encoders_ext_test.cc` e2e
         (9 tests).  `.baseline` 1770 → 1774.
 
 ### Rewrite M20 — enum/scalar field-assignment range errors (shipped 2026-05-25)
@@ -2727,7 +2727,7 @@ in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
         unified Plan body with two `if (is_static)` branches, no
         separate `PlanStatic` (`eval/engine.cc:751-779`).
   - [x] Parity (kDynamic vs kStatic) verified on the
-        `e2e/m28_static_link_test.cc` matrix (const int / string /
+        `e2e/static_link_test.cc` matrix (const int / string /
         bool, 1+2 int, "a"+"b", ternary).
   - [x] `InstanceImpl::runtime_instance` → `helpers_instance` rename
         complete across `eval/engine.cc` + `eval/internal/instance_impl.h`
@@ -2761,17 +2761,17 @@ in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
   - [x] 22 e2e source files run in both kDynamic and kStatic
         (2026-06-09) — `mvp_concat_test`, `known_bugs_test`,
         `host_fn_test`, `optimize_test`, `program_roundtrip_test`,
-        `wkt_field_set_test`, `m2_test`, `m2_partial_eval_test`,
-        `m4_test`, `m5_test`, `m5b_test`, `m7_test`, `m7a_test`,
-        `m7b_test`, `m8_test`, `m9_test`, `m10_test`, `m12_test`,
-        `m14_test`, `m16_test`, `m17_test`, `m18_test`.  **45/45
+        `wkt_field_set_test`, `ident_select_test`, `partial_eval_test`,
+        `list_test`, `operators_test`, `comprehension_test`, `proto_literal_test`, `any_test`,
+        `time_test`, `wrapper_test`, `type_value_test`, `conversion_test`, `string_ext_test`,
+        `optional_test`, `math_ext_test`, `encoders_ext_test`, `network_ext_test`.  **45/45
         targets pass** with bit-identical results between modes.
         Covers variable-bearing cells, comprehensions, `has(msg.field)`,
         list / map literals, host-fn calls, and program-roundtrip.
-        The bespoke `m28_static_link_test` remains explicitly
+        The bespoke `static_link_test` remains explicitly
         mode-scoped.
   - [x] cctz + absl format-spec paths verified identical in both
-        modes (2026-06-09) — `e2e/cctz_doubles_test.cc`, 14 cells
+        modes (2026-06-09) — `e2e/static_init_test.cc`, 14 cells
         covering `timestamp(RFC3339)` parse, timezone-aware
         accessor (`cel_host.cel_timestamp_tz_accessor`),
         `duration(string)` parse, `timestamp + duration` and
@@ -2843,7 +2843,7 @@ in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
         baselines (`conformance/.baseline_static` = 1899).
   - [x] Matrix coverage in static mode — variable-bearing cells,
         comprehension, `has(msg.field)`, list / map literals
-        (P1-5, originally tracked against `m28_static_link_test.cc`).
+        (P1-5, originally tracked against `static_link_test.cc`).
         Satisfied 2026-06-09 via the dual-mode e2e sweep over 22
         source files; bit-identical results between modes.
         *(Remaining: a 1000-term arith chain cell — defer with the
@@ -2887,7 +2887,7 @@ in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
         `m28-configurable-linking.md` §10.1 invariant 9 and
         §13 P2.  The strip tool DCEs `__wasm_call_ctors`
         entirely from the stripped runtime, and the dual-mode
-        e2e sweep — including `e2e/cctz_doubles_test.cc` —
+        e2e sweep — including `e2e/static_init_test.cc` —
         showed every tested cctz / absl path is bit-identical
         between modes.  Helper remains useful as a tripwire for
         future surfaces, e.g. RE2-driven regex or a new absl
@@ -3063,7 +3063,7 @@ now passes.
         trampoline in `cel_host_wasmtime.cc` (bijection CHECKs keep
         them locked); runtime-wasm instantiation stub in
         `cel_runtime_wasm_test.cc`.
-  - [x] e2e, both link modes: `e2e/m14_test.cc::
+  - [x] e2e, both link modes: `e2e/optional_test.cc::
         ProtoOptionalFieldE2ETest.{OfNonZeroValueOnNonZeroMessageHasValue
         (un-skipped known-bug case),OfNonZeroValueOnZeroMessageIsNone,
         OptionalOfNonZeroValueStructOptionalOfNonZeroValueMapOptindexField}`.
@@ -3101,7 +3101,7 @@ corpus rows exercise unknown ranges).
         new `eval/internal/cel_iter_open_impl_test.cc` (snapshot
         happy paths, empty source, poison → loud failure, other
         non-host kinds → defensive empty, missing ref_slot).
-  - [x] e2e, both link modes (`e2e/m2_partial_eval_test.cc`): the 2
+  - [x] e2e, both link modes (`e2e/partial_eval_test.cc`): the 2
         pinned GTEST_SKIPs deleted
         (`ComprehensionOverUnknownListIsUnknown`,
         `ShadowedRangeVarUnknownIsUnknown`); new
@@ -3199,11 +3199,11 @@ logic ops carry the oracle-confirmed UNKNOWN-over-ERROR precedence
         `eval/typed_function_test.cc` (sentinel travels in
         descriptor).
   - [x] e2e, both link modes —
-        `e2e/m2_partial_eval_test.cc::MergedUnknownProvenanceTest`
+        `e2e/partial_eval_test.cc::MergedUnknownProvenanceTest`
         (`a && b` / `a || b` / `a + b` both-unknown decode BOTH
         identities; dotted `a.age && b.age`; same-attr dedup;
         single-unknown regression);
-        `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest`
+        `e2e/operators_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest`
         (unknown-over-error, both orders, both ops).
 
 ## First-party conformance fixture — optimization-series edge pins (2026-06-12)
@@ -3271,7 +3271,7 @@ dedicated section below.
         emits create+append; empty materialized iter_range comprehension.
   - [x] WAT trace + runner (`wat/72_static_aggregate.wat`,
         `wat_runner_test`) — pre-materialized `[10,20,30][1]` → CEL_INT 20.
-  - [x] e2e every materializable element kind (`m31_static_aggregate_test`,
+  - [x] e2e every materializable element kind (`static_aggregate_test`,
         both link modes) — null/bool/int/uint/double/string/bytes/nested,
         index/size/`in`, list-as-root, equivalence vs arena-built,
         comprehension over a materialized range, large 1K/10K lists.
@@ -3323,7 +3323,7 @@ are staged into the native arena so the kernel reads their bytes).
   - [x] WAT trace + runner (`wat/74_static_map_swisstable.wat`,
         `wat_runner_test`) — pre-materialized 9-entry int map with baked
         index; `m[5]` resolves through the baked index → CEL_INT 105.
-  - [x] e2e (`m31_static_aggregate_test`, both link modes) — value kinds,
+  - [x] e2e (`static_aggregate_test`, both link modes) — value kinds,
         key kinds, size/`in`/`==` order-independent, nested const map,
         list-of-const-maps, large 100-entry map.
   - [x] conformance held 2035/2035 both modes (maps have no observable

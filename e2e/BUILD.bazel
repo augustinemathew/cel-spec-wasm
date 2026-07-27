@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+load("@rules_python//python:defs.bzl", "py_test")
 load(":link_mode_e2e_test.bzl", "link_mode_e2e_cc_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -114,9 +115,9 @@ link_mode_e2e_cc_test(
 # and evaluate identically to arena-built lists (index / size / in / ==
 # / comprehension range); non-const lists still build per-Eval.
 link_mode_e2e_cc_test(
-    name = "m31_static_aggregate_test",
+    name = "static_aggregate_test",
     size = "large",
-    srcs = ["m31_static_aggregate_test.cc"],
+    srcs = ["static_aggregate_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//compiler:compiler",
@@ -136,9 +137,9 @@ link_mode_e2e_cc_test(
 # equality, over int and string keys, for literal and transformMap-
 # built maps.
 link_mode_e2e_cc_test(
-    name = "m32_swisstable_index_test",
+    name = "map_index_test",
     size = "large",
-    srcs = ["m32_swisstable_index_test.cc"],
+    srcs = ["map_index_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//compiler:compiler",
@@ -153,9 +154,9 @@ link_mode_e2e_cc_test(
 # M17 encoders e2e: compile + plan + eval base64.encode / base64.decode
 # end-to-end.  Tracks `tests/simple/testdata/encoders_ext.textproto`.
 link_mode_e2e_cc_test(
-    name = "m17_test",
+    name = "encoders_ext_test",
     size = "small",
-    srcs = ["m17_test.cc"],
+    srcs = ["encoders_ext_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//eval:activation",
@@ -174,9 +175,9 @@ link_mode_e2e_cc_test(
 # `optional.of` / `.c.x` chains / `has(opt.x)`.  Tracks the FAIL
 # rows in `tests/simple/testdata/optionals.textproto`.
 link_mode_e2e_cc_test(
-    name = "m14_test",
+    name = "optional_test",
     size = "large",
-    srcs = ["m14_test.cc"],
+    srcs = ["optional_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//eval:activation",
@@ -201,9 +202,9 @@ link_mode_e2e_cc_test(
 # Instance::PartialEval(activation, patterns).  Depends on the
 # shared proto fixtures at //testdata.
 link_mode_e2e_cc_test(
-    name = "m2_test",
+    name = "ident_select_test",
     size = "large",
-    srcs = ["m2_test.cc"],
+    srcs = ["ident_select_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
@@ -258,9 +259,9 @@ cc_test(
 # unknown granularities propagate (whole-var, message field path,
 # wildcard) and which are by-design impossible (per-element / per-key).
 link_mode_e2e_cc_test(
-    name = "m2_partial_eval_test",
+    name = "partial_eval_test",
     size = "large",
-    srcs = ["m2_partial_eval_test.cc"],
+    srcs = ["partial_eval_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
@@ -308,9 +309,9 @@ cc_test(
 )
 
 link_mode_e2e_cc_test(
-    name = "m4_test",
+    name = "list_test",
     size = "large",
-    srcs = ["m4_test.cc"],
+    srcs = ["list_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
@@ -331,35 +332,15 @@ link_mode_e2e_cc_test(
     ],
 )
 
-# WASI migration MVP — the canonical "did the migration not
-# break anything?" vertical-slice test.  Compiles `"foo" +
-# "bar"` and asserts the eval result is the string `"foobar"`.
-# See doc/implementation-plan/rewrite/wasi/DESIGN.md §2.
-link_mode_e2e_cc_test(
-    name = "mvp_concat_test",
-    size = "small",
-    srcs = ["mvp_concat_test.cc"],
-    deps = [
-        ":link_mode_e2e_helpers",
-        "//compiler:compiler",
-        "//eval:engine",
-        "//eval:instance",
-        "//compiler:program",
-        "//eval:value",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
 # m28 — Configurable linking, static-link mode.  Asserts
 # `LinkMode::kStatic` Programs compile, plan, evaluate, and produce
 # the same Value as the dynamic-mode default for a representative
 # scalar slice.  See `doc/implementation-plan/rewrite/m28-
 # configurable-linking.md` §7.
 cc_test(
-    name = "m28_static_link_test",
+    name = "static_link_test",
     size = "large",
-    srcs = ["m28_static_link_test.cc"],
+    srcs = ["static_link_test.cc"],
     deps = [
         "//compiler:compiler",
         "//compiler:program",
@@ -374,8 +355,8 @@ cc_test(
 # General kCall arm e2e suite.  Locks the arithmetic / comparison
 # / string-op surface plus the control-flow lowering edge.
 link_mode_e2e_cc_test(
-    name = "m5_test",
-    srcs = ["m5_test.cc"],
+    name = "operators_test",
+    srcs = ["operators_test.cc"],
     # "large" (900s): the static emission pays the per-compile Binaryen
     # runtime merge and exceeds the 300s default on slower CI runners
     # (GitHub macos-14 timed out at 300.1s; passes locally in ~140s).
@@ -408,9 +389,9 @@ link_mode_e2e_cc_test(
 # No proto fixture deps — every test is literal-driven (list / map
 # source from CEL source text or Value::List / Value::Map bindings).
 link_mode_e2e_cc_test(
-    name = "m5b_test",
+    name = "comprehension_test",
     size = "large",
-    srcs = ["m5b_test.cc"],
+    srcs = ["comprehension_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//eval:activation",
@@ -431,11 +412,11 @@ link_mode_e2e_cc_test(
 
 # Proto message literal construction (`kStructExpr`) e2e suite.
 # See `doc/implementation-plan/rewrite/m7-proto-literals.md`.
-# Wrapper-types are covered separately in m8_test.cc.
+# Wrapper-types are covered separately in wrapper_test.cc.
 link_mode_e2e_cc_test(
-    name = "m7_test",
+    name = "proto_literal_test",
     size = "large",
-    srcs = ["m7_test.cc"],
+    srcs = ["proto_literal_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//testdata:e2e_fixture_cc_proto",
@@ -458,16 +439,16 @@ link_mode_e2e_cc_test(
 )
 
 # M7-A e2e test suite — google.protobuf.Any pack / unpack / equality.
-# Sits beside m7_test (M7 proto literals shipped); M7-A is the
+# Sits beside proto_literal_test (M7 proto literals shipped); M7-A is the
 # follow-up that removes M7's descriptor-mismatch tripwire for
 # Any-shaped mismatches.  Most tests SKIP today (M7-A.A/B/C not yet
 # shipped); the regression-cohort (`AnyLiteralRoundTripE2ETest`) is
 # active and pins M7-shipped Any-as-2-field-proto behaviour.  See
 # `m7a-any.md` for slice plan and matrix.
 link_mode_e2e_cc_test(
-    name = "m7a_test",
+    name = "any_test",
     size = "large",
-    srcs = ["m7a_test.cc"],
+    srcs = ["any_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//testdata:host_fixture_proto2_cc_proto",
@@ -497,8 +478,8 @@ link_mode_e2e_cc_test(
 # `doc/implementation-plan/rewrite/m7b-duration-timestamp.md` §5.
 # Conformance unlock target: +78..+94 PASS per the m7b plan §1.
 link_mode_e2e_cc_test(
-    name = "m7b_test",
-    srcs = ["m7b_test.cc"],
+    name = "time_test",
+    srcs = ["time_test.cc"],
     # "large" (900s): passes solo in ~85s but the static emission
     # exceeds the 300s default under parallel load on CI runners
     # (observed on both GitHub macos-14 and the Linux container).
@@ -529,9 +510,9 @@ link_mode_e2e_cc_test(
 # matrix covers all 9 wrappers × the three architecture arms
 # (write-side, read-side+Any-chain, kStruct tail-unwrap).
 link_mode_e2e_cc_test(
-    name = "m8_test",
+    name = "wrapper_test",
     size = "large",
-    srcs = ["m8_test.cc"],
+    srcs = ["wrapper_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//eval:activation",
@@ -560,9 +541,9 @@ link_mode_e2e_cc_test(
 # Harness-side `typed_result:` matcher work lives in
 # `conformance/runner_test.cc`, not here.
 link_mode_e2e_cc_test(
-    name = "m9_test",
+    name = "type_value_test",
     size = "large",
-    srcs = ["m9_test.cc"],
+    srcs = ["type_value_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//testdata:host_fixture_proto2_cc_proto",
@@ -591,9 +572,9 @@ link_mode_e2e_cc_test(
 # M10.A → M10.E per `m10-conversions.md` §5.  Timestamp / duration
 # conversions are out of scope per §2.2 (separate timestamps slice).
 link_mode_e2e_cc_test(
-    name = "m10_test",
+    name = "conversion_test",
     size = "large",
-    srcs = ["m10_test.cc"],
+    srcs = ["conversion_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//eval:activation",
@@ -623,9 +604,9 @@ link_mode_e2e_cc_test(
 # they must be triggered explicitly at Plan time or these tests trap
 # / silently corrupt.
 link_mode_e2e_cc_test(
-    name = "cctz_doubles_test",
+    name = "static_init_test",
     size = "large",
-    srcs = ["cctz_doubles_test.cc"],
+    srcs = ["static_init_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//compiler:compiler",
@@ -643,9 +624,9 @@ link_mode_e2e_cc_test(
 )
 
 link_mode_e2e_cc_test(
-    name = "m12_test",
+    name = "string_ext_test",
     size = "large",
-    srcs = ["m12_test.cc"],
+    srcs = ["string_ext_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//eval:activation",
@@ -669,9 +650,9 @@ link_mode_e2e_cc_test(
 # registration, overload-table seeds, wasm exports), so this is a live
 # acceptance gate.
 link_mode_e2e_cc_test(
-    name = "m16_test",
+    name = "math_ext_test",
     size = "large",
-    srcs = ["m16_test.cc"],
+    srcs = ["math_ext_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//eval:activation",
@@ -688,9 +669,9 @@ link_mode_e2e_cc_test(
 )
 
 link_mode_e2e_cc_test(
-    name = "m18_test",
+    name = "network_ext_test",
     size = "large",
-    srcs = ["m18_test.cc"],
+    srcs = ["network_ext_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
         "//eval:activation",
@@ -965,4 +946,17 @@ link_mode_e2e_cc_test(
         "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
     ],
+)
+
+# Drift guard: e2e/test_taxonomy.json (the machine-readable
+# suite→surface classification consumed by scripts/coverage/) must
+# stay in sync with this BUILD file.  See e2e/README.md.
+py_test(
+    name = "taxonomy_validate_test",
+    size = "small",
+    srcs = ["taxonomy_validate_test.py"],
+    data = [
+        "BUILD.bazel",
+        "test_taxonomy.json",
+    ] + glob(["*.cc"]),
 )
