@@ -67,7 +67,9 @@
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
+#include "google/protobuf/duration.pb.h"
 #include "google/protobuf/message.h"
+#include "google/protobuf/timestamp.pb.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 #include "testdata/e2e_fixture.pb.h"
@@ -1517,6 +1519,41 @@ TEST_F(RejectE2ETest, Int64ToTimestampOverflow) {
 // "field says X but backing is Y" error code-path to test; the
 // `NonWellKnownMessageFieldStillYieldsMessage` test above already
 // pins that non-WKT fields stay as messages.)
+
+// ── Message-backed Timestamp / Duration binds ────────────────────────
+//
+// A Timestamp/Duration-declared variable bound as the raw WKT proto
+// message (not Value::Timestamp/Duration): the activation encoder must
+// peel the message backing into the CelDurTs payload — the
+// seconds/nanos reflection path in instance.cc that absl::Time-based
+// binds never touch.
+
+TEST(MessageBackedTimeBindE2ETest, TimestampMessagePeels) {
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  Instance inst = CompilePlan(compiler,
+                              R"(t == timestamp("1970-01-01T00:00:01.5Z"))");
+  ::google::protobuf::Timestamp p;
+  p.set_seconds(1);
+  p.set_nanos(500'000'000);
+  Activation act;
+  act.Bind("t", Value::Message(p));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kBool);
+  EXPECT_EQ(*got.AsBool(), true);
+}
+
+TEST(MessageBackedTimeBindE2ETest, DurationMessagePeels) {
+  Compiler compiler = CompilerWithVar("d", CelType::Duration());
+  Instance inst = CompilePlan(compiler, R"(d == duration("1.5s"))");
+  ::google::protobuf::Duration p;
+  p.set_seconds(1);
+  p.set_nanos(500'000'000);
+  Activation act;
+  act.Bind("d", Value::Message(p));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kBool);
+  EXPECT_EQ(*got.AsBool(), true);
+}
 
 }  // namespace
 }  // namespace celwasm

@@ -99,6 +99,22 @@ class InstanceEvalTest : public ::testing::Test {
 Compiler* InstanceEvalTest::compiler_ = nullptr;
 Engine* InstanceEvalTest::engine_ = nullptr;
 
+TEST_F(InstanceEvalTest, MoveAssignmentPreservesEval) {
+  auto prog_a = compiler_->Compile("40 + 2");
+  auto prog_b = compiler_->Compile("0");
+  ABSL_CHECK_OK(prog_a);
+  ABSL_CHECK_OK(prog_b);
+  auto a_or = engine_->Plan(*prog_a);
+  auto b_or = engine_->Plan(*prog_b);
+  ASSERT_TRUE(a_or.ok() && b_or.ok());
+  Instance a = *std::move(a_or);
+  Instance b = *std::move(b_or);
+  b = std::move(a);  // b's original store torn down; a's moves in.
+  auto v_or = b.Eval();
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 42);
+}
+
 // ——— Per-scalar-kind round trips (port from host_loader_test). ———
 
 TEST_F(InstanceEvalTest, EvalsIntLiteral) {

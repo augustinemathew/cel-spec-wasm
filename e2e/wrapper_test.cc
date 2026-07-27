@@ -1479,5 +1479,81 @@ TEST_F(WrapperArithmeticE2ETest, EmptyInt32WrapperPlusScalarUsesDefault) {
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 2);
 }
 
+// ── Message-backed wrapper binds ─────────────────────────────────────
+//
+// A variable DECLARED as a wrapper type (typed_ast collapses it to its
+// scalar Repr) but BOUND as the raw wrapper proto message: the
+// activation encoder must peel the message backing to the scalar
+// (instance.cc's WrapperFqnToCelKind + the per-CPPTYPE read arms —
+// paths the Value::Int/String/… binds used elsewhere never touch).
+// One case per wrapper family whose fqn/read arm is distinct.
+
+class WrapperMessageBackedBindE2ETest : public ::testing::Test {};
+
+template <typename WrapperProto, typename Setter>
+void ExpectMessageBackedBindPeels(absl::string_view fqn, Setter set,
+                                  absl::string_view expr) {
+  Compiler compiler = CompilerWithVar("w", CelType::Message(std::string(fqn)));
+  Instance inst = CompilePlan(compiler, expr);
+  WrapperProto p;
+  set(p);
+  Activation act;
+  act.Bind("w", Value::Message(p));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kBool) << fqn;
+  EXPECT_EQ(*got.AsBool(), true) << fqn;
+}
+
+TEST_F(WrapperMessageBackedBindE2ETest, StringValueMessagePeels) {
+  ExpectMessageBackedBindPeels<::google::protobuf::StringValue>(
+      kFqnStringValue, [](auto& p) { p.set_value("hello"); },
+      R"(w == "hello")");
+}
+
+TEST_F(WrapperMessageBackedBindE2ETest, BytesValueMessagePeels) {
+  ExpectMessageBackedBindPeels<::google::protobuf::BytesValue>(
+      kFqnBytesValue,
+      // std::string ctor with explicit length — a bare literal would
+      // truncate at the embedded NUL.
+      [](auto& p) { p.set_value(std::string("ab\0c", 4)); },
+      R"(w == b"ab\x00c")");
+}
+
+TEST_F(WrapperMessageBackedBindE2ETest, UInt32ValueMessagePeels) {
+  ExpectMessageBackedBindPeels<::google::protobuf::UInt32Value>(
+      kFqnUInt32Value, [](auto& p) { p.set_value(7u); }, "w == 7u");
+}
+
+TEST_F(WrapperMessageBackedBindE2ETest, UInt64ValueMessagePeels) {
+  ExpectMessageBackedBindPeels<::google::protobuf::UInt64Value>(
+      kFqnUInt64Value,
+      [](auto& p) { p.set_value(18446744073709551615ull); },
+      "w == 18446744073709551615u");
+}
+
+TEST_F(WrapperMessageBackedBindE2ETest, FloatValueMessagePeels) {
+  ExpectMessageBackedBindPeels<::google::protobuf::FloatValue>(
+      kFqnFloatValue, [](auto& p) { p.set_value(1.5f); }, "w == 1.5");
+}
+
+TEST_F(WrapperMessageBackedBindE2ETest, DoubleValueMessagePeels) {
+  ExpectMessageBackedBindPeels<::google::protobuf::DoubleValue>(
+      kFqnDoubleValue, [](auto& p) { p.set_value(2.25); }, "w == 2.25");
+}
+
+// Value::Null() bound against a wrapper-typed variable reads as null
+// (langdef §"Dynamic Values") — the EncodeNull arm of the activation
+// encoder, which no scalar or message bind can reach.
+TEST_F(WrapperMessageBackedBindE2ETest, NullBoundWrapperReadsAsNull) {
+  Compiler compiler =
+      CompilerWithVar("w", CelType::Message(std::string(kFqnInt64Value)));
+  Instance inst = CompilePlan(compiler, "w == null");
+  Activation act;
+  act.Bind("w", Value::Null());
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kBool);
+  EXPECT_EQ(*got.AsBool(), true);
+}
+
 }  // namespace
 }  // namespace celwasm

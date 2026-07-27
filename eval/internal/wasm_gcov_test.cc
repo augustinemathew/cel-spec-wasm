@@ -341,5 +341,14 @@ TEST(WasmGcovEnvTest, OutputDirFromEnvReadsVariable) {
   EXPECT_EQ(WasmGcovEnv::OutputDirFromEnv(), "");
 }
 
+// The default ctor is the env-fallback path (used when the engine was
+// built without an explicit CollectWasmCoverage dir).
+TEST(WasmGcovEnvTest, DefaultCtorEnablesSinkFromEnv) {
+  ASSERT_EQ(::setenv("CELWASM_WASM_GCOV_DIR", "/tmp/x", 1), 0);
+  EXPECT_TRUE(WasmGcovEnv().sink.enabled());
+  ASSERT_EQ(::unsetenv("CELWASM_WASM_GCOV_DIR"), 0);
+  EXPECT_FALSE(WasmGcovEnv().sink.enabled());
+}
+
 }  // namespace
 }  // namespace celwasm

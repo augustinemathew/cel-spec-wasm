@@ -118,6 +118,7 @@ TEST(EngineLifetimeTest, MoveConstructionPreservesState) {
   (void)b;
 }
 
+
 TEST(EnginePlanTest, PlanSucceedsOnSyntheticProgram) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
@@ -1278,6 +1279,21 @@ TEST(EnginePlanLinkModeTripwireTest, CorrectlyLabeledProgramsPlanInBothModes) {
     ASSERT_TRUE(v_or.ok()) << v_or.status();
     EXPECT_EQ(*v_or->AsInt(), 42);
   }
+}
+
+TEST(EngineLifetimeTest, MoveAssignmentPreservesState) {
+  auto a_or = Engine::NewBuilder().Build();
+  auto b_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(a_or.ok() && b_or.ok());
+  Engine a = *std::move(a_or);
+  Engine b = *std::move(b_or);
+  b = std::move(a);  // b's original state torn down; a's moves in.
+  Program program(CompileToBytes(CompilerOptions::LinkMode::kDynamic));
+  auto inst_or = b.Plan(program);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+  auto v_or = inst_or->Eval();
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 42);
 }
 
 TEST(EngineWasmCoverageTest, CollectWasmCoverageMatchesRuntimeInstrumentation) {

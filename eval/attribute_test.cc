@@ -25,6 +25,15 @@ TEST(AttributeQualifierTest, KindDispatch) {
             AttributeQualifier::Kind::kString);
 }
 
+// The bare-variable convenience ctor — no qualifier chain.
+TEST(AttributeTest, BareVariableCtor) {
+  Attribute a("account");
+  EXPECT_TRUE(a.has_variable_name());
+  EXPECT_EQ(a.variable_name(), "account");
+  EXPECT_TRUE(a.qualifier_path().empty());
+  EXPECT_EQ(a, Attribute("account", {}));
+}
+
 TEST(AttributeQualifierTest, TypedAccessorsReturnValueOrNullopt) {
   auto s = AttributeQualifier::OfString("hello");
   EXPECT_EQ(s.AsString(), "hello");

@@ -498,6 +498,41 @@ TEST(HostFnTest, TypedMapViewArg) {
   EXPECT_EQ(*v->AsInt(), 20);
 }
 
+// map arg via a LITERAL map — the wire shape is CEL_MAP_ARENA, so the
+// context decodes entries straight out of the eval arena
+// (`DecodeArenaMapEntries`, host_call_context.cc) rather than the
+// host-backed table walk the bound-variable case above takes.  (The
+// list sibling is covered by TypedListViewArg's `sum([4, 5, 6])`.)
+TEST(HostFnTest, TypedMapViewArgFromLiteralMap) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.lookup(map<string, int> m, string k);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program =
+      compiler->Compile("lookup({'a': 10, 'b': 20}, 'b')", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddTypedFunction(
+                      "lookup_map_string_int_string",
+                      [](HostMapView m,
+                         absl::string_view k) -> absl::StatusOr<int64_t> {
+                        auto got = m.Get(Value::String(std::string(k)));
+                        if (!got.ok()) return got.status();
+                        if (got->IsError()) return int64_t{-1};
+                        return got->AsInt();
+                      })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsInt(), 20);
+}
+
 // ── shared pieces for the deepest-composite tests ─────────────────
 //
 // Typed (TypedNestedMapStringListProtoArg) and context
