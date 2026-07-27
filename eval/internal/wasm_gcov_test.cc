@@ -225,8 +225,15 @@ struct WasmtimeHarness {
   }
 
   // Builds engine/store/linker, registers the gcov imports for `env`,
-  // compiles `wat`, and instantiates it.
+  // compiles `wat`, and instantiates it.  Split into stages to stay
+  // under the function-size gate (gtest ASSERTs are statement-heavy).
   void InitOrDie(absl::string_view wat, WasmGcovEnv* env) {
+    NewEngineStoreLinkerOrDie(env);
+    CompileWatOrDie(wat);
+    InstantiateOrDie();
+  }
+
+  void NewEngineStoreLinkerOrDie(WasmGcovEnv* env) {
     engine = wasm_engine_new();
     ASSERT_NE(engine, nullptr);
     store = wasmtime_store_new(engine, nullptr, nullptr);
@@ -234,7 +241,10 @@ struct WasmtimeHarness {
     linker = wasmtime_linker_new(engine);
     ASSERT_NE(linker, nullptr);
     ASSERT_TRUE(RegisterWasmGcovImports(linker, env).ok());
+  }
 
+  // `wat` → `module` (the compile stage).
+  void CompileWatOrDie(absl::string_view wat) {
     wasm_byte_vec_t wasm;
     wasmtime_error_t* err = wasmtime_wat2wasm(wat.data(), wat.size(), &wasm);
     ASSERT_EQ(err, nullptr);
@@ -242,14 +252,17 @@ struct WasmtimeHarness {
                               wasm.size, &module);
     wasm_byte_vec_delete(&wasm);
     ASSERT_EQ(err, nullptr);
+  }
 
+  void InstantiateOrDie() {
     wasm_trap_t* trap = nullptr;
-    err = wasmtime_linker_instantiate(linker, Ctx(), module, &instance, &trap);
+    wasmtime_error_t* err =
+        wasmtime_linker_instantiate(linker, Ctx(), module, &instance, &trap);
     ASSERT_EQ(err, nullptr);
     ASSERT_EQ(trap, nullptr);
   }
 
-  wasmtime_context_t* Ctx() {
+  wasmtime_context_t* Ctx() const {
     return wasmtime_store_context(store);
   }
 
