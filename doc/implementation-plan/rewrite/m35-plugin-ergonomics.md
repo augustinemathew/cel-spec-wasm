@@ -893,13 +893,37 @@ export names), produce a wasm32-wasip2 component, and run
 standalone so non-macro builds get the same self-description.
 Protos cross as serialized bytes in every language.
 
+> **Probe-confirmed 2026-07-27 (`probes/foreign_rust/`): the Rust
+> artifact half is PROVEN.**  A wit-bindgen 0.36 crate implementing
+> the `cel generate`-emitted `fns.wit` for
+> `int @plugin.add(int a, int b)`, built with stock
+> `cargo build --release --target wasm32-wasip2` (rustc 1.94):
+>   - a valid Component-Model binary (`wasm-tools validate` clean;
+>     preamble `0x0001000d`), **14.7 KB** — leaner than TinyGo's
+>     118 KB for the same shape;
+>   - exports exactly `cel:rustadd/fns@0.1.0` with
+>     `add-int-int: func(a: s64, b: s64) -> s64` (`wasm-tools
+>     component wit`), i.e. precisely what `Engine::Use`'s static
+>     export lookup resolves;
+>   - **imports NOTHING — zero WASI** (`world root { export
+>     cel:rustadd/fns@0.1.0; }`), so the trap-stub caveat below is
+>     MOOT for lean Rust plugins: there is nothing to stub.
+> The engine-side half (embed-decls → `Plugin::Load` → Use → Plan →
+> Eval, `probes/foreign_rust/build.sh` + `probe_runner.cc`) could not
+> run in the probe container (egress policy blocks bazel's archive
+> fetches) — run `build.sh` on a dev machine to close the loop.
+
 Per-language reality (Go findings PROVEN by the m22 probes,
 `probes/foreign_go/` + `m22-foreign-fn.md` §5.1, for the core-module
 C-ABI path; the component-path deltas are noted):
 
   - **Rust** — the smooth path: native wasip2 components via
-    `cargo component` / `wit-bindgen`, lean std.  Keep the hot path
-    off WASI-touching std features (see the import caveat below).
+    `cargo` / `wit-bindgen` (plain cargo suffices — no
+    cargo-component needed; the wasip2 target emits the component
+    directly).  A compute-only cdylib links ZERO WASI imports
+    (probe-confirmed above), and reflection-free `prost` makes Rust
+    the one lean-AND-proto-capable authoring language candidate —
+    the proto case is the probe's natural next step.
   - **TinyGo** — has a wasip2 target + `wit-bindgen-go`; fine for
     scalar/string functions (~118 KB proven on the C-ABI path);
     **proto-typed functions trap** — TinyGo's incomplete reflection
