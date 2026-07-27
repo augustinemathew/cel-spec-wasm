@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cel_runtime.wasm coverage</title>
+<title>celwasm coverage</title>
 <style>
   :root {
     color-scheme: light;
@@ -116,22 +116,24 @@
 </style>
 <div class="wrap">
   <header>
-    <h1>cel_runtime.wasm coverage</h1>
+    <h1>celwasm coverage</h1>
     <div class="sub" id="subtitle"></div>
   </header>
   <div class="tiles" id="tiles"></div>
   <nav class="tabs" id="tabs">
     <button data-view="overview" class="active">Overview</button>
     <button data-view="functions">Function audit</button>
+    <button data-view="branches" id="branchtab" hidden>Branch gaps</button>
     <button data-view="workloads">Workloads</button>
     <button data-view="source">Source</button>
   </nav>
   <section class="view active" id="view-overview">
-    <p class="note">Line and function coverage of each <code>runtime/*.c</code>
-    translation unit as compiled into the shipping wasm artifact, after every
-    collected workload has executed.  Click a row for the annotated source.</p>
+    <p class="note">Coverage per translation unit after every collected
+    workload has executed.  <b>e2e-only</b> counts only the e2e suites +
+    conformance corpus — the gap between it and the full number is what
+    unit/component tests contribute.  Click a row for annotated source.</p>
     <table id="filetable"><thead><tr>
-      <th>File</th><th>Line coverage</th>
+      <th>File</th><th>Line coverage</th><th class="num">e2e-only</th>
       <th class="num">Lines</th><th class="num">Functions hit</th>
       <th>Uncalled functions</th>
     </tr></thead><tbody></tbody></table>
@@ -154,6 +156,19 @@
     <table id="fntable"><thead><tr>
       <th>Function</th><th>Defined at</th>
       <th class="num">Calls</th><th class="num">Workloads</th><th>Hit by</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+  <section class="view" id="view-branches">
+    <p class="note">Every branch site where at least one direction was never
+    taken by any workload — the "every branch hit" audit.  A row reads
+    taken / total directions at that line.  Click through to the annotated
+    source to see the condition.</p>
+    <div class="controls">
+      <input type="search" id="brsearch" placeholder="filter by file…">
+      <span class="status zero"><span class="dot"></span><span id="brcount"></span></span>
+    </div>
+    <table id="brtable"><thead><tr>
+      <th>Site</th><th class="num">Taken</th><th class="num">Total</th>
     </tr></thead><tbody></tbody></table>
   </section>
   <section class="view" id="view-workloads">
@@ -188,18 +203,35 @@ document.getElementById("subtitle").textContent =
   `${R.generated_against} (${R.generated_on})`;
 const H = R.headline;
 const zeroN = R.gaps.zero_hit.length, singleN = R.gaps.single_workload.length;
-document.getElementById("tiles").innerHTML = [
+const BR = R.branches || null;
+const brGaps = (R.gaps.untaken_branches || []);
+const tiles = [
   { label: "Line coverage", value: `${H.line_pct}%`,
     detail: `${fmt(H.lines_covered)} / ${fmt(H.lines_total)} instrumented lines` },
   { label: "Function coverage", value: `${H.function_pct}%`,
     detail: `${fmt(H.functions_hit)} / ${fmt(H.functions_total)} functions called` },
+];
+if (H.branch_pct !== undefined && H.branches_total) {
+  tiles.push({ label: "Branch coverage", value: `${H.branch_pct}%`,
+    detail: `${fmt(H.branches_taken)} / ${fmt(H.branches_total)} directions taken` });
+}
+tiles.push(
   { label: "Zero-hit functions", value: fmt(zeroN),
     detail: "never called by any workload" },
   { label: "Single-workload functions", value: fmt(singleN),
     detail: "kept alive by exactly one test" },
-].map(t => `<div class="tile"><div class="label">${t.label}</div>` +
-           `<div class="value">${t.value}</div>` +
-           `<div class="detail">${t.detail}</div></div>`).join("");
+);
+for (const name of (R.section_order || [])) {
+  const s = R.sections[name];
+  tiles.push({ label: name,
+    value: `${s.line_pct}%`,
+    detail: `e2e-only ${s.line_pct_e2e}% — fn ${s.function_pct}%` +
+            (s.branches_total ? `, br ${s.branch_pct}%` : "") });
+}
+document.getElementById("tiles").innerHTML = tiles
+  .map(t => `<div class="tile"><div class="label">${t.label}</div>` +
+            `<div class="value">${t.value}</div>` +
+            `<div class="detail">${t.detail}</div></div>`).join("");
 
 // ── tabs ────────────────────────────────────────────────────────────
 const tabs = document.getElementById("tabs");
@@ -216,20 +248,55 @@ tabs.addEventListener("click", e => {
 // ── overview ────────────────────────────────────────────────────────
 {
   const tb = document.querySelector("#filetable tbody");
-  const rows = Object.entries(R.per_file).sort((a, b) => a[1].line_pct - b[1].line_pct);
-  tb.innerHTML = rows.map(([f, v]) => {
+  const nCols = 6 + (BR ? 1 : 0);
+  const fileRow = ([f, v]) => {
     const zero = Object.values(R.functions)
       .filter(e => e.file === f && e.total_workloads === 0).length;
     const zcell = zero
       ? `<span class="status zero"><span class="dot"></span>${zero} uncalled</span>`
       : `<span class="status ok"><span class="dot"></span>all called</span>`;
+    const brcell = v.branch_pct == null ? "" :
+      `<span class="pct">${v.branch_pct}%</span> ` +
+      `<span class="detail" style="color:var(--muted)">` +
+      `${fmt(v.branches_taken)}/${fmt(v.branches_total)}</span>`;
+    const e2e = v.line_pct_e2e === undefined ? "—"
+      : `<span class="pct">${v.line_pct_e2e}%</span>`;
     return `<tr class="rowlink" data-src="${f}"><td>${f}</td>` +
       `<td><span class="meter"><i style="width:${v.line_pct}%"></i></span>` +
       `<span class="pct">${v.line_pct}%</span></td>` +
+      `<td class="num">${e2e}</td>` +
       `<td class="num">${fmt(v.lines_covered)} / ${fmt(v.lines_total)}</td>` +
       `<td class="num">${v.functions_hit} / ${v.functions_total}</td>` +
+      (BR ? `<td class="num">${brcell}</td>` : "") +
       `<td>${zcell}</td></tr>`;
-  }).join("");
+  };
+  const entries = Object.entries(R.per_file);
+  if (R.sections) {
+    tb.innerHTML = (R.section_order || Object.keys(R.sections)).map(sec => {
+      const s = R.sections[sec];
+      const rows = entries
+        .filter(([, v]) => v.section === sec)
+        .sort((a, b) => a[1].line_pct - b[1].line_pct);
+      const head =
+        `<tr><td colspan="${nCols}" style="background:var(--plane);` +
+        `font-weight:650;border-top:2px solid var(--baseline)">${sec}` +
+        ` — line ${s.line_pct}% (e2e-only ${s.line_pct_e2e}%),` +
+        ` fn ${s.function_pct}%` +
+        (s.branches_total ? `, branch ${s.branch_pct}%` : "") +
+        `</td></tr>`;
+      return head + rows.map(fileRow).join("");
+    }).join("");
+  } else {
+    tb.innerHTML = entries
+      .sort((a, b) => a[1].line_pct - b[1].line_pct)
+      .map(fileRow).join("");
+  }
+  if (BR) {
+    document.querySelector("#filetable thead tr").insertBefore(
+      Object.assign(document.createElement("th"),
+                    { textContent: "Branches", className: "num" }),
+      document.querySelector("#filetable thead tr").lastElementChild);
+  }
   tb.addEventListener("click", e => {
     const tr = e.target.closest("tr[data-src]");
     if (tr) openSource(tr.dataset.src);
@@ -254,12 +321,13 @@ function renderFns() {
     const cls = e.total_workloads === 0 ? "zero" :
                 e.total_workloads === 1 ? "single" : "ok";
     const hits = Object.entries(e.hits).sort((a, b) => b[1] - a[1]);
+    const extra = (e.more_workloads || 0) + Math.max(0, hits.length - 4);
     const chips = hits.slice(0, 4).map(([w, n]) =>
       `<span class="chip">${w.replace(/_dynamic$/, "")} ×${fmt(n)}</span>`).join("") +
-      (hits.length > 4 ? `<span class="chip">+${hits.length - 4} more</span>` : "") ||
+      (extra > 0 ? `<span class="chip">+${extra} more</span>` : "") ||
       `<span class="status zero"><span class="dot"></span>none</span>`;
     return `<tr><td><span class="status ${cls}"><span class="dot"></span></span>` +
-      `<code>${esc(e.function)}</code></td>` +
+      `<code>${esc(e.display || e.function)}</code></td>` +
       `<td><a class="jump" data-src="${e.file}" data-line="${e.line}">` +
       `${e.file}:${e.line}</a></td>` +
       `<td class="num">${fmt(e.total_hits)}</td>` +
@@ -279,6 +347,30 @@ document.getElementById("fntable").addEventListener("click", e => {
   if (a) openSource(a.dataset.src, +a.dataset.line);
 });
 renderFns();
+
+// ── branch gaps ─────────────────────────────────────────────────────
+if (brGaps.length) {
+  document.getElementById("branchtab").hidden = false;
+  document.getElementById("brcount").textContent =
+    `${fmt(brGaps.length)} sites with an untaken direction`;
+  const renderBranches = () => {
+    const q = document.getElementById("brsearch").value.toLowerCase();
+    document.querySelector("#brtable tbody").innerHTML = brGaps
+      .filter(b => !q || b.file.toLowerCase().includes(q))
+      .slice(0, 2000)
+      .map(b =>
+        `<tr><td><a class="jump" data-src="${b.file}" data-line="${b.line}">` +
+        `${b.file}:${b.line}</a></td>` +
+        `<td class="num">${b.taken}</td><td class="num">${b.total}</td></tr>`
+      ).join("");
+  };
+  document.getElementById("brsearch").addEventListener("input", renderBranches);
+  document.getElementById("brtable").addEventListener("click", e => {
+    const a = e.target.closest("a.jump");
+    if (a) openSource(a.dataset.src, +a.dataset.line);
+  });
+  renderBranches();
+}
 
 // ── workloads ───────────────────────────────────────────────────────
 {
@@ -311,14 +403,26 @@ function renderSource(f, focus) {
   document.getElementById("srcpane").innerHTML = lines.map((text, i) => {
     const ln = i + 1, m = cov[ln];
     const instrumented = m !== undefined;
-    const hit = instrumented && Object.keys(m).length > 0;
-    const total = hit ? Object.values(m).reduce((a, b) => a + b, 0) : 0;
+    // Two payload shapes: full {workload: count} maps, or the slimmed
+    // [total_hits, n_workloads] pair the combined report embeds.
+    const slim = Array.isArray(m);
+    const hit = instrumented &&
+      (slim ? m.length > 0 : Object.keys(m).length > 0);
+    const total = !hit ? 0 :
+      slim ? m[0] : Object.values(m).reduce((a, b) => a + b, 0);
     const cls = !instrumented ? "" : hit ? "hit" : "miss";
     const ct = !instrumented ? "" : hit ? fmt(total) : "✗ 0";
-    const title = hit ? ` title="${esc(workloadTitle(m))}"` : "";
+    const title = !hit ? "" : slim
+      ? ` title="${m[1]} workload${m[1] === 1 ? "" : "s"}"`
+      : ` title="${esc(workloadTitle(m))}"`;
+    const br = BR && BR[f] && BR[f][ln];
+    const brchip = !br ? "" : br[0] < br[1]
+      ? `<span class="chip" style="color:var(--critical)">` +
+        `branches ${br[0]}/${br[1]}</span>`
+      : `<span class="chip">branches ${br[0]}/${br[1]}</span>`;
     return `<div class="srcline ${cls}" id="L${ln}"${title}>` +
       `<span class="no">${ln}</span><span class="ct">${ct}</span>` +
-      `<code>${esc(text)}</code></div>`;
+      `<code>${esc(text)}</code>${brchip}</div>`;
   }).join("");
   pick.value = f;
   if (focus) {

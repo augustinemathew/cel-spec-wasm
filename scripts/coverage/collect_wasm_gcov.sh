@@ -22,6 +22,12 @@
 #
 # Usage:
 #   scripts/coverage/collect_wasm_gcov.sh <out_root> <binary> [...]
+#   scripts/coverage/collect_wasm_gcov.sh --decode-only <out_root>
+#
+# --decode-only re-pairs + re-decodes every existing raw/<workload>/
+# dir without running anything — for workloads whose .gcda were
+# collected out-of-band (e.g. `bazel run` workloads that need
+# runfiles: conformance, engine_test).
 #
 # Env:
 #   LLVM_COV  path to llvm-cov (default: /opt/homebrew/opt/llvm/bin/llvm-cov,
@@ -29,8 +35,15 @@
 
 set -euo pipefail
 
-if [[ $# -lt 2 ]]; then
+DECODE_ONLY=0
+if [[ "${1:-}" == "--decode-only" ]]; then
+  DECODE_ONLY=1
+  shift
+fi
+
+if [[ $# -lt 1 || ( $DECODE_ONLY -eq 0 && $# -lt 2 ) ]]; then
   echo "usage: $0 <out_root> <binary> [<binary>...]" >&2
+  echo "       $0 --decode-only <out_root>" >&2
   exit 2
 fi
 
@@ -77,6 +90,34 @@ copy_gcno() {
   cp -f "$RUNTIME_OBJS_ROOT"/cel_runtime_wasm.bin/*.gcno "$1/" 2>/dev/null || true
 }
 
+decode_dir() {
+  local dir=$1 name=$2
+  shopt -s nullglob
+  local gcda=("$dir"/*.gcda)
+  shopt -u nullglob
+  if [[ ${#gcda[@]} -eq 0 ]]; then
+    echo "WARN: $name produced no .gcda (not instrumented? crashed early?)" >&2
+    return 0
+  fi
+  copy_gcno "$dir"
+  # Two decodes: `-n -b -f` prints the human per-function/-file summary
+  # (no .gcov files); `-i` writes machine-parsable intermediate-format
+  # .gcov files for the report generators.
+  (cd "$dir" && $LLVM_COV gcov -n -b -f ./*.gcda >summary.txt 2>gcov.err && \
+       $LLVM_COV gcov -i ./*.gcda >>gcov.err 2>&1) || \
+    echo "WARN: llvm-cov gcov failed for $name (see $dir/gcov.err)" >&2
+}
+
+if [[ $DECODE_ONLY -eq 1 ]]; then
+  for dir in "$OUT_ROOT"/raw/*/; do
+    [[ -d "$dir" ]] || continue
+    rm -f "$dir"/*.gcno "$dir"/*.gcov
+    decode_dir "$dir" "$(basename "$dir")"
+  done
+  echo "decoded: $(ls "$OUT_ROOT/raw" | wc -l | tr -d ' ') workload dirs"
+  exit 0
+fi
+
 for bin in "$@"; do
   name=$(basename "$bin")
   dir="$OUT_ROOT/raw/$name"
@@ -88,20 +129,7 @@ for bin in "$@"; do
   if ! CELWASM_WASM_GCOV_DIR="$dir" "$bin" >"$dir/run.log" 2>&1; then
     echo "WARN: $name exited non-zero (see $dir/run.log)" >&2
   fi
-  shopt -s nullglob
-  gcda=("$dir"/*.gcda)
-  shopt -u nullglob
-  if [[ ${#gcda[@]} -eq 0 ]]; then
-    echo "WARN: $name produced no .gcda (not instrumented? crashed early?)" >&2
-    continue
-  fi
-  copy_gcno "$dir"
-  # Two decodes: `-n -b -f` prints the human per-function/-file summary
-  # (no .gcov files); `-i` writes machine-parsable intermediate-format
-  # .gcov files for wasm_gcov_report.py.
-  (cd "$dir" && $LLVM_COV gcov -n -b -f ./*.gcda >summary.txt 2>gcov.err && \
-       $LLVM_COV gcov -i ./*.gcda >>gcov.err 2>&1) || \
-    echo "WARN: llvm-cov gcov failed for $name (see $dir/gcov.err)" >&2
+  decode_dir "$dir" "$name"
 done
 
 echo "collected: $(ls "$OUT_ROOT/raw" | wc -l | tr -d ' ') workload dirs under $OUT_ROOT/raw"
