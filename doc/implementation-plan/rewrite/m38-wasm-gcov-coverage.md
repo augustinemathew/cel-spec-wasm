@@ -1,8 +1,12 @@
 # m38 — wasm-side gcov coverage via the eval host
 
-Status: in progress — drafted 2026-07-27; core implemented and
-smoke-verified end-to-end the same day (see §6 Handoff status for
-exactly what is done and what remains).
+Status: shipped 2026-07-27.  Core implemented + smoke-verified, then
+the full measurement run completed the same day: engine-level
+`CollectWasmCoverage` API, per-workload collection tooling
+(`scripts/coverage/collect_wasm_gcov.sh` + `wasm_gcov_report.py`,
+§4.1), and headline numbers 87.3% line / 95.1% function for
+`runtime/*` in the shipping wasm across 38 workloads (audit report
+§2.3).  §6 records the as-shipped deltas.
 
 ## 1. Problem
 
@@ -66,7 +70,7 @@ port, no WASI filesystem involvement:
       write-out table indices, and the borrowed memory base/size.
     - `RegisterWasmGcovImports(linker, env)` — defines the six imports.
       Always registered (harmless when the module isn't instrumented);
-      callbacks no-op when `CELWASM_WASM_GCOV_DIR` is unset.
+      callbacks no-op when no collection destination is configured.
     - `DumpWasmGcov(context, helpers_instance, env)` — resolves the
       exported `__indirect_function_table`, `table.get`s each registered
       write-out index, and calls it; the guest then drives the
@@ -75,6 +79,14 @@ port, no WASI filesystem involvement:
     `std::unique_ptr<WasmGcovEnv>`; the `InstanceImpl` dtor calls
     `DumpWasmGcov` before tearing down the linker/store (counters live in
     guest memory, so the dump must precede store deletion).
+  - **Engine-level API** (added at measurement time):
+    `Engine::Builder::CollectWasmCoverage(output_dir)` fixes the
+    collection destination at `Build()` — explicit dir wins, else the
+    `CELWASM_WASM_GCOV_DIR` env var, else disabled.  Every Instance the
+    engine Plans dumps into that dir on destruction.  Behavior pinned
+    by `engine_test.cc` `EngineWasmCoverageTest` (config-aware: inert
+    against the normal artifact, collecting against an instrumented
+    one).
 
 Scope: **dynamic link mode** is the measured configuration (the runtime is
 a separate module there). Static mode merges the identical C code; the
@@ -112,9 +124,57 @@ cd /tmp/wasm-gcov && llvm-cov gcov -n *.gcda   # percentages; drop -n for .gcov 
 
 The gcda version emitted by clang 19 here is `"408*"` (gcov 4.8 wire
 format) — readable by llvm-cov 18+. Smoke-verified end to end: 2 cases
-of `mvp_concat_test_dynamic` produced 15 .gcda files, decoded cleanly,
-with plausible per-file percentages (`cel_string_ops.c` 17%,
-`cel_arena.c` 63%, `cel_memory.c` 40%).
+of `mvp_concat_test_dynamic` (since folded into `operators_test.cc`)
+produced 15 .gcda files, decoded cleanly, with plausible per-file
+percentages (`cel_string_ops.c` 17%, `cel_arena.c` 63%,
+`cel_memory.c` 40%).
+
+### 4.1 Productionized workflow (the full measurement run, 2026-07-27)
+
+The manual recipe above is superseded by two committed tools:
+
+  - **`scripts/coverage/collect_wasm_gcov.sh <out_root> <bin>...`** —
+    runs each workload binary sequentially with its own
+    `CELWASM_WASM_GCOV_DIR` (per-workload attribution), pairs the
+    .gcda with the build's .gcno, and decodes twice (`llvm-cov gcov
+    -n -b -f` human summary; `-i` machine-parsable intermediate
+    records).
+  - **`scripts/coverage/wasm_gcov_report.py --cov-root <out_root>`** —
+    joins the per-workload records with `e2e/test_taxonomy.json` into
+    `report.json` (function×workload hit matrix + gap/redundancy
+    pivots) and `report.html` (clickable explorer: overview, function
+    audit, workload contribution, annotated source).
+
+Two .gcno-pairing traps, both learned the hard way and now encoded in
+the collect script:
+
+  1. **The runtime wasm links TUs from several targets.**  The
+    extension TUs (`cel_base64_ext`, `cel_math_ext`, the
+    `cel_string_ext_*` splits, `cel_time_parse`, `cel_optional`,
+    `cel_matches`) compile in their own `_objs/<lib>/` dirs — copying
+    only `_objs/cel_runtime_wasm.bin/` silently drops them from the
+    report.  Gather .gcno from every `bin/runtime/_objs/` dir.
+  2. **Basename collisions must resolve toward the linked objects,
+    with `cp -f`.**  The base TUs compile twice (the `cel_runtime`
+    cc_library AND the `.bin`); the .gcda stamps match the `.bin`
+    objects, so its notes must be copied last — and because bazel
+    outputs are mode `r-x`, a plain `cp` over an earlier copy fails
+    `Permission denied` and silently leaves the WRONG notes in place
+    (surfacing later as `file checksums do not match`).
+
+Conformance is collected via
+`CELWASM_WASM_GCOV_DIR=<dir> bazel run --//runtime:instrument_wasm
+--collect_code_coverage '--instrumentation_filter=^//runtime[/:]'
+//conformance:run_conformance -- --link_mode=dynamic`; the eval manual
+suites (`engine_test_dynamic` needs its runfiles, so `bazel run` it the
+same way) join the sweep as workloads.
+
+Results of the full run (38 workloads: 34 dynamic e2e + engine /
+instance / memory_grow_stability + conformance) are recorded in
+`reviews/2026-07-27-test-inventory-and-coverage.md` §2.3: **87.3% line
+/ 95.1% function** coverage of `runtime/*` in the shipping wasm, 27
+zero-hit functions all classified (native-test-only, never-emitted
+dispatch arms, defense-in-depth).
 
 ## 5. Testing
 
@@ -149,25 +209,23 @@ Done and verified in this branch:
     `CELWASM_WASM_GCOV_DIR` set → 15 .gcda files, decoded by
     `llvm-cov gcov` against the build's .gcno (see §4 numbers).
 
-Remaining before this milestone can close:
+Remaining-work status (updated 2026-07-27, measurement session):
 
-  1. **Regression pass in the default config** — the wiring touches
-     every Plan: run at least `//eval:wasm_gcov_test`,
-     `//eval:engine_test_{dynamic,static}`,
-     `//eval:instance_test_{dynamic,static}`, a dynamic+static e2e pair,
-     and `//e2e:static_link_test` un-flagged, then the normal
-     `$PROJ` + conformance gates.
-  2. **`scripts/lint.sh --branch`** over the diff.
-  3. **The full measurement run** (§4) over all dynamic e2e binaries +
-     the conformance corpus, and fold a "wasm-side coverage" subsection
-     into `reviews/2026-07-27-test-inventory-and-coverage.md` §2 —
-     including the native-vs-wasm comparison for the zero-native-hit
-     families that report flagged (`cel_time.c` `*_with_tz`,
-     `cel_runtime.c` comprehension helpers).
-  4. Closeout per CLAUDE.md: status line here, testing-checklist row,
-     and a decision on whether static-link mode should also be
-     measured (imports are registered either way; only the workflow is
-     dynamic-scoped today).
+  1. **Regression pass** — DONE for the touched surfaces
+     (`wasm_gcov_test`, `engine_test_dynamic`, the six e2e suites that
+     gained gap cases, `e2e_limits_dynamic`, `cel_cpp_oracle_test`, all
+     green un-flagged); the full `$PROJ` sweep + conformance gate run
+     at this session's commit gate.
+  2. **`scripts/lint.sh --branch`** — at the commit gate.
+  3. **The full measurement run** — DONE; see §4.1 and the audit
+     report §2.3 (87.3% line / 95.1% function across 38 workloads,
+     per-workload attribution, all 27 zero-hit functions classified).
+     The zero-native-hit families the audit flagged are CONFIRMED
+     wasm-covered.
+  4. Closeout: testing-checklist row ticked; static-link measurement
+     deliberately NOT run (imports are registered either way; the
+     static merge embeds the same C code, so dynamic-mode numbers are
+     representative — revisit only if a static-only codepath appears).
 
 Known limitations (by design, documented here rather than hedged):
 collection is single-threaded, unlocked, dynamic-mode-scoped; the

@@ -69,22 +69,24 @@ class WasmGcovSink {
   // Returns the first I/O error; collection continues on later files.
   absl::Status EndFile();
 
-  bool enabled() const { return !output_dir_.empty(); }
+  bool enabled() const {
+    return !output_dir_.empty();
+  }
 
  private:
-  uint32_t ReadOld32();               // next u32 from the old file, or ~0u
+  uint32_t ReadOld32();  // next u32 from the old file, or ~0u
   void Write32(uint32_t v);
   void Write64(uint64_t v);
 
   std::string output_dir_;
-  std::string current_path_;          // empty ⇔ no open session
-  std::vector<uint8_t> old_bytes_;    // pre-existing file being merged
+  std::string current_path_;        // empty ⇔ no open session
+  std::vector<uint8_t> old_bytes_;  // pre-existing file being merged
   // Scan offset for ReadOld32, relative to the position the next write
   // lands at (records in old and new files are positionally aligned —
   // the same trick GCDAProfiling.c gets from rewriting in place).
   size_t old_pos_ = 0;
-  std::vector<uint8_t> new_bytes_;    // buffered output
-  int gcov_version_ = 0;              // decoded from the version word
+  std::vector<uint8_t> new_bytes_;  // buffered output
+  int gcov_version_ = 0;            // decoded from the version word
 };
 
 // Per-Instance collection state, shared by the six linker callbacks
@@ -122,8 +124,7 @@ ABSL_MUST_USE_RESULT absl::Status RegisterWasmGcovImports(
 // store is torn down — the counters live in guest memory.
 ABSL_MUST_USE_RESULT absl::Status DumpWasmGcov(
     wasmtime_context_t* absl_nonnull context,
-    const wasmtime_instance_t& helpers_instance,
-    WasmGcovEnv* absl_nonnull env);
+    const wasmtime_instance_t& helpers_instance, WasmGcovEnv* absl_nonnull env);
 
 }  // namespace celwasm
 

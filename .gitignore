@@ -39,3 +39,8 @@ benchmark/eval/results/raw/
 # (bazel-built or probe-compiled), not sources.  Committed probe
 # binaries once weighed ~19MB; deleted 2026-07-25.
 *.wasm
+
+# LLVM/gcov coverage droppings (bazel coverage probes, instrumented runs)
+*.profraw
+*.gcda
+*.gcno

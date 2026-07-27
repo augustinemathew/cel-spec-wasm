@@ -37,8 +37,7 @@ constexpr uint32_t kVersionB02 = 0x4230322A;
 constexpr uint32_t kVersion402 = 0x3430322A;
 
 std::string TestDir(absl::string_view name) {
-  std::string dir =
-      absl::StrCat(::testing::TempDir(), "/wasm_gcov_", name);
+  std::string dir = absl::StrCat(::testing::TempDir(), "/wasm_gcov_", name);
   std::filesystem::remove_all(dir);
   return dir;
 }
@@ -239,8 +238,7 @@ struct WasmtimeHarness {
     wasm_byte_vec_t wasm;
     wasmtime_error_t* err = wasmtime_wat2wasm(wat.data(), wat.size(), &wasm);
     ASSERT_EQ(err, nullptr);
-    err = wasmtime_module_new(engine,
-                              reinterpret_cast<uint8_t*>(wasm.data),
+    err = wasmtime_module_new(engine, reinterpret_cast<uint8_t*>(wasm.data),
                               wasm.size, &module);
     wasm_byte_vec_delete(&wasm);
     ASSERT_EQ(err, nullptr);
@@ -251,7 +249,9 @@ struct WasmtimeHarness {
     ASSERT_EQ(trap, nullptr);
   }
 
-  wasmtime_context_t* Ctx() { return wasmtime_store_context(store); }
+  wasmtime_context_t* Ctx() {
+    return wasmtime_store_context(store);
+  }
 
   void CallExportOrDie(const char* name) {
     wasmtime_extern_t ext;
@@ -259,8 +259,8 @@ struct WasmtimeHarness {
                                              std::strlen(name), &ext));
     ASSERT_EQ(ext.kind, WASMTIME_EXTERN_FUNC);
     wasm_trap_t* trap = nullptr;
-    wasmtime_error_t* err = wasmtime_func_call(Ctx(), &ext.of.func, nullptr, 0,
-                                               nullptr, 0, &trap);
+    wasmtime_error_t* err =
+        wasmtime_func_call(Ctx(), &ext.of.func, nullptr, 0, nullptr, 0, &trap);
     ASSERT_EQ(err, nullptr);
     ASSERT_EQ(trap, nullptr);
   }

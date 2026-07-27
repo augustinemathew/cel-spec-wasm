@@ -19,7 +19,7 @@ namespace celwasm {
 namespace {
 
 // .gcda wire constants — compiler-rt GCDAProfiling.c (llvmorg-19.1.5).
-constexpr uint32_t kGcovDataMagic = 0x67636461;      // "gcda"
+constexpr uint32_t kGcovDataMagic = 0x67636461;  // "gcda"
 constexpr uint32_t kGcovTagFunction = 0x01000000;
 constexpr uint32_t kGcovTagCounterArcs = 0x01a10000;
 constexpr uint32_t kGcovTagObjectSummary = 0xa1000000;
@@ -64,8 +64,8 @@ void WasmGcovSink::Write64(uint64_t v) {
   new_bytes_.insert(new_bytes_.end(), p, p + 8);
 }
 
-void WasmGcovSink::StartFile(absl::string_view orig_filename,
-                             uint32_t version, uint32_t checksum) {
+void WasmGcovSink::StartFile(absl::string_view orig_filename, uint32_t version,
+                             uint32_t checksum) {
   if (!enabled()) return;
   const std::string base =
       std::filesystem::path(std::string(orig_filename)).filename().string();
@@ -175,8 +175,8 @@ absl::Status WasmGcovSink::EndFile() {
   std::error_code ec;
   std::filesystem::create_directories(output_dir_, ec);
   if (ec) {
-    return absl::InternalError(absl::StrCat(
-        "wasm_gcov: cannot create ", output_dir_, ": ", ec.message()));
+    return absl::InternalError(absl::StrCat("wasm_gcov: cannot create ",
+                                            output_dir_, ": ", ec.message()));
   }
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
@@ -231,11 +231,13 @@ std::vector<uint64_t> GuestCounters(const WasmGcovEnv& env, uint32_t n,
   return out;
 }
 
-WasmGcovEnv* EnvOf(void* raw) { return static_cast<WasmGcovEnv*>(raw); }
+WasmGcovEnv* EnvOf(void* raw) {
+  return static_cast<WasmGcovEnv*>(raw);
+}
 
 wasm_trap_t* GcdaStartFile(void* raw, wasmtime_caller_t*,
-                           const wasmtime_val_t* args, size_t,
-                           wasmtime_val_t*, size_t) {
+                           const wasmtime_val_t* args, size_t, wasmtime_val_t*,
+                           size_t) {
   WasmGcovEnv* env = EnvOf(raw);
   if (!env->sink.enabled()) return nullptr;
   env->sink.StartFile(GuestCString(*env, args[0].of.i32),
@@ -254,8 +256,8 @@ wasm_trap_t* GcdaEmitFunction(void* raw, wasmtime_caller_t*,
 }
 
 wasm_trap_t* GcdaEmitArcs(void* raw, wasmtime_caller_t*,
-                          const wasmtime_val_t* args, size_t,
-                          wasmtime_val_t*, size_t) {
+                          const wasmtime_val_t* args, size_t, wasmtime_val_t*,
+                          size_t) {
   WasmGcovEnv* env = EnvOf(raw);
   if (!env->sink.enabled()) return nullptr;
   const auto counters =
@@ -279,9 +281,8 @@ wasm_trap_t* GcdaEndFile(void* raw, wasmtime_caller_t*, const wasmtime_val_t*,
   return nullptr;
 }
 
-wasm_trap_t* GcovInit(void* raw, wasmtime_caller_t*,
-                      const wasmtime_val_t* args, size_t, wasmtime_val_t*,
-                      size_t) {
+wasm_trap_t* GcovInit(void* raw, wasmtime_caller_t*, const wasmtime_val_t* args,
+                      size_t, wasmtime_val_t*, size_t) {
   // args = (writeout_fn, reset_fn) table indices; only writeout is
   // ever host-invoked (reset would zero counters we're about to drop).
   EnvOf(raw)->writeout_fns.push_back(static_cast<uint32_t>(args[0].of.i32));
@@ -290,7 +291,8 @@ wasm_trap_t* GcovInit(void* raw, wasmtime_caller_t*,
 
 wasm_functype_t* NI32sToVoid(size_t n) {
   std::vector<wasm_valtype_t*> params(n);
-  for (auto& p : params) p = wasm_valtype_new(WASM_I32);
+  for (auto& p : params)
+    p = wasm_valtype_new(WASM_I32);
   wasm_valtype_vec_t params_vec;
   wasm_valtype_vec_t results_vec;
   wasm_valtype_vec_new(&params_vec, n, params.data());
@@ -364,8 +366,8 @@ absl::Status DumpWasmGcov(wasmtime_context_t* absl_nonnull context,
     wasmtime_val_t val;
     if (!wasmtime_table_get(context, &ext.of.table, idx, &val) ||
         val.kind != WASMTIME_FUNCREF) {
-      return absl::InternalError(absl::StrCat(
-          "wasm_gcov: table slot ", idx, " is not a funcref"));
+      return absl::InternalError(
+          absl::StrCat("wasm_gcov: table slot ", idx, " is not a funcref"));
     }
     wasm_trap_t* trap = nullptr;
     wasmtime_error_t* err = wasmtime_func_call(context, &val.of.funcref,
@@ -374,9 +376,8 @@ absl::Status DumpWasmGcov(wasmtime_context_t* absl_nonnull context,
     if (err != nullptr || trap != nullptr) {
       if (trap != nullptr) wasm_trap_delete(trap);
       if (err != nullptr) wasmtime_error_delete(err);
-      return absl::InternalError(
-          absl::StrCat("wasm_gcov: write-out fn at table slot ", idx,
-                       " failed"));
+      return absl::InternalError(absl::StrCat(
+          "wasm_gcov: write-out fn at table slot ", idx, " failed"));
     }
   }
   return absl::OkStatus();
