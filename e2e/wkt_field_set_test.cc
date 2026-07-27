@@ -603,5 +603,42 @@ citation: conformance row dynamic any/literal_empty; e2e/wkt_field_set_test.cc A
 )CELSKIP";
 }
 
+// ── Proto map-field construction: int/uint key + value setter arms ───
+//
+// Map-field literals route each entry through the per-CPPTYPE key and
+// value reflection setters (eval/internal/cel_host.cc's map-entry
+// insert arms).  The string/bool arms are exercised elsewhere; these
+// four pin the INT32/INT64/UINT32/UINT64 key AND value arms, which no
+// other suite constructs.
+
+TEST_F(WktLiteralFieldTest, MapFieldInt32KeyInt64Value) {
+  ::cel::expr::conformance::proto3::TestAllTypes expected;
+  (*expected.mutable_map_int32_int64())[1] = 2;
+  ExpectConstructsProto("TestAllTypes{map_int32_int64: {1: 2}}", kP3,
+                        expected);
+}
+
+TEST_F(WktLiteralFieldTest, MapFieldInt64KeyInt64Value) {
+  ::cel::expr::conformance::proto3::TestAllTypes expected;
+  (*expected.mutable_map_int64_int64())[-3] = -4;
+  ExpectConstructsProto("TestAllTypes{map_int64_int64: {-3: -4}}", kP3,
+                        expected);
+}
+
+TEST_F(WktLiteralFieldTest, MapFieldUint32KeyUint32Value) {
+  ::cel::expr::conformance::proto3::TestAllTypes expected;
+  (*expected.mutable_map_uint32_uint32())[5u] = 6u;
+  ExpectConstructsProto("TestAllTypes{map_uint32_uint32: {5u: 6u}}", kP3,
+                        expected);
+}
+
+TEST_F(WktLiteralFieldTest, MapFieldUint64KeyUint64Value) {
+  ::cel::expr::conformance::proto3::TestAllTypes expected;
+  (*expected.mutable_map_uint64_uint64())[18446744073709551615ull] = 8u;
+  ExpectConstructsProto(
+      "TestAllTypes{map_uint64_uint64: {18446744073709551615u: 8u}}", kP3,
+      expected);
+}
+
 }  // namespace
 }  // namespace celwasm
