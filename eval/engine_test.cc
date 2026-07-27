@@ -1280,17 +1280,21 @@ TEST(EnginePlanLinkModeTripwireTest, CorrectlyLabeledProgramsPlanInBothModes) {
   }
 }
 
-TEST(EngineWasmCoverageTest, CollectWasmCoverageInertOnNonInstrumentedRuntime) {
-  // `CollectWasmCoverage(dir)` against the normal (non-instrumented)
-  // cel_runtime.wasm: the gcov imports are registered but never
-  // called, so Plan + Eval succeed unchanged and no .gcda output —
-  // not even the directory — is produced.  (Positive collection
-  // against an instrumented runtime is exercised hermetically in
-  // eval/internal/wasm_gcov_test.cc and end-to-end by the
-  // --//runtime:instrument_wasm measurement workflow; this pins the
-  // "inert by default" half of the contract.)
+TEST(EngineWasmCoverageTest, CollectWasmCoverageMatchesRuntimeInstrumentation) {
+  // `CollectWasmCoverage(dir)` behaves per the linked runtime:
+  //   - normal cel_runtime.wasm — the gcov imports are registered
+  //     but never called, so Plan + Eval succeed unchanged and no
+  //     .gcda output (not even the directory) is produced;
+  //   - `--//runtime:instrument_wasm` builds — the Instance's
+  //     destruction dumps per-TU .gcda into exactly the configured
+  //     directory, end-to-end through the engine-level API.
+  // Which arm runs depends on the build config, so both are
+  // asserted conditionally on the directory's existence; either
+  // way the eval result is unaffected and nothing lands anywhere
+  // but `dir`.  (The byte-level sink + glue contract is pinned
+  // hermetically in eval/internal/wasm_gcov_test.cc.)
   const std::string dir =
-      absl::StrCat(::testing::TempDir(), "/engine_wasm_cov_inert");
+      absl::StrCat(::testing::TempDir(), "/engine_wasm_cov_api");
   std::filesystem::remove_all(dir);
   auto engine_or = Engine::NewBuilder().CollectWasmCoverage(dir).Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
@@ -1301,14 +1305,22 @@ TEST(EngineWasmCoverageTest, CollectWasmCoverageInertOnNonInstrumentedRuntime) {
     auto v_or = inst_or->Eval();
     ASSERT_TRUE(v_or.ok()) << v_or.status();
     EXPECT_EQ(*v_or->AsInt(), 42);
-  }  // Instance destroyed here — the dump hook runs (and no-ops).
-  EXPECT_FALSE(std::filesystem::exists(dir));
+  }  // Instance destroyed here — the dump hook runs.
+  if (std::filesystem::exists(dir)) {
+    // Instrumented runtime: collection landed in the configured dir.
+    size_t gcda = 0;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+      EXPECT_EQ(e.path().extension(), ".gcda") << e.path();
+      ++gcda;
+    }
+    EXPECT_GT(gcda, 0u);
+  }
 }
 
 TEST(EngineWasmCoverageTest, LvalueBuilderChainsCoverageDir) {
   // The `&`-qualified overload: configure on a named Builder, then
-  // Build.  Same inert outcome; this pins the overload compiles and
-  // the engine still Plans.
+  // Build.  Pins that the overload compiles, chains, and the engine
+  // still Plans; output-location behavior is covered above.
   const std::string dir =
       absl::StrCat(::testing::TempDir(), "/engine_wasm_cov_lvalue");
   std::filesystem::remove_all(dir);
@@ -1319,7 +1331,6 @@ TEST(EngineWasmCoverageTest, LvalueBuilderChainsCoverageDir) {
   Program program(CompileToBytes(CompilerOptions::LinkMode::kDynamic));
   auto inst_or = engine_or->Plan(program);
   ASSERT_TRUE(inst_or.ok()) << inst_or.status();
-  EXPECT_FALSE(std::filesystem::exists(dir));
 }
 
 TEST(EnginePlanLinkModeTripwireTest, MislabeledStaticProgramRejectedAtPlan) {

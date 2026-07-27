@@ -122,6 +122,22 @@ void ExpectAgree(absl::string_view source, absl::string_view container) {
 TEST(CelCppOracle, IntArithmeticAgrees) {
   ExpectAgree("1 + 1", kP3);
 }
+// Empty-needle `replace` / empty-separator `split` take dedicated
+// interleave/explode code paths (runtime/cel_string_ext_search.cc /
+// cel_string_ext_list.cc) whose semantics were transcribed from
+// cel-cpp — these differentials keep the transcription honest.
+TEST(CelCppOracle, StringReplaceEmptyNeedleAgrees) {
+  ExpectAgree(R"("abc".replace("", "-"))", kP3);
+}
+TEST(CelCppOracle, StringReplaceEmptyNeedleLimitAgrees) {
+  ExpectAgree(R"("abc".replace("", "-", 2))", kP3);
+}
+TEST(CelCppOracle, StringSplitEmptySepAgrees) {
+  ExpectAgree(R"("abc".split("") == ["a", "b", "c"])", kP3);
+}
+TEST(CelCppOracle, StringSplitEmptySepLimitAgrees) {
+  ExpectAgree(R"("abc".split("", 2))", kP3);
+}
 TEST(CelCppOracle, StringConcatAgrees) {
   ExpectAgree("'foo' + 'bar'", kP3);
 }

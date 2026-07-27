@@ -1282,6 +1282,7 @@ struct TzCase {
   int64_t ts_seconds;
   int64_t expected;  // -1 = expect runtime error
   bool expect_error;
+  int32_t ts_nanos = 0;  // sub-second component (getMilliseconds rows)
 };
 
 class TzAccessorE2ETest : public ::testing::TestWithParam<TzCase> {};
@@ -1293,8 +1294,9 @@ TEST_P(TzAccessorE2ETest, IanaOrFixedOffset) {
       absl::StrCat("t.", AccessorMethod(p.accessor), "(\"", p.tz, "\")");
   Instance inst = CompilePlan(compiler, source);
   Activation act;
-  act.Bind("t",
-           Value::Timestamp(absl::UnixEpoch() + absl::Seconds(p.ts_seconds)));
+  act.Bind("t", Value::Timestamp(absl::UnixEpoch() +
+                                 absl::Seconds(p.ts_seconds) +
+                                 absl::Nanoseconds(p.ts_nanos)));
   Value got = EvalOk(inst, act);
   if (p.expect_error) {
     EXPECT_EQ(got.kind(), Value::Kind::kError) << p.label;
@@ -1324,6 +1326,12 @@ INSTANTIATE_TEST_SUITE_P(
                15, false},
         TzCase{"FixedZero_Hours", TsAccessor::kHours, "+00:00", 1234567890, 23,
                false},
+        // getMilliseconds is TZ-invariant (sub-second component) but
+        // routes through its own accessor-kind arm — the only with-TZ
+        // arm the rest of this grid (and the conformance corpus)
+        // never fires.
+        TzCase{"IanaLA_Millis", TsAccessor::kMilliseconds,
+               "America/Los_Angeles", 1234567890, 123, false, 123'000'000},
         // Invalid TZ — runtime error
         TzCase{"InvalidName", TsAccessor::kYear, "NotARealZone", 1234567890, 0,
                true},

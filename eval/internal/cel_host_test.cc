@@ -497,7 +497,8 @@ TEST(Layer2AbsorptionTest, InvalidExternrefSlotYieldsHostAdapterError) {
 // Helper: intern `backing`, stage a CEL_MESSAGE at kMsgSlot, run the
 // probe, return the out CelValue.
 CelValue RunMessageIsZero(
-    Layer2Fixture& f, const std::shared_ptr<const HostMessageBacking>& backing) {
+    Layer2Fixture& f,
+    const std::shared_ptr<const HostMessageBacking>& backing) {
   const uint32_t slot = f.refs.Intern(backing);
   CelValue cv{};
   cv.kind = CEL_MESSAGE;

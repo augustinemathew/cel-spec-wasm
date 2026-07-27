@@ -250,5 +250,48 @@ TEST_F(MultiFunctionE2ETest, FormatWithReceiverChain) {
   EXPECT_EQ(EvalString(R"("count=%d".format(["hello".size()]))"), "count=5");
 }
 
+// Empty-needle replace interleaves the replacement BEFORE each code
+// point (plus one trailing copy while limit budget remains) — the
+// dedicated interleave arm in cel_string_ext_search.cc, which no
+// non-empty needle can reach.  Values oracle-confirmed
+// (testdata/cel_cpp_oracle_test.cc StringReplaceEmptyNeedle*).
+TEST_F(MultiFunctionE2ETest, ReplaceEmptyNeedleInterleaves) {
+  EXPECT_EQ(EvalString(R"("abc".replace("", "-"))"), "-a-b-c-");
+}
+
+TEST_F(MultiFunctionE2ETest, ReplaceEmptyNeedleWithLimit) {
+  EXPECT_EQ(EvalString(R"("abc".replace("", "-", 2))"), "-a-bc");
+}
+
+// Empty-separator split explodes per code point (limit-bounded) —
+// the explode arm in cel_string_ext_list.cc.  Oracle-confirmed
+// (StringSplitEmptySep*).
+TEST_F(MultiFunctionE2ETest, SplitEmptySeparatorExplodesPerCodePoint) {
+  EXPECT_EQ(EvalBool(R"("abc".split("") == ["a", "b", "c"])"), true);
+  EXPECT_EQ(EvalBool(R"("abc".split("", 2) == ["a", "bc"])"), true);
+}
+
+// A transform with nothing to change takes the no-mutation fast path
+// (the input span is vended back untouched).
+TEST_F(MultiFunctionE2ETest, CaseTransformNoOpFastPath) {
+  EXPECT_EQ(EvalString(R"("123 !?".upperAscii())"), "123 !?");
+  EXPECT_EQ(EvalString(R"("123 !?".lowerAscii())"), "123 !?");
+}
+
+// A specifier/argument kind mismatch surfaces a CEL error Value at
+// eval — the formatter's error path, which the happy-path suites
+// above never take.
+TEST_F(MultiFunctionE2ETest, FormatKindMismatchSurfacesError) {
+  Compiler::Builder b;
+  auto compiler = std::move(b).Build();
+  ABSL_CHECK_OK(compiler);
+  auto instance =
+      CompilePlan(*compiler, R"("%d".format(["not a number"]))");
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(v->IsError());
+}
+
 }  // namespace
 }  // namespace celwasm

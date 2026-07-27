@@ -1091,5 +1091,53 @@ TEST_F(ComprehensionConsumerE2ETest, FilterResultEqualsEmptyList) {
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
+// ── Comprehension over a poisoned range ──────────────────────────────
+//
+// When the range expression itself evaluates to an error (here: an
+// out-of-bounds index producing an error-valued list / map), the
+// comprehension must propagate the error, not iterate.  Exercises the
+// runtime's poisoned-view vending (`vend_poison_list_view` /
+// `vend_poison_map_iter` in runtime/cel_runtime.c): the macro asks the
+// errored slot for a list view / map iterator and must receive a
+// poisoned one that walks zero elements and carries the error out.
+
+TEST(PoisonedRangeE2ETest, ListRangeErrorPropagatesThroughAll) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // [[1]][5] is a checker-valid list<int> expression that errors at
+  // eval (index out of bounds); .all over it must yield that error.
+  auto instance =
+      CompilePlan(*compiler, "([[1]][5]).all(x, x > 0)");
+  Activation a;
+  auto v_or = instance.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
+}
+
+TEST(PoisonedRangeE2ETest, ListRangeErrorPropagatesThroughMap) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "([[1]][5]).map(x, x + 1)");
+  Activation a;
+  auto v_or = instance.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
+}
+
+TEST(PoisonedRangeE2ETest, MapRangeErrorPropagatesThroughAll) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // {'a': {'b': 1}}['zzz'] is a checker-valid map<string,int>
+  // expression that errors at eval (no such key); iterating its keys
+  // must carry the error out through the poisoned map iterator.
+  auto instance = CompilePlan(
+      *compiler, "({'a': {'b': 1}}['zzz']).all(k, k != '')");
+  Activation a;
+  auto v_or = instance.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
+}
+
 }  // namespace
 }  // namespace celwasm

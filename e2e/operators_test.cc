@@ -1623,6 +1623,51 @@ TEST_F(MessageEqualityE2ETest, MessageReflexiveEquality) {
   EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c != c"), act).AsBool(), false);
 }
 
+// ── Bool-element membership + runtime-error operator paths ───────────
+
+// `_in_` over a bool-element list takes the runtime's bool scan arm
+// (`arena_list_scan_bool` in cel_runtime.c) — every other suite (and
+// the conformance corpus) exercises only int/uint/double/string
+// element scans.
+TEST(BoolListInE2ETest, PresentAndAbsent) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  struct Case {
+    absl::string_view source;
+    bool expected;
+  };
+  for (const Case& c : {Case{"true in [false, true]", true},
+                        Case{"true in [false, false]", false},
+                        Case{"false in [true, false, true]", true}}) {
+    auto program = compiler->Compile(c.source, e2e::DefaultOpts());
+    ASSERT_TRUE(program.ok()) << c.source << ": " << program.status();
+    auto instance = engine->Plan(*program);
+    ASSERT_TRUE(instance.ok()) << instance.status();
+    auto value = instance->Eval();
+    ASSERT_TRUE(value.ok()) << value.status();
+    EXPECT_EQ(*value->AsBool(), c.expected) << c.source;
+  }
+}
+
+// `matches` with a pattern that fails to compile at eval time (an
+// unterminated character class) must produce a CEL error Value —
+// the regex-compile poison path, unreachable via valid patterns.
+TEST(MatchesErrorE2ETest, InvalidPatternSurfacesError) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  auto program = compiler->Compile(R"("abc".matches("["))", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  auto value = instance->Eval();
+  ASSERT_TRUE(value.ok()) << value.status();
+  EXPECT_TRUE(value->IsError());
+}
+
 // ── FullPipelineSmoke — folded in from the retired mvp_concat_test.cc ──
 //
 // `"foo" + "bar"` exercises the full pipeline in one expression:
