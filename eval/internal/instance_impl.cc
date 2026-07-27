@@ -5,6 +5,8 @@
 
 namespace celwasm {
 
+// NOLINTNEXTLINE(bugprone-exception-escape): any bad_alloc inside the
+// gcov dump / logging is process-fatal by repo policy (never caught).
 InstanceImpl::~InstanceImpl() {
   // Flush wasm-side gcov counters (no-op unless collection is active)
   // while the store — and with it the guest memory the counters live

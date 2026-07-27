@@ -32,8 +32,8 @@ int DecodeGcovVersion(uint32_t version) {
   const uint8_t c3 = version >> 24;
   const uint8_t c2 = (version >> 16) & 255;
   const uint8_t c1 = (version >> 8) & 255;
-  return c3 >= 'A' ? (c3 - 'A') * 100 + (c2 - '0') * 10 + (c1 - '0')
-                   : (c3 - '0') * 10 + (c1 - '0');
+  return c3 >= 'A' ? ((c3 - 'A') * 100) + ((c2 - '0') * 10) + (c1 - '0')
+                   : ((c3 - '0') * 10) + (c1 - '0');
 }
 
 }  // namespace
@@ -55,12 +55,12 @@ uint32_t WasmGcovSink::ReadOld32() {
 }
 
 void WasmGcovSink::Write32(uint32_t v) {
-  const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+  const auto* p = reinterpret_cast<const uint8_t*>(&v);
   new_bytes_.insert(new_bytes_.end(), p, p + 4);
 }
 
 void WasmGcovSink::Write64(uint64_t v) {
-  const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+  const auto* p = reinterpret_cast<const uint8_t*>(&v);
   new_bytes_.insert(new_bytes_.end(), p, p + 8);
 }
 
@@ -214,7 +214,7 @@ absl::string_view GuestCString(const WasmGcovEnv& env, uint32_t ptr) {
     ABSL_LOG(WARNING) << "wasm_gcov: unterminated filename string";
     return "";
   }
-  return absl::string_view(start, len);
+  return {start, len};
 }
 
 std::vector<uint64_t> GuestCounters(const WasmGcovEnv& env, uint32_t n,
@@ -291,8 +291,9 @@ wasm_trap_t* GcovInit(void* raw, wasmtime_caller_t*, const wasmtime_val_t* args,
 
 wasm_functype_t* NI32sToVoid(size_t n) {
   std::vector<wasm_valtype_t*> params(n);
-  for (auto& p : params)
+  for (auto& p : params) {
     p = wasm_valtype_new(WASM_I32);
+  }
   wasm_valtype_vec_t params_vec;
   wasm_valtype_vec_t results_vec;
   wasm_valtype_vec_new(&params_vec, n, params.data());
