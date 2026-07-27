@@ -39,3 +39,4 @@ benchmark/eval/results/raw/
 # (bazel-built or probe-compiled), not sources.  Committed probe
 # binaries once weighed ~19MB; deleted 2026-07-25.
 *.wasm
+__pycache__/
