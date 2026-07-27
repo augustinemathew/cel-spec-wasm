@@ -26,6 +26,7 @@
 #include "eval/internal/cel_plugin.h"
 #include "eval/internal/instance_impl.h"
 #include "eval/internal/module_imports.h"
+#include "eval/internal/wasm_gcov.h"
 #include "eval/internal/required_fn_check.h"
 #include "eval/internal/wasmtime_engine_state.h"
 #include "eval/typed_function.h"
@@ -205,6 +206,16 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
     return s;
   }
   if (auto s = RegisterWasiStubs(impl->linker); !s.ok()) return s;
+  // gcov write-out imports for a coverage-instrumented runtime
+  // (--//runtime:instrument_wasm).  Registering is harmless for the
+  // normal artifact — it never calls them — and the callbacks no-op
+  // unless CELWASM_WASM_GCOV_DIR is set.  See //eval:wasm_gcov.
+  impl->gcov_env = std::make_unique<celwasm::WasmGcovEnv>();
+  if (auto s =
+          celwasm::RegisterWasmGcovImports(impl->linker, impl->gcov_env.get());
+      !s.ok()) {
+    return s;
+  }
   return absl::OkStatus();
 }
 
@@ -243,6 +254,14 @@ absl::Status CacheRuntimeMemory(wasmtime_context_t* ctx,
   // shared-memory pointer owned by the store; we clone it so this
   // InstanceImpl owns its own refcounted handle (deleted in the dtor).
   impl->memory = wasmtime_sharedmemory_clone(mem_ext.of.sharedmemory);
+  // Hand the gcov collector its (stable) view of linear memory — the
+  // write-out callbacks read filename strings and counter arrays out
+  // of the guest at dump time.
+  if (impl->gcov_env != nullptr) {
+    impl->gcov_env->mem_base = reinterpret_cast<const uint8_t*>(
+        wasmtime_sharedmemory_data(impl->memory));
+    impl->gcov_env->mem_size = wasmtime_sharedmemory_data_size(impl->memory);
+  }
   return absl::OkStatus();
 }
 

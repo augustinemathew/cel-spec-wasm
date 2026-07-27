@@ -775,6 +775,39 @@ cc_test(
     ],
 )
 
+# Internal — host-side gcov (.gcda) collection for an instrumented
+# cel_runtime.wasm (built with --//runtime:instrument_wasm).  See
+# doc/implementation-plan/rewrite/m38-wasm-gcov-coverage.md.
+cc_library(
+    name = "wasm_gcov",
+    srcs = ["internal/wasm_gcov.cc"],
+    hdrs = ["internal/wasm_gcov.h"],
+    tags = ["manual"],
+    deps = [
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
+cc_test(
+    name = "wasm_gcov_test",
+    size = "small",
+    srcs = ["internal/wasm_gcov_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":wasm_gcov",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "//third_party/wasmtime:wasmtime",
+    ],
+)
+
 # Internal — pImpl payload for cel::Instance.  Owned via
 # unique_ptr from the public Instance.  Tagged manual; wasmtime dep.
 cc_library(
@@ -786,7 +819,10 @@ cc_library(
         ":abi_decode",
         ":cel_host_wasmtime",
         ":host_callback",
+        ":wasm_gcov",
         "//abi:cel_abi_cc_proto",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status",
         "//third_party/wasmtime:wasmtime",
     ],
 )
@@ -912,6 +948,7 @@ cc_library(
         ":required_fn_check",
         ":typed_function",
         ":value",
+        ":wasm_gcov",
         ":wasmtime_engine_state",
         "//abi:celfn_wire",
         "//abi:plugin",

@@ -18,6 +18,7 @@
 #include "abi/cel_abi.pb.h"
 #include "eval/host_callback.h"
 #include "eval/internal/cel_host_wasmtime.h"
+#include "eval/internal/wasm_gcov.h"
 #include "wasmtime.h"
 
 namespace celwasm {
@@ -111,6 +112,14 @@ struct InstanceImpl {
   // wasmtime's per-store cleanup, so the captured func handles stay
   // valid until the store is torn down.
   std::vector<std::shared_ptr<void>> plugin_fn_envs;
+
+  // gcov collection state for a coverage-instrumented runtime
+  // (--//runtime:instrument_wasm).  Always allocated by `InitLinker`
+  // (the import callbacks need a stable env pointer); inert unless
+  // CELWASM_WASM_GCOV_DIR is set AND the module registered write-out
+  // functions.  The destructor drives the dump — counters live in
+  // guest memory, so it must happen before the store is torn down.
+  std::unique_ptr<WasmGcovEnv> gcov_env;
 
   InstanceImpl() = default;
   ~InstanceImpl();
