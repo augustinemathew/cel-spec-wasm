@@ -4,8 +4,10 @@ Status: report — 2026-07-27, run against `ba28793` (master at the time of the
 audit; PR #23 merge).
 
 **Verdict: mixed.** The suite is large (181 test targets, 143 files, ~4.3k test
-case macros, conformance at 2035/2516 with 0 FAILs) and the per-component
-pairing discipline mostly holds. But (a) the e2e layer is organized by
+case macros, conformance at 2035/2516 with 0 FAILs; all 180 coverage-run
+targets pass) and coverage is healthy at the component level — compiler
+90.2% / native runtime 88.8% / eval host 82.5% line coverage — and the
+per-component pairing discipline mostly holds. But (a) the e2e layer is organized by
 milestone history rather than language surface, so finding "where is `X`
 tested" requires a decoder ring; (b) several public API members have zero or
 single-file coverage; (c) the two biggest first-party TUs
@@ -148,8 +150,58 @@ harness gap).
 
 ## 2. Coverage numbers
 
-> Pending: the `bazel coverage` run is in flight; this section is filled in
-> by the follow-up commit on this branch.
+All **180 targets executed and passed** under the coverage config (the 181st,
+the fuzz divergence miner, was excluded by design). Mechanics worth
+recording: coverage had to run as **two merged passes**, because
+instrumenting `//runtime` leaks gcov hooks into the wasm32 cross-compile —
+`cel_runtime.wasm` then imports `env::llvm_gcda_start_file` and every
+wasm-instantiating test aborts at Plan. Pass 1 ran the 99 native-only suites
+with `//runtime` instrumented; pass 2 ran the 81 wasm-instantiating suites
+(all e2e, engine/instance, conformance unit tests, tools) with `//runtime`
+de-instrumented. Reports merged per-line. Anyone re-running coverage must
+repeat this split (or fix the wasi toolchain to drop coverage flags).
+
+### 2.1 Per-component summary (line / function coverage)
+
+| Component | Lines | Line % | Func % |
+|---|---:|---:|---:|
+| `compiler/` (all) | 4253/4717 | **90.2%** | 94.6% |
+| `runtime/` (native build) | 4835/5443 | **88.8%** | 90.7% |
+| `eval/` (host) | 5584/6768 | **82.5%** | 90.1% |
+| `abi/` | 557/586 | 95.1% | 100% |
+| `shared/` | 133/139 | 95.7% | 100% |
+| `tools/` (cel CLI + wat_runner) | 1477/1946 | 75.9% | 89.4% |
+| `conformance/` (harness code) | 146/647 | 22.6%* | 24.2%* |
+
+\* Measurement artifact, mostly: the corpus driver (`run_conformance`) is a
+`manual` `cc_binary`, not a bazel test, so the 2×2516-row conformance run
+contributes nothing here; `runner.cc` (12%) and `binding_marshal.cc` (50%)
+are exercised almost entirely by that driver. The *unit* tests
+(`runner_test`, `binding_marshal_test`) cover only helpers. If harness
+coverage matters, teach the gate script to run the driver under
+instrumentation once per release.
+
+Sub-component detail: `compiler/codegen` 89.2%, `compiler/frontend` 91.3%,
+`compiler/internal` 93.7%, `compiler/celfn` 89.7%, `compiler/ir` 92.5%;
+`eval/internal` 81.5% (5.4k-line `cel_host.cc` dominates), `eval/engine.cc`
+86.4%, `eval/instance.cc` 76.7%, `eval/host_call_context.cc` 77.3%,
+`eval/host` (cel_log) 84.5%.
+
+### 2.2 Lowest-coverage files (and what the uncovered lines are)
+
+| File | Line % | What's actually uncovered |
+|---|---:|---|
+| `runtime/cel_time.c` | 68.4% | the entire `*_with_tz` accessor family, `cel_int_to_ts/dur`, `cel_ts_to_int`, `cel_dur_minutes/seconds`, `duration_in_range` — **zero native hits**; exercised only through the wasm path by e2e m7b |
+| `runtime/cel_runtime.c` | 74.7% | `cel_host_cel_*` import shims (wasm-only by construction — a permanent native blind spot), plus genuinely untested-natively helpers: `cel_list_append_at_if_bool`, `cel_map_insert_at_if_bool`, `cel_not_equals_at_vv`, `cel_list_in/size`, `cel_map_in/size/count` |
+| `tools/cel` | 75.2% | CLI error/edge arms |
+| `eval/instance.cc` | 76.7% | `EncodeNull`, `WasmTrapToStatus`, move-assign, several activation-encode error arms |
+| `eval/host_call_context.cc` | 77.3% | arg/return error arms (wrong-kind, bounds) |
+| `runtime/cel_string_format_render.cc` | 80.4% | render error paths (consistent with CELW-0008/0009 being open) |
+| `conformance/binding_marshal.cc` | 49.7% | see the artifact note above |
+
+The wasm-side caveat from §Method applies throughout: these are native-build
+numbers; the wasm copy of the runtime is behaviour-covered by e2e + the
+conformance corpus but is invisible to gcov.
 
 ## 3. Public API surface vs coverage
 
@@ -316,6 +368,15 @@ should be part of the reorganization commit (§6), not left to drift further.
     behaviour-parity via e2e.
   - `runtime/cel_string_format_render_test.cc` — direct render cases per
     directive × operand kind, especially the CELW-0008/0009 boundaries.
+  - **`runtime/cel_time_test.cc`: add the `*_with_tz` family** — coverage
+    shows every `_with_tz` accessor plus `cel_int_to_ts/dur`,
+    `cel_ts_to_int`, `cel_dur_minutes/seconds` at zero native hits (only the
+    wasm path via e2e m7b exercises them). Same for the comprehension
+    helpers in `cel_runtime.c` (`cel_list_append_at_if_bool`,
+    `cel_map_insert_at_if_bool`, `cel_not_equals_at_vv`,
+    `cel_list_in/size`, `cel_map_in/size/count`) — native cases belong in
+    the kernel suites so a bad edit fails a 2-second unit test, not a
+    5-minute e2e.
 
 ### 5.4 Language-surface additions (from §4.2)
 
