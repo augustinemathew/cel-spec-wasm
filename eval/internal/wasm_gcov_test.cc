@@ -44,8 +44,7 @@ std::string TestDir(absl::string_view name) {
 
 std::vector<uint8_t> ReadFileBytes(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
-  return {std::istreambuf_iterator<char>(in),
-          std::istreambuf_iterator<char>()};
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
 uint32_t U32At(const std::vector<uint8_t>& b, size_t word) {
