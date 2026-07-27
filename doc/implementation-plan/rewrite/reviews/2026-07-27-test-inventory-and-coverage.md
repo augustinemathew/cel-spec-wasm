@@ -203,6 +203,78 @@ The wasm-side caveat from §Method applies throughout: these are native-build
 numbers; the wasm copy of the runtime is behaviour-covered by e2e + the
 conformance corpus but is invisible to gcov.
 
+> The caveat above is now CLOSED by §2.3 — m38 made the wasm copy
+> measurable.
+
+### 2.3 Wasm-side runtime coverage (m38 measurement run, 2026-07-27)
+
+Collected per m38 (`--//runtime:instrument_wasm` + host-side gcda
+collection; workflow `scripts/coverage/collect_wasm_gcov.sh` +
+`wasm_gcov_report.py`), one attributable counter set per workload: all 34
+dynamic e2e binaries, the 3 wasm-instantiating `//eval` manual suites
+(engine / instance / memory_grow_stability), and the conformance corpus
+(dynamic mode, 2035 PASS — unchanged).  Headline, for `runtime/*` TUs as
+compiled into the shipping `cel_runtime.wasm`:
+
+| Scope | Line | Function |
+|---|---:|---:|
+| all 38 workloads | **87.3%** (4570/5235) | **95.1%** (526/553) |
+| e2e suites only (no conformance) | 79.2% | 88.4% |
+
+Per-workload data + gap/redundancy pivots: `report.json` / `report.html`
+from `scripts/coverage/wasm_gcov_report.py` (regenerate; not committed).
+
+Findings against §2.2's "believed covered via the wasm path" claims:
+
+  - **`cel_time.c` `*_with_tz` family: CONFIRMED covered** through the
+    wasm path (90.2% line for the TU) — mostly by the conformance
+    corpus, not by e2e; `getMilliseconds(tz)` was the one arm nothing
+    fired, now pinned by `time_test.cc` `IanaLA_Millis`.
+  - **`cel_runtime.c` comprehension/aggregate helpers: CONFIRMED
+    covered** (81% line for the TU), with two exceptions that are
+    defense-in-depth, not gaps (below).
+  - The measurement run surfaced real e2e gaps that are now pinned by
+    new cases: negative-int / >2^63-uint indexed-map key hashing
+    (`map_index_test`), bool-element list `in` (`operators_test`),
+    poisoned-range comprehensions (`comprehension_test`), 4-byte UTF-8
+    `string(bytes)` (`conversion_test`), invalid-regex `matches`
+    (`operators_test`), `format` kind-mismatch + empty-needle `replace`
+    + empty-separator `split` + case-transform no-op (`string_ext_test`,
+    with oracle differentials in `cel_cpp_oracle_test.cc`).
+
+The 27 remaining zero-hit functions classify as (verified by reading
+call sites, not guessed):
+
+  - **Native-test-only helpers compiled into the wasm artifact** (~11
+    fns): `cel_make.c`'s scalar constructors + span views (only
+    `cel_make_string` has a wasm-path caller, `cel_net_ext.c`),
+    `arena_cursor` / `arena_capacity`, `cel_memory_size_` /
+    `cel_mem_size`.  Restructure candidate: move to a test-support TU
+    so the shipped kernel stops carrying them.
+  - **Never-emitted dispatch arms** (8 fns): `cel_compare.c`'s
+    monomorphic eq/ne helpers (`cel_int_eq_at_vv`, …) — no codegen
+    site references them (equality lowers polymorphically).  Delete
+    candidates.
+  - **Defense-in-depth, unreachable through checked expressions** (~8
+    fns): `vend_poison_list_view` / `vend_poison_map_iter` (the
+    comprehension prologue pre-checks CEL_ERROR/CEL_UNKNOWN before
+    calling the runtime — these fire only on codegen drift),
+    `cel_hash_double_key` / `cel_hash_double_sentinel` (double lookup
+    keys are checker-rejected in the static subset), the per-TU
+    `poison` instances of the same character, `arena_oom_block`,
+    `utf8_four_byte_valid`'s remaining branch.  Keep; they are the
+    miscompile tripwires CLAUDE.md mandates.
+
+Line-coverage ceiling: of the 665 uncovered lines, 527 sit in scattered
+runs of ≤3 lines — overwhelmingly the per-helper defense-in-depth error
+branches of the same character (kind-check poisons behind
+checker-guaranteed types).  With the native-test-only + never-emitted
+code relocated/deleted (~140 lines) the raw number rises mechanically;
+the defense-in-depth branches are load-bearing and *should not* be
+chased with artificial tests.  95%+ **function** coverage is the
+meaningful bar met tonight; the line number is expected to plateau in
+the high 80s / low 90s until the restructure lands.
+
 ## 3. Public API surface vs coverage
 
 ### 3.1 Visibility drift (CLAUDE.md vs BUILD reality)

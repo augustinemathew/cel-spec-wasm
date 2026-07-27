@@ -3493,6 +3493,33 @@ References to `CelfnType` in earlier shipped-milestone sections above
       empty-witness InvalidArgument guards; the emitters'
       empty-payload InternalErrors; Argkind's `"unknown"` fallbacks.
 
+## Rewrite M38 — wasm-side gcov coverage collected by the eval host (shipped 2026-07-27)
+
+- [x] `WasmGcovSink` / glue — .gcda header/record layout, merge summing,
+      shape-mismatch fallback, hermetic WAT-driven import registration +
+      table-driven dump (`eval/internal/wasm_gcov_test.cc`, 13 cases).
+- [x] `Engine::Builder::CollectWasmCoverage` — config-aware end-to-end
+      pin: inert on the normal artifact / collects into the configured
+      dir on an instrumented one; lvalue-chain overload
+      (`eval/engine_test.cc` EngineWasmCoverageTest).
+- [x] Measurement-run gap cases added where the per-workload data showed
+      zero-hit runtime functions (each cites its arm):
+      indexed-map negative-int + >2^63-uint key tokens
+      (`e2e/map_index_test.cc`), poisoned-range comprehension
+      propagation (`e2e/comprehension_test.cc`), bool-element list `in`
+      + invalid-regex `matches` (`e2e/operators_test.cc`), 4-byte UTF-8
+      `string(bytes)` valid/invalid/above-ceiling
+      (`e2e/conversion_test.cc`), `getMilliseconds(tz)`
+      (`e2e/time_test.cc`), `format` kind-mismatch, empty-needle
+      `replace`, empty-separator `split`, case-transform no-op
+      (`e2e/string_ext_test.cc`, oracle differentials in
+      `testdata/cel_cpp_oracle_test.cc`).
+- [x] Compilation limits: source-size boundary pair at exactly
+      100,000 / 100,001 codepoints (`e2e/limits_test.cc` SourceSize_*,
+      cel-cpp `parser/internal/options.h:22` cited).
+- [x] Taxonomy drift guard: `//e2e:taxonomy_validate_test` pins
+      `e2e/test_taxonomy.json` ↔ `e2e/BUILD.bazel` ↔ surface vocabulary.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in
