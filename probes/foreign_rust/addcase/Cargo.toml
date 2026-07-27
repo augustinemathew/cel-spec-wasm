@@ -1,0 +1,18 @@
+# Probe crate — manual Rust authoring of a cel-wasm plugin.
+# No repo codegen: the wit/ dir carries the fns.wit that
+# `cel generate` emitted for rustadd.idl; wit-bindgen's macro
+# generates the guest glue at compile time.
+[package]
+name = "rustadd-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.36"
+
+[profile.release]
+opt-level = "s"
+lto = true

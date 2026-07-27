@@ -1,0 +1,6 @@
+// Probe IDL — manual Rust authoring path (m35 follow-on).
+// One scalar fn; proto case comes after this proves the contract.
+
+Module rustadd;
+
+int @plugin.add(int a, int b);

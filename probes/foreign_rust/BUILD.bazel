@@ -1,0 +1,19 @@
+# Probe infra — manual Rust plugin authoring (deleted at closeout per
+# the probe discipline in CLAUDE.md).  The runner consumes only public
+# API targets; the Rust component itself is built by build.sh with
+# cargo (outside bazel — the probe IS the manual path).
+cc_binary(
+    name = "probe_runner",
+    srcs = ["probe_runner.cc"],
+    deps = [
+        "//abi:plugin",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+    ],
+)
