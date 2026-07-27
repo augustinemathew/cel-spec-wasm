@@ -149,6 +149,20 @@ Done and verified in this branch:
     `CELWASM_WASM_GCOV_DIR` set → 15 .gcda files, decoded by
     `llvm-cov gcov` against the build's .gcno (see §4 numbers).
 
+**The full measurement run is DONE (2026-07-27, this branch):** all 37
+dynamic e2e/eval binaries green against the instrumented runtime, plus
+the 2,516-row conformance corpus, 26 instrumented TUs harvested
+(`cel_time.c` merged 26,650 runs). Results — runtime/ 84.5% wasm-side,
+93.5% native∪wasm — and the full per-file comparison + findings are in
+`reviews/2026-07-27-test-inventory-and-coverage.md` §2.3. Operational
+notes from the run: three suites (`engine_test_dynamic`, both plugin
+tests) load fixtures via runfiles and need
+`TEST_SRCDIR=$PWD/<bin>.runfiles TEST_WORKSPACE=_main` when run outside
+`bazel test`; `llvm-cov gcov` must run with the repo's `runtime/`
+resolvable from the cwd (symlink suffices) or it emits header-only
+.gcov files; `scripts/coverage/gcov_to_lcov.py` folds the output for
+`lcov_merge.py`/`lcov_report.py`.
+
 Remaining before this milestone can close:
 
   1. **Regression pass in the default config** — the wiring touches
@@ -156,15 +170,11 @@ Remaining before this milestone can close:
      `//eval:engine_test_{dynamic,static}`,
      `//eval:instance_test_{dynamic,static}`, a dynamic+static e2e pair,
      and `//e2e:m28_static_link_test` un-flagged, then the normal
-     `$PROJ` + conformance gates.
+     `$PROJ` + conformance gates. (The un-flagged wiring IS exercised
+     implicitly — `//eval:wasm_gcov_test` passes and the flag-off
+     artifact is byte-identical — but the explicit pass hasn't run.)
   2. **`scripts/lint.sh --branch`** over the diff.
-  3. **The full measurement run** (§4) over all dynamic e2e binaries +
-     the conformance corpus, and fold a "wasm-side coverage" subsection
-     into `reviews/2026-07-27-test-inventory-and-coverage.md` §2 —
-     including the native-vs-wasm comparison for the zero-native-hit
-     families that report flagged (`cel_time.c` `*_with_tz`,
-     `cel_runtime.c` comprehension helpers).
-  4. Closeout per CLAUDE.md: status line here, testing-checklist row,
+  3. Closeout per CLAUDE.md: status line here, testing-checklist row,
      and a decision on whether static-link mode should also be
      measured (imports are registered either way; only the workflow is
      dynamic-scoped today).
