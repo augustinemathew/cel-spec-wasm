@@ -292,7 +292,8 @@ TEST(WasmGcovGlueTest, DumpInvokesWriteoutAndWritesGcda) {
   std::vector<uint8_t> guest_mem(128, 0);
   const char kName[] = "cel_glue.gcda";
   std::memcpy(guest_mem.data(), kName, sizeof(kName));
-  const uint64_t c0 = 3, c1 = 4;
+  const uint64_t c0 = 3;
+  const uint64_t c1 = 4;
   std::memcpy(guest_mem.data() + 64, &c0, 8);
   std::memcpy(guest_mem.data() + 72, &c1, 8);
   env.mem_base = guest_mem.data();
