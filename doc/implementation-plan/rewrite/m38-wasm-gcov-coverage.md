@@ -174,3 +174,101 @@ collection is single-threaded, unlocked, dynamic-mode-scoped; the
 `.gcno` pairing requires the combined-flags build in §4; the sink bumps
 the run count once per file per dump (deviation from compiler-rt's
 once-per-process quirk, noted in the .cc).
+
+## 7. Session context for pickup
+
+Everything below is state from the session that produced this branch
+(2026-07-27, base `ba28793`), recorded so a fresh agent/machine can
+continue without re-deriving it.
+
+### 7.1 Where this came from
+
+This milestone is the direct follow-up to the audit at
+`doc/implementation-plan/rewrite/reviews/2026-07-27-test-inventory-and-coverage.md`
+(both commits are ancestors of this branch). The audit measured
+coverage for the runtime on the **native** build only and flagged two
+function families with zero native hits that are believed covered via
+the wasm path (`cel_time.c` `*_with_tz` + conversions;
+`cel_runtime.c` comprehension/aggregate helpers, minus the
+`cel_host_cel_*` import shims which are wasm-only by construction).
+The whole point of the m38 measurement run is to confirm or refute
+that belief with real wasm-side line data and write the comparison
+into that report's §2.
+
+### 7.2 How the audit's NATIVE numbers were produced (reproduce before comparing)
+
+Three non-obvious mechanics, all learned the hard way:
+
+  1. **The toolchain's default gcov mismatches clang.** With the
+     autodetected clang toolchain, bazel's collector runs GNU `gcov`,
+     which cannot read clang's profile output — tests "pass" with
+     empty coverage.dat. Fix: a wrapper script
+     (`exec llvm-cov gcov "$@"`) and
+     `coverage --repo_env=GCOV=<wrapper>` in `user.bazelrc`. Compile
+     flags are unchanged, so this costs no rebuild.
+  2. **A single `bazel coverage` pass cannot work.** Instrumenting
+     `//runtime` leaks the profile flags into the wasm32 cross-compile
+     (this is also what m38 exploits deliberately) — before this
+     branch, every wasm-instantiating test then died at Plan on the
+     unresolved `env::llvm_gcda_start_file` import. So native coverage
+     ran as two passes, merged:
+       - pass 1: `--instrumentation_filter='^//(compiler|eval|shared|abi|runtime|conformance|tools)[/:]'`
+         over the 99 native-only suites;
+       - pass 2: the same minus `runtime` over the 81
+         wasm-instantiating suites;
+       - `scripts/coverage/lcov_merge.py pass1.dat pass2.dat merged.dat`
+         then `scripts/coverage/lcov_report.py merged.dat --misses`.
+     NOTE: now that this branch's host hooks exist, the imports
+     resolve, so a single-pass run may work again — but `--export-table`
+     is keyed to `--//runtime:instrument_wasm`, not to the coverage
+     config, so the dump step would error `no __indirect_function_table`
+     (collection is env-var-gated anyway; it degrades to a warning).
+     The two-pass recipe stays the documented native path.
+  3. **The fuzz miner is excluded**: `//e2e/fuzz:cel_oracle_property_test`
+     is a divergence discovery tool, not a regression suite.
+
+Native headline at `ba28793`, all 180 targets green: compiler 90.2% /
+runtime (native) 88.8% / eval 82.5% / abi 95.1% / shared 95.7% /
+tools 75.9% lines. Full tables in the audit report.
+
+### 7.3 Tooling committed with this branch
+
+  - `scripts/coverage/lcov_merge.py` — merge lcov .dat reports.
+  - `scripts/coverage/lcov_report.py` — per-file/per-dir tables +
+    uncovered ranges.
+  - `scripts/coverage/wasm_sections.py` — wasm import/export dumper
+    (the §2 probe tool).
+
+The wasm-side gcda→lcov step still needs a converter (llvm-cov gcov's
+per-file output → lcov `DA:` records, or just report percentages
+directly from `llvm-cov gcov -n`); nothing exotic — the report script
+only needs `SF:`/`DA:` records.
+
+### 7.4 Decisions already made (don't relitigate silently)
+
+  - **Host-implemented gcda imports over porting compiler-rt to wasi**:
+    wasi-sdk 25 ships no profile runtime, GCDAProfiling.c wants mmap,
+    and host-side collection needs no preopened WASI dirs. Recorded in
+    §2/§3; revisit only if wasi-sdk starts shipping
+    `libclang_rt.profile-wasm32`.
+  - **Imports registered unconditionally** on every Plan linker:
+    harmless for normal modules, and it means an instrumented Program
+    (static mode) also instantiates. Collection stays env-var-gated.
+  - **Run-count deviation** from compiler-rt (per-file-per-dump instead
+    of once-per-process) — deliberate, commented in the .cc, asserted
+    by the tests.
+  - **Basename flattening** of gcda paths is safe because runtime TU
+    basenames are unique; revisit if a second instrumented module ever
+    collects into the same directory.
+  - The milestone number is **m38** (m37 is reserved/taken elsewhere).
+
+### 7.5 Environment note
+
+This branch was produced in a sandboxed cloud session whose egress
+policy blocks bcr.bazel.build, GitHub `/archive/` tarballs,
+mirror.bazel.build, and antlr.org; Bazel was fed via a registry mirror
++ repository-cache injection, all confined to the session's gitignored
+`user.bazelrc`. None of that is needed on a normal network — a stock
+checkout builds as usual. The only `user.bazelrc` line worth copying
+locally is the coverage GCOV wrapper from §7.2 when the host compiler
+is clang.
