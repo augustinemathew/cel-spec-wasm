@@ -209,8 +209,10 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
   // gcov write-out imports for a coverage-instrumented runtime
   // (--//runtime:instrument_wasm).  Registering is harmless for the
   // normal artifact — it never calls them — and the callbacks no-op
-  // unless CELWASM_WASM_GCOV_DIR is set.  See //eval:wasm_gcov.
-  impl->gcov_env = std::make_unique<celwasm::WasmGcovEnv>();
+  // unless the engine was built with a coverage destination
+  // (`Builder::CollectWasmCoverage`, falling back to
+  // CELWASM_WASM_GCOV_DIR).  See //eval:wasm_gcov.
+  impl->gcov_env = std::make_unique<celwasm::WasmGcovEnv>(state->wasm_gcov_dir);
   if (auto s =
           celwasm::RegisterWasmGcovImports(impl->linker, impl->gcov_env.get());
       !s.ok()) {
@@ -488,7 +490,7 @@ absl::Status BindHelpersInstance(celwasm::InstanceImpl* impl,
 // call; the strip tool removes those wrappers but explicitly exports
 // `__wasm_call_ctors` so it survives DCE.  Today the tested
 // expression surface is empirically zero-init-safe (see
-// `e2e/cctz_doubles_test.cc`), but a future surface might land a C++
+// `e2e/static_init_test.cc`), but a future surface might land a C++
 // static that requires constructor init.  One-time prophylactic; if
 // the export is absent (older stripped bytes) we skip silently for
 // back-compat.
@@ -1798,6 +1800,12 @@ absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
 absl::StatusOr<Engine> Engine::Builder::Build() const&& {
   auto state_or = InitWasmtime(jit_perf_map_);
   if (!state_or.ok()) return state_or.status();
+  // Resolve the wasm-coverage destination once, at engine
+  // instantiation: an explicit CollectWasmCoverage(dir) wins, else
+  // the CELWASM_WASM_GCOV_DIR env var, else disabled (empty).
+  (*state_or)->wasm_gcov_dir = wasm_coverage_dir_.empty()
+                                   ? celwasm::WasmGcovEnv::OutputDirFromEnv()
+                                   : wasm_coverage_dir_;
   return Engine(std::move(*state_or));
 }
 

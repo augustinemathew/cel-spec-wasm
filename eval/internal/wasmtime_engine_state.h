@@ -111,6 +111,13 @@ struct WasmtimeEngineState {
   std::map<std::string, RegisteredCustomModule> custom_modules;
   std::map<std::string, RegisteredHostCallback> host_callbacks;
 
+  // Destination directory for wasm-side gcov collection, resolved
+  // once at `Engine::Builder::Build()` (explicit
+  // `CollectWasmCoverage(dir)` wins; else the CELWASM_WASM_GCOV_DIR
+  // env var; empty ⇒ disabled).  Each Plan hands it to the
+  // Instance's `WasmGcovEnv`.
+  std::string wasm_gcov_dir;
+
   // Plugins registered via `Engine::AddPlugin`.
   // Order-preserving vector (vs map) — there is no natural keying name
   // for a plugin the way `alias` keys a `RegisteredCustomModule`;

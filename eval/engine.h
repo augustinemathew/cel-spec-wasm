@@ -34,6 +34,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "abi/plugin.h"
 #include "absl/base/attributes.h"
@@ -319,6 +320,29 @@ class Engine::Builder {
     return std::move(*this);
   }
 
+  // Collect wasm-side gcov coverage from a runtime built with
+  // `--//runtime:instrument_wasm`, writing merged .gcda files into
+  // `output_dir` (created if absent; counters from sequential runs
+  // are summed).  Every Instance this Engine Plans participates:
+  // its counters are dumped when the Instance is destroyed.
+  //
+  // Empty `output_dir` (the default) defers to the
+  // `CELWASM_WASM_GCOV_DIR` env var; unset env + empty dir means
+  // collection is disabled.  The destination is resolved once at
+  // Build() — fixed at engine instantiation, per the "configure
+  // once, Plan from many threads" contract.  Against a
+  // non-instrumented runtime the option is inert (the module never
+  // calls the gcov write-out imports).  See
+  // eval/internal/wasm_gcov.h for the collection machinery.
+  Builder& CollectWasmCoverage(absl::string_view output_dir) & {
+    wasm_coverage_dir_ = std::string(output_dir);
+    return *this;
+  }
+  Builder&& CollectWasmCoverage(absl::string_view output_dir) && {
+    wasm_coverage_dir_ = std::string(output_dir);
+    return std::move(*this);
+  }
+
   // Allocate the wasm engine + parse `cel_runtime.wasm` into a
   // module.  Returns Internal on wasmtime allocation failure.
   // Single-use: && enforces consumption at the call site (const so
@@ -327,6 +351,7 @@ class Engine::Builder {
 
  private:
   bool jit_perf_map_ = false;
+  std::string wasm_coverage_dir_;
 };
 
 }  // namespace celwasm
