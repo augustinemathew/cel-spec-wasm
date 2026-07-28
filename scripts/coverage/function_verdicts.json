@@ -1,0 +1,130 @@
+{
+  "_comment": [
+    "Curated dead-code verdicts joined into the coverage report by",
+    "native_cov_report.py (see apply_verdicts).  Verdict vocabulary:",
+    "  dead      — no caller anywhere in first-party code; delete.",
+    "  test-only — only unit tests call it; relocate to test support.",
+    "  by-design — unreachable tripwire / defense-in-depth; keep.",
+    "  gap       — (default for unmatched zero-hit fns) needs a test.",
+    "Every entry needs evidence a reviewer can check without rerunning",
+    "the analysis: the caller search that proved it, or the design",
+    "invariant (with doc citation) that makes the path unreachable.",
+    "Entries match by file prefix + substring of the (de)mangled name."
+  ],
+  "verdicts": [
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "UnpackJsonStruct",
+      "verdict": "by-design",
+      "evidence": "google.protobuf.Struct fields peel to map<string, dyn>; RejectDyn refuses dyn before codegen, so no checked program reaches the unpack. Unlock = dyn passthrough (PROPOSALS-scale change)."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "UnpackJsonListValue",
+      "verdict": "by-design",
+      "evidence": "google.protobuf.ListValue peels to list<dyn>; RejectDyn refuses dyn before codegen. Unlock = dyn passthrough."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "UnpackJsonValueMessage",
+      "verdict": "by-design",
+      "evidence": "Dispatcher over the two dyn-typed JSON peels above; same RejectDyn gate."
+    },
+    {
+      "file": "runtime/cel_map_hash.h",
+      "match": "cel_hash_double_key",
+      "verdict": "by-design",
+      "evidence": "Double map keys are checker-rejected in the static subset (langdef: map keys are int|uint|bool|string); arm is a tripwire for codegen drift."
+    },
+    {
+      "file": "runtime/cel_map_hash.h",
+      "match": "cel_hash_double_sentinel",
+      "verdict": "by-design",
+      "evidence": "Only caller is the checker-rejected double-key arm above."
+    },
+    {
+      "file": "runtime/cel_runtime.c",
+      "match": "vend_poison_list_view",
+      "verdict": "by-design",
+      "evidence": "Comprehension prologue pre-checks CEL_ERROR/CEL_UNKNOWN before vending a view; fires only on codegen drift. Miscompile tripwire per CLAUDE.md."
+    },
+    {
+      "file": "runtime/cel_runtime.c",
+      "match": "vend_poison_map_iter",
+      "verdict": "by-design",
+      "evidence": "Same prologue pre-check as vend_poison_list_view; codegen-drift tripwire."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "WasmTrapToStatus",
+      "verdict": "by-design",
+      "evidence": "Runtime kernel poisons instead of trapping on every reachable path; a trap means codegen/runtime drift. Tripwire, keep."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeWireError",
+      "verdict": "by-design",
+      "evidence": "3VL absorbs error-valued args before host-fn dispatch, so a wire error can't reach ArgValue decode; pinned by e2e HostFnTest.ErrorValuedArgContract. Unlock = a non-strict-functions AddFunction API."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_null",
+      "verdict": "test-only",
+      "evidence": "Callers: native kernel unit tests only (grep of runtime/ + codegen emit sites). Relocation to a test-support TU recommended in the m38 doc."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_bool",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_int",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_uint",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_double",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_bytes_view",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only (cel_make_bytes/cel_make_string have cel_net_ext.c callers; the view variants do not)."
+    },
+    {
+      "file": "runtime/cel_arena.c",
+      "match": "arena_cursor",
+      "verdict": "test-only",
+      "evidence": "Host-reentry export consumed by native tests; the engine allocator uses arena_alloc/arena_reset. Relocation candidate."
+    },
+    {
+      "file": "runtime/cel_arena.c",
+      "match": "arena_capacity",
+      "verdict": "test-only",
+      "evidence": "Same as arena_cursor."
+    },
+    {
+      "file": "runtime/cel_memory.c",
+      "match": "cel_memory_size_",
+      "verdict": "test-only",
+      "evidence": "Native tests only; wasm build answers size via memory.size intrinsic path."
+    },
+    {
+      "file": "runtime/cel_memory.c",
+      "match": "cel_mem_size",
+      "verdict": "test-only",
+      "evidence": "Native tests only; alias surface of cel_memory_size_."
+    }
+  ]
+}

@@ -69,6 +69,16 @@ bazel coverage \
     $TARGETS
 
 echo "── 3/3 report ─────────────────────────────────────────────────"
+# Keep the previous report for diffing (one generation of history).
+if [[ -f "$OUT/report.json" ]]; then
+  mkdir -p "$OUT/prev"
+  cp -f "$OUT/report.json" "$OUT/prev/report.json"
+  cp -f "$OUT/report.html" "$OUT/prev/report.html" 2>/dev/null || true
+fi
 python3 scripts/coverage/native_cov_report.py \
     --repo-root . --out "$OUT" --wasm-cov-root "$WASM_COV"
+if [[ -f "$OUT/prev/report.json" ]]; then
+  python3 scripts/coverage/report_diff.py \
+      "$OUT/prev/report.json" "$OUT/report.json" || true
+fi
 echo "report: $OUT/report.html"

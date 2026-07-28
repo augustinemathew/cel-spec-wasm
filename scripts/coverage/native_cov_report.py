@@ -153,24 +153,51 @@ def section_of(path: str) -> str:
     return "Other"
 
 
-def is_e2e_workload(workload: str, taxonomy) -> bool:
-    """e2e-class = the e2e suites + external corpus workloads
-    (conformance, fuzz); everything else is a unit/component test."""
+def workload_class(workload: str, taxonomy) -> str:
+    """Three classes: "e2e" (the e2e suites), "corpus" (external
+    workloads — conformance, fuzz), "unit" (everything else).  The
+    goal metrics exclude "corpus": e2e-only = e2e; tests = e2e+unit."""
     skey = workload
     for suf in ("_dynamic", "_static"):
         if skey.endswith(suf):
             skey = skey[: -len(suf)]
-    return (
-        skey in taxonomy["suites"]
-        or skey in taxonomy.get("external_workloads", {})
-    )
+    if skey in taxonomy["suites"]:
+        return "e2e"
+    if skey in taxonomy.get("external_workloads", {}):
+        return "corpus"
+    return "unit"
+
+
+def apply_verdicts(functions, verdicts):
+    """Attach a dead-code verdict to each function.  `verdicts` entries
+    ({file, match, verdict, evidence}) match by file prefix + substring
+    of the mangled or demangled name.  Verdict vocabulary:
+      dead      — no caller anywhere in first-party code; delete.
+      test-only — only unit tests call it; relocate to test support.
+      by-design — unreachable tripwire / defense-in-depth; keep, exempt.
+      gap       — reachable from the pipeline, missing a test (default
+                  for zero-hit functions with no curated entry).
+    """
+    for e in functions.values():
+        hit = None
+        for v in verdicts:
+            if not e["file"].startswith(v["file"]):
+                continue
+            if v["match"] in e["function"] or v["match"] in e["display"]:
+                hit = v
+                break
+        if hit:
+            e["verdict"] = hit["verdict"]
+            e["verdict_evidence"] = hit.get("evidence", "")
+        elif e["total_workloads"] == 0:
+            e["verdict"] = "gap"
 
 
 def build(workloads, taxonomy, repo_root):
     fileset = sorted({f for w in workloads.values() for f in w})
-    e2e_workloads = {
-        w for w in workloads if is_e2e_workload(w, taxonomy)
-    }
+    wclass = {w: workload_class(w, taxonomy) for w in workloads}
+    e2e_workloads = {w for w, c in wclass.items() if c == "e2e"}
+    test_workloads = {w for w, c in wclass.items() if c != "corpus"}
 
     functions, lines, branches = {}, collections.defaultdict(dict), {}
     for workload, per_file in workloads.items():
@@ -219,10 +246,17 @@ def build(workloads, taxonomy, repo_root):
             1 for l in instrumented[src]
             if any(w in e2e_workloads for w in lines[src].get(l, {}))
         )
+        covered_tests = sum(
+            1 for l in instrumented[src]
+            if any(w in test_workloads for w in lines[src].get(l, {}))
+        )
         fns = [e for e in functions.values() if e["file"] == src]
         fn_hit = sum(1 for e in fns if e["total_workloads"] > 0)
         fn_hit_e2e = sum(
             1 for e in fns if any(w in e2e_workloads for w in e["hits"])
+        )
+        fn_hit_tests = sum(
+            1 for e in fns if any(w in test_workloads for w in e["hits"])
         )
         br = branches.get(src, {})
         br_total = sum(t for _, t in br.values())
@@ -236,12 +270,17 @@ def build(workloads, taxonomy, repo_root):
             "line_pct_e2e": (
                 round(100.0 * covered_e2e / total, 2) if total else 0.0
             ),
+            "lines_covered_tests": covered_tests,
+            "line_pct_tests": (
+                round(100.0 * covered_tests / total, 2) if total else 0.0
+            ),
             "functions_total": len(fns),
             "functions_hit": fn_hit,
             "function_pct": (
                 round(100.0 * fn_hit / len(fns), 2) if fns else 0.0
             ),
             "functions_hit_e2e": fn_hit_e2e,
+            "functions_hit_tests": fn_hit_tests,
             "branches_total": br_total,
             "branches_taken": br_taken,
             "branch_pct": (
@@ -253,9 +292,11 @@ def build(workloads, taxonomy, repo_root):
         lt = sum(per_file[k]["lines_total"] for k in keys)
         lc = sum(per_file[k]["lines_covered"] for k in keys)
         le = sum(per_file[k]["lines_covered_e2e"] for k in keys)
+        lts = sum(per_file[k]["lines_covered_tests"] for k in keys)
         ft = sum(per_file[k]["functions_total"] for k in keys)
         fh = sum(per_file[k]["functions_hit"] for k in keys)
         fe = sum(per_file[k]["functions_hit_e2e"] for k in keys)
+        fts = sum(per_file[k]["functions_hit_tests"] for k in keys)
         bt = sum(per_file[k]["branches_total"] for k in keys)
         bk = sum(per_file[k]["branches_taken"] for k in keys)
         return {
@@ -263,9 +304,14 @@ def build(workloads, taxonomy, repo_root):
             "lines_covered": lc, "lines_total": lt,
             "line_pct_e2e": round(100.0 * le / lt, 2) if lt else 0.0,
             "lines_covered_e2e": le,
+            "line_pct_tests": round(100.0 * lts / lt, 2) if lt else 0.0,
+            "lines_covered_tests": lts,
             "function_pct": round(100.0 * fh / ft, 2) if ft else 0.0,
             "functions_hit": fh, "functions_total": ft,
             "function_pct_e2e": round(100.0 * fe / ft, 2) if ft else 0.0,
+            "function_pct_tests": (
+                round(100.0 * fts / ft, 2) if ft else 0.0
+            ),
             "branch_pct": round(100.0 * bk / bt, 2) if bt else 0.0,
             "branches_taken": bk, "branches_total": bt,
         }
@@ -304,7 +350,7 @@ def build(workloads, taxonomy, repo_root):
         )
         workload_stats[workload] = {
             "suite": skey,
-            "class": "e2e" if workload in e2e_workloads else "unit",
+            "class": wclass[workload],
             "surfaces": surfaces,
             "lines_covered": len(covered),
             "lines_unique": len(unique),
@@ -368,6 +414,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--wasm-cov-root", default=None,
                     help="collect_wasm_gcov.sh output tree to merge in")
+    ap.add_argument("--verdicts", default=None,
+                    help="dead-code verdicts JSON (default: "
+                         "function_verdicts.json beside this script)")
     ap.add_argument("--scope-prefix", action="append", default=None)
     args = ap.parse_args()
     scopes = args.scope_prefix or DEFAULT_SCOPES
@@ -405,6 +454,14 @@ def main():
                 slot[src] = {**data, "branches": {}}
 
     report = build(workloads, taxonomy, args.repo_root)
+
+    verdicts_path = args.verdicts or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "function_verdicts.json",
+    )
+    if os.path.exists(verdicts_path):
+        with open(verdicts_path, encoding="utf-8") as f:
+            apply_verdicts(report["functions"], json.load(f)["verdicts"])
 
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "report.json"), "w",
@@ -456,6 +513,8 @@ def main():
     h = report["headline"]
     print(f"workloads: {len(workloads)}")
     print(f"line: {h['line_pct']}% ({h['lines_covered']}/{h['lines_total']})")
+    print(f"line e2e-only: {h['line_pct_e2e']}%  "
+          f"line tests-no-corpus: {h['line_pct_tests']}%")
     print(f"function: {h['function_pct']}% "
           f"({h['functions_hit']}/{h['functions_total']})")
     print(f"branch: {h['branch_pct']}% "
