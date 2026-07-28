@@ -259,7 +259,12 @@ once-per-process quirk, noted in the .cc).
 > either e2e-covered or verdict-classified with evidence; endgame is
 > ledger closure enforced as a zero-unclassified-gap check.
 > Trajectory: 74.07 → 75.57 (batch 1) → 78.52 (`c8e759d`) →
-> **78.85** (`9ea7219`, full sweep #1); tests goal-metric 88.18.
+> 78.85 (`9ea7219`, full sweep #1) → 80.08 (`45d4ad8`, iter 5:
+> AttributeQualifier string-only + probe batch) → 80.39 (`c37b2c4`,
+> iter 6: narrowing range-check P0 fix + literal field-set matrix +
+> CLI/examples measured as e2e) → **80.73** (`3dae78d`, iter 7 +
+> full sweep #2); tests goal-metric 89.0.  Conformance 2035/2035
+> both modes at sweep #2.
 > Drive iterations from `scripts/coverage/plan_sim.py` (~21
 > iterations remain, ~45 probes each, full sweep every 3rd); VERIFY
 > CALLERS before writing probes — three "top gap" targets were dead
