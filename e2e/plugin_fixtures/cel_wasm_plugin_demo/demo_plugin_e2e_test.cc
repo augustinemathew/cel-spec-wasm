@@ -185,55 +185,29 @@ TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
 // (LiftCelToComponent for the arg, LowerComponentToCel for the
 // result).  Every NON-scalar carrier is pinned below.
 TEST(CelWasmPluginDemo, KindMatrixEchoRoundTrips) {
-  auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
-  ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
-  ExpectPluginBoolTrue(*plugin_or, "echo_double(1.5) == 1.5");
-  ExpectPluginBoolTrue(*plugin_or, "negate(true) == false");
-}
-
-TEST(CelWasmPluginDemo, NonScalarCarriersTrapOrFlake) {
-  GTEST_SKIP() << R"CELBUG(CELBUG v1
-id: CELW-0019
-severity: P1
-kind: missing-feature
-summary: plugin fns carrying list<T> / bytes / map<K,V> trap at call time
-  ("cannot leave component instance"); map is worse than broken, it is FLAKY
-repro: sum_list([1, 2, 3])
-bindings: the demo plugin (e2e/plugin_fixtures/cel_wasm_plugin_demo),
-  decl `int @plugin.sum_list(list<int> xs);`
-actual: FAILED_PRECONDITION "Eval (func_call): ... wasm trap: cannot leave
-  component instance", guest backtrace through
-  wit-component:adapter:wasi_snapshot_preview1!random_get
-expected: 6
-layer: the wasm32-wasip2 guest side (libc++ / wit-bindgen canonical ABI),
-  not the host codec — eval/internal/cel_plugin.cc LiftList / LowerList /
-  LiftMap / LowerMap are reached and hand off well-formed component values
-blocked-by: none
-found-by: m38 coverage iteration 8 — the cel_plugin.cc aggregate arms were
-  e2e-uncovered; adding a carrier matrix to the demo fixture surfaced this
-fix-hint: SAME FAMILY as the documented string-return trap
-  (doc/design/05-custom-functions.md §5.4).  Three findings that narrow it:
-  (1) DIRECTION IS NOT THE VARIABLE — `sum_list` (list arg, scalar return)
-  and `iota` (scalar arg, list return) both trap, so it is not return
-  lowering alone.  (2) map<string,int> is NONDETERMINISTIC: the identical
-  `echo_map({'a':1,'b':2})['b'] == 2` row passed on some builds of this
-  fixture and trapped on others, with no source change between them —
-  treat "map works" claims with suspicion and re-run before believing.
-  (3) A zero-length aggregate return used to call
-  `cabi_realloc(NULL, 0, align, 0)`; the emitter now short-circuits to a
-  NULL pointer (cpp_codec_emitter.cc), which was a real defect but NOT the
-  cause of this trap.  Likeliest fix is rebuilding the demo against
-  wasm32-wasi + the preview1 adapter (see the AddRoundTrips skip in this
-  file) rather than any host-side change.
-issue: none
-)CELBUG";
-
+  // One echo-shaped call per canonical-ABI carrier: each row drives
+  // BOTH directions of the host codec (LiftCelToComponent for the
+  // arg, LowerComponentToCel for the result) for its kind.  The
+  // aggregate rows used to trap ("cannot leave component instance")
+  // until the guest stopped importing wasi:random — see
+  // bazel/plugin_rng_stub.c for why that import was fatal here.
   auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
   ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
   const absl::string_view kTrueSources[] = {
-      "rev_bytes(b'ab') == b'ba'", "echo_list([1, 2])[1] == 2",
-      "size(echo_list([])) == 0",  "sum_list([1, 2, 3]) == 6",
-      "iota(3)[2] == 2",           "echo_map({'a': 1, 'b': 2})['b'] == 2",
+      // scalars
+      "echo_double(1.5) == 1.5",
+      "negate(true) == false",
+      // bytes (list<u8> on the wire)
+      "rev_bytes(b'ab') == b'ba'",
+      // list<int>, both directions and the empty case
+      "echo_list([1, 2])[1] == 2",
+      "size(echo_list([])) == 0",
+      "sum_list([1, 2, 3]) == 6",
+      "iota(3)[2] == 2",
+      // map<string,int> (list<tuple2> on the wire), incl. empty —
+      // the lower half of the map codec only exists as of the
+      // kMapTpl change that landed with this fixture.
+      "echo_map({'a': 1, 'b': 2})['b'] == 2",
       "size(echo_map({})) == 0",
   };
   for (const absl::string_view source : kTrueSources) {
@@ -241,14 +215,6 @@ issue: none
   }
 }
 
-// ─── m35 — the one-noun flow ─────────────────────────────────────
-//
-// The quickstart contract (m35-plugin-ergonomics.md §2): one noun
-// carries bytes, declarations, and hash from artifact to both
-// pipeline halves.  Plugin::Load(macro-built bytes) →
-// Compiler::Builder::Use(plugin) → Compile → Engine::Use(plugin)
-// (static export check, no instantiation) → Plan → Eval.  No
-// hand-maintained FunctionLibrary mirror anywhere.
 TEST(CelWasmPluginDemo, OneNounFlowLoadUseCompileUsePlanEval) {
   auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
   ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
@@ -320,18 +286,6 @@ TEST(CelWasmPluginDemo, AddRoundTrips) {
 }
 
 TEST(CelWasmPluginDemo, GreetRoundTripsString) {
-  GTEST_SKIP()
-      << "engine.cc now stubs `wasi:random/random.get-random-bytes` with a "
-         "deterministic-bytes host fn (m26 #44 partial mitigation), so the "
-         "AddRoundTrips path passes — but std::to_string + std::string "
-         "concat still trips a `wasm trap: cannot leave component instance` "
-         "INSIDE libc++ AFTER random_get returns (the trap is at the wasm "
-         "function-92 level, post-adapter, somewhere in libc++'s "
-         "post-RNG-init machinery — possibly thread-local destructor "
-         "registration or canonical-ABI re-entrancy guard).  Un-skip once "
-         "the wasmtime C API exposes a real wasi-preview2 store context, "
-         "OR once we rebuild the demo against wasm32-wasi + the preview1 "
-         "adapter so the existing wasi.hh WasiConfig satisfies libc++.";
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   const auto lib = BuildDemoLibrary();

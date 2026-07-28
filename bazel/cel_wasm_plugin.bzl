@@ -121,7 +121,7 @@ def _core_wasm(name, srcs, headers, gen_dir, wit_dir, component_type_obj,
     core_name = name + "_core"
     native.cc_binary(
         name = core_name + ".bin",
-        srcs = srcs + [component_type_obj],
+        srcs = srcs + [component_type_obj, "//bazel:plugin_rng_stub.c"],
         deps = deps + _AUTOMATIC_WASM_DEPS + headers,
         copts = copts + [
             "-I$(GENDIR)/" + native.package_name() + "/" + gen_dir,

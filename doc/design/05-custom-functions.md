@@ -301,18 +301,37 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
 
 ### 5.4 Known traps
 
-- **String-return trap.** A string-returning plugin fn traps at call time
-  ("cannot leave component instance", inside libc++ post-RNG-init under
-  wasm32-wasip2) — reasoned skip in `e2e/.../demo_plugin_e2e_test.cc:135-147`.
-  The supported envelope today is **scalar returns**
-  (`examples/09_plugin_functions.cc` is scalar-only on purpose,
-  examples/README.md:24-26).
-- **Map-lower emitter gap.** `EmitCodecH` emits a literal
-  `// TODO(m26): lower($1*, const $0&) not yet emitted`
-  (cpp_codec_emitter.cc:371) — a map-*returning* `@plugin.` decl generates a
-  stub calling a nonexistent `codec::lower`. The fixture declaring exactly such
-  decls (`fixtures/full_matrix.idl`) is referenced by no BUILD target, so no
-  gate catches it.
+- **~~String-return trap~~ — FIXED 2026-07-28.** Every non-scalar carrier
+  (string, bytes, `list<T>`, `map<K,V>`) used to trap at call time with
+  `wasm trap: cannot leave component instance`. Root cause: libc++ seeds its
+  hash machinery lazily, wasi-libc implements that seed via the
+  `wasi:random/random@0.2.0` component **import**, and when the lazy init
+  fired while the guest was inside a canonical-ABI lift/lower — i.e. exactly
+  when an aggregate argument or return is marshalled — wasmtime refused the
+  import call. The guest now defines
+  `__imported_wasi_snapshot_preview1_random_get` itself
+  (`bazel/plugin_rng_stub.c`), so the import is not emitted at all and there
+  is no call left to forbid. The supported envelope is now **scalars,
+  string, bytes, `list<T>`, and `map<K,V>`, in both directions**, pinned by
+  `demo_plugin_e2e_test.cc`'s `KindMatrixEchoRoundTrips`.
+  This also explains the carrier's former *flakiness*: whether the seed had
+  already been initialised depended on what else had allocated first, so the
+  same expression passed on some builds and trapped on others.
+- **~~Map-lower emitter gap~~ — FIXED 2026-07-28.** `EmitCodecH` used to emit a
+  literal `// TODO(m26): lower($1*, const $0&) not yet emitted`, so a
+  map-*returning* `@plugin.` decl generated a stub calling a nonexistent
+  `codec::lower` and failed to compile. `kMapTpl` now carries the lower half
+  (string keys route through the string codec, scalar values assign
+  directly), and every aggregate lower short-circuits an empty container to
+  a NULL pointer rather than calling `cabi_realloc(NULL, 0, align, 0)`.
+- **Proto args/returns still blocked** (`demo_plugin_proto`, manual-tagged).
+  Not the trap above — a toolchain break: the fixture drags libprotobuf,
+  which drags absl, whose cctz `time_zone_impl.cc` uses `std::mutex`. The
+  wasip2 platform is deliberately `wasi_threads_off` (the Component Model
+  requires non-shared memory), so libc++ there has no threads and no
+  `std::mutex`. Fixing protos means making that dependency edge
+  thread-free — e.g. a `LITE_RUNTIME` proto that avoids absl/time, or an
+  absl patch under `third_party/patches/`.
 - **Example 09's visibility hole — closed by the `Plugin` surface.**
   The example's former `FunctionLibrary` mirror needed the
   `//:internal` `//compiler/celfn:function_library` target; the
