@@ -197,6 +197,108 @@
       "match": "WellKnownTypeName",
       "verdict": "by-design",
       "evidence": "Remaining uncovered lines are the UNSPECIFIED/unhandled ABSL_CHECK tripwires; Any/Timestamp/Duration name arms are e2e-covered by type_value_test ident rows and any_test."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InitWasmtime",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime engine/config creation failures (wasmtime_config_new / wasmtime_engine_new returning null, config-set errors) \u2014 allocator-failure arms with no e2e trigger."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InitStore",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are `wasmtime_store_new returned null` / `wasi_config_new returned null` (allocator failure) and the context_set_wasi error arm; none reachable without fault injection."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InitLinker",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime linker define/allocation failures; the success path is exercised by every planned instance."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "GetRuntimeMemoryExport",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms fire only if cel_runtime.wasm lacks a `memory` export or exports it non-shared.  That artifact is built by //runtime with the shared-memory linkopts, so the arms are tripwires against a corrupted / mismatched runtime build."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindRuntimeExport",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms are wasmtime linker-define failures plus `export missing from the runtime instance` \u2014 same corrupted-artifact tripwire as GetRuntimeMemoryExport."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindAllRuntimeExports",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines propagate BindRuntimeExport's tripwire status; the enumerated export list comes from the runtime catalogue we generate."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "DefineCelLinkerBindings",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime linker-define failure propagation."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindRuntimeFuncHandles",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms require cel_runtime.wasm to be missing `arena_alloc` / `malloc`, to export them as non-functions, or with a non-all-i32 signature.  All three contradict how //runtime builds the artifact."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "SeedRuntimeArena",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms require a missing / mistyped `arena_init` export, or a wasmtime call error / guest trap from it \u2014 the runtime's arena_init is a leaf that cannot trap under a correct build."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "EnforceRuntimeMemoryInvariants",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are ABSL_CHECK tripwires on the runtime's memory layout (shared-memory size, __heap_base kind/value).  By construction of the runtime build; a violation is a build regression, not an input."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindStaticModeHelpers",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are export-lookup failures on the statically-linked module, whose exports codegen itself emits."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InstantiateRuntime",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime instantiate error / trap arms for cel_runtime.wasm \u2014 a fixed, validated artifact."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InstantiateExpr",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms require the expr module to lack an `eval` export, export it as a non-function, or with the wrong signature.  expr_lower always emits `$eval` with the pinned signature (WAT traces + module validation gate it)."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "HostCallbackTrampoline",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are arity / arg-kind mismatch arms on the wasm->host boundary; the call shape is emitted by codegen against the same decl the host registered, so a mismatch is a codegen regression tripwire."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "PluginCallbackTrampoline",
+      "verdict": "by-design",
+      "evidence": "Same as HostCallbackTrampoline for the plugin path: uncovered lines are the arity / lift / lower failure arms guarding a codegen-emitted call shape."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "RegisterHostCallbacks",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime linker-define failures during callback registration."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "LiftPluginArgs",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are the per-arg lift failure propagation arm; the successful lifts for every supported carrier are covered by demo_plugin_e2e_test's KindMatrixEchoRoundTrips."
     }
   ]
 }

@@ -48,7 +48,8 @@ exec_root="$(bazel info execution_root 2>/dev/null || true)"
 if [[ -z "$exec_root" ]] \
    || ! compgen -G "$exec_root/external/*abseil*" >/dev/null 2>&1 \
    || ! compgen -G "$exec_root/external/*protobuf*" >/dev/null 2>&1 \
-   || ! compgen -G "$exec_root/external/*cel-cpp*" >/dev/null 2>&1; then
+   || ! compgen -G "$exec_root/external/*cel-cpp*" >/dev/null 2>&1 \
+   || ! compgen -G "$exec_root/external/*googletest*" >/dev/null 2>&1; then
   echo "build_lint_pch.sh: external symlinks missing — populating" \
        "(one-time; subsequent lints skip this)." >&2
   bazel build $PROJ \
