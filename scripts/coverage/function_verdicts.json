@@ -167,6 +167,36 @@
       "match": "DecodeListIndex",
       "verdict": "by-design",
       "evidence": "The checker admits only index_list(list(A), int) \u2014 codegen can emit CEL_INT (or absorbed error/unknown) indexes exclusively; the CEL_UINT / CEL_DOUBLE / kind-mismatch arms guard the wire against a codegen regression.  Verified: ListAtCallTarget in expr_lower.cc is the only emit family, and no uint/double list-index overload exists in the static subset."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "RejectDyn",
+      "verdict": "by-design",
+      "evidence": "The uncovered lines are the unchecked-AST FailedPrecondition guard; ParseAndCheck always checks before calling RejectDyn, so the arm is an internal-contract tripwire (unit-covered in parse_and_check_test)."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "DeclTypeToCheckerType",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are the kType/kOptional ABSL_CHECK tripwire \u2014 guarded upstream by ValidateDeclTypesMappable (compiler.cc), which rejects such decls at Build with a diagnostic (e2e: host_fn_test DeclDiagnosticsE2ETest)."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "PrimitiveTypeName",
+      "verdict": "by-design",
+      "evidence": "Remaining uncovered lines are the UNSPECIFIED/unhandled ABSL_CHECK tripwires; every name arm is e2e-covered by type_value_test's ident grid."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "WrapperTypeName",
+      "verdict": "by-design",
+      "evidence": "Remaining uncovered lines are the UNSPECIFIED/unhandled ABSL_CHECK tripwires; the six wrapper-name arms are e2e-covered by type_value_test's WrapperBool..WrapperBytes ident rows."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "WellKnownTypeName",
+      "verdict": "by-design",
+      "evidence": "Remaining uncovered lines are the UNSPECIFIED/unhandled ABSL_CHECK tripwires; Any/Timestamp/Duration name arms are e2e-covered by type_value_test ident rows and any_test."
     }
   ]
 }

@@ -48,21 +48,19 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
 #include "eval/value.h"
-#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
-
-using ::celwasm::e2e::GlobalEngine;
 
 Compiler MathCompiler() {
   Compiler::Builder b;
@@ -140,6 +138,15 @@ TEST_F(MinMaxE2ETest, GreatestBinaryIntSameType) {
   EXPECT_EQ(EvalInt("math.greatest(1, 1)"), 1);
   EXPECT_EQ(EvalInt("math.greatest(3, -3)"), 3);
   EXPECT_EQ(EvalInt("math.greatest(-7, 5)"), 5);
+}
+
+TEST_F(MinMaxE2ETest, MixedNumericArgsDispatchAtRuntime) {
+  // Cross-type math.@min/@max are checker-typed `dyn`; the static
+  // subset admits the call through its dyn-passthrough gate
+  // (parse_and_check.cc IsDynPassthroughCall) and the runtime kernel
+  // dispatches on operand kind.  int 1 < double 2.0 either way.
+  EXPECT_EQ(EvalInt("math.least(1, 2.0)"), 1);
+  EXPECT_EQ(EvalDouble("math.greatest(1, 2.0)"), 2.0);
 }
 
 TEST_F(MinMaxE2ETest, LeastBinaryIntSameType) {

@@ -1008,10 +1008,13 @@ void ExpectBindMismatch(absl::string_view decl,
   ABSL_CHECK_OK(engine.status());
   absl::Status s =
       absl::StrContains(decl, "(int ")
-          ? engine->BindFunction(
-                decl, [](bool) -> absl::StatusOr<int64_t> { return 0; })
-          : engine->BindFunction(
-                decl, [](int64_t) -> absl::StatusOr<int64_t> { return 0; });
+          ? engine->BindFunction(decl,
+                                 [](bool) -> absl::StatusOr<int64_t> {
+                                   return 0;
+                                 })
+          : engine->BindFunction(decl, [](int64_t) -> absl::StatusOr<int64_t> {
+              return 0;
+            });
   ASSERT_FALSE(s.ok()) << decl;
   EXPECT_TRUE(absl::StrContains(s.message(), expect_decl_slug))
       << decl << ": " << s;
@@ -1033,18 +1036,18 @@ TEST(HostFnTest, BindFunctionSignatureMismatchMatrix) {
   ExpectBindMismatch("int @host.p8(Timestamp t);", "timestamp", "int64_t");
   ExpectBindMismatch("int @host.p9(list<int> xs);", "list", "int64_t");
   ExpectBindMismatch("int @host.p10(map<string, int> m);", "map", "int64_t");
-  ExpectBindMismatch(
-      "int @host.p11(proto(celwasm.testdata.Customer) c);", "message",
-      "int64_t");
+  ExpectBindMismatch("int @host.p11(proto(celwasm.testdata.Customer) c);",
+                     "message", "int64_t");
 }
 
 // Arity mismatch: decl declares two params, callable takes one.
 TEST(HostFnTest, BindFunctionArityMismatch) {
   auto engine = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine.ok()) << engine.status();
-  absl::Status s = engine->BindFunction(
-      "int @host.two(int a, int b);",
-      [](int64_t) -> absl::StatusOr<int64_t> { return 0; });
+  absl::Status s = engine->BindFunction("int @host.two(int a, int b);",
+                                        [](int64_t) -> absl::StatusOr<int64_t> {
+                                          return 0;
+                                        });
   ASSERT_FALSE(s.ok());
   EXPECT_TRUE(absl::StrContains(s.message(), "2 parameter(s)")) << s;
 }
@@ -2357,6 +2360,69 @@ TEST(HostFnTest, BytesArgWithEmbeddedNulRoundTrips) {
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBytes);
   EXPECT_EQ(std::string(*v->AsBytes()), payload);
+}
+
+// ── decl-surface diagnostics: the kind-naming reject arms ───────────
+// Each negative pins both the rejection AND the kind name in the
+// message (CelTypeKindName / DeclMessageToCheckerType) — the
+// diagnostic text is the API contract an embedder scripts against.
+
+class DeclDiagnosticsE2ETest : public ::testing::Test {};
+
+TEST_F(DeclDiagnosticsE2ETest, NonDeclarableVariableKindsNameTheKind) {
+  {
+    auto b = Compiler::NewBuilder();
+    b.DeclareVariable("x", CelType::Null());
+    auto c = std::move(b).Build();
+    ASSERT_FALSE(c.ok());
+    EXPECT_TRUE(absl::StrContains(c.status().message(), "`null`"))
+        << c.status();
+  }
+  {
+    auto b = Compiler::NewBuilder();
+    b.DeclareVariable("x", CelType::Optional(CelType::Int()));
+    auto c = std::move(b).Build();
+    ASSERT_FALSE(c.ok());
+    EXPECT_TRUE(absl::StrContains(c.status().message(), "`optional`"))
+        << c.status();
+  }
+}
+
+TEST_F(DeclDiagnosticsE2ETest, IllegalMapKeyKindsNameTheKind) {
+  // Map keys are the closed bool/int/uint/string set (langdef §Maps).
+  // The celfn grammar enforces it at PARSE time — the mismatched
+  // input is named in the diagnostic, spelled as written.
+  const struct {
+    absl::string_view decl;
+    absl::string_view kind;
+  } kRows[] = {
+      {"int @host.f(map<double, int> m);", "double"},
+      {"int @host.f(map<bytes, int> m);", "bytes"},
+      {"int @host.f(map<Duration, int> m);", "Duration"},
+      {"int @host.f(map<Timestamp, int> m);", "Timestamp"},
+  };
+  for (const auto& row : kRows) {
+    auto b = Compiler::NewBuilder();
+    b.AddFunction(row.decl);
+    auto c = std::move(b).Build();
+    ASSERT_FALSE(c.ok()) << row.decl;
+    EXPECT_TRUE(absl::StrContains(c.status().message(), row.kind))
+        << row.decl << ": " << c.status();
+  }
+}
+
+TEST_F(DeclDiagnosticsE2ETest, UnknownProtoMessageTypeInDeclFailsCompile) {
+  // The FQN only resolves against the descriptor pool at check time
+  // (DeclMessageToCheckerType), so Build succeeds and the first
+  // Compile reports the unknown message type by name.
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.f(proto(no.such.Msg) x);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("1 + 1", e2e::DefaultOpts());
+  ASSERT_FALSE(program.ok());
+  EXPECT_TRUE(absl::StrContains(program.status().message(), "no.such.Msg"))
+      << program.status();
 }
 
 }  // namespace

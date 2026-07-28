@@ -85,7 +85,6 @@
 
 namespace celwasm {
 namespace {
-using ::celwasm::AttributePattern;
 
 using ::absl_testing::IsOk;
 using ::celwasm::testdata::HostMsg2;
@@ -98,8 +97,6 @@ using ::celwasm::testdata::HostMsg3;
       google::protobuf::LinkMessageReflection<HostMsg3>();
       return 0;
     }();
-
-using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -417,7 +414,19 @@ INSTANTIATE_TEST_SUITE_P(
         TypeIdentCase{"String", "string"}, TypeIdentCase{"Bytes", "bytes"},
         TypeIdentCase{"NullType", "null_type"}, TypeIdentCase{"List", "list"},
         TypeIdentCase{"Map", "map"}, TypeIdentCase{"Type", "type"},
-        TypeIdentCase{"MessageHostMsg3", "celwasm.testdata.HostMsg3"}),
+        TypeIdentCase{"MessageHostMsg3", "celwasm.testdata.HostMsg3"},
+        // Wrapper type idents rewrite through WrapperTypeName to
+        // their google.protobuf FQNs; Timestamp / Duration through
+        // WellKnownTypeName.  Same standalone-ident surface as the
+        // primitives above.
+        TypeIdentCase{"WrapperBool", "google.protobuf.BoolValue"},
+        TypeIdentCase{"WrapperInt64", "google.protobuf.Int64Value"},
+        TypeIdentCase{"WrapperUint64", "google.protobuf.UInt64Value"},
+        TypeIdentCase{"WrapperDouble", "google.protobuf.DoubleValue"},
+        TypeIdentCase{"WrapperString", "google.protobuf.StringValue"},
+        TypeIdentCase{"WrapperBytes", "google.protobuf.BytesValue"},
+        TypeIdentCase{"WellKnownTimestamp", "google.protobuf.Timestamp"},
+        TypeIdentCase{"WellKnownDuration", "google.protobuf.Duration"}),
     [](const ::testing::TestParamInfo<TypeIdentCase>& info) {
       return info.param.label;
     });
