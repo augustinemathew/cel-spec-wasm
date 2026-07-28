@@ -137,6 +137,30 @@
       "match": "cel_mem_size",
       "verdict": "test-only",
       "evidence": "Native tests only; alias surface of cel_memory_size_."
+    },
+    {
+      "file": "abi/celfn_wire.cc",
+      "match": "WireKindForCelScalar",
+      "verdict": "by-design",
+      "evidence": "Sole caller TypeFromCelType dispatches composites (message/list/map/optional) before this scalar mapping; the uncovered arms are the composite/kUnknown case-breaks + the ABSL_CHECK(false) tripwire."
+    },
+    {
+      "file": "abi/celfn_wire.cc",
+      "match": "TypeFromCelType",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms are kOptional + kUnknown only.  No decl surface spells optional: parse_and_check.cc TypeParser has no optional production, and function_library.cc rejects optional<T> params/returns; kUnknown is the ABSL_CHECK tripwire for the default-constructed sentinel."
+    },
+    {
+      "file": "abi/celfn_wire.cc",
+      "match": "RequiredFunctionFromDecl",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are the kCelDefined ABSL_CHECK(false) arm \u2014 kCelDefined decls import under per-module aliases and never produce a cel_fn wire row; the CEL-defined backend itself was deleted 2026-07-27."
+    },
+    {
+      "file": "eval/attribute.cc",
+      "match": "PatternParser",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines in the FSM are the unreachable-state ABSL_CHECK(false) in Step (the State enum is closed and every value has a case)."
     }
   ]
 }

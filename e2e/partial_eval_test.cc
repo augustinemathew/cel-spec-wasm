@@ -44,9 +44,11 @@
 // Int leaves / keys / values throughout to avoid the host-arena
 // string-marshal gap (e2e/list_test.cc BoundStringListUnimplemented).
 
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -69,6 +71,7 @@
 namespace celwasm {
 namespace {
 
+using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::celwasm::testdata::Customer;
 
@@ -1149,6 +1152,79 @@ TEST_F(MergedUnknownProvenanceTest, SingleUnknownThroughArithKeepsIdentity) {
   ASSERT_EQ(v.kind(), Value::Kind::kUnknown);
   ASSERT_TRUE(v.UnknownAttribute().ok()) << "one-element set";
   EXPECT_THAT(UnknownIds(v), ::testing::SizeIs(1));
+}
+
+// ──────────────────────────────────────────────────────────────
+//  12. The attribute model an embedder uses to interpret unknowns.
+//
+//  PartialEval reports unknowns as dense AttributeIds; the embedder
+//  side of the contract is the attribute model itself — building the
+//  Attributes its patterns name, matching them back against the
+//  patterns it evaluated with, ordering / deduping them for a stable
+//  report, and rendering the dotted diagnostic form.  These pin that
+//  public model (eval/attribute.h) in the same suite that exercises
+//  the ids referring into it.
+// ──────────────────────────────────────────────────────────────
+
+TEST(AttributeModelReportTest, DottedRenderAndPatternMatchRoundTrip) {
+  const Attribute attr("c", {AttributeQualifier::OfString("order"),
+                             AttributeQualifier::OfString("total")});
+  EXPECT_TRUE(attr.has_variable_name());
+  ASSERT_EQ(attr.qualifier_path().size(), 2u);
+  EXPECT_EQ(attr.qualifier_path()[0].value(), "order");
+  EXPECT_THAT(attr.AsString(), IsOkAndHolds("c.order.total"));
+
+  // Full match on the exact pattern (and through a wildcard);
+  // partial when the pattern digs strictly deeper; none across
+  // roots.  `AttributePatternMatchTypeName` is the diagnostic
+  // rendering of the verdicts.
+  EXPECT_EQ(AttributePatternMatchTypeName(  //
+                MakePattern("c.order.total").IsMatch(attr)),
+            "full");
+  EXPECT_EQ(
+      AttributePatternMatchTypeName(MakePattern("c.*.total").IsMatch(attr)),
+      "full");
+  EXPECT_EQ(AttributePatternMatchTypeName(
+                MakePattern("c.order.total.currency").IsMatch(attr)),
+            "partial");
+  EXPECT_EQ(AttributePatternMatchTypeName(MakePattern("d").IsMatch(attr)),
+            "none");
+}
+
+TEST(AttributeModelReportTest, ReportOrderingIsStableAndDeduped) {
+  // A report over several unknown paths: `std::sort` + `std::unique`
+  // over Attribute's `<` / `==` give a stable, deduplicated listing —
+  // root name first, then per-segment key order, with a path prefix
+  // ordering before its extensions.
+  std::vector<Attribute> report = {
+      Attribute("m", {AttributeQualifier::OfString("b")}),
+      Attribute("m", {AttributeQualifier::OfString("a"),
+                      AttributeQualifier::OfString("x")}),
+      Attribute("m", {AttributeQualifier::OfString("a")}),
+      Attribute("a"),
+      Attribute("m", {AttributeQualifier::OfString("a")}),
+  };
+  std::sort(report.begin(), report.end());
+  report.erase(std::unique(report.begin(), report.end()), report.end());
+  std::vector<std::string> rendered;
+  rendered.reserve(report.size());
+  for (const Attribute& attr : report) {
+    auto s = attr.AsString();
+    ASSERT_TRUE(s.ok()) << s.status();
+    rendered.push_back(*std::move(s));
+  }
+  EXPECT_THAT(rendered, ::testing::ElementsAre("a", "m.a", "m.a.x", "m.b"));
+}
+
+TEST(AttributeModelReportTest, UnrenderableKeyRejectsLoudly) {
+  // Keys with unprintable / quote bytes refuse to render rather than
+  // producing an ambiguous diagnostic string — both through the
+  // qualifier's canonical form and the attribute's dotted form.
+  const auto bad = AttributeQualifier::OfString(std::string("\x01", 1));
+  EXPECT_THAT(bad.AsCanonicalString(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  const Attribute attr("m", {bad});
+  EXPECT_THAT(attr.AsString(), StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 }  // namespace

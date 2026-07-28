@@ -783,6 +783,8 @@ link_mode_e2e_cc_test(
     deps = [
         ":link_mode_e2e_helpers",
         "//abi:program_facts",
+        "//testdata:e2e_fixture_cc_proto",
+        "@com_google_protobuf//:protobuf",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",

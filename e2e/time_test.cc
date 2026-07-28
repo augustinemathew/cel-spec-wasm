@@ -77,8 +77,6 @@
 namespace celwasm {
 namespace {
 
-using ::absl_testing::IsOk;
-
 // Force generated-pool registration of descriptors referenced by the
 // well-known-type field-read tests below.  Runs once at static init.
 [[maybe_unused]] const int
@@ -856,6 +854,83 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 // ──────────────────────────────────────────────────────────────
+// 5b. With-TZ civil-field grid — the accessor kinds and TZ-string
+// shapes §7's TzGrid below doesn't fire: Year / Month / DayOfMonth /
+// DayOfYear / DayOfWeek / Minutes / Seconds projections, the
+// unsigned `HH:MM` offset (implied `+`), a negative offset, the
+// bare `Z` spelling, and the minutes>59 malformed-offset reject.
+// One instant throughout (2024-01-02T03:04:05.123456789Z) so every
+// delta is attributable to the TZ argument.
+// ──────────────────────────────────────────────────────────────
+
+struct CivilFieldTzCase {
+  std::string label;
+  TsAccessor accessor;
+  std::string tz;
+  int64_t expected;
+};
+
+class CivilFieldTzE2ETest : public ::testing::TestWithParam<CivilFieldTzCase> {
+};
+
+TEST_P(CivilFieldTzE2ETest, ProjectFieldInZone) {
+  const CivilFieldTzCase& p = GetParam();
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  const std::string source =
+      absl::StrCat("t.", AccessorMethod(p.accessor), "('", p.tz, "')");
+  Instance inst = CompilePlan(compiler, source);
+  Activation act;
+  act.Bind("t", Value::Timestamp(absl::UnixEpoch() + absl::Seconds(1704164645) +
+                                 absl::Nanoseconds(123'456'789)));
+  Value got = EvalOk(inst, act);
+  ASSERT_EQ(got.kind(), Value::Kind::kInt) << p.label;
+  EXPECT_EQ(*got.AsInt(), p.expected) << p.label;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ZoneGrid, CivilFieldTzE2ETest,
+    ::testing::Values(
+        // America/New_York is UTC-5 (EST) at this instant → civil
+        // 2024-01-01T22:04:05.123 — the date fields all roll back a
+        // day relative to UTC.
+        CivilFieldTzCase{"NY_Year", TsAccessor::kYear, "America/New_York",
+                         2024},
+        CivilFieldTzCase{"NY_Month", TsAccessor::kMonth, "America/New_York", 0},
+        CivilFieldTzCase{"NY_DayOfMonth", TsAccessor::kDayOfMonth,
+                         "America/New_York", 0},
+        CivilFieldTzCase{"NY_DayOfYear", TsAccessor::kDayOfYear,
+                         "America/New_York", 0},
+        // 2024-01-01 is a Monday; cel-cpp renders Sunday=0.
+        CivilFieldTzCase{"NY_DayOfWeek", TsAccessor::kDayOfWeek,
+                         "America/New_York", 1},
+        CivilFieldTzCase{"NY_Seconds", TsAccessor::kSeconds, "America/New_York",
+                         5},
+        // Half-hour offset shifts the minutes field: 03:04Z @ +05:30
+        // → 08:34.
+        CivilFieldTzCase{"OffsetHalf_Minutes", TsAccessor::kMinutes, "+05:30",
+                         34},
+        // Unsigned offset implies `+`; negative offset takes the
+        // sign arm; `Z` resolves without tzdata.
+        CivilFieldTzCase{"OffsetUnsigned_Hours", TsAccessor::kHours, "05:30",
+                         8},
+        CivilFieldTzCase{"OffsetNeg_Hours", TsAccessor::kHours, "-03:00", 0},
+        CivilFieldTzCase{"Zulu_Hours", TsAccessor::kHours, "Z", 3}),
+    [](const ::testing::TestParamInfo<CivilFieldTzCase>& info) {
+      return info.param.label;
+    });
+
+TEST(CivilFieldTzE2ETestErrors, MinutesOutOfRangeOffsetErrors) {
+  // `+05:60` passes the digit-layout check but fails the minutes<=59
+  // bound — the reject must be an eval error, not a silent UTC.
+  Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
+  Instance inst = CompilePlan(compiler, "t.getHours('+05:60')");
+  Activation act;
+  act.Bind("t", Value::Timestamp(absl::UnixEpoch()));
+  Value got = EvalOk(inst, act);
+  EXPECT_EQ(got.kind(), Value::Kind::kError);
+}
+
+// ──────────────────────────────────────────────────────────────
 // 6. ParseFormatE2ETest  (M7B.D — host trampolines)
 //
 //    Admit / reject matrix per §6.2.  Parse: 4 host trampolines
@@ -1296,9 +1371,9 @@ TEST_P(TzAccessorE2ETest, IanaOrFixedOffset) {
       absl::StrCat("t.", AccessorMethod(p.accessor), "(\"", p.tz, "\")");
   Instance inst = CompilePlan(compiler, source);
   Activation act;
-  act.Bind("t", Value::Timestamp(absl::UnixEpoch() +
-                                 absl::Seconds(p.ts_seconds) +
-                                 absl::Nanoseconds(p.ts_nanos)));
+  act.Bind("t",
+           Value::Timestamp(absl::UnixEpoch() + absl::Seconds(p.ts_seconds) +
+                            absl::Nanoseconds(p.ts_nanos)));
   Value got = EvalOk(inst, act);
   if (p.expect_error) {
     EXPECT_EQ(got.kind(), Value::Kind::kError) << p.label;
@@ -1530,8 +1605,8 @@ TEST_F(RejectE2ETest, Int64ToTimestampOverflow) {
 
 TEST(MessageBackedTimeBindE2ETest, TimestampMessagePeels) {
   Compiler compiler = CompilerWithVar("t", CelType::Timestamp());
-  Instance inst = CompilePlan(compiler,
-                              R"(t == timestamp("1970-01-01T00:00:01.5Z"))");
+  Instance inst =
+      CompilePlan(compiler, R"(t == timestamp("1970-01-01T00:00:01.5Z"))");
   ::google::protobuf::Timestamp p;
   p.set_seconds(1);
   p.set_nanos(500'000'000);

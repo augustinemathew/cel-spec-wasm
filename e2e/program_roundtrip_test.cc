@@ -33,11 +33,22 @@
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
+#include "testdata/e2e_fixture.pb.h"
 
 namespace celwasm {
 namespace {
+
+// Force generated-pool registration of Customer's descriptor for the
+// `proto(...)`-typed declaration row below.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<testdata::Customer>();
+      return 0;
+    }();
 
 Engine& GlobalEngine() {
   static Engine* engine = [] {
@@ -48,71 +59,69 @@ Engine& GlobalEngine() {
   return *engine;
 }
 
-// Compile + Plan + Eval through both paths and compare Values.
-// `configure` declares any variables; `bind` fills the activation.
-void RoundTripIdentical(absl::string_view source,
-                        std::function<void(Compiler::Builder&)> configure,
-                        std::function<void(Activation&)> bind) {
+// Same scalar payload, by kind.  The round-trip matrix picks sources
+// that produce a scalar, so this check is sufficient — aggregate
+// equality is its own slice.  Non-scalar kinds compare unequal so the
+// caller's EXPECT fails loudly.
+bool SameScalarPayload(const Value& a, const Value& b) {
+  switch (a.kind()) {
+    case Value::Kind::kBool:
+      return *a.AsBool() == *b.AsBool();
+    case Value::Kind::kInt:
+      return *a.AsInt() == *b.AsInt();
+    case Value::Kind::kUint:
+      return *a.AsUint() == *b.AsUint();
+    case Value::Kind::kDouble:
+      return *a.AsDouble() == *b.AsDouble();
+    case Value::Kind::kString:
+      return *a.AsString() == *b.AsString();
+    default:
+      return false;
+  }
+}
+
+// Compile `source`, capture the wasm bytes into an owned vector
+// (simulating a write to disk / cache / wire), reconstruct a fresh
+// Program via the public ctor, and plan BOTH ends.  The pure-data
+// contract on Program promises no information lives outside the
+// bytes, so the reloaded instance must behave identically.
+std::pair<Instance, Instance> PlanOriginalAndReloaded(
+    absl::string_view source,
+    const std::function<void(Compiler::Builder&)>& configure) {
   Compiler::Builder b;
   configure(b);
   auto compiler = std::move(b).Build();
-  ASSERT_TRUE(compiler.ok()) << compiler.status();
-
+  ABSL_CHECK_OK(compiler.status());
   auto program = compiler->Compile(source, e2e::DefaultOpts());
-  ASSERT_TRUE(program.ok()) << program.status();
-
-  // Capture the wasm bytes into an owned vector (simulating a write
-  // to disk / cache / wire), then reconstruct a fresh Program from
-  // them via the public ctor.
+  ABSL_CHECK_OK(program.status()) << source;
   std::vector<uint8_t> saved(program->wasm_bytes().begin(),
                              program->wasm_bytes().end());
   Program reloaded(std::move(saved));
-
-  // The reconstructed Program must hold byte-identical wasm; the
-  // pure-data contract on Program promises no information lives
-  // anywhere else.
-  ASSERT_EQ(reloaded.wasm_bytes().size(), program->wasm_bytes().size());
-
-  // Plan both ends.
+  ABSL_CHECK(reloaded.wasm_bytes().size() == program->wasm_bytes().size());
   auto i_orig = GlobalEngine().Plan(*program);
-  ASSERT_TRUE(i_orig.ok()) << i_orig.status();
+  ABSL_CHECK_OK(i_orig.status()) << source;
   auto i_reload = GlobalEngine().Plan(reloaded);
-  ASSERT_TRUE(i_reload.ok()) << i_reload.status();
+  ABSL_CHECK_OK(i_reload.status()) << source;
+  return {*std::move(i_orig), *std::move(i_reload)};
+}
 
-  // Eval both ends with the same Activation contents.
+// Compile + Plan + Eval through both paths and compare Values.
+// `configure` declares any variables; `bind` fills the activation.
+void RoundTripIdentical(
+    absl::string_view source,
+    const std::function<void(Compiler::Builder&)>& configure,
+    const std::function<void(Activation&)>& bind) {
+  auto [i_orig, i_reload] = PlanOriginalAndReloaded(source, configure);
   Activation a_orig;
   bind(a_orig);
   Activation a_reload;
   bind(a_reload);
-  auto v_orig = i_orig->Eval(a_orig);
-  auto v_reload = i_reload->Eval(a_reload);
+  auto v_orig = i_orig.Eval(a_orig);
+  auto v_reload = i_reload.Eval(a_reload);
   ASSERT_TRUE(v_orig.ok()) << v_orig.status();
   ASSERT_TRUE(v_reload.ok()) << v_reload.status();
-
-  // Compare by kind + scalar payload.  Test matrix below picks
-  // sources that produce a scalar, so the kind+payload check is
-  // sufficient — aggregate equality is its own slice.
   ASSERT_EQ(v_orig->kind(), v_reload->kind()) << source;
-  switch (v_orig->kind()) {
-    case Value::Kind::kBool:
-      EXPECT_EQ(*v_orig->AsBool(), *v_reload->AsBool()) << source;
-      break;
-    case Value::Kind::kInt:
-      EXPECT_EQ(*v_orig->AsInt(), *v_reload->AsInt()) << source;
-      break;
-    case Value::Kind::kUint:
-      EXPECT_EQ(*v_orig->AsUint(), *v_reload->AsUint()) << source;
-      break;
-    case Value::Kind::kDouble:
-      EXPECT_EQ(*v_orig->AsDouble(), *v_reload->AsDouble()) << source;
-      break;
-    case Value::Kind::kString:
-      EXPECT_EQ(*v_orig->AsString(), *v_reload->AsString()) << source;
-      break;
-    default:
-      FAIL() << "test matrix produced a non-scalar result for source=" << source
-             << " kind=" << static_cast<int>(v_orig->kind());
-  }
+  EXPECT_TRUE(SameScalarPayload(*v_orig, *v_reload)) << source;
 }
 
 TEST(ProgramRoundTripE2E, LiteralInt) {
@@ -285,6 +294,46 @@ TEST(ProgramFactsE2E, DescribeReportsRequiredHostFn) {
   EXPECT_EQ(facts->required_fns[0].name, "tax_rate");
   EXPECT_TRUE(facts->required_fns[0].is_host);
   EXPECT_FALSE(facts->required_fns[0].signature.empty());
+}
+
+TEST(ProgramFactsE2E, DescribeRendersSignaturesAcrossTypeFamilies) {
+  // One compiled program per declarable type family; the described
+  // signature is `abi::RenderSignature` over the `cel.abi`
+  // required-functions row, so each row pins the wire spelling of a
+  // family (scalars, temporals, aggregates, receiver form, proto).
+  struct Row {
+    absl::string_view decl;
+    absl::string_view expr;
+    absl::string_view want_signature;
+  };
+  const Row kRows[] = {
+      {"bool @host.flag(uint u, double d);", "flag(1u, 1.5)",
+       "bool flag(uint, double)"},
+      {"bytes @host.digest(string s);", "digest('x')", "bytes digest(string)"},
+      {"null @host.nil();", "nil()", "null nil()"},
+      {"Duration @host.lag(Timestamp t);",
+       "lag(timestamp('2024-01-01T00:00:00Z'))", "Duration lag(Timestamp)"},
+      {"list<int> @host.ids(map<string, int> m);", "ids({'a': 1})",
+       "list<int> ids(map<string, int>)"},
+      {"string @host.upper(this string s);", "'x'.upper()",
+       "string upper(this string)"},
+      {"int @host.rank(proto(celwasm.testdata.Customer) c);", "rank(cust)",
+       "int rank(proto(celwasm.testdata.Customer))"},
+  };
+  for (const Row& row : kRows) {
+    auto b = Compiler::NewBuilder();
+    b.AddFunction(row.decl);
+    b.DeclareVariable("cust", CelType::Message("celwasm.testdata.Customer"));
+    auto compiler = std::move(b).Build();
+    ASSERT_TRUE(compiler.ok()) << row.decl << ": " << compiler.status();
+    auto program = compiler->Compile(row.expr, e2e::DefaultOpts());
+    ASSERT_TRUE(program.ok()) << row.expr << ": " << program.status();
+    auto facts = abi::DescribeProgram(program->wasm_bytes());
+    ASSERT_TRUE(facts.ok()) << facts.status();
+    ASSERT_EQ(facts->required_fns.size(), 1u) << row.decl;
+    EXPECT_TRUE(facts->required_fns[0].is_host) << row.decl;
+    EXPECT_EQ(facts->required_fns[0].signature, row.want_signature);
+  }
 }
 
 TEST(ProgramFactsE2E, DescribeReportsLinkMode) {

@@ -66,8 +66,8 @@ constexpr absl::string_view kNested =
 using Decls = std::vector<std::pair<std::string, CelType>>;
 using Binds = std::vector<std::pair<std::string, Value>>;
 
-// Compile `source` with `decls` declared, plan it, bind `binds`, eval.
-Value EvalBound(absl::string_view source, const Decls& decls, Binds binds) {
+// Compile `source` with `decls` declared and plan it.
+Instance PlanBound(absl::string_view source, const Decls& decls) {
   auto b = Compiler::NewBuilder();
   for (const auto& [name, type] : decls) {
     b.DeclareVariable(name, type);
@@ -81,11 +81,17 @@ Value EvalBound(absl::string_view source, const Decls& decls, Binds binds) {
   ABSL_CHECK_OK(program.status()) << source;
   auto instance = GlobalEngine().Plan(*program);
   ABSL_CHECK_OK(instance.status()) << source;
+  return *std::move(instance);
+}
+
+// Compile `source` with `decls` declared, plan it, bind `binds`, eval.
+Value EvalBound(absl::string_view source, const Decls& decls, Binds binds) {
+  Instance instance = PlanBound(source, decls);
   Activation act;
   for (auto& [name, value] : binds) {
     act.Bind(name, std::move(value));
   }
-  auto v = instance->Eval(act);
+  auto v = instance.Eval(act);
   ABSL_CHECK_OK(v.status()) << source;
   return *std::move(v);
 }
@@ -484,6 +490,49 @@ TEST_F(MessageBackedReadTest, BoundTimestampEqualsLiteral) {
 TEST_F(MessageBackedReadTest, BoundDurationEqualsLiteral) {
   ExpectBoundTrue("d == duration('90s')", {{"d", CelType::Duration()}},
                   {{"d", Value::Duration(absl::Seconds(90))}});
+}
+
+TEST_F(MessageBackedReadTest, CollectionSizeInAndElementKindMatrix) {
+  // The host-backed collection reads a bound message reaches:
+  // `size()` on message-backed map / list views (CelMapSizeImpl /
+  // CelListSizeImpl), `in` over both (CelMapInImpl, the host-origin
+  // scan arm of CelListInImpl), and the per-cpp_type indexed-element
+  // decode (ReadRepeatedElement) for every repeated scalar kind plus
+  // enum, bytes, and nested message.
+  const Decls decls = {
+      {"msg", CelType::Message("cel.expr.conformance.proto3.TestAllTypes")}};
+  const auto fill = [](TestAllTypes& m) {
+    m.add_repeated_bool(true);
+    m.add_repeated_int32(5);
+    m.add_repeated_int64(6);
+    m.add_repeated_uint32(7);
+    m.add_repeated_uint64(8);
+    m.add_repeated_float(1.5F);
+    m.add_repeated_double(2.5);
+    m.add_repeated_bytes("ab");
+    m.add_repeated_nested_enum(TestAllTypes::BAR);
+    m.add_repeated_nested_message()->set_bb(7);
+    (*m.mutable_map_string_int64())["k"] = 3;
+  };
+  const absl::string_view kTrueSources[] = {
+      "size(msg.map_string_int64) == 1",
+      "'k' in msg.map_string_int64 && !('z' in msg.map_string_int64)",
+      "size(msg.repeated_int32) == 1",
+      "6 in msg.repeated_int64 && !(9 in msg.repeated_int64)",
+      "msg.repeated_bool[0]",
+      "msg.repeated_int32[0] == 5",
+      "msg.repeated_int64[0] == 6",
+      "msg.repeated_uint32[0] == 7u",
+      "msg.repeated_uint64[0] == 8u",
+      "msg.repeated_float[0] == 1.5",
+      "msg.repeated_double[0] == 2.5",
+      "msg.repeated_bytes[0] == b'ab'",
+      "msg.repeated_nested_enum[0] == 1",
+      "msg.repeated_nested_message[0].bb == 7",
+  };
+  for (const absl::string_view src : kTrueSources) {
+    ExpectBoundTrue(src, decls, {{"msg", BoundTestAllTypes(fill)}});
+  }
 }
 
 TEST_F(MessageBackedReadTest, CrossNumericHostMapKeyLookup) {
