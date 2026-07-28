@@ -39,6 +39,7 @@
 
 #include "absl/status/status.h"
 #include "absl/strings/ascii.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -531,6 +532,114 @@ TEST(HostFnTest, TypedMapViewArgFromLiteralMap) {
   auto v = instance->Eval(act);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), 20);
+}
+
+// A context callback eagerly decoding a LITERAL map arg via
+// `ArgValue` — end-to-end through the real arena wire shape
+// (host_call_context.cc's DecodeArenaMapEntries), where the
+// HostMapView cases above decode lazily.  The callback sums the
+// values through the decoded Value's map backing.
+TEST(HostFnTest, ContextArgValueDecodesLiteralMapArg) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.msum(map<string, int> m);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program =
+      compiler->Compile("msum({'a': 10, 'b': 20})", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("msum_map_string_int", 2,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto v = ctx.ArgValue(0);
+                                  if (!v.ok()) return v.status();
+                                  auto backing = v->MapBacking();
+                                  if (!backing.ok()) return backing.status();
+                                  int64_t sum = 0;
+                                  for (absl::string_view k : {"a", "b"}) {
+                                    auto e = (*backing)->Get(
+                                        Value::String(std::string(k)),
+                                        CelType::Int());
+                                    if (!e.ok()) return e.status();
+                                    sum += *e->AsInt();
+                                  }
+                                  return ctx.ReturnInt(sum);
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsInt(), 30);
+}
+
+// An embedder callback reading an arg with the WRONG typed accessor:
+// the mismatch diagnostic must name the actual wire kind (the
+// WireKindName arms in host_call_context.cc) and surface as an eval
+// failure — end-to-end proof the context's kind check is not
+// bypassable from real wire values.
+TEST(HostFnTest, ContextWrongAccessorDiagnosticNamesWireKind) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("d", CelType::Duration());
+  b.AddFunction("int @host.dprobe(Duration d);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("dprobe(d)", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("dprobe_duration", 2,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  // Deliberate embedder bug: int read
+                                  // of a duration slot.
+                                  return ctx.ArgInt(0).status();
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  act.Bind("d", Value::Duration(absl::Seconds(5)));
+  auto v = instance->Eval(act);
+  ASSERT_FALSE(v.ok());
+  EXPECT_TRUE(absl::StrContains(v.status().message(), "duration"))
+      << v.status();
+}
+
+// What reaches the callback when an ARGUMENT evaluates to a runtime
+// error: pins the dispatch contract for error-valued args through the
+// full pipeline ([1][5] is int-typed but errors at eval).
+TEST(HostFnTest, ErrorValuedArgContract) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.echo7(int x);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("echo7([1][5])", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  int calls = 0;
+  ASSERT_TRUE(engine
+                  ->AddFunction("echo7_int", 2,
+                                [&calls](HostCallContext& ctx) -> absl::Status {
+                                  ++calls;
+                                  return ctx.ReturnInt(7);
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  // 3VL absorption: the error propagates without dispatching the
+  // callback (mirrors cel-cpp strict-function semantics).
+  EXPECT_TRUE(v->IsError());
+  EXPECT_EQ(calls, 0);
 }
 
 // ── shared pieces for the deepest-composite tests ─────────────────
