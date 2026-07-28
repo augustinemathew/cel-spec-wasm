@@ -990,6 +990,7 @@ py_test(
     data = [
         "BUILD.bazel",
         "test_taxonomy.json",
+        "//e2e/plugin_fixtures/cel_wasm_plugin_demo:BUILD.bazel",
         "//examples:BUILD.bazel",
         "//tools/cel:BUILD.bazel",
     ] + glob(["*.cc"]),

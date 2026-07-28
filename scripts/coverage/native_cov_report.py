@@ -192,8 +192,9 @@ def is_harness_file(path: str) -> bool:
 
 
 def workload_class(workload: str, taxonomy) -> str:
-    """Three classes: "e2e" (the e2e suites + the CLI/example
-    workloads that drive the full public pipeline), "corpus"
+    """Three classes: "e2e" (the e2e suites, plus the CLI / example /
+    plugin-fixture suites declared outside e2e/BUILD.bazel that drive
+    the same full public pipeline), "corpus"
     (external workloads — conformance, fuzz), "unit" (everything
     else).  The goal metrics exclude "corpus": e2e-only = e2e;
     tests = e2e+unit."""
@@ -203,7 +204,8 @@ def workload_class(workload: str, taxonomy) -> str:
             skey = skey[: -len(suf)]
     if skey in taxonomy["suites"]:
         return "e2e"
-    if skey in taxonomy.get("cli_workloads", {}) and skey != "_comment":
+    if (skey in taxonomy.get("external_e2e_workloads", {})
+            and skey != "_comment"):
         return "e2e"
     if skey in taxonomy.get("external_workloads", {}):
         return "corpus"

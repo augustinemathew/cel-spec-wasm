@@ -267,8 +267,8 @@
       "surfaces": ["meta/differential"]
     }
   },
-  "cli_workloads": {
-    "_comment": "Workloads outside e2e/BUILD.bazel that still drive the full public pipeline (Compile -> Plan -> Eval) end-to-end and therefore class as e2e in the coverage goal metrics: the cel CLI smoke (the shipped binary; --var specs, eval/check subcommands) and the examples (embedder-shaped programs).  Names are validated against their BUILD files by taxonomy_validate_test.py.",
+  "external_e2e_workloads": {
+    "_comment": "Suites declared OUTSIDE e2e/BUILD.bazel that nonetheless drive the full public pipeline (Compile -> Plan -> Eval) end to end, and so count as e2e in the coverage goal metrics: the cel CLI smoke (the shipped binary; --var specs, eval/check subcommands), the examples (embedder-shaped programs), and the plugin-fixture suite (a real Component-Model plugin through Engine::Use + Plan + Eval).  Names are validated against their BUILD files by taxonomy_validate_test.py.",
     "cel_smoke_test": {
       "build_file": "tools/cel/BUILD.bazel",
       "surfaces": ["lang/literals", "lang/operators.arith", "lang/idents", "lang/time", "lang/lists", "lang/comprehensions"]
@@ -276,6 +276,10 @@
     "examples_smoke_test": {
       "build_file": "examples/BUILD.bazel",
       "surfaces": ["lang/literals", "lang/idents", "host/foreign-fns"]
+    },
+    "demo_plugin_e2e_test": {
+      "build_file": "e2e/plugin_fixtures/cel_wasm_plugin_demo/BUILD.bazel",
+      "surfaces": ["host/plugins"]
     }
   }
 }

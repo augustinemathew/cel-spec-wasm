@@ -57,11 +57,11 @@ class TaxonomyValidateTest(unittest.TestCase):
             f"(renamed or deleted?): {sorted(stale)}",
         )
 
-    def _cli_workloads(self) -> dict:
+    def _external_e2e_workloads(self) -> dict:
         return {
             name: entry
             for name, entry in self.manifest.get(
-                "cli_workloads", {}
+                "external_e2e_workloads", {}
             ).items()
             if name != "_comment"
         }
@@ -70,7 +70,7 @@ class TaxonomyValidateTest(unittest.TestCase):
         entries = (
             list(self.suites.items())
             + list(self.manifest.get("external_workloads", {}).items())
-            + list(self._cli_workloads().items())
+            + list(self._external_e2e_workloads().items())
         )
         for name, entry in entries:
             with self.subTest(suite=name):
@@ -90,12 +90,12 @@ class TaxonomyValidateTest(unittest.TestCase):
                     f"{name}: source {entry['source']} not found in e2e/",
                 )
 
-    def test_cli_workload_targets_exist(self):
-        # cli_workloads live outside e2e/BUILD.bazel; each names its
+    def test_external_e2e_workload_targets_exist(self):
+        # These live outside e2e/BUILD.bazel; each names its
         # BUILD file, and that file must declare a target of the same
         # name — the drift guard mirroring the suite<->BUILD checks.
         repo_root = os.path.dirname(_E2E_DIR)
-        for name, entry in self._cli_workloads().items():
+        for name, entry in self._external_e2e_workloads().items():
             with self.subTest(workload=name):
                 build_path = os.path.join(repo_root, entry["build_file"])
                 self.assertTrue(
