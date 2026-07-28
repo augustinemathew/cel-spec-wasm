@@ -996,6 +996,59 @@ TEST(HostFnTest, TypedFunctionsCompose) {
 // registration-level validation matrix lives in eval/engine_test.cc
 // (EngineBindFunctionTest); this is the single end-to-end dispatch
 // proof through wasmtime.
+// One BindFunction signature-mismatch probe: `decl` declares the
+// parameter's CEL type; the bound callable takes int64_t (except the
+// int row, which takes bool).  Registration must fail InvalidArgument
+// naming the declared slug AND the callable's C++ spelling — the
+// CppParamMatchesDeclType arm and HostParamKindName arm for that kind.
+void ExpectBindMismatch(absl::string_view decl,
+                        absl::string_view expect_decl_slug,
+                        absl::string_view expect_cpp_name) {
+  auto engine = Engine::NewBuilder().Build();
+  ABSL_CHECK_OK(engine.status());
+  absl::Status s =
+      absl::StrContains(decl, "(int ")
+          ? engine->BindFunction(
+                decl, [](bool) -> absl::StatusOr<int64_t> { return 0; })
+          : engine->BindFunction(
+                decl, [](int64_t) -> absl::StatusOr<int64_t> { return 0; });
+  ASSERT_FALSE(s.ok()) << decl;
+  EXPECT_TRUE(absl::StrContains(s.message(), expect_decl_slug))
+      << decl << ": " << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), expect_cpp_name))
+      << decl << ": " << s;
+}
+
+// The registration-time signature compare, one probe per declared CEL
+// kind (the matched half is exercised by the round-trip tests below
+// and the per-type matrix suite).
+TEST(HostFnTest, BindFunctionSignatureMismatchMatrix) {
+  ExpectBindMismatch("int @host.p1(bool b);", "bool", "int64_t");
+  ExpectBindMismatch("int @host.p2(int x);", "int", "bool");
+  ExpectBindMismatch("int @host.p3(uint u);", "uint", "int64_t");
+  ExpectBindMismatch("int @host.p4(double d);", "double", "int64_t");
+  ExpectBindMismatch("int @host.p5(string s);", "string", "int64_t");
+  ExpectBindMismatch("int @host.p6(bytes b);", "bytes", "int64_t");
+  ExpectBindMismatch("int @host.p7(Duration d);", "duration", "int64_t");
+  ExpectBindMismatch("int @host.p8(Timestamp t);", "timestamp", "int64_t");
+  ExpectBindMismatch("int @host.p9(list<int> xs);", "list", "int64_t");
+  ExpectBindMismatch("int @host.p10(map<string, int> m);", "map", "int64_t");
+  ExpectBindMismatch(
+      "int @host.p11(proto(celwasm.testdata.Customer) c);", "message",
+      "int64_t");
+}
+
+// Arity mismatch: decl declares two params, callable takes one.
+TEST(HostFnTest, BindFunctionArityMismatch) {
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  absl::Status s = engine->BindFunction(
+      "int @host.two(int a, int b);",
+      [](int64_t) -> absl::StatusOr<int64_t> { return 0; });
+  ASSERT_FALSE(s.ok());
+  EXPECT_TRUE(absl::StrContains(s.message(), "2 parameter(s)")) << s;
+}
+
 TEST(HostFnTest, BindFunctionDeclFirstRoundTrip) {
   constexpr absl::string_view kDecl = "int @host.discount_pct(string tier);";
   auto b = Compiler::NewBuilder();
