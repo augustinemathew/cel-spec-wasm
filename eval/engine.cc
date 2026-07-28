@@ -629,24 +629,9 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
 
 // ── M13 Slice C.1 — custom-fn helpers ────────────────────────────
 
-// Reserved module-alias names — Engine::AddModule rejects these.
-// `cel` / `cel_host` / `cel_env` / `cel_fn` are the engine's own
-// import namespaces (runtime + host trampolines + custom-fn host
-// callbacks).  `host` is reserved per the .celfn IDL convention
-// (`@host.X` is the only legal host syntax; using `host` as a
-// foreign alias would create confusing decls).
-// `wasi_snapshot_preview1` is the WASI preview1 namespace —
-// `RegisterWasiStubs` already populates the linker with this
-// module, and overriding it would silently mask a stub.
-bool IsReservedAlias(absl::string_view alias) {
-  return alias == "cel" || alias == "cel_host" || alias == "cel_env" ||
-         alias == "cel_fn" || alias == "host" ||
-         alias == "wasi_snapshot_preview1";
-}
 
 // Functype for host callbacks: `arity` × i32 params, no results.
-// Both AddModule's per-helper export bindings and AddFunction's
-// host callbacks use this signature.
+// AddFunction's host callbacks use this signature.
 wasm_functype_t* MakeI32sToVoidFuncType(std::uint8_t arity) {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_new_uninitialized(&params, arity);
@@ -758,62 +743,6 @@ wasm_trap_t* HostCallbackTrampoline(void* env_ptr, wasmtime_caller_t* caller,
   return nullptr;
 }
 
-// Instantiate each registered foreign custom module in the per-Plan
-// store + bind its function exports under its alias on the linker.
-// Runs after `InstantiateRuntime` (so cel.memory + cel.arena_alloc
-// etc. are bound) and before `InstantiateExpr`.  Calls
-// `_initialize` on each module if exported (§4.5.2 point 4).
-absl::Status InstantiateAndBindCustomModules(
-    celwasm::WasmtimeEngineState* state, celwasm::InstanceImpl* impl) {
-  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
-  for (const auto& [alias, mod] : state->custom_modules) {
-    wasmtime_instance_t inst;
-    wasm_trap_t* trap = nullptr;
-    wasmtime_error_t* err = wasmtime_linker_instantiate(
-        impl->linker, ctx, mod.module, &inst, &trap);
-    if (err != nullptr) {
-      return WasmtimeErrorToStatus(absl::StrCat("instantiate(", alias, ")"),
-                                   err);
-    }
-    if (trap != nullptr) {
-      return WasmTrapToStatus(absl::StrCat("instantiate(", alias, ") trapped"),
-                              trap);
-    }
-
-    wasmtime_extern_t init_ext;
-    if (wasmtime_instance_export_get(ctx, &inst, "_initialize", 11,
-                                     &init_ext) &&
-        init_ext.kind == WASMTIME_EXTERN_FUNC) {
-      wasmtime_func_t init_fn = init_ext.of.func;
-      wasm_trap_t* init_trap = nullptr;
-      err = wasmtime_func_call(ctx, &init_fn, /*args=*/nullptr, /*nargs=*/0,
-                               /*results=*/nullptr, /*nresults=*/0, &init_trap);
-      if (err != nullptr) {
-        return WasmtimeErrorToStatus(absl::StrCat(alias, "._initialize"), err);
-      }
-      if (init_trap != nullptr) {
-        return WasmTrapToStatus(absl::StrCat(alias, "._initialize trapped"),
-                                init_trap);
-      }
-    }
-
-    for (const auto& helper : mod.helper_exports) {
-      wasmtime_extern_t ext;
-      if (!wasmtime_instance_export_get(ctx, &inst, helper.data(),
-                                        helper.size(), &ext)) {
-        continue;
-      }
-      wasmtime_error_t* def_err =
-          wasmtime_linker_define(impl->linker, ctx, alias.data(), alias.size(),
-                                 helper.data(), helper.size(), &ext);
-      if (def_err != nullptr) {
-        return WasmtimeErrorToStatus(
-            absl::StrCat("define(", alias, ".", helper, ")"), def_err);
-      }
-    }
-  }
-  return absl::OkStatus();
-}
 
 // Register each `Engine::AddFunction`-registered callback on the
 // linker as `cel_fn.<overload_id>`.  Each callback gets its own
@@ -1307,7 +1236,7 @@ absl::Status InstantiateAndBindPlugins(celwasm::WasmtimeEngineState* state,
 // module's `(import "rules" "allow_...")` / `(import "cel_fn"
 // "upper_...")` imports get resolved against whatever's on the
 // linker at instantiate time.
-//   1. M13 Slice C.1: foreign custom modules + host callbacks.
+//   1. Host callbacks.
 //   2. m24 §3.5: Component-Model plugins — each instantiated into
 //      the per-Plan store, its declared fns bound as
 //      `cel_fn.<overload_id>` host-callback trampolines.  Runs AFTER
@@ -1316,9 +1245,6 @@ absl::Status InstantiateAndBindPlugins(celwasm::WasmtimeEngineState* state,
 //      registration.
 absl::Status BindRegisteredExtensions(celwasm::WasmtimeEngineState* state,
                                       celwasm::InstanceImpl* impl) {
-  if (auto s = InstantiateAndBindCustomModules(state, impl); !s.ok()) {
-    return s;
-  }
   if (auto s = RegisterHostCallbacks(state, impl); !s.ok()) {
     return s;
   }
@@ -1506,8 +1432,7 @@ absl::Status CheckPluginExportsStatically(const wasmtime_component_t* component,
 
 // Parses plugin bytes into the `wasmtime_component_t*` shared across
 // Plans (each Plan instantiates it into its own per-Plan store,
-// mirroring how RegisteredCustomModule's parsed `wasmtime_module_t*`
-// is reused).  On parse failure returns the raw wasmtime error
+// mirroring how the parsed runtime `wasmtime_module_t*` is reused).  On parse failure returns the raw wasmtime error
 // (FailedPrecondition), `context` naming the caller; each caller owns
 // its status-code policy at the call site (see
 // doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §3.4).
@@ -1612,64 +1537,7 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   return Instance(wasmtime_, std::move(impl));
 }
 
-// ——— Engine::AddModule + Engine::AddFunction (M13 Slice C.1) ———
-
-absl::Status Engine::AddModule(absl::string_view alias,
-                               absl::Span<const uint8_t> wasm_bytes) {
-  if (alias.empty()) {
-    return absl::InvalidArgumentError(
-        "Engine::AddModule: alias must be non-empty");
-  }
-  if (IsReservedAlias(alias)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("Engine::AddModule: `", alias, "` is a reserved alias"));
-  }
-  const std::string alias_str(alias);
-  if (wasmtime_->custom_modules.find(alias_str) !=
-      wasmtime_->custom_modules.end()) {
-    return absl::AlreadyExistsError(
-        absl::StrCat("module alias `", alias, "` already registered"));
-  }
-
-  // Parse the wasm bytes at registration time — surfaces syntactic
-  // errors here, not at Plan time.  The parsed wasmtime_module_t*
-  // is reusable across Plan calls (each Plan instantiates it into
-  // its fresh store).
-  celwasm::RegisteredCustomModule entry;
-  wasmtime_error_t* err = wasmtime_module_new(
-      wasmtime_->engine, wasm_bytes.data(), wasm_bytes.size(), &entry.module);
-  if (err != nullptr) {
-    return WasmtimeErrorToStatus(absl::StrCat("Engine::AddModule(", alias, ")"),
-                                 err);
-  }
-
-  // Snapshot the module's function exports — for downstream
-  // cross-module conflict detection + import resolution at Plan
-  // time.  Needs an instance, so spin up a throwaway store +
-  // empty linker and instantiate; modules with imports beyond
-  // `cel.memory` would fail here (Slice C.1 requires foreign
-  // modules to be self-contained or to only import cel.memory,
-  // which we don't have yet at this point).
-  //
-  // For C.1, accept "may fail to introspect imports" and snapshot
-  // exports lazily — i.e., walk the module's export TYPES (no
-  // instance needed) via `wasmtime_module_exports`.  That gives us
-  // the export names without instantiating.
-  wasm_exporttype_vec_t exports;
-  wasmtime_module_exports(entry.module, &exports);
-  for (size_t i = 0; i < exports.size; ++i) {
-    const wasm_name_t* name = wasm_exporttype_name(exports.data[i]);
-    const wasm_externtype_t* xt = wasm_exporttype_type(exports.data[i]);
-    if (wasm_externtype_kind(xt) != WASM_EXTERN_FUNC) continue;
-    const absl::string_view nm(name->data, name->size);
-    if (nm.empty() || nm[0] == '_') continue;
-    entry.helper_exports.emplace_back(nm);
-  }
-  wasm_exporttype_vec_delete(&exports);
-
-  wasmtime_->custom_modules.emplace(alias_str, std::move(entry));
-  return absl::OkStatus();
-}
+// ——— Engine::AddFunction (host callbacks) ———
 
 absl::Status Engine::AddFunction(absl::string_view overload_id,
                                  std::uint8_t num_args, HostCallback impl) {

@@ -342,10 +342,13 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
 **Status today: declaration-only.** Grammar (§3.1), Builder gates, checker
 registration, and codegen's `kUserModule` import emission all exist and are
 tested. Nothing produces the wasm module those imports resolve against: a
-compiled `@native` call emits `(import "<module_name>" "<overload_id>")`; the
-only binding mechanism is `Engine::AddModule(alias, bytes)`, and nothing in the
-tree produces those bytes. Expected behavior: an unresolved-import failure at
-Plan (R2/R3).
+compiled `@native` call emits `(import "<module_name>" "<overload_id>")`, and
+nothing binds it: `Engine::AddModule(alias, bytes)` — the registration surface
+reserved for this backend — was deleted 2026-07-27 (never exercised end-to-end;
+the m38 dead-code audit removed it with its Plan-side instantiation). Expected
+behavior: an unresolved-import failure at Plan (R2/R3). Whichever
+implementation below is chosen would reintroduce a binding surface designed
+with it.
 
 Two competing implementations exist, **neither live on this branch**:
 

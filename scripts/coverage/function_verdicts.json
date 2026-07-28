@@ -2,10 +2,10 @@
   "_comment": [
     "Curated dead-code verdicts joined into the coverage report by",
     "native_cov_report.py (see apply_verdicts).  Verdict vocabulary:",
-    "  dead      — no caller anywhere in first-party code; delete.",
-    "  test-only — only unit tests call it; relocate to test support.",
-    "  by-design — unreachable tripwire / defense-in-depth; keep.",
-    "  gap       — (default for unmatched zero-hit fns) needs a test.",
+    "  dead      \u2014 no caller anywhere in first-party code; delete.",
+    "  test-only \u2014 only unit tests call it; relocate to test support.",
+    "  by-design \u2014 unreachable tripwire / defense-in-depth; keep.",
+    "  gap       \u2014 (default for unmatched zero-hit fns) needs a test.",
     "Every entry needs evidence a reviewer can check without rerunning",
     "the analysis: the caller search that proved it, or the design",
     "invariant (with doc citation) that makes the path unreachable.",
@@ -53,18 +53,6 @@
       "match": "vend_poison_map_iter",
       "verdict": "by-design",
       "evidence": "Same prologue pre-check as vend_poison_list_view; codegen-drift tripwire."
-    },
-    {
-      "file": "eval/engine.cc",
-      "match": "InstantiateAndBindCustomModules",
-      "verdict": "by-design",
-      "evidence": "Engine::AddModule is reserved for the unimplemented @native backend (doc/user-guide/custom-functions.md §4.5); no compiled program can require a custom-module helper until it lands, so the Plan-side instantiation is e2e-unreachable. Registration arms are unit-covered by EngineAddModuleTest. PROPOSALS-worthy: implement @native or delete the surface."
-    },
-    {
-      "file": "eval/engine.cc",
-      "match": "Engine::AddModule",
-      "verdict": "by-design",
-      "evidence": "Reserved surface for the unimplemented @native backend (user-guide §4.5); registration validation unit-covered, instantiation unreachable e2e."
     },
     {
       "file": "eval/engine.cc",

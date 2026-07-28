@@ -256,13 +256,15 @@ declarations with `cel embed-decls` and loading it as a `Plugin`
 ([Writing plugins §6](writing-plugins.md#6-plugins-built-outside-the-macro-cel-embed-decls));
 reach for `AddPlugin` only when you can't.
 
-### 4.5 What about `Engine::AddModule`?
+### 4.5 What about registering a raw core wasm module?
 
-`Engine::AddModule(alias, wasm_bytes)` — an alias-keyed "register a
-core wasm module" API — is reserved for the unimplemented `@native`
-backend (§3) and is **not** a plugin registration path. Use
-`Engine::Use` (or the `AddPlugin` escape hatch) for every
-plugin-backed function.
+There is no such API. An `Engine::AddModule(alias, wasm_bytes)`
+surface existed for a while, reserved for a `@native` shared-memory
+backend that was never implemented; it was removed rather than kept
+as a promise (nothing a compiled program produces could ever call
+into it). Every plugin-backed function goes through `Engine::Use`
+(or the `AddPlugin` escape hatch). If a shared-memory native backend
+is ever built, its registration API will be designed with it.
 
 ---
 
