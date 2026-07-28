@@ -235,6 +235,114 @@ once-per-process quirk, noted in the .cc).
 
 ## 7. Session context for pickup
 
+> **2026-07-27 (second session) — current state.  Read §7.0 FIRST; the
+> subsections after it are the original session's context and remain
+> valid background.**
+
+### 7.0 Live state + the report-regeneration runbook
+
+**Branch:** `claude/m38-wasm-gcov-coverage`, 16 commits ahead of
+origin, clean tree.  All gates were green at commit `761d3d7`
+($PROJ 157/157, all 22 manual-tagged targets, conformance monotonic
+both modes, full-PCH `scripts/lint.sh --branch` at zero findings);
+commits after it (host-context tranche `bbba787`, eq/ne-arm deletion
+`d2aff22`) have targeted test verification but still owe a final
+full-gate pass before push.
+
+**The goal (user-stated, supersedes the earlier 95%/99% bars):**
+coverage-guided hill climbing to **e2e-only = 100% of non-error
+branches** and **overall = 100% minus `ABSL_CHECK(false)` /
+defense-in-depth arms**.  Error branches may be unit-covered; the
+e2e-only column of the report is the number being climbed.
+
+**THE REPORT (the deliverable the user keeps asking for):** the
+combined Compiler / Eval / CelRuntime explorer with the e2e-only
+vs all-tests split, function audit, branch-gap list, per-workload
+redundancy, annotated source.  Published at
+`https://claude.ai/code/artifact/f7eea479-1779-41a8-baed-4205c5b17230`
+— from a NEW session, republish by passing that URL as the Artifact
+tool's `url` parameter (same-file-path tricks only work within the
+publishing conversation).
+
+**One-command regeneration:**
+
+```bash
+scripts/coverage/run_full_coverage.sh /tmp/celwasm-coverage
+# -> /tmp/celwasm-coverage/report.{html,json}
+```
+
+It drives: (1) instrumented-wasm build + per-workload gcda
+collection over all dynamic e2e binaries + instance/memory_grow
+manual suites, with engine_test + conformance via
+`CELWASM_WASM_GCOV_DIR=<dir> bazel run` (they need runfiles);
+(2) the native `bazel coverage` sweep in LLVM source-based mode
+(the `llvm_gcov.sh` dual-role shim); (3)
+`native_cov_report.py --wasm-cov-root` to join both layers.
+
+**Regeneration invariants (violating these produced a silently-wrong
+report once each):**
+
+  - A plain `bazel test <target>` DELETES that target's
+    `bazel-testlogs/<pkg>/<name>/coverage.dat`.  After ANY test
+    running since the last sweep, re-run the `bazel coverage` sweep
+    before regenerating — the generator prints `workloads: N`;
+    anything under ~140 means clobbered data (a valid full run is
+    143+ workloads).
+  - Any change to `runtime/` invalidates every collected wasm
+    `.gcda`/`.gcno` pair — wipe the wasm-cov raw tree and re-collect
+    from a fresh instrumented build (checksum mismatches otherwise).
+  - `.gcno` pairing rules are encoded in `collect_wasm_gcov.sh`
+    (per-lib `_objs` dirs; `cp -f` because bazel outputs are r-x).
+
+**Last VALID numbers (143 workloads, commit `bbba787`, before the
+arm deletion):** total 82.74% line / 92.31% fn / 71.62% branch;
+Compiler 90.04% line (e2e-only 70.87%), Eval 81.39% (62.98%),
+CelRuntime 87.30% (87.14%), Other 57.61%.  195 zero-hit functions,
+1,919 untaken branch sites.
+
+**In flight at handoff:** a full uncached native sweep (all ~180
+targets).  After it completes: instrumented wasm rebuild + FULL wasm
+re-collection (runtime changed), regenerate, republish, then resume
+the hill-climb loop: report → largest e2e-only non-error gaps →
+e2e tests (or deletion / classification) → re-measure.
+
+**User-approved deletions executed (`d2aff22`):** the 8 unreachable
+per-kind eq/ne arms (int/uint/double eq+ne, bool_ne, numeric_ne) with
+all consumers — exports, wat_runner bindings, WAT trace 17 retired,
+traces 63/66/67 + focused compare tests + BM_IntEq repointed to the
+production `cel_equals_at_vv` / `cel_not_equals_at_vv`; TypedAst
+`mutable_ast` / `mutable_annotations` (zero callers).
+**Recommended but NOT yet executed:** relocating `cel_make.c`'s
+native-test-only constructors (all but `cel_make_string` +
+`make_span_copy` + `alloc_cv`, which `cel_net_ext.c` uses) and
+`arena_cursor`/`arena_capacity`/`cel_memory_size_`/`cel_mem_size`
+into a test-support target so the shipped wasm stops carrying them.
+
+**Classified unreachable — do NOT write tests for these (report
+exemptions instead):** RejectDyn-blocked JSON `Struct`/`ListValue`
+unpack (`cel_host.cc:270-364`) and double-key map hashing
+(`cel_map_hash.h`) — unlock only via dyn passthrough;
+`vend_poison_list_view`/`vend_poison_map_iter` + mismatch-message
+builders + `WasmTrapToStatus` — codegen-drift tripwires;
+`DecodeWireError` — 3VL absorbs error args before dispatch (pinned
+e2e by `HostFnTest.ErrorValuedArgContract`); a non-strict-functions
+API on `AddFunction` would be the unlock, `PROPOSALS.md`-worthy.
+
+**Next e2e gap targets (from the last report):** `cel_host.cc` proto
+read/write matrices (~780 uncovered lines — more field-shape e2e
+cases, no product changes needed), `instance.cc` / `engine.cc` /
+`cel_plugin.cc` / `cel_log.cc` remaining non-error runs, and the
+branch-gap tab worked file-by-file.
+
+**Session mechanics worth keeping:** commit hooks run a 90s review
+agent that has timed out on every commit — `CEL_HOOK_SKIP=1 git
+commit` is the sanctioned skip; `scripts/lint.sh` re-runs its ~10-min
+cold-tree symlink populate after every bazel config switch (fastbuild
+↔ coverage ↔ instrumented), so batch lint at gates; clangd
+diagnostics in this tree are stale-index noise — bazel is the
+authority.
+
+
 Everything below is state from the session that produced this branch
 (2026-07-27, base `ba28793`), recorded so a fresh agent/machine can
 continue without re-deriving it.
