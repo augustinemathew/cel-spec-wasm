@@ -782,6 +782,7 @@ link_mode_e2e_cc_test(
     srcs = ["program_roundtrip_test.cc"],
     deps = [
         ":link_mode_e2e_helpers",
+        "//abi:program_facts",
         "//eval:activation",
         "//compiler:compiler",
         "//eval:engine",
@@ -790,6 +791,7 @@ link_mode_e2e_cc_test(
         "//shared:type",
         "//eval:value",
         "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
     ],

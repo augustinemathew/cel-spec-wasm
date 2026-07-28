@@ -22,7 +22,9 @@
 #include <utility>
 #include <vector>
 
+#include "abi/program_facts.h"
 #include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -232,6 +234,87 @@ TEST(ProgramRoundTripE2E, OptimizedBytesAlsoRoundTrip) {
   auto v = i->Eval(a);
   ASSERT_TRUE(v.ok()) << v.status();
   EXPECT_EQ(*v->AsInt(), 31);  // 25 + 5 + 1
+}
+
+// ── abi::DescribeProgram — embedder introspection over the same
+// persisted bytes this suite round-trips.  The facts come from the
+// `cel.abi` section the compile pipeline emitted, so every assertion
+// here pins the emit→describe contract end-to-end.
+
+TEST(ProgramFactsE2E, DescribeReportsDeclaredVars) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("i", CelType::Int());
+  b.DeclareVariable("xs", CelType::List(CelType::Int()));
+  b.DeclareVariable("m", CelType::Map(CelType::String(), CelType::Int()));
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program =
+      compiler->Compile("i + size(xs) + size(m)", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto facts = abi::DescribeProgram(program->wasm_bytes());
+  ASSERT_TRUE(facts.ok()) << facts.status();
+  EXPECT_TRUE(facts->has_abi_section);
+  EXPECT_GT(facts->abi_version, 0u);
+  ASSERT_EQ(facts->vars.size(), 3u);
+  EXPECT_EQ(facts->vars[0].name, "i");
+  EXPECT_TRUE(facts->vars[0].has_full_type);
+  EXPECT_EQ(facts->vars[0].type_spec, "int");
+  EXPECT_EQ(facts->vars[1].type_spec, "list<int>");
+  EXPECT_EQ(facts->vars[2].type_spec, "map<string,int>");
+  // Every declared var's type spec round-trips into a --var binding
+  // spec (the full-type path of TypeSpecForBinding).
+  for (const auto& var : facts->vars) {
+    auto spec = abi::TypeSpecForBinding(var);
+    ASSERT_TRUE(spec.ok()) << var.name;
+    EXPECT_EQ(*spec, var.type_spec);
+  }
+}
+
+TEST(ProgramFactsE2E, DescribeReportsRequiredHostFn) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.tax_rate(string region);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("tax_rate('de')", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto facts = abi::DescribeProgram(program->wasm_bytes());
+  ASSERT_TRUE(facts.ok()) << facts.status();
+  ASSERT_EQ(facts->required_fns.size(), 1u);
+  EXPECT_EQ(facts->required_fns[0].name, "tax_rate");
+  EXPECT_TRUE(facts->required_fns[0].is_host);
+  EXPECT_FALSE(facts->required_fns[0].signature.empty());
+}
+
+TEST(ProgramFactsE2E, DescribeReportsLinkMode) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("1 + 1", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+  auto facts = abi::DescribeProgram(program->wasm_bytes());
+  ASSERT_TRUE(facts.ok()) << facts.status();
+  EXPECT_EQ(facts->static_linked,
+            e2e::kE2ELinkMode == CompilerOptions::LinkMode::kStatic);
+  EXPECT_TRUE(facts->required_fns.empty());
+}
+
+TEST(ProgramFactsE2E, DescribeModuleWithoutAbiSection) {
+  // A minimal valid wasm module (magic + version, no sections) has no
+  // cel.abi — not an error; the facts say so explicitly.
+  const uint8_t kEmptyModule[] = {0x00, 0x61, 0x73, 0x6d,
+                                  0x01, 0x00, 0x00, 0x00};
+  auto facts = abi::DescribeProgram(kEmptyModule);
+  ASSERT_TRUE(facts.ok()) << facts.status();
+  EXPECT_FALSE(facts->has_abi_section);
+  EXPECT_TRUE(facts->vars.empty());
+}
+
+TEST(ProgramFactsE2E, DescribeRejectsNonWasmBytes) {
+  const uint8_t kGarbage[] = {0xde, 0xad, 0xbe, 0xef};
+  auto facts = abi::DescribeProgram(kGarbage);
+  EXPECT_EQ(facts.status().code(), absl::StatusCode::kInvalidArgument)
+      << facts.status();
 }
 
 }  // namespace
