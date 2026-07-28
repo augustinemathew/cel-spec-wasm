@@ -19,7 +19,7 @@ hand-kept in sync:
 (3) was pure duplication of (1)+(2); (2) carried the irreducible
 membership fact (which C symbols are codegen helpers vs host-only —
 NOT derivable from signatures, since e.g. `cel_int_add_at_vv`
-(codegen) and `cel_int_eq_at_vv` (host-only) have identical
+(codegen) and `cel_string_eq_at_vv` (host-only) have identical
 signatures).
 
 ## Decision

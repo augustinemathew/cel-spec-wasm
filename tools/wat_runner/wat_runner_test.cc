@@ -800,19 +800,6 @@ TEST(WatRunnerArithCompareTest, IntAddProducesSum) {
   EXPECT_EQ(cv.payload.i, 3);
 }
 
-TEST(WatRunnerArithCompareTest, IntEqProducesBoolFalse) {
-  auto wat = LoadWat("17_compare_int_eq.wat");
-  ASSERT_THAT(wat, IsOk());
-  WatRunInput in;
-  in.wat = *wat;
-  auto out = RunWat(in);
-  ASSERT_THAT(out, IsOk());
-  EXPECT_EQ(out->eval_return, 64u);
-  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
-  EXPECT_EQ(cv.kind, CEL_BOOL);
-  EXPECT_EQ(cv.payload.b, 0);  // 1 == 2 is false.
-}
-
 TEST(WatRunnerStringOpsTest, StringConcatBuildsArenaPayload) {
   auto wat = LoadWat("18_string_concat.wat");
   ASSERT_THAT(wat, IsOk());

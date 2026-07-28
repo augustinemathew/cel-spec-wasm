@@ -672,23 +672,18 @@ product manually using only 32×32→64 partial multiplies that the
 wasm32 backend lowers natively as `i64.mul`.  See
 `cel_runtime.c::uint64_mul_overflows`.
 
-## 17. Comparison — `1 == 2` (M5.B slot-out compare ABI)
+## 17. Comparison — `1 == 2` (RETIRED)
 
-`wat/17_compare_int_eq.wat`.  Companion to 16 — same slot-out
-shape, only the result kind differs (CEL_BOOL instead of CEL_INT).
-Locks that comparison and arithmetic share the helper ABI.
-
-`cel_int_eq_at_vv(out_slot, a_slot, b_slot)`:
-
-  - reads a / b as CEL_INT (cross-type numeric equality
-    `1 == 1u` / `1 == 1.0` routes through a separate
-    `cel_numeric_*` ladder added in M5.B step 2);
-  - 3VL absorption matches the arith helpers;
-  - happy path: `out_slot = {CEL_BOOL, b = (a==b ? 1 : 0)}`.
-
-Same memory map as 16.  Runtime exports cover the full per-kind
-matrix (eq/ne/lt/le/gt/ge × int/uint/double + bool eq/ne + null
-eq); the WAT exercises one representative.
+`wat/17_compare_int_eq.wat` traced the original per-kind equality
+dispatch (`cel_int_eq_at_vv`).  Equality was later rebuilt around
+the polymorphic `cel_equals_at_vv` / `cel_not_equals_at_vv`
+dispatcher (`cel_runtime.c::equality_kernel`), leaving the per-kind
+int/uint/double eq+ne, `bool_ne`, and `numeric_ne` arms unreachable
+from compiled CEL; the arms and this trace were deleted together.
+The slot-out compare ABI it locked is identical to 16's arithmetic
+shape and remains exercised through the equality calls in traces
+63/66/67.  The ORDERING arms (`lt/le/gt/ge` per kind) are still
+codegen-imported and unchanged.
 
 ## 18. String concat — `"ab" + "cd"` (M5.C arena-alloc helper ABI)
 

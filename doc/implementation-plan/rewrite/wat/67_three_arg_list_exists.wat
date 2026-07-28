@@ -86,7 +86,7 @@
 ;;
 ;; ── Runtime helpers — all exported today ────────────────────
 ;;   cel.cel_list_create / cel_list_append_at         (M4.F)
-;;   cel.cel_int_eq_at_vv                       (M5.B)
+;;   cel.cel_equals_at_vv                       (M5.B)
 ;;   cel.cel_and                                (M5.G)
 ;;   cel.cel_or                                 (M5.G)
 (module
@@ -95,8 +95,8 @@
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
   (import "cel" "cel_list_append_at" (func $cel_list_append_at (param i32 i32)))
-  (import "cel" "cel_int_eq_at_vv"
-          (func $cel_int_eq_at_vv (param i32 i32 i32)))
+  (import "cel" "cel_equals_at_vv"
+          (func $cel_equals_at_vv (param i32 i32 i32)))
   (import "cel" "cel_and" (func $cel_and (param i32 i32 i32)))
   (import "cel" "cel_or" (func $cel_or (param i32 i32 i32)))
 
@@ -167,12 +167,12 @@
 
         ;; loop_step: @result || ((v == 20) && (i == 1))
         ;;   scratchA = v == 20
-        (call $cel_int_eq_at_vv
+        (call $cel_equals_at_vv
               (i32.const 232)
               (local.get $iter_off)             ;; v IS iter_off
               (i32.const 112))
         ;;   scratchB = i == 1
-        (call $cel_int_eq_at_vv
+        (call $cel_equals_at_vv
               (i32.const 256)
               (i32.const 208)                   ;; i IS index_slot
               (i32.const 136))
