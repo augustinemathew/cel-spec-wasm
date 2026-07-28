@@ -54,48 +54,37 @@ TEST(WasmModuleTest, MoveAssignDisposesPrevious) {
 
 // --- Memory: define + export --------------------------------------------
 
-TEST(WasmModuleTest, SetMemoryExportsUnderGivenName) {
+TEST(WasmModuleTest, AddMemoryImportTwiceFailsPrecondition) {
   WasmModule m;
-  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory"), IsOk());
-  EXPECT_TRUE(BinaryenHasMemory(m.raw()));
-  EXPECT_THAT(m.Validate(), IsOk());
-  ASSERT_EQ(BinaryenGetNumExports(m.raw()), 1u);
-  BinaryenExportRef exp = BinaryenGetExportByIndex(m.raw(), 0);
-  EXPECT_EQ(BinaryenExportGetKind(exp), BinaryenExternalMemory());
-  EXPECT_STREQ(BinaryenExportGetName(exp), "memory");
-}
-
-TEST(WasmModuleTest, SetMemoryWithEmptyExportDoesNotExport) {
-  WasmModule m;
-  ASSERT_THAT(m.SetMemory(1, std::nullopt, ""), IsOk());
-  EXPECT_TRUE(BinaryenHasMemory(m.raw()));
-  EXPECT_EQ(BinaryenGetNumExports(m.raw()), 0u);
-}
-
-TEST(WasmModuleTest, SetMemoryTwiceFailsPrecondition) {
-  WasmModule m;
-  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory"), IsOk());
-  EXPECT_THAT(m.SetMemory(1, std::nullopt, "memory"),
+  ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt), IsOk());
+  EXPECT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt),
               StatusIs(absl::StatusCode::kFailedPrecondition));
 }
 
-TEST(WasmModuleTest, SetMemoryMaxLessThanInitialIsInvalidArgument) {
+TEST(WasmModuleTest, AddMemoryImportMaxLessThanInitialIsInvalidArgument) {
   WasmModule m;
-  EXPECT_THAT(m.SetMemory(4, /*max_pages=*/2, "memory"),
+  EXPECT_THAT(m.AddMemoryImport("cel", "memory", 4, /*max_pages=*/2),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(WasmModuleTest, AddMemoryImportSharedRequiresMaxPages) {
+  WasmModule m;
+  EXPECT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt,
+                                /*segments=*/{}, /*shared=*/true),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 // --- Memory: data segments ----------------------------------------------
 
-TEST(WasmModuleTest, SetMemoryInstallsActiveDataSegment) {
+TEST(WasmModuleTest, MemoryImportInstallsActiveDataSegment) {
   WasmModule m;
   // Use a 4-byte tag unlikely to occur elsewhere in the wasm binary so
   // the round-trip search doesn't collide with Binaryen-emitted bytes.
   const std::vector<uint8_t> rodata = {0xDE, 0xAD, 0xBE, 0xEF};
   WasmModule::DataSegment seg{/*offset=*/16, rodata};
-  ASSERT_THAT(
-      m.SetMemory(1, std::nullopt, "memory", absl::MakeConstSpan(&seg, 1)),
-      IsOk());
+  ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt,
+                                absl::MakeConstSpan(&seg, 1)),
+              IsOk());
   EXPECT_EQ(BinaryenGetNumMemorySegments(m.raw()), 1u);
   EXPECT_THAT(m.Validate(), IsOk());
 
@@ -114,7 +103,7 @@ TEST(WasmModuleTest, SetMemoryInstallsActiveDataSegment) {
   EXPECT_TRUE(found) << "rodata payload not found in serialised bytes";
 }
 
-TEST(WasmModuleTest, SetMemoryInstallsMultipleDataSegments) {
+TEST(WasmModuleTest, MemoryImportInstallsMultipleDataSegments) {
   WasmModule m;
   const std::vector<uint8_t> seg_a = {0x01, 0x02};
   const std::vector<uint8_t> seg_b = {0x03, 0x04, 0x05};
@@ -122,7 +111,8 @@ TEST(WasmModuleTest, SetMemoryInstallsMultipleDataSegments) {
       {/*offset=*/16, seg_a},
       {/*offset=*/64, seg_b},
   };
-  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory", segs), IsOk());
+  ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt, segs),
+              IsOk());
   EXPECT_EQ(BinaryenGetNumMemorySegments(m.raw()), 2u);
   EXPECT_THAT(m.Validate(), IsOk());
 }
@@ -134,13 +124,6 @@ TEST(WasmModuleTest, AddMemoryImportMarksMemoryAsImport) {
   ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt), IsOk());
   EXPECT_TRUE(BinaryenHasMemory(m.raw()));
   EXPECT_THAT(m.Validate(), IsOk());
-}
-
-TEST(WasmModuleTest, AddMemoryImportAfterSetFailsPrecondition) {
-  WasmModule m;
-  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory"), IsOk());
-  EXPECT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt),
-              StatusIs(absl::StatusCode::kFailedPrecondition));
 }
 
 // --- Functions: imports + defs + exports --------------------------------
@@ -354,7 +337,14 @@ TEST(WasmModuleAdoptTest, RoundTripThroughSerializeAndReadValidates) {
   // and Adopt the result — the kStatic link-mode shape, where the
   // pre-built runtime wasm is loaded as the base module.
   WasmModule src;
-  ASSERT_THAT(src.SetMemory(1, std::nullopt, "memory"), IsOk());
+  // The static base (cel_runtime.wasm) OWNS its memory — install one
+  // directly via the Binaryen C API to keep the adopted shape faithful.
+  BinaryenSetMemory(src.raw(), /*initial=*/1, /*maximum=*/1,
+                    /*exportName=*/"memory", /*segmentNames=*/nullptr,
+                    /*segmentDatas=*/nullptr, /*segmentPassives=*/nullptr,
+                    /*segmentOffsets=*/nullptr, /*segmentSizes=*/nullptr,
+                    /*numSegments=*/0, /*shared=*/false, /*memory64=*/false,
+                    /*name=*/"0");
   BinaryenExpressionRef body = BinaryenNop(src.raw());
   src.AddFunction("f", {}, BinaryenTypeNone(), {}, body);
   ASSERT_THAT(src.Validate(), IsOk());
@@ -423,7 +413,7 @@ TEST(WasmModuleAdoptTest, DestructorDisposesAdoptedModule) {
 
 TEST(WasmModuleDataSegmentTest, LandsOnDefaultMemoryAndRoundTrips) {
   WasmModule m;
-  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory"), IsOk());
+  ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt), IsOk());
   const std::vector<uint8_t> payload = {0xCA, 0xFE, 0xF0, 0x0D};
   m.AddActiveDataSegment(/*offset=*/32, payload);
   EXPECT_THAT(m.Validate(), IsOk());
@@ -441,14 +431,14 @@ TEST(WasmModuleDataSegmentTest, LandsOnDefaultMemoryAndRoundTrips) {
 
 TEST(WasmModuleDataSegmentTest, AppendsAlongsideExistingSegments) {
   // The kStatic-path shape: the memory's init data was already
-  // committed through SetMemory's segments array; AddActiveDataSegment
-  // appends alongside it rather than replacing it.
+  // committed through the memory install's segments array;
+  // AddActiveDataSegment appends alongside it rather than replacing it.
   WasmModule m;
   const std::vector<uint8_t> committed = {0x01, 0x02};
   WasmModule::DataSegment seg{/*offset=*/16, committed};
-  ASSERT_THAT(
-      m.SetMemory(1, std::nullopt, "memory", absl::MakeConstSpan(&seg, 1)),
-      IsOk());
+  ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt,
+                                absl::MakeConstSpan(&seg, 1)),
+              IsOk());
   ASSERT_EQ(BinaryenGetNumMemorySegments(m.raw()), 1u);
 
   const std::vector<uint8_t> appended = {0x03, 0x04, 0x05};
@@ -489,7 +479,7 @@ TEST(WasmModuleDataSegmentTest, EmptyBytesSpanProducesEmptyValidSegment) {
   // active segment that Binaryen accepts (the wasm spec permits
   // size-0 active segments; the instantiator writes nothing).
   WasmModule m;
-  ASSERT_THAT(m.SetMemory(1, std::nullopt, "memory"), IsOk());
+  ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt), IsOk());
   m.AddActiveDataSegment(/*offset=*/16, {});
   ASSERT_EQ(BinaryenGetNumMemorySegments(m.raw()), 1u);
   BinaryenDataSegmentRef seg = BinaryenGetDataSegmentByIndex(m.raw(), 0);

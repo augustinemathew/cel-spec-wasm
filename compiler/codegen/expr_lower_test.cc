@@ -208,9 +208,12 @@ void InstallListImports(WasmModule& m) {
 void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
   std::vector<uint8_t> rodata_copy(layout.rodata);
   WasmModule::DataSegment seg{layout.rodata_base, rodata_copy};
-  ASSERT_THAT(
-      m.SetMemory(1, std::nullopt, "memory", absl::MakeConstSpan(&seg, 1)),
-      IsOk());
+  // Import cel.memory with rodata as an active segment — the same
+  // shape production compiles emit (compile.cc), so the lowering
+  // validates against the real memory topology.
+  ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt,
+                                absl::MakeConstSpan(&seg, 1)),
+              IsOk());
   const BinaryenType i32 = BinaryenTypeInt32();
   m.AddFunctionImport(kArenaResetInternalName, "cel", "arena_reset",
                       absl::Span<const BinaryenType>{}, BinaryenTypeNone());

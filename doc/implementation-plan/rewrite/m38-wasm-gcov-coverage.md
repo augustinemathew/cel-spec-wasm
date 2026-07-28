@@ -251,6 +251,28 @@ once-per-process quirk, noted in the .cc).
 
 ### 7.0 Live state + the report-regeneration runbook
 
+> **State refresh (2026-07-28 ~01:30):** branch pushed through
+> `9ea7219`; full sweep #1 green (gates incl. conformance both
+> modes at stage 1, full native + 39-workload wasm re-measure).
+> **GOAL (user-stated, supersedes all earlier bars): e2e
+> goal-metric = 100%** (waypoints 90/95) — every product-scope line
+> either e2e-covered or verdict-classified with evidence; endgame is
+> ledger closure enforced as a zero-unclassified-gap check.
+> Trajectory: 74.07 → 75.57 (batch 1) → 78.52 (`c8e759d`) →
+> **78.85** (`9ea7219`, full sweep #1); tests goal-metric 88.18.
+> Drive iterations from `scripts/coverage/plan_sim.py` (~21
+> iterations remain, ~45 probes each, full sweep every 3rd); VERIFY
+> CALLERS before writing probes — three "top gap" targets were dead
+> code (LowerToCustomFn `c019fb1`, Engine::AddModule `c8e759d`;
+> `WasmModule::SetMemory` still suspected).  Goal metrics print as
+> the `GOAL METRICS` line of `native_cov_report.py`; verdict ledger
+> = `scripts/coverage/function_verdicts.json`; per-iteration
+> measurement = cached `bazel coverage` re-run + incremental
+> `collect_wasm_gcov.sh` of changed binaries only (runtime/
+> unchanged ⇒ wasm layer stays valid, incl. the conformance
+> corpus's counters).  The prose below this callout describes the
+> 2026-07-27 evening state and remains valid where not superseded.
+
 **Branch:** `claude/m38-wasm-gcov-coverage`, 16 commits ahead of
 origin, clean tree.  All gates were green at commit `761d3d7`
 ($PROJ 157/157, all 22 manual-tagged targets, conformance monotonic
@@ -259,7 +281,7 @@ commits after it (host-context tranche `bbba787`, eq/ne-arm deletion
 `d2aff22`) have targeted test verification but still owe a final
 full-gate pass before push.
 
-**The goal (user-stated, supersedes the earlier 95%/99% bars):**
+**The goal (user-stated, superseded by the callout above):**
 coverage-guided hill climbing to **e2e-only = 100% of non-error
 branches** and **overall = 100% minus `ABSL_CHECK(false)` /
 defense-in-depth arms**.  Error branches may be unit-covered; the
