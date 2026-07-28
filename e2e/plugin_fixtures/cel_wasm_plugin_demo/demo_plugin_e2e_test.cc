@@ -110,6 +110,37 @@ FunctionLibrary BuildDemoLibrary() {
   return *std::move(lib_or);
 }
 
+// Compile + Plan + Eval `source` against `plugin`.  Each call builds
+// its own Compiler and Engine — plugin registrations are per-Engine
+// state.
+absl::StatusOr<Value> EvalPluginSource(const Plugin& plugin,
+                                       absl::string_view source) {
+  auto builder = Compiler::NewBuilder();
+  builder.Use(plugin);
+  auto compiler = std::move(builder).Build();
+  if (!compiler.ok()) return compiler.status();
+  auto program = compiler->Compile(source, e2e::DefaultOpts());
+  if (!program.ok()) return program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  if (!engine.ok()) return engine.status();
+  if (auto s = engine->Use(plugin); !s.ok()) return s;
+  auto instance = engine->Plan(*program);
+  if (!instance.ok()) return instance.status();
+
+  Activation act;
+  return instance->Eval(act);
+}
+
+// Assert `source` evaluates to boolean true through `plugin`.
+void ExpectPluginBoolTrue(const Plugin& plugin, absl::string_view source) {
+  auto v = EvalPluginSource(plugin, source);
+  ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+  auto b = v->AsBool();
+  ASSERT_TRUE(b.ok()) << source << " kind=" << static_cast<int>(v->kind());
+  EXPECT_TRUE(*b) << source;
+}
+
 // The macro-built artifact is self-describing: it CARRIES the
 // `cel.fns` section (verbatim fns.idl bytes, embedded by the macro's
 // `cel embed-decls` step) and `Plugin::Load` round-trips it.
@@ -132,13 +163,82 @@ TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
   ASSERT_THAT(plugin, IsOk()) << plugin.status();
   EXPECT_EQ(plugin->celfn_source(), idl_text);
   EXPECT_EQ(plugin->wit_interface(), "cel:customfn/fns@0.1.0");
-  ASSERT_EQ(plugin->decls().size(), 3);
+  ASSERT_EQ(plugin->decls().size(), 10);
   EXPECT_EQ(plugin->decls()[0].fn_name, "greet");
   EXPECT_EQ(plugin->decls()[0].overload_id, "greet_string_int");
   EXPECT_EQ(plugin->decls()[1].fn_name, "add");
   EXPECT_EQ(plugin->decls()[1].overload_id, "add_int_int");
   EXPECT_EQ(plugin->decls()[2].fn_name, "len");
   EXPECT_EQ(plugin->decls()[2].overload_id, "len_string");
+  EXPECT_EQ(plugin->decls()[3].fn_name, "echo_double");
+  EXPECT_EQ(plugin->decls()[4].fn_name, "negate");
+  EXPECT_EQ(plugin->decls()[5].fn_name, "rev_bytes");
+  EXPECT_EQ(plugin->decls()[6].fn_name, "echo_list");
+  EXPECT_EQ(plugin->decls()[7].fn_name, "echo_map");
+}
+
+// ─── kind-matrix dispatch: the carriers that work today ──────────
+//
+// The scalar carriers are the supported envelope (doc/design/
+// 05-custom-functions.md §5.4).  Each row is echo-shaped, so one
+// call drives BOTH directions of the host codec
+// (LiftCelToComponent for the arg, LowerComponentToCel for the
+// result).  Every NON-scalar carrier is pinned below.
+TEST(CelWasmPluginDemo, KindMatrixEchoRoundTrips) {
+  auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
+  ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
+  ExpectPluginBoolTrue(*plugin_or, "echo_double(1.5) == 1.5");
+  ExpectPluginBoolTrue(*plugin_or, "negate(true) == false");
+}
+
+TEST(CelWasmPluginDemo, NonScalarCarriersTrapOrFlake) {
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0019
+severity: P1
+kind: missing-feature
+summary: plugin fns carrying list<T> / bytes / map<K,V> trap at call time
+  ("cannot leave component instance"); map is worse than broken, it is FLAKY
+repro: sum_list([1, 2, 3])
+bindings: the demo plugin (e2e/plugin_fixtures/cel_wasm_plugin_demo),
+  decl `int @plugin.sum_list(list<int> xs);`
+actual: FAILED_PRECONDITION "Eval (func_call): ... wasm trap: cannot leave
+  component instance", guest backtrace through
+  wit-component:adapter:wasi_snapshot_preview1!random_get
+expected: 6
+layer: the wasm32-wasip2 guest side (libc++ / wit-bindgen canonical ABI),
+  not the host codec — eval/internal/cel_plugin.cc LiftList / LowerList /
+  LiftMap / LowerMap are reached and hand off well-formed component values
+blocked-by: none
+found-by: m38 coverage iteration 8 — the cel_plugin.cc aggregate arms were
+  e2e-uncovered; adding a carrier matrix to the demo fixture surfaced this
+fix-hint: SAME FAMILY as the documented string-return trap
+  (doc/design/05-custom-functions.md §5.4).  Three findings that narrow it:
+  (1) DIRECTION IS NOT THE VARIABLE — `sum_list` (list arg, scalar return)
+  and `iota` (scalar arg, list return) both trap, so it is not return
+  lowering alone.  (2) map<string,int> is NONDETERMINISTIC: the identical
+  `echo_map({'a':1,'b':2})['b'] == 2` row passed on some builds of this
+  fixture and trapped on others, with no source change between them —
+  treat "map works" claims with suspicion and re-run before believing.
+  (3) A zero-length aggregate return used to call
+  `cabi_realloc(NULL, 0, align, 0)`; the emitter now short-circuits to a
+  NULL pointer (cpp_codec_emitter.cc), which was a real defect but NOT the
+  cause of this trap.  Likeliest fix is rebuilding the demo against
+  wasm32-wasi + the preview1 adapter (see the AddRoundTrips skip in this
+  file) rather than any host-side change.
+issue: none
+)CELBUG";
+
+  auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
+  ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
+  const absl::string_view kTrueSources[] = {
+      "rev_bytes(b'ab') == b'ba'", "echo_list([1, 2])[1] == 2",
+      "size(echo_list([])) == 0",  "sum_list([1, 2, 3]) == 6",
+      "iota(3)[2] == 2",           "echo_map({'a': 1, 'b': 2})['b'] == 2",
+      "size(echo_map({})) == 0",
+  };
+  for (const absl::string_view source : kTrueSources) {
+    ExpectPluginBoolTrue(*plugin_or, source);
+  }
 }
 
 // ─── m35 — the one-noun flow ─────────────────────────────────────

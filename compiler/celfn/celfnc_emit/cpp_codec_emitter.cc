@@ -62,10 +62,11 @@ std::string SuffixFor(const CelType& t) {
       return "f64";
     case K::kString:
       return "string";
+    // bytes is list<u8>, null is option<u8> — the ELEMENT suffix is
+    // `u8` for both; only the container shape differs.
     case K::kBytes:
-      return "u8";  // list<u8>
     case K::kNull:
-      return "u8";  // option<u8>
+      return "u8";
     case K::kList:
       return absl::StrCat("list_", SuffixFor(t.list_element()));
     case K::kMap:
@@ -329,10 +330,14 @@ constexpr absl::string_view kListFlatTpl =
 
           inline void lower($1* ret, const $0& v) {
             ret->len = v.size();
+            if (v.empty()) {
+              ret->ptr = NULL;
+              return;
+            }
             ret->ptr = static_cast<decltype(ret->ptr)>(
                 cabi_realloc(NULL, 0, alignof(decltype(*ret->ptr)),
                              v.size() * sizeof(*ret->ptr)));
-            if (!v.empty()) std::memcpy(ret->ptr, v.data(), v.size() * sizeof(*ret->ptr));
+            std::memcpy(ret->ptr, v.data(), v.size() * sizeof(*ret->ptr));
           }
     )cpp";
 
@@ -350,6 +355,10 @@ constexpr absl::string_view kListRecTpl =
 
           inline void lower($1* ret, const $0& v) {
             ret->len = v.size();
+            if (v.empty()) {
+              ret->ptr = NULL;
+              return;
+            }
             ret->ptr = static_cast<decltype(ret->ptr)>(
                 cabi_realloc(NULL, 0, alignof(decltype(*ret->ptr)),
                              v.size() * sizeof(*ret->ptr)));
@@ -361,8 +370,11 @@ constexpr absl::string_view kListRecTpl =
 
 // $0 = cpp std::map<...>, $1 = customfn_list_tuple2_*_t,
 // $2 = key lift expression (uses m.ptr[i].f0),
-// $3 = value lift expression (uses m.ptr[i].f1).
-constexpr absl::string_view kMapLiftTpl =
+// $3 = value lift expression (uses m.ptr[i].f1),
+// $4 = the whole lower-loop body (key write, value write, ++i) —
+//      ONE substitution because clang-format reformats raw-string
+//      contents and would otherwise join adjacent statement slots.
+constexpr absl::string_view kMapTpl =
     R"cpp(inline $0 lift(const $1& m) {
             $0 r;
             for (size_t i = 0; i < m.len; ++i) {
@@ -371,8 +383,80 @@ constexpr absl::string_view kMapLiftTpl =
             return r;
           }
 
-          // TODO(m26): lower($1*, const $0&) not yet emitted; declare manually if needed.
+          inline void lower($1* ret, const $0& m) {
+            ret->len = m.size();
+            if (m.empty()) {
+              ret->ptr = NULL;
+              return;
+            }
+            ret->ptr = static_cast<decltype(ret->ptr)>(
+                cabi_realloc(NULL, 0, alignof(decltype(*ret->ptr)),
+                             m.size() * sizeof(*ret->ptr)));
+            size_t i = 0;
+            for (const auto& kv : m) {
+              $4
+            }
+          }
     )cpp";
+
+// Emit the map arm's lift + lower.  The per-element key / value
+// expressions vary by kind — string keys route through the string
+// codec, scalar values assign directly — so they are inlined into
+// the shared template rather than templated further.
+void EmitMap(const CelType& t, absl::string_view cpp, absl::string_view c_name,
+             std::string* out) {
+  using K = CelType::Kind;
+  const bool key_string = t.map_key().kind() == K::kString;
+  const std::string key_expr =
+      key_string
+          ? "std::string(reinterpret_cast<const char*>(m.ptr[i].f0.ptr), "
+            "m.ptr[i].f0.len)"
+          : "m.ptr[i].f0";
+  const K vk = t.map_value().kind();
+  const bool val_scalar =
+      vk == K::kBool || vk == K::kInt || vk == K::kUint || vk == K::kDouble;
+  const std::string val_expr = val_scalar ? "m.ptr[i].f1" : "lift(m.ptr[i].f1)";
+  const std::string lower_body =
+      absl::StrCat(key_string ? "lower(&ret->ptr[i].f0, kv.first); "
+                              : "ret->ptr[i].f0 = kv.first; ",
+                   val_scalar ? "ret->ptr[i].f1 = kv.second; "
+                              : "lower(&ret->ptr[i].f1, kv.second); ",
+                   "++i;");
+  absl::SubstituteAndAppend(out, kMapTpl, cpp, c_name, key_expr, val_expr,
+                            lower_body);
+}
+
+// The kinds whose codec is a fixed template with no substitution
+// (string / bytes / proto / null) plus the two record kinds, whose
+// only substitution is the struct name.  Returns false for the
+// kinds that need per-type expression building (list / map) or need
+// no codec at all (the scalars).
+bool EmitFixedTemplate(const CelType& t, const StructName& s,
+                       std::string* out) {
+  using K = CelType::Kind;
+  switch (t.kind()) {
+    case K::kString:
+      absl::StrAppend(out, kStringTpl);
+      return true;
+    case K::kBytes:
+      absl::StrAppend(out, kBytesTpl);
+      return true;
+    case K::kMessage:
+      absl::StrAppend(out, kProtoTpl);
+      return true;
+    case K::kNull:
+      absl::StrAppend(out, kNullTpl);
+      return true;
+    case K::kDuration:
+      absl::SubstituteAndAppend(out, kDurationTpl, s.c_name);
+      return true;
+    case K::kTimestamp:
+      absl::SubstituteAndAppend(out, kTimestampTpl, s.c_name);
+      return true;
+    default:
+      return false;
+  }
+}
 
 // Emit lift+lower for a single type that needs them.
 absl::Status EmitOne(const CelType& t, absl::string_view exports_prefix,
@@ -383,27 +467,9 @@ absl::Status EmitOne(const CelType& t, absl::string_view exports_prefix,
   if (!cpp_or.ok()) return cpp_or.status();
   const std::string& cpp = *cpp_or;
 
+  if (EmitFixedTemplate(t, s, out)) return absl::OkStatus();
+
   switch (t.kind()) {
-    case K::kString:
-      absl::StrAppend(out, kStringTpl);
-      return absl::OkStatus();
-
-    case K::kBytes:
-      absl::StrAppend(out, kBytesTpl);
-      return absl::OkStatus();
-
-    case K::kMessage:
-      absl::StrAppend(out, kProtoTpl);
-      return absl::OkStatus();
-
-    case K::kDuration:
-      absl::SubstituteAndAppend(out, kDurationTpl, s.c_name);
-      return absl::OkStatus();
-
-    case K::kTimestamp:
-      absl::SubstituteAndAppend(out, kTimestampTpl, s.c_name);
-      return absl::OkStatus();
-
     case K::kList: {
       const auto& inner = t.list_element();
       const bool scalar_inner =
@@ -414,28 +480,8 @@ absl::Status EmitOne(const CelType& t, absl::string_view exports_prefix,
       return absl::OkStatus();
     }
 
-    case K::kMap: {
-      // Inline the per-element key + value lift expressions; the
-      // template wraps them in the r.emplace(...) call site.
-      const bool key_string = t.map_key().kind() == K::kString;
-      const std::string key_expr =
-          key_string
-              ? "std::string(reinterpret_cast<const char*>(m.ptr[i].f0.ptr), "
-                "m.ptr[i].f0.len)"
-              : "m.ptr[i].f0";
-      const bool val_scalar = t.map_value().kind() == K::kBool ||
-                              t.map_value().kind() == K::kInt ||
-                              t.map_value().kind() == K::kUint ||
-                              t.map_value().kind() == K::kDouble;
-      const std::string val_expr =
-          val_scalar ? "m.ptr[i].f1" : "lift(m.ptr[i].f1)";
-      absl::SubstituteAndAppend(out, kMapLiftTpl, cpp, s.c_name, key_expr,
-                                val_expr);
-      return absl::OkStatus();
-    }
-
-    case K::kNull:
-      absl::StrAppend(out, kNullTpl);
+    case K::kMap:
+      EmitMap(t, cpp, s.c_name, out);
       return absl::OkStatus();
 
     case K::kBool:
@@ -449,10 +495,66 @@ absl::Status EmitOne(const CelType& t, absl::string_view exports_prefix,
     case K::kType:
       return absl::FailedPreconditionError(
           "codec emit reached a permanently-rejected kind");
+
+    case K::kString:
+    case K::kBytes:
+    case K::kMessage:
+    case K::kNull:
+    case K::kDuration:
+    case K::kTimestamp:
+      ABSL_CHECK(false) << "EmitOne: EmitFixedTemplate already handled kind "
+                        << static_cast<int>(t.kind());
+      break;
     case K::kUnknown:
       break;
   }
   return absl::InternalError("EmitOne: unknown kind");
+}
+
+// The fixed file header + include block.  The two proto includes are
+// conditional so authors whose IDL has no Duration / Timestamp pay no
+// protobuf dep at the wasm cc_binary step.
+void EmitPreambleAndIncludes(bool needs_proto_duration,
+                             bool needs_proto_timestamp, std::string* out) {
+  absl::StrAppend(out,
+                  "// Generated by `cel generate` — DO NOT EDIT.\n"
+                  "//\n"
+                  "// codec.h: lift / lower between wit-bindgen customfn_* "
+                  "structs\n"
+                  "// and std:: containers.  Author never includes this — "
+                  "consumed\n"
+                  "// only by generated_stub.cc.\n//\n"
+                  "// Ownership rule: `lower(*ret, ...)` populates the "
+                  "out-param;\n"
+                  "// the canonical-ABI runtime calls `cabi_post_*` to free.\n"
+                  "// The author NEVER calls _free on a return value.\n\n");
+  absl::StrAppend(out, "#pragma once\n");
+  absl::StrAppend(out, "#include <cstdint>\n");
+  absl::StrAppend(out, "#include <cstring>\n");
+  absl::StrAppend(out, "#include <map>\n");
+  absl::StrAppend(out, "#include <string>\n");
+  absl::StrAppend(out, "#include <string_view>\n");
+  absl::StrAppend(out, "#include <variant>  // std::monostate\n");
+  absl::StrAppend(out, "#include <vector>\n\n");
+  if (needs_proto_duration) {
+    absl::StrAppend(out, "#include \"google/protobuf/duration.pb.h\"\n");
+  }
+  if (needs_proto_timestamp) {
+    absl::StrAppend(out, "#include \"google/protobuf/timestamp.pb.h\"\n");
+  }
+  absl::StrAppend(out, "#include \"customfn.h\"\n\n");
+}
+
+// Visit every type reachable from the library's PLUGIN decls (the
+// only backend whose args/returns cross the canonical ABI).
+void CollectPluginTypes(const FunctionLibrary& lib, TypeCollector* tc) {
+  for (const auto& d : lib.decls()) {
+    if (d.backend != CelfnDecl::Backend::kPlugin) continue;
+    tc->Visit(d.return_type);
+    for (const auto& p : d.params) {
+      tc->Visit(p.type);
+    }
+  }
 }
 
 }  // namespace
@@ -461,13 +563,7 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
                                        absl::string_view cpp_namespace,
                                        absl::string_view wit_package_name) {
   TypeCollector tc;
-  for (const auto& d : lib.decls()) {
-    if (d.backend != CelfnDecl::Backend::kPlugin) continue;
-    tc.Visit(d.return_type);
-    for (const auto& p : d.params) {
-      tc.Visit(p.type);
-    }
-  }
+  CollectPluginTypes(lib, &tc);
 
   const std::string exports_prefix = absl::StrCat(
       "exports_", NormalizePkgForExportsPrefix(wit_package_name), "_fns_");
@@ -484,33 +580,7 @@ absl::StatusOr<std::string> EmitCodecH(const FunctionLibrary& lib,
   }
 
   std::string out;
-  absl::StrAppend(&out,
-                  "// Generated by `cel generate` — DO NOT EDIT.\n"
-                  "//\n"
-                  "// codec.h: lift / lower between wit-bindgen customfn_* "
-                  "structs\n"
-                  "// and std:: containers.  Author never includes this — "
-                  "consumed\n"
-                  "// only by generated_stub.cc.\n//\n"
-                  "// Ownership rule: `lower(*ret, ...)` populates the "
-                  "out-param;\n"
-                  "// the canonical-ABI runtime calls `cabi_post_*` to free.\n"
-                  "// The author NEVER calls _free on a return value.\n\n");
-  absl::StrAppend(&out, "#pragma once\n");
-  absl::StrAppend(&out, "#include <cstdint>\n");
-  absl::StrAppend(&out, "#include <cstring>\n");
-  absl::StrAppend(&out, "#include <map>\n");
-  absl::StrAppend(&out, "#include <string>\n");
-  absl::StrAppend(&out, "#include <string_view>\n");
-  absl::StrAppend(&out, "#include <variant>  // std::monostate\n");
-  absl::StrAppend(&out, "#include <vector>\n\n");
-  if (needs_proto_duration) {
-    absl::StrAppend(&out, "#include \"google/protobuf/duration.pb.h\"\n");
-  }
-  if (needs_proto_timestamp) {
-    absl::StrAppend(&out, "#include \"google/protobuf/timestamp.pb.h\"\n");
-  }
-  absl::StrAppend(&out, "#include \"customfn.h\"\n\n");
+  EmitPreambleAndIncludes(needs_proto_duration, needs_proto_timestamp, &out);
 
   // wit-bindgen's customfn.c defines `cabi_realloc` as a weak,
   // export-named symbol but customfn.h does NOT declare it.  The

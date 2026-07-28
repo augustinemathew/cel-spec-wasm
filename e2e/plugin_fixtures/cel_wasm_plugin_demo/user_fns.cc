@@ -5,8 +5,11 @@
 
 #include "user_fns.h"
 
+#include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace customfn {
 
@@ -21,6 +24,42 @@ int64_t Add(int64_t a, int64_t b) {
 
 int64_t Len(std::string_view s) {
   return static_cast<int64_t>(s.size());
+}
+
+double EchoDouble(double d) {
+  return d;
+}
+
+bool Negate(bool b) {
+  return !b;
+}
+
+std::vector<uint8_t> RevBytes(const std::vector<uint8_t>& b) {
+  return {b.rbegin(), b.rend()};
+}
+
+std::vector<int64_t> EchoList(const std::vector<int64_t>& xs) {
+  return xs;
+}
+
+std::map<std::string, int64_t> EchoMap(
+    const std::map<std::string, int64_t>& m) {
+  return m;
+}
+
+int64_t SumList(const std::vector<int64_t>& xs) {
+  int64_t total = 0;
+  for (int64_t x : xs)
+    total += x;
+  return total;
+}
+
+std::vector<int64_t> Iota(int64_t n) {
+  std::vector<int64_t> out;
+  out.reserve(static_cast<size_t>(n));
+  for (int64_t i = 0; i < n; ++i)
+    out.push_back(i);
+  return out;
 }
 
 }  // namespace customfn

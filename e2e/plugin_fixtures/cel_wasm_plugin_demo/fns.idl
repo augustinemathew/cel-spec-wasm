@@ -12,3 +12,19 @@ int    @plugin.add(int a, int b);
 // dispatch cost.  Returns the input string's length so the bench
 // measures the canonical-ABI copy throughput, not the user fn body.
 int    @plugin.len(string s);
+
+// Kind-matrix echo fns — one per canonical-ABI carrier the plugin
+// boundary supports without protobuf (double / bool / bytes /
+// list<int> / map<string,int>).  Each is echo-shaped so a single
+// call exercises BOTH the lift (CEL -> component) and lower
+// (component -> CEL) arm for its kind.
+double @plugin.echo_double(double d);
+bool   @plugin.negate(bool b);
+bytes  @plugin.rev_bytes(bytes b);
+list<int> @plugin.echo_list(list<int> xs);
+map<string, int> @plugin.echo_map(map<string, int> m);
+
+// Direction-isolating probes for the list carrier: one takes a list
+// and returns a scalar, the other takes a scalar and returns a list.
+int @plugin.sum_list(list<int> xs);
+list<int> @plugin.iota(int n);
