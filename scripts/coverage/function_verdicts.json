@@ -62,6 +62,12 @@
     },
     {
       "file": "eval/host_call_context.cc",
+      "match": "DecodeUnknownSet",
+      "verdict": "by-design",
+      "evidence": "Strict dispatch absorbs CEL_UNKNOWN args before the callback runs (same 3VL family as DecodeWireError); pinned by e2e HostFnTest.UnknownValuedArgContract. Unlock = a non-strict-functions AddFunction API."
+    },
+    {
+      "file": "eval/host_call_context.cc",
       "match": "DecodeWireError",
       "verdict": "by-design",
       "evidence": "3VL absorbs error-valued args before host-fn dispatch, so a wire error can't reach ArgValue decode; pinned by e2e HostFnTest.ErrorValuedArgContract. Unlock = a non-strict-functions AddFunction API."

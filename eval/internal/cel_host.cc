@@ -4475,6 +4475,12 @@ std::optional<absl::Status> AppendRepeatedHostScalar(
 // from a host-list backing as a `celwasm::Value` (Activation::Bind
 // path).  Per-cpp_type dispatch reads via celwasm::Value's typed
 // accessors instead of CelValue payloads + MemoryView.
+// Defined below with the host map-entry helpers; forward-declared so
+// the repeated host arm can pack temporal WKT elements too.
+// NOLINTNEXTLINE(readability-redundant-declaration)
+std::optional<absl::Status> MaybePackWktFromHostValue(
+    google::protobuf::Message& dst, const celwasm::Value& value);
+
 absl::Status AppendRepeatedFromHostListValue(
     google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field,
@@ -4485,6 +4491,15 @@ absl::Status AppendRepeatedFromHostListValue(
     return *std::move(s);
   }
   if (field.cpp_type() == FD::CPPTYPE_MESSAGE) {
+    // Null element of a message-typed repeated field is PRUNED, not
+    // appended — parity with the arena path's `AppendRepeatedMessage`.
+    if (v.kind() == K::kNull) {
+      return absl::OkStatus();
+    }
+    google::protobuf::Message* dst = refl.AddMessage(&msg, &field);
+    if (auto s = MaybePackWktFromHostValue(*dst, v); s.has_value()) {
+      return *std::move(s);
+    }
     if (v.kind() != K::kMessage) {
       return absl::InvalidArgumentError(
           absl::StrCat("CelSetFieldImpl: host-list repeated message `",
@@ -4498,7 +4513,6 @@ absl::Status AppendRepeatedFromHostListValue(
           absl::StrCat("CelSetFieldImpl: host-list repeated message `",
                        field.name(), "` backing has no proto message"));
     }
-    google::protobuf::Message* dst = refl.AddMessage(&msg, &field);
     return WriteMessageOrPack(dst, *src_msg);
   }
   ABSL_CHECK(false) << "AppendRepeatedFromHostListValue: unknown cpp_type "
@@ -4757,11 +4771,50 @@ std::optional<absl::Status> SetHostMapEntryFloatValue(
 
 // CPPTYPE_MESSAGE arm of SetHostMapEntryValue: resolve the source
 // backing and copy/pack it into the entry's value submessage.
+// Packs a host-origin Duration / Timestamp value into a WKT-typed
+// `dst`, mirroring the arena path's `MaybePackWktMessage` temporal
+// arms.  Only the temporal arms exist here: the JSON WKTs (Value /
+// Struct / ListValue) and Any need a dyn-typed source, which
+// RejectDyn keeps out of the static subset for declared variables.
+// nullopt → `dst` is not a temporal WKT or `value` is not the
+// matching temporal kind; the caller falls through to its
+// message-backing path (and its diagnostic).
+std::optional<absl::Status> MaybePackWktFromHostValue(
+    google::protobuf::Message& dst, const celwasm::Value& value) {
+  const google::protobuf::Descriptor* d = dst.GetDescriptor();
+  const absl::string_view fqn = d != nullptr ? d->full_name() : "";
+  CelDurTs dur_ts;
+  if (fqn == "google.protobuf.Duration") {
+    auto dv = value.AsDuration();
+    if (!dv.ok()) return std::nullopt;
+    // Sign-correlated (seconds, nanos): IDivDuration truncates toward
+    // zero, so the remainder's sign matches the input's.
+    absl::Duration rem;
+    dur_ts.seconds = absl::IDivDuration(*dv, absl::Seconds(1), &rem);
+    dur_ts.nanos = static_cast<int32_t>(absl::ToInt64Nanoseconds(rem));
+  } else if (fqn == "google.protobuf.Timestamp") {
+    auto tv = value.AsTimestamp();
+    if (!tv.ok()) return std::nullopt;
+    // ToUnixSeconds floors, so the sub-second remainder is in
+    // [0, 1e9) nanos — the google.protobuf.Timestamp invariant.
+    dur_ts.seconds = absl::ToUnixSeconds(*tv);
+    dur_ts.nanos = static_cast<int32_t>(
+        absl::ToInt64Nanoseconds(*tv - absl::FromUnixSeconds(dur_ts.seconds)));
+  } else {
+    return std::nullopt;
+  }
+  return PackDurationOrTimestamp(dst, dur_ts);
+}
+
 absl::Status SetHostMapEntryMessageValue(
     google::protobuf::Message& entry,
     const google::protobuf::Reflection& entry_refl,
     const google::protobuf::FieldDescriptor& val_fd,
     const celwasm::Value& value) {
+  google::protobuf::Message* dst = entry_refl.MutableMessage(&entry, &val_fd);
+  if (auto s = MaybePackWktFromHostValue(*dst, value); s.has_value()) {
+    return *std::move(s);
+  }
   auto backing_or = value.MessageBacking();
   if (!backing_or.ok()) return backing_or.status();
   const google::protobuf::Message* src_msg = (*backing_or)->message();
@@ -4769,7 +4822,6 @@ absl::Status SetHostMapEntryMessageValue(
     return absl::InvalidArgumentError(
         "CelSetFieldImpl: map message-value backing has no proto");
   }
-  google::protobuf::Message* dst = entry_refl.MutableMessage(&entry, &val_fd);
   return WriteMessageOrPack(dst, *src_msg);
 }
 
@@ -4848,9 +4900,18 @@ absl::Status InsertHostMapEntry(google::protobuf::Message& msg,
                                 const google::protobuf::Reflection& refl,
                                 const celwasm::Value& key,
                                 const celwasm::Value& value) {
-  google::protobuf::Message* entry = refl.AddMessage(&msg, &field);
   const google::protobuf::FieldDescriptor* key_fd = MapEntryField(field, 1);
   const google::protobuf::FieldDescriptor* val_fd = MapEntryField(field, 2);
+  // A `null` value of a message-typed map field is PRUNED — the whole
+  // entry is skipped, not inserted with a default value.  Parity with
+  // the arena path's `InsertArenaMapEntry`; check before AddMessage so
+  // no stray empty entry is left behind.
+  if (val_fd->cpp_type() ==
+          google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE &&
+      value.kind() == celwasm::Value::Kind::kNull) {
+    return absl::OkStatus();
+  }
+  google::protobuf::Message* entry = refl.AddMessage(&msg, &field);
   // The entry submessage's key/value sub-fields are *Set* (singular),
   // not *Add* (repeated) — so we dispatch through the two host-value
   // helpers rather than reusing `AppendRepeatedFromHostListValue`.

@@ -221,8 +221,10 @@ const tiles = [
 ];
 if (H.line_pct_tests !== undefined) {
   tiles.push(
-    { label: "e2e-only lines", value: `${H.line_pct_e2e}%`,
-      detail: "e2e suites, conformance excluded — goal 90%" },
+    { label: "e2e-only (product)", value:
+        `${H.line_pct_e2e_product ?? H.line_pct_e2e}%`,
+      detail: "e2e suites, product pipeline scope (harness/CLI/emitters" +
+              " excluded) — goal 90%" },
     { label: "tests lines", value: `${H.line_pct_tests}%`,
       detail: "e2e + unit, conformance excluded — goal 100% − by-design" },
   );

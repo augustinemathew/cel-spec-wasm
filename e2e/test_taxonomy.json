@@ -57,6 +57,12 @@
       "manual": false,
       "surfaces": ["lang/partial-eval"]
     },
+    "proto_from_host_test": {
+      "source": "proto_from_host_test.cc",
+      "link_modes": ["dynamic", "static"],
+      "manual": false,
+      "surfaces": ["lang/proto.literal", "lang/maps", "lang/lists", "lang/idents", "lang/operators.equality", "lang/comprehensions", "lang/time", "pipeline/activation-marshal"]
+    },
     "operators_test": {
       "source": "operators_test.cc",
       "link_modes": ["dynamic", "static"],

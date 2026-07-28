@@ -36,6 +36,7 @@ the two in sync with the BUILD file).
 | `any_test` | `google.protobuf.Any` pack / unpack / equality |
 | `wrapper_test` | the 9 wrapper WKTs, auto-wrap/unwrap |
 | `wkt_field_set_test` | WKT-valued proto fields (`Value`, `Struct`, Any, null-pruning) |
+| `proto_from_host_test` | proto construction from host-origin (bound) maps/lists; message-backed collection reads |
 | `optional_test` | optionals: `.?`, `[?]`, `optional.*`, `or/orValue`, `optMap/optFlatMap` |
 | `partial_eval_test` | unknowns / partial-eval propagation matrix |
 | `string_ext_test` | `strings` extension |

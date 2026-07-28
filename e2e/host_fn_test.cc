@@ -37,10 +37,13 @@
 #include <string>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
 #include "e2e/link_mode_e2e_helpers.h"
@@ -640,6 +643,184 @@ TEST(HostFnTest, ErrorValuedArgContract) {
   // callback (mirrors cel-cpp strict-function semantics).
   EXPECT_TRUE(v->IsError());
   EXPECT_EQ(calls, 0);
+}
+
+// The unknown-valued analog of ErrorValuedArgContract: strict
+// dispatch absorbs CEL_UNKNOWN args the same way it absorbs errors,
+// so the callback never runs and the unknown propagates as the
+// result (langdef partial-eval: unknown arguments short-circuit
+// strict functions).
+TEST(HostFnTest, UnknownValuedArgContract) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int());
+  b.AddFunction("int @host.echo8(int x);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("echo8(x)", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  int calls = 0;
+  ASSERT_TRUE(engine
+                  ->AddFunction("echo8_int", 2,
+                                [&calls](HostCallContext& ctx) -> absl::Status {
+                                  ++calls;
+                                  return ctx.ReturnInt(8);
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  act.Bind("x", Value::Int(41));
+  auto pattern = AttributePattern::Parse("x");
+  ASSERT_TRUE(pattern.ok()) << pattern.status();
+  AttributePattern patterns[] = {*std::move(pattern)};
+  auto v = instance->PartialEval(act, patterns);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(v->IsUnknown()) << static_cast<int>(v->kind());
+  EXPECT_EQ(calls, 0);
+}
+
+// A literal-list argument decoded through the context's ArgValue:
+// the arena-resident run decodes element-by-element (the
+// DecodeArenaList walk in host_call_context.cc), end-to-end.
+TEST(HostFnTest, ContextArgValueDecodesLiteralListArg) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.lsum(list<int> xs);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("lsum([1, 2, 3])", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("lsum_list_int", 2,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto v = ctx.ArgValue(0);
+                                  if (!v.ok()) return v.status();
+                                  auto backing = v->ListBacking();
+                                  if (!backing.ok()) return backing.status();
+                                  int64_t sum = 0;
+                                  for (size_t i = 0; i < (*backing)->Size();
+                                       ++i) {
+                                    auto e = (*backing)->At(i, CelType::Int());
+                                    if (!e.ok()) return e.status();
+                                    sum += *e->AsInt();
+                                  }
+                                  return ctx.ReturnInt(sum);
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsInt(), 6);
+}
+
+// HostMapView::ContainsKey from inside a callback — both the present
+// and absent probes, against a literal (arena-resident) map.
+TEST(HostFnTest, ContextMapViewContainsKey) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("bool @host.haskey(map<string, int> m, string k);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile(
+      "haskey({'a': 1}, 'a') && "
+      "!haskey({'a': 1}, 'z')",
+      e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("haskey_map_string_int_string", 3,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto m = ctx.ArgMap(0);
+                                  if (!m.ok()) return m.status();
+                                  auto k = ctx.ArgString(1);
+                                  if (!k.ok()) return k.status();
+                                  return ctx.ReturnBool(m->ContainsKey(
+                                      Value::String(std::string(*k))));
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(*v->AsBool());
+}
+
+// Compile `kprobe(v)` with `v` declared as `type` / IDL `idl_type`.
+Program CompileKprobeProgram(absl::string_view idl_type, const CelType& type) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("v", type);
+  b.AddFunction(absl::StrCat("int @host.kprobe(", idl_type, " v);"));
+  auto compiler = std::move(b).Build();
+  ABSL_CHECK_OK(compiler.status());
+  auto program = compiler->Compile("kprobe(v)", e2e::DefaultOpts());
+  ABSL_CHECK_OK(program.status()) << idl_type;
+  return *std::move(program);
+}
+
+// Register the wrong-accessor callback under `overload_id` and return
+// the eval status for `bind`.
+absl::Status WrongAccessorEvalStatus(const Program& program,
+                                     absl::string_view overload_id,
+                                     Value bind) {
+  auto engine = Engine::NewBuilder().Build();
+  ABSL_CHECK_OK(engine.status());
+  ABSL_CHECK_OK(engine->AddFunction(  // Deliberate misread: int accessor.
+      overload_id, 2, [](HostCallContext& ctx) -> absl::Status {
+        return ctx.ArgInt(0).status();
+      }));
+  auto instance = engine->Plan(program);
+  ABSL_CHECK_OK(instance.status()) << overload_id;
+  Activation act;
+  act.Bind("v", std::move(bind));
+  return instance->Eval(act).status();
+}
+
+// One wrong-accessor probe: the ArgInt(0) misread must fail eval with
+// a message naming `expect_kind` (that wire kind's WireKindName arm).
+void ExpectWrongAccessorNames(absl::string_view idl_type, const CelType& type,
+                              absl::string_view overload_id, Value bind,
+                              absl::string_view expect_kind) {
+  Program program = CompileKprobeProgram(idl_type, type);
+  absl::Status s =
+      WrongAccessorEvalStatus(program, overload_id, std::move(bind));
+  ASSERT_FALSE(s.ok()) << idl_type;
+  EXPECT_TRUE(absl::StrContains(s.message(), expect_kind))
+      << idl_type << ": " << s;
+}
+
+// The WireKindName matrix: every wire kind a wrong accessor can name
+// in its mismatch diagnostic, driven end-to-end from real bound
+// values (the Duration arm is pinned above).
+TEST(HostFnTest, WrongAccessorDiagnosticKindMatrix) {
+  ExpectWrongAccessorNames("uint", CelType::Uint(), "kprobe_uint",
+                           Value::Uint(5), "uint");
+  ExpectWrongAccessorNames("double", CelType::Double(), "kprobe_double",
+                           Value::Double(1.5), "double");
+  ExpectWrongAccessorNames("bool", CelType::Bool(), "kprobe_bool",
+                           Value::Bool(true), "bool");
+  ExpectWrongAccessorNames("string", CelType::String(), "kprobe_string",
+                           Value::String("s"), "string");
+  ExpectWrongAccessorNames("bytes", CelType::Bytes(), "kprobe_bytes",
+                           Value::Bytes("b"), "bytes");
+  ExpectWrongAccessorNames(
+      "Timestamp", CelType::Timestamp(), "kprobe_timestamp",
+      Value::Timestamp(absl::FromUnixSeconds(1)), "timestamp");
+  ExpectWrongAccessorNames("list<int>", CelType::List(CelType::Int()),
+                           "kprobe_list_int", Value::List({Value::Int(1)}),
+                           "list");
+  ExpectWrongAccessorNames(
+      "map<string, int>", CelType::Map(CelType::String(), CelType::Int()),
+      "kprobe_map_string_int",
+      Value::Map({{Value::String("a"), Value::Int(1)}}), "map");
 }
 
 // ── shared pieces for the deepest-composite tests ─────────────────

@@ -712,6 +712,33 @@ link_mode_e2e_cc_test(
     ],
 )
 
+# Proto construction from host-origin (activation-bound) aggregates —
+# the CEL_MAP_HOST / CEL_LIST_HOST setter matrix in cel_host.cc — plus
+# the message-backed collection reads only a bound proto reaches.
+link_mode_e2e_cc_test(
+    name = "proto_from_host_test",
+    size = "large",
+    srcs = ["proto_from_host_test.cc"],
+    deps = [
+        ":link_mode_e2e_helpers",
+        "//compiler:compiler",
+        "//compiler:program",
+        "//eval:activation",
+        "//eval:cel_host",  # MessageBacking() on constructed msgs
+        "//eval:engine",
+        "//eval:instance",
+        "//eval:value",
+        "//shared:type",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_cel_spec//proto/cel/expr/conformance/proto3:test_all_types_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
 # WKT-field-set e2e suite — one TEST_F per conformance corpus row in
 # the well-known-type field-construction cluster (literal_wellknown,
 # dynamic value_*/struct/int32/uint32, set_null null-pruning, Any).
@@ -818,6 +845,7 @@ link_mode_e2e_cc_test(
         "//compiler:program",
         "//shared:type",
         "//testdata:e2e_fixture_cc_proto",
+        "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",

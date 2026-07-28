@@ -153,6 +153,16 @@ def section_of(path: str) -> str:
     return "Other"
 
 
+def is_harness_file(path: str) -> bool:
+    """Files e2e can never execute by construction — harness, CLI,
+    build-time emitters, the coverage infra itself.  They stay in the
+    tests-100% goal but are excluded from the e2e-90% goal metric."""
+    if path.startswith(("tools/", "conformance/", "benchmark/")):
+        return True
+    return ("/celfnc_emit/" in path or "test_fakes" in path
+            or "wasm_gcov" in path)
+
+
 def workload_class(workload: str, taxonomy) -> str:
     """Three classes: "e2e" (the e2e suites), "corpus" (external
     workloads — conformance, fuzz), "unit" (everything else).  The
@@ -263,6 +273,7 @@ def build(workloads, taxonomy, repo_root):
         br_taken = sum(k for k, _ in br.values())
         per_file[src] = {
             "section": section_of(src),
+            "harness": is_harness_file(src),
             "lines_total": total,
             "lines_covered": covered,
             "line_pct": round(100.0 * covered / total, 2) if total else 0.0,
@@ -317,6 +328,11 @@ def build(workloads, taxonomy, repo_root):
         }
 
     headline = subtotal(per_file)
+    product = subtotal([f for f in per_file if not per_file[f]["harness"]])
+    headline["line_pct_e2e_product"] = product["line_pct_e2e"]
+    headline["line_pct_tests_product"] = product["line_pct_tests"]
+    headline["product_lines_total"] = product["lines_total"]
+    headline["product_lines_covered_e2e"] = product["lines_covered_e2e"]
     sections = {}
     for name, _prefixes in SECTIONS:
         keys = [f for f in per_file if per_file[f]["section"] == name]
@@ -515,6 +531,8 @@ def main():
     print(f"line: {h['line_pct']}% ({h['lines_covered']}/{h['lines_total']})")
     print(f"line e2e-only: {h['line_pct_e2e']}%  "
           f"line tests-no-corpus: {h['line_pct_tests']}%")
+    print(f"product scope: e2e-only {h['line_pct_e2e_product']}% "
+          f"(goal 90%)  tests {h['line_pct_tests_product']}%")
     print(f"function: {h['function_pct']}% "
           f"({h['functions_hit']}/{h['functions_total']})")
     print(f"branch: {h['branch_pct']}% "
