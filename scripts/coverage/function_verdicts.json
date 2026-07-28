@@ -161,6 +161,12 @@
       "match": "PatternParser",
       "verdict": "by-design",
       "evidence": "Uncovered lines in the FSM are the unreachable-state ABSL_CHECK(false) in Step (the State enum is closed and every value has a case)."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "DecodeListIndex",
+      "verdict": "by-design",
+      "evidence": "The checker admits only index_list(list(A), int) \u2014 codegen can emit CEL_INT (or absorbed error/unknown) indexes exclusively; the CEL_UINT / CEL_DOUBLE / kind-mismatch arms guard the wire against a codegen regression.  Verified: ListAtCallTarget in expr_lower.cc is the only emit family, and no uint/double list-index overload exists in the static subset."
     }
   ]
 }

@@ -614,8 +614,7 @@ citation: conformance row dynamic any/literal_empty; e2e/wkt_field_set_test.cc A
 TEST_F(WktLiteralFieldTest, MapFieldInt32KeyInt64Value) {
   ::cel::expr::conformance::proto3::TestAllTypes expected;
   (*expected.mutable_map_int32_int64())[1] = 2;
-  ExpectConstructsProto("TestAllTypes{map_int32_int64: {1: 2}}", kP3,
-                        expected);
+  ExpectConstructsProto("TestAllTypes{map_int32_int64: {1: 2}}", kP3, expected);
 }
 
 TEST_F(WktLiteralFieldTest, MapFieldInt64KeyInt64Value) {
@@ -638,6 +637,105 @@ TEST_F(WktLiteralFieldTest, MapFieldUint64KeyUint64Value) {
   ExpectConstructsProto(
       "TestAllTypes{map_uint64_uint64: {18446744073709551615u: 8u}}", kP3,
       expected);
+}
+
+// ── Literal construction matrix: every scalar cpp_type arm of the
+// field-set kernel (SetScalarField / SetWrapperFieldFromScalar /
+// AppendRepeated* / SetMapField), plus the int32/uint32 narrowing
+// range errors — the runtime-reachable rejects a checked expr can
+// still trigger (the checker types the literal int/uint, the 32-bit
+// width only exists proto-side).  Read-back through the constructed
+// message pins the value, not just "construction didn't trap".
+// ──────────────────────────────────────────────────────────────
+
+class LiteralFieldSetMatrixTest : public ::testing::Test {};
+
+TEST_F(LiteralFieldSetMatrixTest, WrapperFieldKindMatrix) {
+  ExpectBoolTrue(
+      "TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper == 5", kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{single_int64_wrapper: 6}.single_int64_wrapper == 6", kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{single_uint32_wrapper: 7u}.single_uint32_wrapper == 7u",
+      kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{single_uint64_wrapper: 8u}.single_uint64_wrapper == 8u",
+      kP3);
+  ExpectBoolTrue("TestAllTypes{single_bool_wrapper: true}.single_bool_wrapper",
+                 kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{single_float_wrapper: 1.5}.single_float_wrapper == 1.5",
+      kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{single_double_wrapper: 2.5}.single_double_wrapper == 2.5",
+      kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{single_string_wrapper: 'x'}.single_string_wrapper == 'x'",
+      kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{single_bytes_wrapper: b'ab'}.single_bytes_wrapper == "
+      "b'ab'",
+      kP3);
+}
+
+TEST_F(LiteralFieldSetMatrixTest, WrapperNarrowingRangeErrors) {
+  ExpectEvalError("TestAllTypes{single_int32_wrapper: 2147483648}", kP3);
+  ExpectEvalError("TestAllTypes{single_int32_wrapper: -2147483649}", kP3);
+  ExpectEvalError("TestAllTypes{single_uint32_wrapper: 4294967296u}", kP3);
+}
+
+TEST_F(LiteralFieldSetMatrixTest, PlainScalarKindMatrixAndRangeErrors) {
+  ExpectBoolTrue("TestAllTypes{single_float: 1.5}.single_float == 1.5", kP3);
+  ExpectBoolTrue("TestAllTypes{single_bytes: b'ab'}.single_bytes == b'ab'",
+                 kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{single_nested_message: TestAllTypes.NestedMessage{bb: "
+      "7}}.single_nested_message.bb == 7",
+      kP3);
+  ExpectEvalError("TestAllTypes{single_int32: 2147483648}", kP3);
+  ExpectEvalError("TestAllTypes{single_uint32: 4294967296u}", kP3);
+}
+
+TEST_F(LiteralFieldSetMatrixTest, RepeatedLiteralElementKindMatrix) {
+  ExpectBoolTrue("TestAllTypes{repeated_int32: [1, 2]}.repeated_int32[1] == 2",
+                 kP3);
+  ExpectBoolTrue("TestAllTypes{repeated_int64: [5]}.repeated_int64[0] == 5",
+                 kP3);
+  ExpectBoolTrue("TestAllTypes{repeated_uint32: [1u]}.repeated_uint32[0] == 1u",
+                 kP3);
+  ExpectBoolTrue("TestAllTypes{repeated_uint64: [6u]}.repeated_uint64[0] == 6u",
+                 kP3);
+  ExpectBoolTrue("TestAllTypes{repeated_bool: [true]}.repeated_bool[0]", kP3);
+  ExpectBoolTrue("TestAllTypes{repeated_float: [1.5]}.repeated_float[0] == 1.5",
+                 kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{repeated_double: [2.5]}.repeated_double[0] == 2.5", kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{repeated_string: ['x']}.repeated_string[0] == 'x'", kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{repeated_bytes: [b'ab']}.repeated_bytes[0] == b'ab'", kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{repeated_nested_message: [TestAllTypes.NestedMessage{bb: "
+      "3}]}.repeated_nested_message[0].bb == 3",
+      kP3);
+  ExpectEvalError("TestAllTypes{repeated_int32: [2147483648]}", kP3);
+  ExpectEvalError("TestAllTypes{repeated_uint32: [4294967296u]}", kP3);
+}
+
+TEST_F(LiteralFieldSetMatrixTest, MapLiteralFieldMatrix) {
+  ExpectBoolTrue(
+      "TestAllTypes{map_int32_int64: {1: 2}}.map_int32_int64[1] == 2", kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{map_string_string: {'k': 'v'}}.map_string_string['k'] == "
+      "'v'",
+      kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{map_bool_bool: {true: false}}.map_bool_bool[true] == "
+      "false",
+      kP3);
+  ExpectBoolTrue(
+      "TestAllTypes{map_uint64_uint64: {5u: 6u}}.map_uint64_uint64[5u] == 6u",
+      kP3);
 }
 
 }  // namespace

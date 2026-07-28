@@ -535,6 +535,38 @@ TEST_F(MessageBackedReadTest, CollectionSizeInAndElementKindMatrix) {
   }
 }
 
+// ── narrowing range errors on the HOST-origin write paths ───────────
+// Regression pins for the silent-truncation family fixed 2026-07-28:
+// out-of-int32/uint32-range values arriving through a bound list /
+// map must poison the construction (cel-cpp: struct_value_builder.cc
+// "int64 to int32 overflow"), never wrap.  The arena-literal twins
+// live in e2e/wkt_field_set_test.cc LiteralFieldSetMatrixTest.
+
+class HostNarrowingRangeTest : public ::testing::Test {};
+
+TEST_F(HostNarrowingRangeTest, HostListElementOutOfRangePoisons) {
+  const Decls list_decl = {{"xs", CelType::List(CelType::Int())}};
+  Value v = EvalBound("TestAllTypes{repeated_int32: xs}", list_decl,
+                      {{"xs", Value::List({Value::Int(int64_t{1} << 40)})}});
+  EXPECT_TRUE(v.IsError()) << "kind=" << static_cast<int>(v.kind());
+  const Decls ulist_decl = {{"us", CelType::List(CelType::Uint())}};
+  Value u = EvalBound("TestAllTypes{repeated_uint32: us}", ulist_decl,
+                      {{"us", Value::List({Value::Uint(uint64_t{1} << 40)})}});
+  EXPECT_TRUE(u.IsError()) << "kind=" << static_cast<int>(u.kind());
+}
+
+TEST_F(HostNarrowingRangeTest, HostMapKeyAndValueOutOfRangePoison) {
+  const Decls m_decl = {{"m", CelType::Map(CelType::Int(), CelType::Int())}};
+  Value key = EvalBound(
+      "TestAllTypes{map_int32_int64: m}", m_decl,
+      {{"m", Value::Map({{Value::Int(int64_t{1} << 40), Value::Int(1)}})}});
+  EXPECT_TRUE(key.IsError()) << "kind=" << static_cast<int>(key.kind());
+  Value val = EvalBound(
+      "TestAllTypes{map_int64_int32: m}", m_decl,
+      {{"m", Value::Map({{Value::Int(1), Value::Int(int64_t{1} << 40)}})}});
+  EXPECT_TRUE(val.IsError()) << "kind=" << static_cast<int>(val.kind());
+}
+
 TEST_F(MessageBackedReadTest, CrossNumericHostMapKeyLookup) {
   // Map-key equality is value-based across int/uint/double (langdef
   // §Maps): a host-bound map whose STORED key kind differs from the

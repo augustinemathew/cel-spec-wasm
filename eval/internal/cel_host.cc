@@ -3350,9 +3350,11 @@ double ReadDouble(const CelValue& cv) {
 
 // Range-check an int64 CEL value before narrowing to an int32 proto
 // field.  cel-cpp surfaces an out-of-range field assignment as an
-// eval error ("range error"); we return OutOfRange so the caller
-// propagates it rather than silently truncating.  Shared by the bare
-// int32 field arm and the Int32Value-wrapper arm.
+// eval error (struct_value_builder.cc "int64 to int32 overflow");
+// we return OutOfRange so the caller propagates it rather than
+// silently truncating.  Shared by every int32-narrowing write arm:
+// the bare singular field, the Int32Value wrapper, repeated appends
+// (arena + host list), and host-map entry keys/values.
 absl::Status CheckInt32Range(int64_t v, absl::string_view field_name) {
   if (v < std::numeric_limits<int32_t>::min() ||
       v > std::numeric_limits<int32_t>::max()) {
@@ -4208,10 +4210,11 @@ absl::Status RepeatedAppendMismatch(
                    " element kind=", static_cast<int>(cv.kind)));
 }
 
-// INT32/INT64/UINT32/UINT64/FLOAT/DOUBLE arms of AppendRepeatedScalar.
-// Returns nullopt for a non-numeric cpp_type (caller handles
-// BOOL/STRING/ENUM/MESSAGE).  Uses the `Add...` reflection family.
-std::optional<absl::Status> AppendRepeatedNumeric(
+// INT32/INT64/UINT32/UINT64 arms of AppendRepeatedNumeric.  The
+// 32-bit widths range-check before narrowing (same contract as the
+// singular SetScalarIntegerField).  Returns nullopt for a
+// non-integer cpp_type.
+std::optional<absl::Status> AppendRepeatedInteger(
     google::protobuf::Message& msg,
     const google::protobuf::FieldDescriptor& field,
     const google::protobuf::Reflection& refl, const CelValue& cv) {
@@ -4219,6 +4222,9 @@ std::optional<absl::Status> AppendRepeatedNumeric(
   switch (field.cpp_type()) {
     case FD::CPPTYPE_INT32:
       if (cv.kind != CEL_INT) return RepeatedAppendMismatch(field, "INT32", cv);
+      if (auto s = CheckInt32Range(cv.payload.i, field.name()); !s.ok()) {
+        return s;
+      }
       refl.AddInt32(&msg, &field, static_cast<int32_t>(cv.payload.i));
       return absl::OkStatus();
     case FD::CPPTYPE_INT64:
@@ -4229,6 +4235,9 @@ std::optional<absl::Status> AppendRepeatedNumeric(
       if (cv.kind != CEL_UINT) {
         return RepeatedAppendMismatch(field, "UINT32", cv);
       }
+      if (auto s = CheckUint32Range(cv.payload.u, field.name()); !s.ok()) {
+        return s;
+      }
       refl.AddUInt32(&msg, &field, static_cast<uint32_t>(cv.payload.u));
       return absl::OkStatus();
     case FD::CPPTYPE_UINT64:
@@ -4237,6 +4246,23 @@ std::optional<absl::Status> AppendRepeatedNumeric(
       }
       refl.AddUInt64(&msg, &field, cv.payload.u);
       return absl::OkStatus();
+    default:
+      return std::nullopt;
+  }
+}
+
+// INT32/INT64/UINT32/UINT64/FLOAT/DOUBLE arms of AppendRepeatedScalar.
+// Returns nullopt for a non-numeric cpp_type (caller handles
+// BOOL/STRING/ENUM/MESSAGE).  Uses the `Add...` reflection family.
+std::optional<absl::Status> AppendRepeatedNumeric(
+    google::protobuf::Message& msg,
+    const google::protobuf::FieldDescriptor& field,
+    const google::protobuf::Reflection& refl, const CelValue& cv) {
+  using FD = google::protobuf::FieldDescriptor;
+  if (auto s = AppendRepeatedInteger(msg, field, refl, cv); s.has_value()) {
+    return s;
+  }
+  switch (field.cpp_type()) {
     case FD::CPPTYPE_FLOAT:
       if (cv.kind != CEL_DOUBLE) {
         return RepeatedAppendMismatch(field, "FLOAT", cv);
@@ -4382,6 +4408,7 @@ std::optional<absl::Status> AppendRepeatedHostInteger(
     case FD::CPPTYPE_INT32: {
       auto i = v.AsInt();
       if (!i.ok()) return i.status();
+      if (auto s = CheckInt32Range(*i, field.name()); !s.ok()) return s;
       refl.AddInt32(&msg, &field, static_cast<int32_t>(*i));
       return absl::OkStatus();
     }
@@ -4394,6 +4421,7 @@ std::optional<absl::Status> AppendRepeatedHostInteger(
     case FD::CPPTYPE_UINT32: {
       auto u = v.AsUint();
       if (!u.ok()) return u.status();
+      if (auto s = CheckUint32Range(*u, field.name()); !s.ok()) return s;
       refl.AddUInt32(&msg, &field, static_cast<uint32_t>(*u));
       return absl::OkStatus();
     }
@@ -4646,6 +4674,7 @@ std::optional<absl::Status> SetHostMapEntryIntegerKey(
     case FD::CPPTYPE_INT32: {
       auto i = key.AsInt();
       if (!i.ok()) return i.status();
+      if (auto s = CheckInt32Range(*i, key_fd.name()); !s.ok()) return s;
       entry_refl.SetInt32(&entry, &key_fd, static_cast<int32_t>(*i));
       return absl::OkStatus();
     }
@@ -4658,6 +4687,7 @@ std::optional<absl::Status> SetHostMapEntryIntegerKey(
     case FD::CPPTYPE_UINT32: {
       auto u = key.AsUint();
       if (!u.ok()) return u.status();
+      if (auto s = CheckUint32Range(*u, key_fd.name()); !s.ok()) return s;
       entry_refl.SetUInt32(&entry, &key_fd, static_cast<uint32_t>(*u));
       return absl::OkStatus();
     }
@@ -4717,6 +4747,7 @@ std::optional<absl::Status> SetHostMapEntryIntegerValue(
     case FD::CPPTYPE_INT32: {
       auto i = value.AsInt();
       if (!i.ok()) return i.status();
+      if (auto s = CheckInt32Range(*i, val_fd.name()); !s.ok()) return s;
       entry_refl.SetInt32(&entry, &val_fd, static_cast<int32_t>(*i));
       return absl::OkStatus();
     }
@@ -4729,6 +4760,7 @@ std::optional<absl::Status> SetHostMapEntryIntegerValue(
     case FD::CPPTYPE_UINT32: {
       auto u = value.AsUint();
       if (!u.ok()) return u.status();
+      if (auto s = CheckUint32Range(*u, val_fd.name()); !s.ok()) return s;
       entry_refl.SetUInt32(&entry, &val_fd, static_cast<uint32_t>(*u));
       return absl::OkStatus();
     }
