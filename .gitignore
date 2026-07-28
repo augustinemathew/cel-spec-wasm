@@ -44,3 +44,4 @@ benchmark/eval/results/raw/
 *.profraw
 *.gcda
 *.gcno
+__pycache__/

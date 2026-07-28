@@ -221,7 +221,17 @@ Remaining-work status (updated 2026-07-27, measurement session):
      report §2.3 (87.3% line / 95.1% function across 38 workloads,
      per-workload attribution, all 27 zero-hit functions classified).
      The zero-native-hit families the audit flagged are CONFIRMED
-     wasm-covered.
+     wasm-covered.  An earlier parallel measurement pass on this
+     branch (before the gap-test tranche) recorded 84.5% wasm-side /
+     93.5% native∪wasm over 37 binaries + the 2,516-row conformance
+     corpus; its operational notes still apply: three suites
+     (`engine_test_dynamic`, both plugin tests) load fixtures via
+     runfiles and need `TEST_SRCDIR=$PWD/<bin>.runfiles
+     TEST_WORKSPACE=_main` when run outside `bazel test`; `llvm-cov
+     gcov` must run with the repo's `runtime/` resolvable from the cwd
+     (symlink suffices) or it emits header-only .gcov files;
+     `scripts/coverage/gcov_to_lcov.py` folds the output for
+     `lcov_merge.py`/`lcov_report.py`.
   4. Closeout: testing-checklist row ticked; static-link measurement
      deliberately NOT run (imports are registered either way; the
      static merge embeds the same C code, so dynamic-mode numbers are

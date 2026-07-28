@@ -275,6 +275,100 @@ chased with artificial tests.  95%+ **function** coverage is the
 meaningful bar met tonight; the line number is expected to plateau in
 the high 80s / low 90s until the restructure lands.
 
+### 2.3.1 Native vs wasm vs union, per file (parallel measurement pass, same day)
+
+A parallel pass on this branch (run before the gap-test tranche above,
+so its wasm numbers trail §2.3's by a few points) crossed the wasm-side
+data with the audit's native numbers: the **entire dynamic e2e suite
+(37 binaries, all green) plus the 2,516-row conformance corpus** ran
+against the instrumented `cel_runtime.wasm`, and the guest's own arc
+counters were harvested through the evaluator. Per-file, native vs wasm
+vs the union (a line counts in the union if either build executed it;
+small denominator differences between the two collectors make a few
+union cells non-monotonic — `cel_memory.c` — treat ±1 line as noise):
+
+| File | Native | Wasm (e2e via eval) | Union |
+|---|---:|---:|---:|
+| `cel_3vl.c` | 100.0% | 87.8% | 100.0% |
+| `cel_arena.c` | 83.6% | 80.4% | 89.0% |
+| `cel_arith.c` | 87.5% | 98.0% | 98.1% |
+| `cel_base64_ext.cc` | 95.2% | 81.0% | 95.2% |
+| `cel_compare.c` | 97.2% | 87.2% | 98.6% |
+| `cel_convert.c` | 94.0% | 88.1% | 94.4% |
+| `cel_convert_double_format.cc` | 86.7% | 82.2% | 86.7% |
+| `cel_internal.h` | 100.0% | 60.0% | 100.0% |
+| `cel_make.c` | 100.0% | **24.4%** | 100.0% |
+| `cel_map_hash.h` | 97.5% | 60.8% | 97.5% |
+| `cel_map_index.c` | 98.1% | 93.0% | 98.1% |
+| `cel_matches.cc` | 95.8% | 78.3% | 95.8% |
+| `cel_math_ext.c` | 91.4% | 92.1% | 96.3% |
+| `cel_memory.c` | 100.0% | 60.0% | 85.7% |
+| `cel_net_ext.c` | 92.8% | 88.9% | 92.8% |
+| `cel_optional.c` | 90.5% | 86.7% | 90.5% |
+| `cel_runtime.c` | 74.7% | 81.0% | 86.5% |
+| `cel_string_ext_codepoint.cc` | 97.4% | 82.6% | 97.4% |
+| `cel_string_ext_internal.h` | 92.3% | 13.2% | 92.3% |
+| `cel_string_ext_list.cc` | 97.5% | 83.5% | 97.5% |
+| `cel_string_ext_quote.cc` | 100.0% | 95.5% | 100.0% |
+| `cel_string_ext_search.cc` | 94.1% | 83.6% | 94.1% |
+| `cel_string_format.cc` | 95.8% | 79.1% | 95.8% |
+| `cel_string_format_render.cc` | 80.4% | 88.6% | 89.8% |
+| `cel_string_ops.c` | 97.5% | 95.0% | 97.5% |
+| `cel_time.c` | 68.4% | **94.3%** | 94.5% |
+| `cel_time_parse.cc` | 97.0% | 91.0% | 97.0% |
+| `cel_type.c` | 88.2% | 86.7% | 88.2% |
+| **runtime/ total** | **88.7%** | **84.5%** | **93.5%** |
+
+What the measurement settled:
+
+  - **The audit's zero-native-hit families ARE covered in production
+    shape.** `cel_time.c` jumps 68.4% → 94.3% under wasm: the whole
+    `*_with_tz` accessor family, `cel_int_to_ts/dur`, `cel_ts_to_int`
+    run constantly through e2e/conformance. Same for the
+    `cel_runtime.c` comprehension helpers (74.7% → 81.0%, and 86.5%
+    union). These are native *unit-test* gaps, not dead code — §5.3's
+    "add native cases" items stand, but at P2 urgency, not P0.
+  - **The union residue — ~6.5% of the runtime, covered NOWHERE — is
+    the real missing-test list**, and it decomposes into exactly two
+    kinds (spot-checked by reading the ranges):
+      1. defensive `poison(...)` guard arms (wrong-kind / overflow
+         rejects) that neither the type-checked pipeline nor the
+         native negative matrices reach — e.g. 13 two-line guards in
+         `cel_convert.c`, 16 in `cel_net_ext.c`, 9 in
+         `cel_string_ext_search.cc`; these want targeted native
+         negative cases (the kernel suites can call the helpers with
+         forbidden kinds directly);
+      2. `__attribute__((weak))` native-stub shims for host imports
+         (`cel_host_cel_*` fallbacks, `cel_host_cel_set_field`) that
+         are **structurally dead in both builds** — the wasm build
+         replaces them with real imports, the native build with the
+         eval host. They inflate the denominator and should be
+         annotated or excluded, not "covered".
+  - **New inverse finding: `cel_make.c` is barely used by compiled
+    expressions** (24.4% wasm despite 100% native): the static-
+    aggregate materialization path appears to have obsoleted most
+    `cel_make_*` constructor calls in generated code. Worth a
+    follow-up: either the corpus under-exercises the non-const
+    construction path, or part of this surface is retirable.
+    (Similarly `cel_string_ext_internal.h` at 13.2% wasm — its
+    helpers inline into callers under the wasm build's LTO, so the
+    wasm number is an artifact; the native 92.3% is the meaningful
+    one.)
+
+Reproduction: `scripts/coverage/{gcov_to_lcov,lcov_merge,lcov_report}.py`
++ the workflow in `../m38-wasm-gcov-coverage.md` §4. Three suites
+(`engine_test`, both plugin tests) need `TEST_SRCDIR`/`TEST_WORKSPACE`
+exported when run outside `bazel test` — they load fixtures via
+runfiles.
+
+> Follow-up landed: the "never-emitted dispatch arms" of §2.3 (the
+> `cel_compare.c` monomorphic eq/ne family) were deleted with all
+> consumers in `d2aff22`, so the `cel_compare.c` rows above describe
+> the pre-deletion file.  The `cel_make.c` retirability question is
+> answered in §2.3: native-test-only constructors, relocation
+> recommended (only `cel_make_string` + `make_span_copy` + `alloc_cv`
+> have wasm-path callers via `cel_net_ext.c`).
+
 ## 3. Public API surface vs coverage
 
 ### 3.1 Visibility drift (CLAUDE.md vs BUILD reality)
@@ -448,7 +542,20 @@ should be part of the reorganization commit (§6), not left to drift further.
     `cel_map_insert_at_if_bool`, `cel_not_equals_at_vv`,
     `cel_list_in/size`, `cel_map_in/size/count`) — native cases belong in
     the kernel suites so a bad edit fails a 2-second unit test, not a
-    5-minute e2e.
+    5-minute e2e. *(§2.3 downgrade: the wasm measurement confirmed all
+    of these run constantly through e2e — they are unit-test
+    convenience gaps, P2, not correctness holes.)*
+  - **From §2.3's union residue (the covered-NOWHERE list)**: targeted
+    native negative cases for the unreached `poison` guard arms —
+    biggest clusters `cel_convert.c` (13 guards), `cel_net_ext.c`
+    (16), `cel_string_ext_search.cc` (9), `cel_optional.c`,
+    `cel_string_format*` — and an annotation/exclusion decision for
+    the structurally-dead `__attribute__((weak))` host-import shims.
+    Full line ranges are reproducible via
+    `scripts/coverage/lcov_report.py <union.dat> --misses`.
+  - **Investigate `cel_make.c`'s 24.4% wasm usage** (§2.3): confirm
+    whether the non-const construction path is under-exercised by the
+    corpus or the surface is partly retirable post-m31.
 
 ### 5.4 Language-surface additions (from §4.2)
 
