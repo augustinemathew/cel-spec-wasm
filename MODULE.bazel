@@ -284,7 +284,19 @@ bazel_dep(
 single_version_override(
     module_name = "abseil-cpp",
     patch_strip = 1,
-    patches = ["//third_party/patches:abseil-cpp-wasm-sysinfo.patch"],
+    patches = [
+        "//third_party/patches:abseil-cpp-wasm-sysinfo.patch",
+        # cctz guards its time-zone map with std::mutex, which the
+        # threadless wasip2 libc++ does not ship — see the patch
+        # header.  Needed by any plugin whose IDL uses proto(...).
+        "//third_party/patches:abseil-cpp-wasm-cctz-mutex.patch",
+        # absl::Mutex's yield hook is the only <thread> user in
+        # synchronization/; empty it on the single-threaded target.
+        "//third_party/patches:abseil-cpp-wasm-mutex-yield.patch",
+        # The stdcpp waiter backend + spinlock's lock_guard are the
+        # remaining <mutex>/<condition_variable> users.
+        "//third_party/patches:abseil-cpp-wasm-threadless-sync.patch",
+    ],
 )
 bazel_dep(
     name = "cel-cpp",

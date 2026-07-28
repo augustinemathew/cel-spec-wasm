@@ -1,0 +1,90 @@
+Purpose: lets absl's cctz compile for wasm32-wasip2 (threadless libc++).
+
+cctz's `time_zone_impl.cc` includes `<mutex>` and guards its
+`time_zone_map` with `std::mutex` / `std::lock_guard`.  The
+Component-Model target (`//third_party/wasi_sdk:wasm32_wasip2`) is
+deliberately `wasi_threads_off` — components require non-shared linear
+memory — so that sysroot's libc++ is built with `_LIBCPP_HAS_NO_THREADS`
+and ships no `<mutex>` at all.  Any plugin whose IDL uses `proto(...)`
+drags libprotobuf (even protobuf_lite, which deps on absl/time
+directly), so every proto-bearing plugin failed to build with
+"no type named 'mutex' in namespace 'std'".
+
+Under a single-threaded execution model the lock has nothing to
+exclude, so substitute a no-op guard.  The map and every access pattern
+are untouched; only the mutual-exclusion primitive is elided, and only
+where the platform proves there is exactly one thread.
+
+--- a/absl/time/internal/cctz/src/time_zone_impl.cc
++++ b/absl/time/internal/cctz/src/time_zone_impl.cc
+@@ -16,7 +16,14 @@
+ 
+ #include <deque>
+ #include <memory>
++#if defined(__wasm__) || defined(__wasi__)
++// The Component-Model target is single-threaded (wasi_threads_off:
++// components require non-shared linear memory), so that sysroot's
++// libc++ is built with _LIBCPP_HAS_NO_THREADS and ships no <mutex>.
++#define CCTZ_SINGLE_THREADED_NO_MUTEX 1
++#else
+ #include <mutex>
++#endif
+ #include <string>
+ #include <unordered_map>
+ #include <utility>
+@@ -36,6 +43,19 @@
+     std::unordered_map<std::string, const time_zone::Impl*>;
+ TimeZoneImplByName* time_zone_map = nullptr;
+ 
++#if defined(CCTZ_SINGLE_THREADED_NO_MUTEX)
++// Nothing to exclude on a single-threaded target: the guard is a
++// no-op and no <mutex> is required.
++struct NoOpMutex {};
++struct NoOpLockGuard {
++  explicit NoOpLockGuard(NoOpMutex&) {}
++};
++NoOpMutex& TimeZoneMutex() {
++  static NoOpMutex* time_zone_mutex = new NoOpMutex;
++  return *time_zone_mutex;
++}
++#define CCTZ_LOCK_GUARD NoOpLockGuard
++#else
+ // Mutual exclusion for time_zone_map.
+ std::mutex& TimeZoneMutex() {
+   // This mutex is intentionally "leaked" to avoid the static deinitialization
+@@ -43,6 +63,8 @@
+   static std::mutex* time_zone_mutex = new std::mutex;
+   return *time_zone_mutex;
+ }
++#define CCTZ_LOCK_GUARD std::lock_guard<std::mutex>
++#endif
+ 
+ }  // namespace
+ 
+@@ -60,7 +82,7 @@
+ 
+   // Check whether the time zone has already been loaded.
+   {
+-    std::lock_guard<std::mutex> lock(TimeZoneMutex());
++    CCTZ_LOCK_GUARD lock(TimeZoneMutex());
+     if (time_zone_map != nullptr) {
+       TimeZoneImplByName::const_iterator itr = time_zone_map->find(name);
+       if (itr != time_zone_map->end()) {
+@@ -74,7 +96,7 @@
+   std::unique_ptr<const Impl> new_impl(new Impl(name));
+ 
+   // Add the new time zone to the map.
+-  std::lock_guard<std::mutex> lock(TimeZoneMutex());
++  CCTZ_LOCK_GUARD lock(TimeZoneMutex());
+   if (time_zone_map == nullptr) time_zone_map = new TimeZoneImplByName;
+   const Impl*& impl = (*time_zone_map)[name];
+   if (impl == nullptr) {  // this thread won any load race
+@@ -85,7 +107,7 @@
+ }
+ 
+ void time_zone::Impl::ClearTimeZoneMapTestOnly() {
+-  std::lock_guard<std::mutex> lock(TimeZoneMutex());
++  CCTZ_LOCK_GUARD lock(TimeZoneMutex());
+   if (time_zone_map != nullptr) {
+     // Existing time_zone::Impl* entries are in the wild, so we can't delete
+     // them. Instead, we move them to a private container, where they are

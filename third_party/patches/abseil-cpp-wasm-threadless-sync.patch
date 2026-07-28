@@ -1,0 +1,133 @@
+Purpose: lets absl/synchronization + absl/base compile for wasm32-wasip2
+(threadless libc++).
+
+Third and last piece of the threadless-wasi set (see
+abseil-cpp-wasm-cctz-mutex.patch for why that target has no <mutex>,
+<thread>, or <condition_variable>):
+
+  - `stdcpp_waiter.{h,cc}` is the waiter backend absl selects when no
+    futex / pthread / sem / win32 backend is available.  It holds a
+    `std::mutex` + `std::condition_variable`.  On a single-threaded
+    target nothing can Post a waiting thread, so a Wait that blocked
+    would deadlock regardless; Wait reports "woken" immediately and the
+    caller re-checks its own predicate, which is the contract absl
+    already relies on for spurious wakeups.
+  - `spinlock.h` includes <mutex> only for `std::lock_guard`, which is
+    a pure RAII template with no threading dependency of its own.
+    Provide the equivalent locally rather than pulling the header.
+
+diff -ur a/absl/base/internal/spinlock.h b/absl/base/internal/spinlock.h
+diff -ur a/absl/base/internal/spinlock.h b/absl/base/internal/spinlock.h
+--- a/absl/base/internal/spinlock.h
++++ b/absl/base/internal/spinlock.h
+@@ -31,7 +31,14 @@
+ 
+ #include <atomic>
+ #include <cstdint>
++#if defined(__wasm__) || defined(__wasi__)
++// No <mutex> on the threadless Component-Model target.  std::lock_guard
++// is a pure RAII wrapper with no threading dependency of its own, so
++// SpinLockHolder uses the local equivalent below instead.
++#define ABSL_INTERNAL_SPINLOCK_NO_STD_MUTEX 1
++#else
+ #include <mutex>
++#endif
+ #include <type_traits>
+ 
+ #include "absl/base/attributes.h"
+@@ -246,15 +253,35 @@
+   SpinLock& operator=(const SpinLock&) = delete;
+ };
+ 
++#if defined(ABSL_INTERNAL_SPINLOCK_NO_STD_MUTEX)
++// Local stand-in for std::lock_guard (see the <mutex> note above).
++// Declared in the enclosing absl::base_internal namespace, alongside
++// SpinLock itself.
++template <typename Lockable>
++class SpinLockGuard {
++ public:
++  explicit SpinLockGuard(Lockable& l) : lock_(l) { lock_.lock(); }
++  ~SpinLockGuard() { lock_.unlock(); }
++  SpinLockGuard(const SpinLockGuard&) = delete;
++  SpinLockGuard& operator=(const SpinLockGuard&) = delete;
++
++ private:
++  Lockable& lock_;
++};
++#define ABSL_INTERNAL_SPINLOCK_GUARD_BASE SpinLockGuard<SpinLock>
++#else
++#define ABSL_INTERNAL_SPINLOCK_GUARD_BASE std::lock_guard<SpinLock>
++#endif
++
+ // Corresponding locker object that arranges to acquire a spinlock for
+ // the duration of a C++ scope.
+ class ABSL_SCOPED_LOCKABLE [[nodiscard]] SpinLockHolder
+-    : public std::lock_guard<SpinLock> {
++    : public ABSL_INTERNAL_SPINLOCK_GUARD_BASE {
+  public:
+   inline explicit SpinLockHolder(
+       SpinLock& l ABSL_INTERNAL_ATTRIBUTE_CAPTURED_BY(this))
+       ABSL_EXCLUSIVE_LOCK_FUNCTION(l)
+-      : std::lock_guard<SpinLock>(l) {}
++      : ABSL_INTERNAL_SPINLOCK_GUARD_BASE(l) {}
+   ABSL_DEPRECATE_AND_INLINE()
+   inline explicit SpinLockHolder(SpinLock* l) ABSL_EXCLUSIVE_LOCK_FUNCTION(l)
+       : SpinLockHolder(*l) {}
+diff -ur a/absl/synchronization/internal/stdcpp_waiter.cc b/absl/synchronization/internal/stdcpp_waiter.cc
+--- a/absl/synchronization/internal/stdcpp_waiter.cc
++++ b/absl/synchronization/internal/stdcpp_waiter.cc
+@@ -30,8 +30,21 @@
+ ABSL_NAMESPACE_BEGIN
+ namespace synchronization_internal {
+ 
++#if defined(__wasm__) || defined(__wasi__)
++
++// Single-threaded target: no other thread can Post, so a Wait that
++// blocked would deadlock regardless.  Report "woken" immediately and
++// let the caller re-check its predicate.
+ StdcppWaiter::StdcppWaiter() : waiter_count_(0), wakeup_count_(0) {}
++bool StdcppWaiter::Wait(KernelTimeout) { return true; }
++void StdcppWaiter::Post() {}
++void StdcppWaiter::Poke() {}
++void StdcppWaiter::InternalCondVarPoke() {}
+ 
++#else
++
++StdcppWaiter::StdcppWaiter() : waiter_count_(0), wakeup_count_(0) {}
++
+ bool StdcppWaiter::Wait(KernelTimeout t) {
+   std::unique_lock<std::mutex> lock(mu_);
+   ++waiter_count_;
+@@ -79,6 +92,8 @@
+     cv_.notify_one();
+   }
+ }
++
++#endif  // defined(__wasm__) || defined(__wasi__)
+ 
+ }  // namespace synchronization_internal
+ ABSL_NAMESPACE_END
+diff -ur a/absl/synchronization/internal/stdcpp_waiter.h b/absl/synchronization/internal/stdcpp_waiter.h
+--- a/absl/synchronization/internal/stdcpp_waiter.h
++++ b/absl/synchronization/internal/stdcpp_waiter.h
+@@ -43,8 +43,20 @@
+   // REQUIRES: mu_ must be held.
+   void InternalCondVarPoke();
+ 
++#if defined(__wasm__) || defined(__wasi__)
++  // Single-threaded Component-Model target: libc++ ships no <mutex>
++  // or <condition_variable>.  Nothing can contend, so the primitives
++  // degenerate to empty stand-ins (see the .cc for the method
++  // bodies).
++  struct NoOpMutex {
++    void lock() {}
++    void unlock() {}
++  };
++  NoOpMutex mu_;
++#else
+   std::mutex mu_;
+   std::condition_variable cv_;
++#endif
+   int waiter_count_;
+   int wakeup_count_;  // Unclaimed wakeups.
+ };
