@@ -219,7 +219,16 @@ const tiles = [
   { label: "Function coverage", value: `${H.function_pct}%`,
     detail: `${fmt(H.functions_hit)} / ${fmt(H.functions_total)} functions called` },
 ];
-if (H.line_pct_tests !== undefined) {
+if (H.line_pct_e2e_goal !== undefined) {
+  tiles.push(
+    { label: "e2e GOAL metric", value: `${H.line_pct_e2e_goal}%`,
+      detail: `product scope, ${fmt(H.goal_exempt_lines_e2e)} ` +
+              `verdict-exempt lines excluded — goal 90%` },
+    { label: "tests GOAL metric", value: `${H.line_pct_tests_goal}%`,
+      detail: `product scope, ${fmt(H.goal_exempt_lines_tests)} ` +
+              `by-design lines excluded — goal 100%` },
+  );
+} else if (H.line_pct_tests !== undefined) {
   tiles.push(
     { label: "e2e-only (product)", value:
         `${H.line_pct_e2e_product ?? H.line_pct_e2e}%`,

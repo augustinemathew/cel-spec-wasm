@@ -55,6 +55,24 @@
       "evidence": "Same prologue pre-check as vend_poison_list_view; codegen-drift tripwire."
     },
     {
+      "file": "eval/engine.cc",
+      "match": "InstantiateAndBindCustomModules",
+      "verdict": "by-design",
+      "evidence": "Engine::AddModule is reserved for the unimplemented @native backend (doc/user-guide/custom-functions.md §4.5); no compiled program can require a custom-module helper until it lands, so the Plan-side instantiation is e2e-unreachable. Registration arms are unit-covered by EngineAddModuleTest. PROPOSALS-worthy: implement @native or delete the surface."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "Engine::AddModule",
+      "verdict": "by-design",
+      "evidence": "Reserved surface for the unimplemented @native backend (user-guide §4.5); registration validation unit-covered, instantiation unreachable e2e."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "WasmTrapToStatus",
+      "verdict": "by-design",
+      "evidence": "Engine-side trap conversion: reachable only on codegen/runtime drift (kernel poisons instead of trapping on every legal path). Tripwire, keep."
+    },
+    {
       "file": "eval/instance.cc",
       "match": "WasmTrapToStatus",
       "verdict": "by-design",
