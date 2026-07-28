@@ -1,5 +1,9 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
+# The taxonomy drift guard (//e2e:taxonomy_validate_test) reads this
+# BUILD file to verify cli_workloads entries name real targets.
+exports_files(["BUILD.bazel"])
+
 package(default_visibility = ["//visibility:public"])
 
 # `cel` command-line driver.  Subcommands: eval / check / compile.

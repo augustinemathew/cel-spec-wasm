@@ -272,6 +272,25 @@ once-per-process quirk, noted in the .cc).
 > unchanged ⇒ wasm layer stays valid, incl. the conformance
 > corpus's counters).  The prose below this callout describes the
 > 2026-07-27 evening state and remains valid where not superseded.
+>
+> **Measurement invariant sharpened (2026-07-28, iteration 5):**
+> editing a PRODUCT file invalidates the native `coverage.dat` of
+> **every binary that links it**, not just the workloads with
+> recorded hits on it — llvm-cov's export enumerates a binary's
+> instrumented-line universe for a file even at zero hits, so stale
+> exports resurrect deleted functions and old line tables into the
+> merged report (observed: `SetMemory` and the deleted
+> `AttributeQualifier` accessors reappearing as "newly uncovered",
+> attribute.cc line-pct collapsing to 57%).  Since eval/ and
+> compiler/ headers link into nearly every test, the practical rule
+> is: **any product-code edit ⇒ re-run the full native `bazel
+> coverage` pass** (cheap when the coverage config is warm — the
+> expensive part is the config rebuild, not test execution); only
+> pure test-file / script edits qualify for the narrow per-target
+> re-measure.  Also: a plain `bazel test` of a target clobbers its
+> `coverage.dat` — after any inner-loop testing, sweep for missing
+> `.dat` files before regenerating (`tests(//...)` vs
+> `bazel-testlogs/**/coverage.dat`).
 
 **Branch:** `claude/m38-wasm-gcov-coverage`, 16 commits ahead of
 origin, clean tree.  All gates were green at commit `761d3d7`

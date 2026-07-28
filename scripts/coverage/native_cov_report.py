@@ -29,6 +29,7 @@ eval/ shared/ abi/ tools/ conformance/).
 import argparse
 import collections
 import datetime
+import glob
 import json
 import os
 import re
@@ -54,27 +55,51 @@ def bazel_info(key: str) -> str:
     ).stdout.strip()
 
 
+# sh_test workloads: `bazel-bin/<pkg>/<target>` is the wrapper
+# script, not the instrumented executable the profile came from —
+# llvm-cov must be pointed at the real binaries.  Values are the
+# executables the script drives (first is the primary, the rest
+# become `-object` args).
+SH_TEST_BINARIES = {
+    "tools/cel:cel_smoke_test": ["bazel-bin/tools/cel/cel"],
+    "examples:examples_smoke_test": sorted(
+        p for p in glob.glob("bazel-bin/examples/[0-9][0-9]_*")
+        if os.path.isfile(p) and os.access(p, os.X_OK)
+        and "." not in os.path.basename(p)),
+}
+
+
 def find_targets(testlogs: str):
-    """Yields (workload, profdata_path, binary_path)."""
+    """Yields (workload, profdata_path, [binary_paths])."""
     for dirpath, _dirs, files in os.walk(testlogs):
         if "coverage.dat" not in files:
             continue
         rel = os.path.relpath(dirpath, testlogs)  # <pkg>/<target>
-        binary = os.path.join("bazel-bin", rel)
-        if not os.path.exists(binary):
+        key = rel.rsplit("/", 1)
+        key = f"{key[0]}:{key[1]}" if len(key) == 2 else rel
+        binaries = SH_TEST_BINARIES.get(key)
+        if binaries is None:
+            binary = os.path.join("bazel-bin", rel)
+            if not os.path.exists(binary):
+                continue
+            binaries = [binary]
+        binaries = [b for b in binaries
+                    if os.path.exists(b) and not os.path.isdir(b)]
+        if not binaries:
             continue
         workload = rel.replace("/", ":")
-        yield workload, os.path.join(dirpath, "coverage.dat"), binary
+        yield workload, os.path.join(dirpath, "coverage.dat"), binaries
 
 
-def export_lcov(binary: str, profdata: str) -> str:
-    r = subprocess.run(
-        [LLVM_COV, "export", binary, f"-instr-profile={profdata}",
-         "-format=lcov", f"-ignore-filename-regex={IGNORE_RE}"],
-        capture_output=True, text=True,
-    )
+def export_lcov(binaries, profdata: str) -> str:
+    cmd = [LLVM_COV, "export", binaries[0]]
+    for extra in binaries[1:]:
+        cmd += ["-object", extra]
+    cmd += [f"-instr-profile={profdata}", "-format=lcov",
+            f"-ignore-filename-regex={IGNORE_RE}"]
+    r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
-        print(f"WARN: llvm-cov export failed for {binary}: "
+        print(f"WARN: llvm-cov export failed for {binaries[0]}: "
               f"{r.stderr.strip().splitlines()[:1]}", file=sys.stderr)
         return ""
     return r.stdout
@@ -167,14 +192,18 @@ def is_harness_file(path: str) -> bool:
 
 
 def workload_class(workload: str, taxonomy) -> str:
-    """Three classes: "e2e" (the e2e suites), "corpus" (external
-    workloads — conformance, fuzz), "unit" (everything else).  The
-    goal metrics exclude "corpus": e2e-only = e2e; tests = e2e+unit."""
+    """Three classes: "e2e" (the e2e suites + the CLI/example
+    workloads that drive the full public pipeline), "corpus"
+    (external workloads — conformance, fuzz), "unit" (everything
+    else).  The goal metrics exclude "corpus": e2e-only = e2e;
+    tests = e2e+unit."""
     skey = workload
     for suf in ("_dynamic", "_static"):
         if skey.endswith(suf):
             skey = skey[: -len(suf)]
     if skey in taxonomy["suites"]:
+        return "e2e"
+    if skey in taxonomy.get("cli_workloads", {}) and skey != "_comment":
         return "e2e"
     if skey in taxonomy.get("external_workloads", {}):
         return "corpus"

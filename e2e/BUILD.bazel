@@ -990,5 +990,7 @@ py_test(
     data = [
         "BUILD.bazel",
         "test_taxonomy.json",
+        "//examples:BUILD.bazel",
+        "//tools/cel:BUILD.bazel",
     ] + glob(["*.cc"]),
 )

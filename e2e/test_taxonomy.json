@@ -266,5 +266,16 @@
       "target": "//e2e/fuzz:cel_oracle_property_test",
       "surfaces": ["meta/differential"]
     }
+  },
+  "cli_workloads": {
+    "_comment": "Workloads outside e2e/BUILD.bazel that still drive the full public pipeline (Compile -> Plan -> Eval) end-to-end and therefore class as e2e in the coverage goal metrics: the cel CLI smoke (the shipped binary; --var specs, eval/check subcommands) and the examples (embedder-shaped programs).  Names are validated against their BUILD files by taxonomy_validate_test.py.",
+    "cel_smoke_test": {
+      "build_file": "tools/cel/BUILD.bazel",
+      "surfaces": ["lang/literals", "lang/operators.arith", "lang/idents", "lang/time", "lang/lists", "lang/comprehensions"]
+    },
+    "examples_smoke_test": {
+      "build_file": "examples/BUILD.bazel",
+      "surfaces": ["lang/literals", "lang/idents", "host/foreign-fns"]
+    }
   }
 }

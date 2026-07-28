@@ -57,9 +57,20 @@ class TaxonomyValidateTest(unittest.TestCase):
             f"(renamed or deleted?): {sorted(stale)}",
         )
 
+    def _cli_workloads(self) -> dict:
+        return {
+            name: entry
+            for name, entry in self.manifest.get(
+                "cli_workloads", {}
+            ).items()
+            if name != "_comment"
+        }
+
     def test_surfaces_are_declared_and_nonempty(self):
-        entries = list(self.suites.items()) + list(
-            self.manifest.get("external_workloads", {}).items()
+        entries = (
+            list(self.suites.items())
+            + list(self.manifest.get("external_workloads", {}).items())
+            + list(self._cli_workloads().items())
         )
         for name, entry in entries:
             with self.subTest(suite=name):
@@ -78,6 +89,25 @@ class TaxonomyValidateTest(unittest.TestCase):
                     os.path.exists(os.path.join(_E2E_DIR, entry["source"])),
                     f"{name}: source {entry['source']} not found in e2e/",
                 )
+
+    def test_cli_workload_targets_exist(self):
+        # cli_workloads live outside e2e/BUILD.bazel; each names its
+        # BUILD file, and that file must declare a target of the same
+        # name — the drift guard mirroring the suite<->BUILD checks.
+        repo_root = os.path.dirname(_E2E_DIR)
+        for name, entry in self._cli_workloads().items():
+            with self.subTest(workload=name):
+                build_path = os.path.join(repo_root, entry["build_file"])
+                self.assertTrue(
+                    os.path.exists(build_path),
+                    f"{name}: build_file {entry['build_file']} not found",
+                )
+                with open(build_path, encoding="utf-8") as f:
+                    self.assertIn(
+                        f'name = "{name}"',
+                        f.read(),
+                        f"{name} not declared in {entry['build_file']}",
+                    )
 
     def test_every_surface_is_used(self):
         used: set[str] = set()

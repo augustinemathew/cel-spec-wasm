@@ -144,6 +144,32 @@ expect_exit "run: missing file"            2 "${CEL}" run /nonexistent.wasm
 expect_exit "inspect: missing file"        2 "${CEL}" inspect /nonexistent.wasm
 expect_exit "inspect: not a wasm module"   2 "${CEL}" inspect "$0"
 
+# Malformed --var TYPE SPECS — the reject arms of the compiler-side
+# spec grammar (parse_and_check.cc TypeParser / ParseVariableSpec):
+# unclosed list<>, missing map comma / '>', unknown type name, empty
+# element type, trailing garbage, missing name, missing colon.
+expect_exit "spec: unclosed list<"          2 \
+  "${CEL}" check "1" --var "x:list<int"
+expect_exit "spec: list missing <"          2 \
+  "${CEL}" check "1" --var "x:list int>"
+expect_exit "spec: map missing comma"       2 \
+  "${CEL}" check "1" --var "x:map<int int>"
+expect_exit "spec: map unclosed"            2 \
+  "${CEL}" check "1" --var "x:map<int, int"
+# Unknown type names surface at the check stage (exit 1, a
+# diagnostic), not argv parsing (exit 2) — the name only resolves
+# against the descriptor pool inside ParseAndCheck.
+expect_exit "spec: unknown type name"       1 \
+  "${CEL}" check "1" --var "x:no.such.Type"
+expect_exit "spec: empty element type"      2 \
+  "${CEL}" check "1" --var "x:list<>"
+expect_exit "spec: trailing garbage"        2 \
+  "${CEL}" check "1" --var "x:int garbage"
+expect_exit "spec: empty name"              2 \
+  "${CEL}" check "1" --var ":int=1"
+expect_exit "spec: missing colon"           2 \
+  "${CEL}" check "1" --var "xint"
+
 # `--plugin` is repeatable on `run` but a single absl flag on
 # `embed-decls`.  Peeling it out of argv for every subcommand would
 # consume embed-decls' value before absl saw it — this pins that the
