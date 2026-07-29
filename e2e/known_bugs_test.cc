@@ -1900,5 +1900,49 @@ TEST(KnownBugs, PbtStringFormatHostAggregatePoisons) {
   }
 }
 
+// ──────────────────────────────────────────────────────────────────
+// `%f` / `%e` coerce an int or uint operand to double and render it;
+// cel-cpp's formatter requires an actual double and errors otherwise.
+// Found by adding the format-verb operand-kind matrix to the oracle
+// (cel_cpp_oracle_test) while closing conformance-only coverage: the
+// differential failed on all four (verb x int/uint) combinations.
+// Over-permissive rather than wrong-valued -- we accept a program
+// cel-cpp rejects -- so P1 by the severity rule.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, FixedAndScientificVerbsCoerceIntegers) {
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0019
+severity: P1
+kind: over-permissive
+summary: "%f" / "%e" accept an int or uint operand by coercing it to double; cel-cpp requires a double and errors
+repro: "%f".format([2u])
+bindings: none
+actual: the string "2.000000"
+expected: an evaluation error ("expected a double but got a uint")
+layer: runtime/cel_string_format_render.cc (CoerceToDouble's CEL_INT / CEL_UINT arms, reached from RenderFixed and RenderScientific)
+blocked-by: none
+found-by: cel_cpp_oracle_test FormatVerbOperandKindsAgree, 2026-07-29; all four of {%f,%e} x {int,uint} diverge
+fix-hint: CoerceToDouble admits CEL_INT and CEL_UINT and widens them, so
+  RenderFixed / RenderScientific happily format an integer.  cel-cpp's
+  extensions/strings.cc formatter checks the operand is a double and
+  returns "expected a double but got a <kind>" otherwise -- it does NOT
+  coerce.  Drop the two integer arms from CoerceToDouble (or gate them to
+  the verbs that legitimately take integers) and poison with
+  CEL_ERR_INVALID_ARGUMENT instead.  Note %d legitimately DOES accept a
+  double (it renders 1.7 as "1.700000", which the oracle confirms cel-cpp
+  also does), so the fix is specific to the fixed/scientific verbs, not to
+  CoerceToDouble's every caller.
+issue: none
+)CELBUG";
+  for (const absl::string_view source :
+       {R"("%f".format([2u]))", R"("%f".format([2]))",
+        R"("%e".format([2u]))", R"("%e".format([2]))"}) {
+    auto v = TryEval(source);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << source << " kind=" << static_cast<int>(v->kind());
+  }
+}
+
 }  // namespace
 }  // namespace celwasm

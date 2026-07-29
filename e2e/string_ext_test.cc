@@ -276,6 +276,39 @@ TEST_F(FormatE2ETest, TimestampAndTypeVerbs) {
   EXPECT_EQ(EvalString(R"("%s".format([type(1)]))"), "int");
 }
 
+// Every format verb dispatches per operand kind.  The suite only ever
+// drove the int / double / string arms, so the uint, bool and bytes
+// branches -- and the NaN / +-Infinity special cases shared by the
+// fixed and scientific renderers -- were reached solely by the
+// conformance corpus.  All of these are pinned against cel-cpp by
+// cel_cpp_oracle_test's FormatVerbOperandKindsAgree and
+// FormatNonFiniteDoublesAgree.
+//
+// `%f` / `%e` over an INTEGER operand is deliberately absent: we
+// coerce and render where cel-cpp errors.  That divergence is pinned
+// as CELW-0019 in e2e/known_bugs_test.cc.
+TEST_F(FormatE2ETest, VerbsAcrossOperandKinds) {
+  EXPECT_EQ(EvalString(R"("%s".format([true]))"), "true");
+  EXPECT_EQ(EvalString(R"("%s".format([1u]))"), "1");
+  EXPECT_EQ(EvalString(R"("%s".format([b"ab"]))"), "ab");
+  EXPECT_EQ(EvalString(R"("%d".format([1u]))"), "1");
+  // `%d` legitimately accepts a double (oracle-confirmed).
+  EXPECT_EQ(EvalString(R"("%d".format([1.7]))"), "1.700000");
+  EXPECT_EQ(EvalString(R"("%b".format([5u]))"), "101");
+  EXPECT_EQ(EvalString(R"("%b".format([true]))"), "1");
+  EXPECT_EQ(EvalString(R"("%o".format([8u]))"), "10");
+  EXPECT_EQ(EvalString(R"("%x".format([255u]))"), "ff");
+  EXPECT_EQ(EvalString(R"("%x".format([b"ab"]))"), "6162");
+  EXPECT_EQ(EvalString(R"("%X".format([255u]))"), "FF");
+}
+
+TEST_F(FormatE2ETest, NonFiniteDoubles) {
+  EXPECT_EQ(EvalString(R"("%f".format([double("inf")]))"), "Infinity");
+  EXPECT_EQ(EvalString(R"("%f".format([double("nan")]))"), "NaN");
+  EXPECT_EQ(EvalString(R"("%e".format([double("-inf")]))"), "-Infinity");
+  EXPECT_EQ(EvalString(R"("%s".format([double("inf")]))"), "Infinity");
+}
+
 // `%s` over a Duration uses the canonical proto-JSON form
 // (cel_string_format_render.cc AppendDurationCanonical): zero renders
 // "0s"; the sign is a single leading "-" for a negative whole or

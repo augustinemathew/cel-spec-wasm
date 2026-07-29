@@ -21,6 +21,26 @@ struck through or removed.
 
 ## Open
 
+- [ ] **#54** — `%f` / `%e` coerce an int or uint operand to double and
+      render it; cel-cpp's formatter requires an actual double and
+      errors ("expected a double but got a uint").  Pinned as
+      `CELW-0019` (`e2e/known_bugs_test.cc`
+      `FixedAndScientificVerbsCoerceIntegers`), which asserts the
+      spec-correct rejection for all four {`%f`,`%e`} x {int,uint}
+      combinations.
+      Surfaced: 2026-07-29, by adding the format-verb operand-kind
+      matrix to `cel_cpp_oracle_test` while closing conformance-only
+      coverage.
+      Files: `runtime/cel_string_format_render.cc` (`CoerceToDouble`'s
+      CEL_INT / CEL_UINT arms, reached from `RenderFixed` and
+      `RenderScientific`).
+      Why P1 not P0: over-permissive rather than silently wrong — we
+      accept a program cel-cpp rejects, so no valid program gets a
+      wrong answer.  Note `%d` legitimately DOES accept a double
+      (oracle-confirmed), so the fix must be scoped to the
+      fixed/scientific verbs rather than to every `CoerceToDouble`
+      caller.
+
 - [ ] **#52** — m35 dedupe items deliberately deferred at the
       post-review cleanup: (a) **D6** — a third first-party UTF-8
       validator (`IsValidUtf8` in `abi/plugin.cc`) alongside

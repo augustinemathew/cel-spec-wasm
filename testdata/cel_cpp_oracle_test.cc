@@ -164,6 +164,29 @@ TEST(CelCppOracle, LastIndexOfAgrees) {
   ExpectAgree(R"("abcb".lastIndexOf("b"))", kP3);
   ExpectAgree(R"("abcb".lastIndexOf("b", 1))", kP3);
 }
+// Every format verb dispatches per operand kind, and the suite only
+// drove the int / double / string arms; uint, bool and bytes operands
+// take separate branches, as do the NaN / +-Infinity special cases.
+TEST(CelCppOracle, FormatVerbOperandKindsAgree) {
+  for (const char* src : {
+           R"("%s".format([true]))", R"("%s".format([1u]))",
+           R"("%s".format([b"ab"]))", R"("%d".format([1u]))",
+           R"("%d".format([1.7]))", R"("%b".format([5u]))",
+           R"("%b".format([true]))", R"("%o".format([8u]))",
+           R"("%x".format([255u]))", R"("%x".format([b"ab"]))",
+           R"("%X".format([255u]))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, FormatNonFiniteDoublesAgree) {
+  for (const char* src : {R"("%f".format([double("inf")]))",
+                          R"("%f".format([double("nan")]))",
+                          R"("%e".format([double("-inf")]))",
+                          R"("%s".format([double("inf")]))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
 // Arithmetic overflow / divide / modulus errors: each kernel has its
 // own poison arm, and only `1 / 0` had any e2e row.
 TEST(CelCppOracle, IntArithmeticErrorsAgree) {
