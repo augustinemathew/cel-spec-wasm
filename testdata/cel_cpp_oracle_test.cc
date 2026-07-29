@@ -137,8 +137,8 @@ TEST(CelCppOracle, StringRelationalAgrees) {
   }
 }
 TEST(CelCppOracle, BytesRelationalAgrees) {
-  for (const char* src : {R"(b"b" > b"a")", R"(b"a" < b"b")",
-                          R"(b"b" >= b"b")", R"(b"a" <= b"b")"}) {
+  for (const char* src : {R"(b"b" > b"a")", R"(b"a" < b"b")", R"(b"b" >= b"b")",
+                          R"(b"a" <= b"b")"}) {
     ExpectAgree(src, kP3);
   }
 }
@@ -154,7 +154,9 @@ TEST(CelCppOracle, UintArithmeticAgrees) {
   }
 }
 TEST(CelCppOracle, DoubleNegAndSubAgree) {
-  for (const char* src : {"-1.5", "1.5 - 0.5"}) ExpectAgree(src, kP3);
+  for (const char* src : {"-1.5", "1.5 - 0.5"}) {
+    ExpectAgree(src, kP3);
+  }
 }
 TEST(CelCppOracle, ScientificAndOctalFormatAgree) {
   ExpectAgree(R"("%e".format([1.5]))", kP3);
@@ -169,13 +171,20 @@ TEST(CelCppOracle, LastIndexOfAgrees) {
 // return had no non-corpus workload.  Substring at exactly the
 // code-point count is the empty tail; one past it is an error.
 TEST(CelCppOracle, EmptyNeedleAndSubstringEdgesAgree) {
-  for (const char* src : {R"("héllo".indexOf("", 2))",
-                          R"("héllo".lastIndexOf("", 2))",
-                          R"("abc".substring(3))",
-                          R"("héllo".substring(5))",
-                          R"("héllo".substring(6))"}) {
+  for (const char* src :
+       {R"("héllo".indexOf("", 2))", R"("héllo".lastIndexOf("", 2))",
+        R"("abc".substring(3))", R"("héllo".substring(5))",
+        R"("héllo".substring(6))"}) {
     ExpectAgree(src, kP3);
   }
+}
+
+// A positioned search that finds nothing returns -1 (the walk's
+// fall-through), and a substring whose end exceeds the string is an
+// error — neither had a non-corpus workload.
+TEST(CelCppOracle, PositionedMissAndSubstringEndAgree) {
+  ExpectAgree(R"("tacocat".indexOf("z", 2))", kP3);
+  ExpectAgree(R"("abc".substring(1, 9))", kP3);
 }
 
 // Index-by-non-int, duplicate map keys, cross-kind element equality,
@@ -194,16 +203,14 @@ TEST(CelCppOracle, ElementEqualityAcrossKindsAgrees) {
   for (const char* src :
        {R"([b"a"] == [b"a"])", "[null] == [null]",
         R"([duration("1s")] == [duration("1s")])",
-        "[timestamp(0)] == [timestamp(0)]",
-        R"([b"a"] == [b"b"])"}) {
+        "[timestamp(0)] == [timestamp(0)]", R"([b"a"] == [b"b"])"}) {
     ExpectAgree(src, kP3);
   }
 }
 TEST(CelCppOracle, SearchPositionEdgesAgree) {
-  for (const char* src : {R"("héllo".indexOf("l", 1))",
-                          R"("héllo".lastIndexOf("l", 3))",
-                          R"("abc".indexOf("a", -1))",
-                          R"("abc".lastIndexOf("a", -1))"}) {
+  for (const char* src :
+       {R"("héllo".indexOf("l", 1))", R"("héllo".lastIndexOf("l", 3))",
+        R"("abc".indexOf("a", -1))", R"("abc".lastIndexOf("a", -1))"}) {
     ExpectAgree(src, kP3);
   }
 }
@@ -213,10 +220,10 @@ TEST(CelCppOracle, SearchPositionEdgesAgree) {
 // gate at compile time and then trips the guard — the same route the
 // conformance corpus takes to reach these arms.
 TEST(CelCppOracle, MathExtOperandKindGuardsAgree) {
-  for (const char* src : {"math.ceil(dyn(1))", "math.floor(dyn(1))",
-                          "math.round(dyn(1))", "math.trunc(dyn(1))",
-                          "math.isInf(dyn(1))", "math.isNaN(dyn(1))",
-                          "math.isFinite(dyn(1))"}) {
+  for (const char* src :
+       {"math.ceil(dyn(1))", "math.floor(dyn(1))", "math.round(dyn(1))",
+        "math.trunc(dyn(1))", "math.isInf(dyn(1))", "math.isNaN(dyn(1))",
+        "math.isFinite(dyn(1))"}) {
     ExpectAgree(src, kP3);
   }
 }
@@ -231,21 +238,20 @@ TEST(CelCppOracle, MathExtBitwiseKindGuardsAgree) {
 // drove the int / double / string arms; uint, bool and bytes operands
 // take separate branches, as do the NaN / +-Infinity special cases.
 TEST(CelCppOracle, FormatVerbOperandKindsAgree) {
-  for (const char* src : {
-           R"("%s".format([true]))", R"("%s".format([1u]))",
-           R"("%s".format([b"ab"]))", R"("%d".format([1u]))",
-           R"("%d".format([1.7]))", R"("%b".format([5u]))",
-           R"("%b".format([true]))", R"("%o".format([8u]))",
-           R"("%x".format([255u]))", R"("%x".format([b"ab"]))",
-           R"("%X".format([255u]))"}) {
+  for (const char* src : {R"("%s".format([true]))", R"("%s".format([1u]))",
+                          R"("%s".format([b"ab"]))", R"("%d".format([1u]))",
+                          R"("%d".format([1.7]))", R"("%b".format([5u]))",
+                          R"("%b".format([true]))", R"("%o".format([8u]))",
+                          R"("%x".format([255u]))", R"("%x".format([b"ab"]))",
+                          R"("%X".format([255u]))"}) {
     ExpectAgree(src, kP3);
   }
 }
 TEST(CelCppOracle, FormatNonFiniteDoublesAgree) {
-  for (const char* src : {R"("%f".format([double("inf")]))",
-                          R"("%f".format([double("nan")]))",
-                          R"("%e".format([double("-inf")]))",
-                          R"("%s".format([double("inf")]))"}) {
+  for (const char* src :
+       {R"("%f".format([double("inf")]))", R"("%f".format([double("nan")]))",
+        R"("%e".format([double("-inf")]))",
+        R"("%s".format([double("inf")]))"}) {
     ExpectAgree(src, kP3);
   }
 }
@@ -260,8 +266,7 @@ TEST(CelCppOracle, IntArithmeticErrorsAgree) {
 }
 TEST(CelCppOracle, UintArithmeticErrorsAgree) {
   for (const char* src : {"18446744073709551615u + 1u", "0u - 1u",
-                          "18446744073709551615u * 2u", "1u / 0u",
-                          "1u % 0u"}) {
+                          "18446744073709551615u * 2u", "1u / 0u", "1u % 0u"}) {
     ExpectAgree(src, kP3);
   }
 }

@@ -188,6 +188,21 @@ TEST_F(SearchE2ETest, EmptyNeedleAndSubstringEdges) {
   EXPECT_TRUE(v->IsError()) << "kind=" << static_cast<int>(v->kind());
 }
 
+// A positioned search that finds nothing falls through the walk to
+// -1, and a substring end past the string errors.  Pinned by
+// cel_cpp_oracle_test's PositionedMissAndSubstringEndAgree.
+TEST_F(SearchE2ETest, PositionedMissAndSubstringEnd) {
+  EXPECT_TRUE(EvalBool(R"("tacocat".indexOf("z", 2) == -1)"));
+  Compiler::Builder b;
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto instance = CompilePlan(*compiler, R"("abc".substring(1, 9))");
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(v->IsError()) << "kind=" << static_cast<int>(v->kind());
+}
+
 TEST_F(SearchE2ETest, Substring) {
   EXPECT_EQ(EvalString(R"("hello world".substring(6))"), "world");
 }
@@ -288,9 +303,9 @@ TEST_F(FormatE2ETest, MidStringSubstitution) {
 // all three is pinned by cel_cpp_oracle_test's
 // StringExtRangeErrorsAgree.
 TEST_F(CodePointE2ETest, OutOfRangeIndicesAreErrors) {
-  for (const absl::string_view src : {R"("abc".charAt(9))",
-                                      R"("abc".substring(9))",
-                                      R"("abc".substring(2, 1))"}) {
+  for (const absl::string_view src :
+       {R"("abc".charAt(9))", R"("abc".substring(9))",
+        R"("abc".substring(2, 1))"}) {
     Compiler::Builder b;
     auto compiler = std::move(b).Build();
     ASSERT_TRUE(compiler.ok()) << compiler.status();
@@ -298,8 +313,7 @@ TEST_F(CodePointE2ETest, OutOfRangeIndicesAreErrors) {
     Activation a;
     auto v = instance.Eval(a);
     ASSERT_TRUE(v.ok()) << src << ": " << v.status();
-    EXPECT_TRUE(v->IsError())
-        << src << " kind=" << static_cast<int>(v->kind());
+    EXPECT_TRUE(v->IsError()) << src << " kind=" << static_cast<int>(v->kind());
   }
 }
 
@@ -397,8 +411,7 @@ TEST_F(FormatE2ETest, MalformedFormatAndArgMismatchAreErrors) {
     Activation a;
     auto v = instance.Eval(a);
     ASSERT_TRUE(v.ok()) << src << ": " << v.status();
-    EXPECT_TRUE(v->IsError())
-        << src << " kind=" << static_cast<int>(v->kind());
+    EXPECT_TRUE(v->IsError()) << src << " kind=" << static_cast<int>(v->kind());
   }
 }
 
