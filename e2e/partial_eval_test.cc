@@ -1259,6 +1259,8 @@ class HostTrampolineAbsorbTest : public ::testing::TestWithParam<AbsorbCase> {
       b.DeclareVariable("xs", CelType::List(CelType::Int()));
       b.DeclareVariable("t", CelType::Timestamp());
       b.DeclareVariable("tz", CelType::String());
+      b.DeclareVariable("i", CelType::Int());
+      b.DeclareVariable("s", CelType::String());
     });
     ABSL_CHECK_OK(c.status());
     return *std::move(c);
@@ -1268,6 +1270,8 @@ class HostTrampolineAbsorbTest : public ::testing::TestWithParam<AbsorbCase> {
     a.Bind("xs", Value::List({Value::Int(1), Value::Int(2)}));
     a.Bind("t", Value::Timestamp(absl::UnixEpoch()));
     a.Bind("tz", Value::String("UTC"));
+    a.Bind("i", Value::Int(0));
+    a.Bind("s", Value::String("a"));
   }
 };
 
@@ -1280,7 +1284,8 @@ TEST_P(HostTrampolineAbsorbTest, UnknownOperandPropagates) {
   // Mark every root unknown: whichever one the source touches, the
   // trampoline must absorb it rather than type-check it.
   AttributePattern patterns[] = {MakePattern("m"), MakePattern("xs"),
-                                 MakePattern("t"), MakePattern("tz")};
+                                 MakePattern("t"), MakePattern("tz"),
+                                 MakePattern("i"), MakePattern("s")};
   Value v = PartialEvalOk(instance, a, patterns);
   EXPECT_EQ(v.kind(), Value::Kind::kUnknown)
       << p.source << " kind=" << static_cast<int>(v.kind());
@@ -1288,23 +1293,28 @@ TEST_P(HostTrampolineAbsorbTest, UnknownOperandPropagates) {
 
 INSTANTIATE_TEST_SUITE_P(
     HostBoundary, HostTrampolineAbsorbTest,
-    ::testing::Values(AbsorbCase{"MapLookup", "m['k'] == 1"},
-                      AbsorbCase{"MapSize", "size(m) == 1"},
-                      AbsorbCase{"MapIn", "'k' in m"},
-                      AbsorbCase{"ListAt", "xs[0] == 1"},
-                      AbsorbCase{"ListSize", "size(xs) == 2"},
-                      AbsorbCase{"ListIn", "1 in xs"},
-                      AbsorbCase{"TsAccessor", "t.getFullYear() == 1970"},
-                      AbsorbCase{"TsAccessorTz", "t.getHours('UTC') == 0"},
-                      // The TZ ARGUMENT is the unknown here, not the
-                      // timestamp — TzAccessorPrelude guards both
-                      // operand positions independently.
-                      AbsorbCase{"TsAccessorTzArgUnknown",
-                                 "timestamp('1970-01-01T00:00:00Z')"
-                                 ".getHours(tz) == 0"},
-                      AbsorbCase{"TsCompare",
-                                 "t == timestamp('1970-01-01T00:00:00Z')"},
-                      AbsorbCase{"TsToString", "string(t) == 'x'"}),
+    ::testing::Values(
+        AbsorbCase{"MapLookup", "m['k'] == 1"},
+        AbsorbCase{"MapSize", "size(m) == 1"}, AbsorbCase{"MapIn", "'k' in m"},
+        AbsorbCase{"ListAt", "xs[0] == 1"},
+        AbsorbCase{"ListSize", "size(xs) == 2"},
+        AbsorbCase{"ListIn", "1 in xs"},
+        AbsorbCase{"TsAccessor", "t.getFullYear() == 1970"},
+        AbsorbCase{"TsAccessorTz", "t.getHours('UTC') == 0"},
+        // The TZ ARGUMENT is the unknown here, not the
+        // timestamp — TzAccessorPrelude guards both
+        // operand positions independently.
+        // ARENA-side kernels: a LITERAL list/map is
+        // arena-backed, so these reach
+        // cel_list_at_arena / the arena map lookup
+        // rather than the host trampolines above.
+        AbsorbCase{"ArenaListAtUnknownIndex", "[1, 2][i] == 1"},
+        AbsorbCase{"ArenaMapLookupUnknownKey", "{'a': 1, 'b': 2}[s] == 1"},
+        AbsorbCase{"TsAccessorTzArgUnknown",
+                   "timestamp('1970-01-01T00:00:00Z')"
+                   ".getHours(tz) == 0"},
+        AbsorbCase{"TsCompare", "t == timestamp('1970-01-01T00:00:00Z')"},
+        AbsorbCase{"TsToString", "string(t) == 'x'"}),
     [](const ::testing::TestParamInfo<AbsorbCase>& info) {
       return info.param.label;
     });
@@ -1339,6 +1349,12 @@ INSTANTIATE_TEST_SUITE_P(
         AbsorbCase{"MapLookupErrorKey", "m[1 / 0] == 2"},
         AbsorbCase{"ListInErrorNeedle", "(1 / 0) in xs"},
         AbsorbCase{"MapInErrorKey", "(1 / 0) in m"},
+        // ARENA-side: literal aggregates, so the error rides into
+        // cel_list_at_arena / the arena map kernel, and into the
+        // string-format kernel's poison arms.
+        AbsorbCase{"ArenaListAtErrorIndex", "[1, 2][1 / 0] == 1"},
+        AbsorbCase{"ArenaMapLookupErrorKey", "{1: 2}[1 / 0] == 2"},
+        AbsorbCase{"FormatErrorArg", R"("%d".format([1 / 0]) == "")"},
         AbsorbCase{"WrapperUnwrapError",
                    "google.protobuf.Int32Value{value: 1 / 0} == 0"},
         AbsorbCase{"WrapperUnwrapErrorInt64",

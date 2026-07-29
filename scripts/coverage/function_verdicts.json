@@ -515,6 +515,18 @@
       "match": "ValidateExprStaticRegion",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the ResourceExhausted arm for a static region past the reserved low-memory window.  The limit itself is pinned in e2e/limits_test.cc per the compilation-limits rule; this is the internal assertion behind it."
+    },
+    {
+      "file": "runtime/cel_3vl.c",
+      "match": "cel_unknown_merge",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-UNKNOWN-operand poison (codegen emits the merge only for two unknowns) and the empty-UnknownSet arms, which the function's own comment rules out: `Every production writer (host trampolines, activation marshal, host-fn returns) mints a non-empty descriptor, so an empty side reaches here only from hand-built fixtures`."
+    },
+    {
+      "file": "runtime/cel_runtime.c",
+      "match": "cel_list_at_arena",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the LIST-side unknown/error absorb: an arena list is materialised by the same expression that indexes it, so the list operand is never 3VL.  The INDEX-side absorb is e2e-covered by partial_eval_test's ArenaListAt rows."
     }
   ]
 }
