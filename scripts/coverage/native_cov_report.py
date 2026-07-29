@@ -237,7 +237,59 @@ def apply_verdicts(functions, verdicts):
             e["verdict"] = "gap"
 
 
-def compute_goal_metrics(report):
+# The goal is stated as "100% excluding ABSL(false)".  An
+# `ABSL_CHECK(false)` / `ABSL_LOG(FATAL)` statement is an invariant
+# tripwire: by construction no input reaches it, so its lines can
+# never be covered and do not belong in either denominator.  This
+# encodes that rule mechanically instead of requiring a hand-written
+# verdict per function.
+#
+# The exempt span is the statement itself — from the ABSL_CHECK line
+# through the line carrying its terminating `;`, since the message is
+# usually streamed across several lines — plus one immediately
+# following `return`, which is the unreachable sentinel compilers
+# demand after a [[noreturn]]-in-practice check.  Nothing else is
+# swept in: a `return` that is not adjacent to the check keeps
+# counting.
+_CHECK_FALSE_RE = re.compile(r"\bABSL_CHECK\(false\)|\bABSL_LOG\(FATAL\)")
+
+
+def check_false_lines(repo_root, paths):
+    """{path: set(1-based line numbers)} covered by the rule above."""
+    out = {}
+    for rel in paths:
+        try:
+            with open(os.path.join(repo_root, rel), encoding="utf-8") as f:
+                src = f.read().split("\n")
+        except OSError:
+            continue
+        exempt = set()
+        i = 0
+        while i < len(src):
+            if _CHECK_FALSE_RE.search(src[i]):
+                j = i
+                while j < len(src) and ";" not in src[j]:
+                    j += 1
+                for k in range(i, min(j + 1, len(src))):
+                    exempt.add(k + 1)
+                nxt = j + 1
+                while nxt < len(src) and not src[nxt].strip():
+                    nxt += 1
+                if nxt < len(src) and src[nxt].strip().startswith("return"):
+                    end = nxt
+                    while end < len(src) and ";" not in src[end]:
+                        end += 1
+                    for k in range(nxt, min(end + 1, len(src))):
+                        exempt.add(k + 1)
+                i = j + 1
+                continue
+            i += 1
+        if exempt:
+            out[rel] = exempt
+    return out
+
+
+def compute_goal_metrics(report, repo_root="."):
     """Verdict-aware goal denominators, product scope.
 
     The goals are "e2e 90%" and "tests 100% minus by-design", so the
@@ -257,8 +309,14 @@ def compute_goal_metrics(report):
     for v in fns_by_file.values():
         v.sort(key=lambda t: t[0])
 
+    # Mechanical "excluding ABSL(false)" exemption, per the goal
+    # statement — see check_false_lines.
+    scoped = [p for p in report["lines"]
+              if not report["per_file"][p].get("harness")]
+    check_false = check_false_lines(repo_root, scoped)
+
     lt = e2e_cov = tests_cov = 0
-    e2e_exempt = tests_exempt = 0
+    e2e_exempt = tests_exempt = check_false_exempt = 0
     e2e_workloads = set(report["e2e_workloads"])
     for src, per_line in report["lines"].items():
         if report["per_file"][src].get("harness"):
@@ -273,9 +331,13 @@ def compute_goal_metrics(report):
             tests_cov += covered_tests
             i = _bisect.bisect_right(starts, int(l)) - 1
             v = verdicts[i] if i >= 0 else None
-            if not covered_e2e and v in ("by-design", "test-only"):
+            is_check_false = int(l) in check_false.get(src, ())
+            if is_check_false and not covered_tests:
+                check_false_exempt += 1
+            if not covered_e2e and (v in ("by-design", "test-only")
+                                    or is_check_false):
                 e2e_exempt += 1
-            if not covered_tests and v == "by-design":
+            if not covered_tests and (v == "by-design" or is_check_false):
                 tests_exempt += 1
     h = report["headline"]
     h["line_pct_e2e_goal"] = round(
@@ -285,6 +347,7 @@ def compute_goal_metrics(report):
         if lt > tests_exempt else 0.0
     h["goal_exempt_lines_e2e"] = e2e_exempt
     h["goal_exempt_lines_tests"] = tests_exempt
+    h["goal_exempt_lines_check_false"] = check_false_exempt
 
 
 def build(workloads, taxonomy, repo_root):
@@ -562,7 +625,7 @@ def main():
     if os.path.exists(verdicts_path):
         with open(verdicts_path, encoding="utf-8") as f:
             apply_verdicts(report["functions"], json.load(f)["verdicts"])
-    compute_goal_metrics(report)
+    compute_goal_metrics(report, args.repo_root)
 
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "report.json"), "w",
@@ -622,7 +685,9 @@ def main():
           f"e2e {h['line_pct_e2e_goal']}% "
           f"(exempt {h['goal_exempt_lines_e2e']} ln)  "
           f"tests {h['line_pct_tests_goal']}% "
-          f"(exempt {h['goal_exempt_lines_tests']} ln)")
+          f"(exempt {h['goal_exempt_lines_tests']} ln; of which "
+          f"{h.get('goal_exempt_lines_check_false', 0)} are "
+          f"ABSL_CHECK(false))")
     print(f"function: {h['function_pct']}% "
           f"({h['functions_hit']}/{h['functions_total']})")
     print(f"branch: {h['branch_pct']}% "
