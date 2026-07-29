@@ -318,6 +318,13 @@ def compute_goal_metrics(report, repo_root="."):
     lt = e2e_cov = tests_cov = 0
     e2e_exempt = tests_exempt = check_false_exempt = 0
     e2e_workloads = set(report["e2e_workloads"])
+    # The tests goal is "non-e2e + e2e test coverage, EXCLUDING
+    # conformance" — so a line covered only by the conformance corpus
+    # is NOT covered for this metric, exactly as `line_pct_tests`
+    # (reported as "tests-no-corpus") already treats it.  This used to
+    # read `bool(m)`, which counted any workload and silently credited
+    # conformance-only lines.
+    test_workloads = set(report["test_workloads"])
     for src, per_line in report["lines"].items():
         if report["per_file"][src].get("harness"):
             continue
@@ -326,7 +333,7 @@ def compute_goal_metrics(report, repo_root="."):
         for l, m in per_line.items():
             lt += 1
             covered_e2e = any(w in e2e_workloads for w in m)
-            covered_tests = bool(m)
+            covered_tests = any(w in test_workloads for w in m)
             e2e_cov += covered_e2e
             tests_cov += covered_tests
             i = _bisect.bisect_right(starts, int(l)) - 1
@@ -549,6 +556,7 @@ def build(workloads, taxonomy, repo_root):
         "sections": sections,
         "section_order": [n for n, _p in SECTIONS if n in sections],
         "e2e_workloads": sorted(e2e_workloads),
+        "test_workloads": sorted(test_workloads),
         "per_file": per_file,
         "functions": functions,
         "workloads": workload_stats,

@@ -270,7 +270,34 @@ once-per-process quirk, noted in the .cc).
 > CALLERS before writing probes — three "top gap" targets were dead
 > code (LowerToCustomFn `c019fb1`, Engine::AddModule `c8e759d`;
 > `WasmModule::SetMemory` still suspected).  Goal metrics print as
-> the `GOAL METRICS` line of `native_cov_report.py`; verdict ledger
+> the `GOAL METRICS` line of `native_cov_report.py`.
+>
+> **2026-07-29 — tests goal-metric definition corrected.**  The goal
+> is "non-e2e + e2e test coverage (EXCLUDING conformance) at 100%
+> excluding `ABSL_CHECK(false)`", and `line_pct_tests` has always
+> honoured that (it prints as `tests-no-corpus`).  The *goal* metric
+> did not: `compute_goal_metrics` counted a line as tests-covered on
+> `bool(m)` — any workload at all, conformance included — so every
+> line only the conformance corpus reached was silently credited.
+> Fixed to require a non-corpus workload, which restates the tests
+> goal-metric from 93.71 to **92.76** at `371b707`; nothing regressed,
+> the earlier number was measuring the wrong thing.  The correction
+> also realigns the two goals: a conformance-only line now counts
+> against BOTH, so an e2e row covering one moves both metrics rather
+> than only e2e.
+>
+> **Measurement fact worth not re-learning:** `runtime/*` rows come
+> from the wasm gcov layer ALONE — `runtime/` is not in the native
+> pass's `DEFAULT_SCOPES` — so native kernel unit tests
+> (`cel_convert_test`, …) contribute nothing to those numbers.  A
+> `poison(out, CEL_ERR_TYPE_MISMATCH)` guard in a runtime kernel is
+> unreachable from any type-checked CEL expression, so it can only be
+> retired by verdict classification, never by writing another native
+> test.  Adding `runtime/` to the native scope was probed: it moves
+> tests +0.55 but costs e2e 4.35 (runtime lines enter the e2e
+> denominator while already counted via wasm), so it was NOT adopted.
+>
+> Verdict ledger
 > = `scripts/coverage/function_verdicts.json`; per-iteration
 > measurement = cached `bazel coverage` re-run + incremental
 > `collect_wasm_gcov.sh` of changed binaries only (runtime/
