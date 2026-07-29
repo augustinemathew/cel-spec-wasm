@@ -146,9 +146,12 @@ AST:
 
   - resolves idents (`LoweringContext::idents`, populated inline by
     `BuildParamList`);
-  - decides how literals travel (raw `i64.const`/`f64.const` for
-    numeric, `cel_make_bool/int/uint/double/null` calls for boxed,
-    `cel_alloc` + `cel_make_string_view` for strings);
+  - decides how literals travel — every constant, scalar or span, is
+    packed into the static rodata region at compile time by
+    `LayoutPass` / `StaticMemoryBuilder`, and the emitted code is an
+    `i32.const <rodata offset>`.  No runtime constructor call is
+    emitted for a literal; `expr_lower` treats any storage kind other
+    than `kStaticRodata` on a `kConst` node as an invariant violation;
   - decides where results live (a single shared scratch slot via
     `GetScratchSlotLocal()`, inline-branching `EmitCheckedArithmetic`
     to check tags after every op);
