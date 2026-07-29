@@ -359,7 +359,63 @@ TEST_F(BytesOpsE2ETest, Concat) {
 //  helper consumes that slot directly.
 // ──────────────────────────────────────────────────────────────
 
+// Overflow / divide / modulus errors.  Each arithmetic kernel poisons
+// its out slot with a distinct error code, and only `1 / 0` had any
+// e2e row — the rest were reached solely by the conformance corpus.
+// Every case here is pinned against cel-cpp by cel_cpp_oracle_test's
+// {Int,Uint}ArithmeticErrorsAgree.
+struct ArithErrorCase {
+  std::string label;
+  std::string source;
+};
+
+class ArithmeticErrorE2ETest
+    : public ::testing::TestWithParam<ArithErrorCase> {};
+
+TEST_P(ArithmeticErrorE2ETest, PoisonsRatherThanTraps) {
+  const ArithErrorCase& p = GetParam();
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, p.source);
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << p.source << ": " << v.status();
+  EXPECT_TRUE(v->IsError())
+      << p.source << " kind=" << static_cast<int>(v->kind());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    EveryKernel, ArithmeticErrorE2ETest,
+    ::testing::Values(
+        ArithErrorCase{"IntAddOverflow", "9223372036854775807 + 1"},
+        ArithErrorCase{"IntMulOverflow", "9223372036854775807 * 2"},
+        ArithErrorCase{"IntSubOverflow", "-9223372036854775807 - 2"},
+        ArithErrorCase{"IntModByZero", "1 % 0"},
+        ArithErrorCase{"UintAddOverflow", "18446744073709551615u + 1u"},
+        ArithErrorCase{"UintSubUnderflow", "0u - 1u"},
+        ArithErrorCase{"UintMulOverflow", "18446744073709551615u * 2u"},
+        ArithErrorCase{"UintDivByZero", "1u / 0u"},
+        ArithErrorCase{"UintModByZero", "1u % 0u"}),
+    [](const ::testing::TestParamInfo<ArithErrorCase>& info) {
+      return info.param.label;
+    });
+
 class BoundVarArithmeticE2ETest : public ::testing::Test {};
+
+// Unary minus on a literal is folded by the parser into a negative
+// constant, so `-1.5` never calls the negate kernel — only a bound
+// operand reaches `cel_double_neg_at_v`.  (The oracle takes no
+// activation bindings, so this one cannot be routed through it.)
+TEST_F(BoundVarArithmeticE2ETest, DoubleNegateOnBoundOperand) {
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("d", CelType::Double());
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "-d");
+  Activation a;
+  a.Bind("d", Value::Double(1.5));
+  EXPECT_EQ(*EvalOk(instance, a).AsDouble(), -1.5);
+}
 
 TEST_F(BoundVarArithmeticE2ETest, IntPlusOne) {
   auto compiler = BuildCompiler([](Compiler::Builder& b) {

@@ -201,6 +201,21 @@ TEST_F(QuoteE2ETest, EscapesBackslash) {
   EXPECT_TRUE(EvalBool(R"(strings.quote("\\") == "\"\\\\\"")"));
 }
 
+// The escape switch has one arm per C-style control character plus the
+// double quote; the existing rows only drove backslash, so the rest
+// were reached solely by the conformance corpus.  All eight are pinned
+// against cel-cpp by cel_cpp_oracle_test's StringsQuoteEscapesAgree.
+TEST_F(QuoteE2ETest, EscapesEveryControlCharacter) {
+  EXPECT_EQ(EvalString(R"(strings.quote("a\tb"))"), R"("a\tb")");
+  EXPECT_EQ(EvalString(R"(strings.quote("a\nb"))"), R"("a\nb")");
+  EXPECT_EQ(EvalString(R"(strings.quote("a\rb"))"), R"("a\rb")");
+  EXPECT_EQ(EvalString(R"(strings.quote("a\bb"))"), R"("a\bb")");
+  EXPECT_EQ(EvalString(R"(strings.quote("a\fb"))"), R"("a\fb")");
+  EXPECT_EQ(EvalString(R"(strings.quote("a\vb"))"), R"("a\vb")");
+  EXPECT_EQ(EvalString(R"(strings.quote("a\ab"))"), R"("a\ab")");
+  EXPECT_EQ(EvalString(R"(strings.quote("q\"z"))"), R"("q\"z")");
+}
+
 TEST_F(QuoteE2ETest, Empty) {
   EXPECT_EQ(EvalString(R"(strings.quote(""))"), "\"\"");
 }

@@ -164,6 +164,33 @@ TEST(CelCppOracle, LastIndexOfAgrees) {
   ExpectAgree(R"("abcb".lastIndexOf("b"))", kP3);
   ExpectAgree(R"("abcb".lastIndexOf("b", 1))", kP3);
 }
+// Arithmetic overflow / divide / modulus errors: each kernel has its
+// own poison arm, and only `1 / 0` had any e2e row.
+TEST(CelCppOracle, IntArithmeticErrorsAgree) {
+  for (const char* src : {"9223372036854775807 + 1", "9223372036854775807 * 2",
+                          "-9223372036854775807 - 2", "1 % 0"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, UintArithmeticErrorsAgree) {
+  for (const char* src : {"18446744073709551615u + 1u", "0u - 1u",
+                          "18446744073709551615u * 2u", "1u / 0u",
+                          "1u % 0u"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+// `strings.quote` escapes seven C-style control characters plus the
+// double quote; each is a separate arm of the escape switch.
+TEST(CelCppOracle, StringsQuoteEscapesAgree) {
+  for (const char* src :
+       {R"(strings.quote("a\tb"))", R"(strings.quote("a\nb"))",
+        R"(strings.quote("a\rb"))", R"(strings.quote("a\bb"))",
+        R"(strings.quote("a\fb"))", R"(strings.quote("a\vb"))",
+        R"(strings.quote("a\ab"))", R"(strings.quote("q\"z"))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
 TEST(CelCppOracle, TimestampAndTypeFormatAgree) {
   ExpectAgree(R"("%s".format([timestamp(0)]))", kP3);
   ExpectAgree(R"("%s".format([type(1)]))", kP3);
