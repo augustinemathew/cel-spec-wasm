@@ -335,6 +335,150 @@
       "match": "SetNestedSingularMessage",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is kind/descriptor-mismatch rejects on a nested message field; the checker types `Foo{nested: Bar{...}}` before codegen emits the set, so reaching them means a codegen regression.  The success path is e2e-covered by wkt_field_set_test's nested-message rows."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelWktUnwrapTimeImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-CEL_MESSAGE kind guard, the ExternrefTable miss, the null-message arm, and the WKT-descriptor-mismatch arm whose own comment says `codegen only emits this for matching s.name()`.  Codegen emits the call only immediately after cel_make_message for a Timestamp/Duration literal; the 3VL absorb arm is e2e-covered by partial_eval_test's TimeUnwrapError row."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelWktUnwrapWrapperImpl",
+      "verdict": "by-design",
+      "evidence": "Same shape as CelWktUnwrapTimeImpl, plus the produced-kind vs wrapper_kind cross-check the code labels in place as a `codegen-regression tripwire`.  The absorb arm is e2e-covered by partial_eval_test's WrapperUnwrapError rows."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetWrapperInnerValue",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is per-cpp_type kind mismatch on a WKT wrapper's inner `value` field, plus the unexpected-inner-cpp_type CHECK.  The checker types `Int32Value{value: x}` before codegen emits the set, so a mismatch is a pipeline regression."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetWrapperIntegerValue",
+      "verdict": "by-design",
+      "evidence": "Same as SetWrapperInnerValue for the bool/int32/int64/uint32/uint64 arms; the range-check paths are e2e-covered by wkt_field_set_test's WrapperNarrowingRangeErrors."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetStringOrEnumField",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the BYTES / STRING / ENUM kind-mismatch rejects.  Field type comes from the descriptor and the value's type from the checker, so disagreement is a codegen regression."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "PackAnyFromScalar",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is descriptor-pool misses (inner FQN absent, no generated prototype) and a wrapper lacking its `value` field \u2014 all InternalError arms over the generated pool's own contents."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "AppendRepeatedMessage",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder guards a repeated-message element that is not CEL_MESSAGE, has no externref entry, or whose backing carries no proto message \u2014 each a host-adapter invariant, not user input."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "AppendRepeatedFromHostListValue",
+      "verdict": "by-design",
+      "evidence": "Same guards as AppendRepeatedMessage on the host-list path, plus the unknown-cpp_type CHECK."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelMapInImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-CEL_MAP_HOST kind guard (codegen routes only host-origin maps here; literal maps use the arena kernel), the ExternrefTable miss, and the DecodeKey failure \u2014 the absorb arm is e2e-covered by partial_eval_test's MapIn rows."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "ReadClassifiedMessageField",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the kMessageJson arm plus the unreachable scalar/map/repeated cases and their CHECK.  The JSON arm cannot be reached from e2e AT ALL: a google.protobuf.Struct field types as map(string, dyn) and a Value field as dyn, and RejectDyn refuses both before codegen \u2014 so it is e2e-unreachable by construction while remaining unit-reachable through cel_host_test.  The plain-message, wrapper and temporal arms are e2e-covered."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "DecodeSecondsNanosRecord",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder rejects a component value that is not a 2-field {seconds,nanos} record.  wit-bindgen generates that record from the WIT our own emitter wrote, so a mismatch is a generator regression \u2014 see doc/design/10-plugin-wit-pipeline.md \u00a73."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LowerMap",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the illegal-map-key-kind reject (FunctionLibrary::Builder rejects those at decl time), the non-list valkind guard, and the non-tuple-entry guard \u2014 all over a shape wit-bindgen produced from our own WIT."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LiftCelToComponent",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the per-kind CelfnVsValueMismatch arms: the declared CelType and the runtime Value disagreeing.  The checker types every plugin call site against the same decl, so a mismatch is a pipeline regression.  Every supported carrier's success path is e2e-covered by demo_plugin_e2e_test's KindMatrixEchoRoundTrips."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LowerComponentToCel",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the optional<T> and type-of-types return-shape rejects (both refused at decl time by FunctionLibrary::Builder) and the kUnknown invariant arm."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LowerProto",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-list valkind guard, the missing-generated-prototype InternalError (its message names the fix: link the cc_proto_library), and the parse-failure arm."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LiftProto",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the kind mismatch and the non-proto-backed-message reject (a custom HostMessageBacking cannot be serialised)."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "DecodeHostMessageAt",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the externref-miss and null-proto-message guards on a CEL_MESSAGE the runtime itself produced \u2014 host-adapter invariants."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "DecodeUnknownSetAt",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the impossible-id-count guard and propagation arms over a CEL_UNKNOWN descriptor the runtime wrote; malformed wire bytes there are an invariant break, not user input."
+    },
+    {
+      "file": "compiler/codegen/expr_lower.cc",
+      "match": "EmitSlotBaseAddress",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the kNone-storage ABSL_CHECK: the producing visitor must set storage before this call, so reaching it is a LayoutPass regression."
+    },
+    {
+      "file": "compiler/codegen/expr_lower.cc",
+      "match": "PickIndexCallTarget",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the unsupported-operand-repr CHECK over a closed set; parse_and_check.cc UnacceptableLabel rejects every other shape before codegen, as the message says in place."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "AddCheckerLibraries",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are `return s;` propagation arms for cel-cpp checker-library registration failures \u2014 each library is a compile-time constant of ours, so a failure is a vendored-dep regression."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "BuildMacroRegistry",
+      "verdict": "by-design",
+      "evidence": "Same shape: propagation arms for macro registration failures over a fixed macro set."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "ConfigureCheckerBuilder",
+      "verdict": "by-design",
+      "evidence": "Same shape: propagation arms over fixed checker configuration."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeHostMessage",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the externref-miss and null-proto-message guards on a CEL_MESSAGE the runtime produced \u2014 host-adapter invariants, mirroring instance.cc DecodeHostMessageAt."
     }
   ]
 }
