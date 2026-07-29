@@ -647,6 +647,30 @@
       "match": "CelSetFieldImpl",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the field_ref_id-out-of-range and field-not-found-on-descriptor guards.  Both ids come from the cel.abi table the compiler emitted against the same descriptor, so a miss is a pipeline regression.  The 3VL absorb and range-poison paths are e2e-covered."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindOnePluginDecl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the export-is-not-a-function guard and the linker define failure.  Engine::Use already validates the component's export surface against the decls before Plan binds them (CheckPluginExportsStatically), so a mismatch here is a validation regression."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindPluginLibraryDecls",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the missing-interface guard, over the same pre-validated export surface."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InstantiateOnePlugin",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is wasmtime_component_linker_new returning null and the delete-on-error path \u2014 allocator-failure arms."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LiftMap",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the ForEach-over-visits-Size InternalError: it fires only if a HostMapBacking's ForEach disagrees with its own Size(), which is a backing-implementation invariant, not user input."
     }
   ]
 }

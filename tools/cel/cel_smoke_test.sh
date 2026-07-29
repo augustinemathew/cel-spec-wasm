@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Smoke test for the `cel` CLI.  Schema-less coverage — `--proto` /
-# `--descriptor_set` paths are exercised by var_parser_test +
+# Smoke test for the `cel` CLI.  Covers the schema-less paths plus
+# `--descriptor_set` against a real FileDescriptorSet (the
+# proto_library by-product declared in this target's `data`);
+# `--proto` source loading is exercised by var_parser_test +
 # value_format_test against real descriptor pools.
 set -eo pipefail
 
@@ -144,6 +146,31 @@ expect_exit "run: missing file"            2 "${CEL}" run /nonexistent.wasm
 expect_exit "inspect: missing file"        2 "${CEL}" inspect /nonexistent.wasm
 expect_exit "inspect: not a wasm module"   2 "${CEL}" inspect "$0"
 
+# --- --descriptor_set: schema loading from a FileDescriptorSet ------------
+# The path is the proto_library's descriptor-set by-product, resolved
+# relative to the runfiles root.
+FDS="${TEST_SRCDIR}/_main/testdata/e2e_fixture_proto-descriptor-set.proto.bin"
+if [[ ! -s "${FDS}" ]]; then
+  echo "FAIL: descriptor set not in runfiles at ${FDS}"
+  fail=1
+else
+  # A message-typed variable resolves against the loaded set.
+  expect "descriptor_set: message var checks" "OK" \
+    "${CEL}" check "c.name" --var "c:celwasm.testdata.Customer" \
+      --descriptor_set "${FDS}"
+  # A message NOT in the set is still rejected.
+  expect_exit "descriptor_set: unknown message rejected" 1 \
+    "${CEL}" check "c.name" --var "c:no.such.Message" \
+      --descriptor_set "${FDS}"
+fi
+
+expect_exit "descriptor_set: missing file"      2 \
+  "${CEL}" check "1" --descriptor_set /nonexistent.fds
+expect_exit "descriptor_set: not an FDS"        2 \
+  "${CEL}" check "1" --descriptor_set "$0"
+expect_exit "descriptor_set: with --proto"      2 \
+  "${CEL}" check "1" --descriptor_set "${FDS}" --proto testdata/e2e_fixture.proto
+
 # Malformed --var TYPE SPECS — the reject arms of the compiler-side
 # spec grammar (parse_and_check.cc TypeParser / ParseVariableSpec):
 # unclosed list<>, missing map comma / '>', unknown type name, empty
@@ -152,6 +179,8 @@ expect_exit "spec: unclosed list<"          2 \
   "${CEL}" check "1" --var "x:list<int"
 expect_exit "spec: list missing <"          2 \
   "${CEL}" check "1" --var "x:list int>"
+expect_exit "spec: map missing '<'"         2 \
+  "${CEL}" check "1" --var "x:map int>"
 expect_exit "spec: map missing comma"       2 \
   "${CEL}" check "1" --var "x:map<int int>"
 expect_exit "spec: map unclosed"            2 \

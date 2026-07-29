@@ -181,6 +181,9 @@ sh_test(
     data = [
         ":cel",
         "//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin.wasm",
+        # A real FileDescriptorSet for the --descriptor_set rows; the
+        # proto_library emits it as a by-product.
+        "//testdata:e2e_fixture_proto",
     ],
 )
 
