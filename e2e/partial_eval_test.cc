@@ -1310,6 +1310,11 @@ INSTANTIATE_TEST_SUITE_P(
         // rather than the host trampolines above.
         AbsorbCase{"ArenaListAtUnknownIndex", "[1, 2][i] == 1"},
         AbsorbCase{"ArenaMapLookupUnknownKey", "{'a': 1, 'b': 2}[s] == 1"},
+        // Building a map literal whose KEY is unknown: cel_map_insert_at
+        // absorbs into the map slot rather than inserting.
+        AbsorbCase{"ArenaMapInsertUnknownKey", "{s: 1}['a'] == 1"},
+        // Map equality with an unknown operand.
+        AbsorbCase{"MapEqUnknown", "m == {'k': 1}"},
         AbsorbCase{"TsAccessorTzArgUnknown",
                    "timestamp('1970-01-01T00:00:00Z')"
                    ".getHours(tz) == 0"},

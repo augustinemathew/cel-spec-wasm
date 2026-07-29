@@ -527,6 +527,12 @@
       "match": "cel_list_at_arena",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the LIST-side unknown/error absorb: an arena list is materialised by the same expression that indexes it, so the list operand is never 3VL.  The INDEX-side absorb is e2e-covered by partial_eval_test's ArenaListAt rows."
+    },
+    {
+      "file": "runtime/cel_runtime.c",
+      "match": "cel_value_eq",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the bytes / null / duration / timestamp / IP arms.  Every caller is a map-key lookup (cel_map_index.c:90,128 and cel_runtime.c:129,179,224), and langdef restricts map keys to bool/int/uint/string, so no legal program can present those kinds here.  The kernel is written generically; the callers are not."
     }
   ]
 }

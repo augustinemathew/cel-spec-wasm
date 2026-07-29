@@ -223,6 +223,41 @@ TEST_F(FormatE2ETest, DurationCanonicalForms) {
   EXPECT_EQ(EvalString(R"("%s".format([duration("-0.500s")]))"), "-0.500s");
 }
 
+// Malformed format strings and argument-kind mismatches surface as
+// CEL errors from the format kernel (cel_string_format.cc), not as
+// traps.  Diagnostic strings track cel-cpp's ParsePrecision.
+TEST_F(FormatE2ETest, MalformedFormatAndArgMismatchAreErrors) {
+  const absl::string_view kErrorSources[] = {
+      // `%` with nothing after it — ParsePrecision's end-of-string arm.
+      R"("%".format([]))",
+      // `.` with no digits, and digits running to the end — both are
+      // "unable to find end of precision specifier".
+      R"("%.".format([1]))",
+      R"("%.2".format([1]))",
+      // Argument kind does not match the directive.
+      R"("%d".format(["not an int"]))",
+      R"("%s and %d".format(["a"]))",
+  };
+  for (const absl::string_view src : kErrorSources) {
+    Compiler::Builder b;
+    auto compiler = std::move(b).Build();
+    ASSERT_TRUE(compiler.ok()) << compiler.status();
+    auto instance = CompilePlan(*compiler, src);
+    Activation a;
+    auto v = instance.Eval(a);
+    ASSERT_TRUE(v.ok()) << src << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << src << " kind=" << static_cast<int>(v->kind());
+  }
+}
+
+// An empty result commits through CommitResult's empty-buffer arm,
+// which writes a zero-length CEL_STRING rather than allocating.
+TEST_F(FormatE2ETest, EmptyResultCommitsAsEmptyString) {
+  EXPECT_EQ(EvalString(R"("".format([]))"), "");
+  EXPECT_EQ(EvalString(R"("%s".format([""]))"), "");
+}
+
 TEST_F(FormatE2ETest, PercentEscaping) {
   EXPECT_EQ(EvalString(R"("%% and also %%".format([]))"), "% and also %");
 }
