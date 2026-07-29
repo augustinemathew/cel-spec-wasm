@@ -650,6 +650,35 @@ TEST_F(WktLiteralFieldTest, MapFieldUint64KeyUint64Value) {
 
 class LiteralFieldSetMatrixTest : public ::testing::Test {};
 
+// google.protobuf.Value packing, one row per CelValue kind the
+// packer handles (cel_host.cc PackCelValueIntoJsonValue).  JSON
+// Value stores every number as a double, so int and uint both land
+// in the number field.
+TEST_F(LiteralFieldSetMatrixTest, JsonValuePackingKindMatrix) {
+  using P3 = cel::expr::conformance::proto3::TestAllTypes;
+  {
+    P3 expected;
+    expected.mutable_single_value()->set_number_value(7.0);
+    ExpectConstructsProto("TestAllTypes{single_value: 7u}", kP3, expected);
+  }
+  {
+    P3 expected;
+    expected.mutable_single_value()->set_number_value(-3.0);
+    ExpectConstructsProto("TestAllTypes{single_value: -3}", kP3, expected);
+  }
+  {
+    P3 expected;
+    expected.mutable_single_value()->set_bool_value(true);
+    ExpectConstructsProto("TestAllTypes{single_value: true}", kP3, expected);
+  }
+  {
+    P3 expected;
+    expected.mutable_single_value()->set_null_value(
+        google::protobuf::NULL_VALUE);
+    ExpectConstructsProto("TestAllTypes{single_value: null}", kP3, expected);
+  }
+}
+
 TEST_F(LiteralFieldSetMatrixTest, WrapperFieldKindMatrix) {
   ExpectBoolTrue(
       "TestAllTypes{single_int32_wrapper: 5}.single_int32_wrapper == 5", kP3);

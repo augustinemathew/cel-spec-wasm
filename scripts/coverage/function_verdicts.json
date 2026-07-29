@@ -623,6 +623,30 @@
       "match": "DecodeHostListAt",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the truncated-arena-header and missing-externref guards over a CelValue the runtime itself wrote."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetWrapperFieldFromScalar",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the missing-generated_factory-prototype and missing-value-field InternalErrors, both over the generated descriptor pool's own contents for a WKT wrapper."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelListSizeImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-CEL_LIST_HOST kind guard (codegen routes only host-origin lists here; literal lists use the arena kernel) and the ExternrefTable miss.  The absorb arm is e2e-covered by partial_eval_test's ListSize row."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelMapSizeImpl",
+      "verdict": "by-design",
+      "evidence": "Same shape as CelListSizeImpl for maps; the absorb arm is covered by the MapSize row."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelSetFieldImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the field_ref_id-out-of-range and field-not-found-on-descriptor guards.  Both ids come from the cel.abi table the compiler emitted against the same descriptor, so a miss is a pipeline regression.  The 3VL absorb and range-poison paths are e2e-covered."
     }
   ]
 }

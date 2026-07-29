@@ -41,6 +41,7 @@
 #include "eval/value.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/util/message_differencer.h"
+#include "google/protobuf/wrappers.pb.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 
@@ -627,6 +628,39 @@ TEST_F(MessageBackedReadTest, UnsetWrapperFieldReadsAsNull) {
       {"msg", CelType::Message("cel.expr.conformance.proto3.TestAllTypes")}};
   ExpectBoundTrue("msg.single_int32_wrapper == null", decls,
                   {{"msg", BoundTestAllTypes([](TestAllTypes&) {})}});
+}
+
+// size() over a BOUND map/list goes through cel_map_count /
+// cel_list_count's host branch, which issues a cel_host size probe
+// rather than reading an arena header.  Existing size() rows all use
+// literals or proto fields; an activation-bound aggregate is its own
+// path.
+// A repeated google.protobuf.Any element unwraps on read, the same
+// as a singular Any field — ReadRepeatedElement mirrors the singular
+// peel chain rather than handing back the Any wrapper.
+TEST_F(MessageBackedReadTest, RepeatedAnyElementUnwrapsOnRead) {
+  ExpectBoundTrue(
+      "msg.repeated_any[0] == 42",
+      {{"msg", CelType::Message("cel.expr.conformance.proto3.TestAllTypes")}},
+      {{"msg", BoundTestAllTypes([](TestAllTypes& m) {
+          google::protobuf::Int64Value inner;
+          inner.set_value(42);
+          m.add_repeated_any()->PackFrom(inner);
+        })}});
+}
+
+TEST_F(MessageBackedReadTest, SizeOverBoundAggregatesProbesHost) {
+  ExpectBoundTrue("size(m) == 2",
+                  {{"m", CelType::Map(CelType::String(), CelType::Int())}},
+                  {{"m", Value::Map({{Value::String("a"), Value::Int(1)},
+                                     {Value::String("b"), Value::Int(2)}})}});
+  ExpectBoundTrue(
+      "size(xs) == 3", {{"xs", CelType::List(CelType::Int())}},
+      {{"xs", Value::List({Value::Int(1), Value::Int(2), Value::Int(3)})}});
+  // Empty bound aggregates take the same probe with a zero result.
+  ExpectBoundTrue("size(m) == 0",
+                  {{"m", CelType::Map(CelType::String(), CelType::Int())}},
+                  {{"m", Value::Map({})}});
 }
 
 TEST_F(MessageBackedReadTest, CrossNumericHostMapKeyLookup) {
