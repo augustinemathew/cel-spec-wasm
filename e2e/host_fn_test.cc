@@ -722,6 +722,38 @@ TEST(HostFnTest, ContextArgValueDecodesLiteralListArg) {
 
 // HostMapView::ContainsKey from inside a callback — both the present
 // and absent probes, against a literal (arena-resident) map.
+// An EMPTY map argument takes HostCallContext's zero-count early
+// return, which builds a HostMapView over no entries rather than
+// reading an arena header.  Only an empty literal reaches it.
+TEST(HostFnTest, ContextMapViewOverEmptyMap) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("bool @host.haskey2(map<string, int> m, string k);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("!haskey2({}, 'a')", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("haskey2_map_string_int_string", 3,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto m = ctx.ArgMap(0);
+                                  if (!m.ok()) return m.status();
+                                  auto k = ctx.ArgString(1);
+                                  if (!k.ok()) return k.status();
+                                  return ctx.ReturnBool(m->ContainsKey(
+                                      Value::String(std::string(*k))));
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation a;
+  auto v = instance->Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsBool(), true);
+}
+
 TEST(HostFnTest, ContextMapViewContainsKey) {
   auto b = Compiler::NewBuilder();
   b.AddFunction("bool @host.haskey(map<string, int> m, string k);");
@@ -2409,6 +2441,17 @@ TEST_F(DeclDiagnosticsE2ETest, IllegalMapKeyKindsNameTheKind) {
     EXPECT_TRUE(absl::StrContains(c.status().message(), row.kind))
         << row.decl << ": " << c.status();
   }
+}
+
+TEST_F(DeclDiagnosticsE2ETest, ReceiverModifierOnlyOnFirstParameter) {
+  // `this` marks the receiver, so it is meaningful only on parameter
+  // one; the celfn parser rejects it anywhere else by name.
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.f(int a, this int bad);");
+  auto c = std::move(b).Build();
+  ASSERT_FALSE(c.ok());
+  EXPECT_TRUE(absl::StrContains(c.status().message(), "first parameter"))
+      << c.status();
 }
 
 TEST_F(DeclDiagnosticsE2ETest, UnknownProtoMessageTypeInDeclFailsCompile) {

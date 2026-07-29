@@ -605,6 +605,24 @@
       "match": "host_value_is_zero",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the arena-OOM early return and the closed-dispatch __builtin_trap.  The CEL_LIST_HOST / CEL_MAP_HOST probe arms are now e2e-covered by optional_test's OfNonZeroValueHostBacked rows."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_convert",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder across the conversion kernels is the operand-kind poison: int()/uint()/double()/string()/bytes() are checker-typed, so a wrong-kind operand is a codegen regression rather than user input.  The conversions' value paths and their range/parse errors are e2e-covered by conversion_test."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeCelValue",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the CEL_TYPE arm and the unknown-kind default.  A host fn cannot declare a `type` parameter \u2014 function_library.cc's ExtractType has no `type` keyword and Build() rejects the kind \u2014 so no call can present one; the default guards the closed wire vocabulary."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeHostListAt",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the truncated-arena-header and missing-externref guards over a CelValue the runtime itself wrote."
     }
   ]
 }
