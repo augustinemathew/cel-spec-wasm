@@ -550,6 +550,32 @@ TEST_F(ErrorE2ETest, AbsInt64MinOverflows) {
   ExpectEvalError("math.abs(-9223372036854775808)", "abs(INT64_MIN) overflow");
 }
 
+// Each math kernel guards its operand kind at runtime.  A wrongly
+// typed literal is rejected by the checker, so the guard is reached by
+// wrapping the operand in `dyn()` — which clears the static-subset
+// gate and then trips the guard at eval.  That is the same route the
+// conformance corpus takes, and it was the only workload reaching
+// these arms.  Agreement with cel-cpp on every row is pinned by
+// cel_cpp_oracle_test's MathExt{OperandKind,Bitwise}GuardsAgree.
+TEST_F(ErrorE2ETest, RoundingAndPredicateKindGuards) {
+  for (const absl::string_view source :
+       {"math.ceil(dyn(1))", "math.floor(dyn(1))", "math.round(dyn(1))",
+        "math.trunc(dyn(1))", "math.isInf(dyn(1))", "math.isNaN(dyn(1))",
+        "math.isFinite(dyn(1))"}) {
+    ExpectEvalError(source, "non-double operand");
+  }
+}
+
+// The bitwise kernels take int-int or uint-uint; a mixed pair falls
+// through to the shared poison arm.
+TEST_F(ErrorE2ETest, BitwiseMixedKindGuards) {
+  for (const absl::string_view source :
+       {"math.bitAnd(dyn(1), 2u)", "math.bitOr(dyn(1), 2u)",
+        "math.bitXor(dyn(1), 2u)"}) {
+    ExpectEvalError(source, "mixed int/uint operands");
+  }
+}
+
 TEST_F(ErrorE2ETest, ShiftLeftNegativeOffset) {
   ExpectEvalError("math.bitShiftLeft(1u, -1)", "negative shift offset");
 }

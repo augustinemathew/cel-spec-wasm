@@ -164,6 +164,25 @@ TEST(CelCppOracle, LastIndexOfAgrees) {
   ExpectAgree(R"("abcb".lastIndexOf("b"))", kP3);
   ExpectAgree(R"("abcb".lastIndexOf("b", 1))", kP3);
 }
+// The math extension's kernels guard their operand kind at runtime.
+// A `dyn()`-wrapped operand of the wrong kind clears the static-subset
+// gate at compile time and then trips the guard — the same route the
+// conformance corpus takes to reach these arms.
+TEST(CelCppOracle, MathExtOperandKindGuardsAgree) {
+  for (const char* src : {"math.ceil(dyn(1))", "math.floor(dyn(1))",
+                          "math.round(dyn(1))", "math.trunc(dyn(1))",
+                          "math.isInf(dyn(1))", "math.isNaN(dyn(1))",
+                          "math.isFinite(dyn(1))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, MathExtBitwiseKindGuardsAgree) {
+  for (const char* src : {"math.bitAnd(dyn(1), 2u)", "math.bitOr(dyn(1), 2u)",
+                          "math.bitXor(dyn(1), 2u)"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
 // Every format verb dispatches per operand kind, and the suite only
 // drove the int / double / string arms; uint, bool and bytes operands
 // take separate branches, as do the NaN / +-Infinity special cases.

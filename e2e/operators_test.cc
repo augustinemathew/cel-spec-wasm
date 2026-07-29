@@ -25,6 +25,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -1104,6 +1105,37 @@ TEST_F(StringBytesActivationE2ETest, BindBytesWithNul) {
 // ──────────────────────────────────────────────────────────────
 class DynPassthroughE2ETest : public ::testing::Test {};
 
+// A conversion over `dyn` is rejected at the static-subset gate.
+// `dyn(x)` is the identity at codegen and forwards its argument's
+// annotation, so the checker resolves `int(dyn(1u))` to the identity
+// `int -> int` overload: no conversion and no kind check are emitted,
+// and the uint reaches the result slot untouched.  That produced a
+// silently wrong VALUE (`int(dyn(1u))` evaluated to `1u`, and
+// `double(dyn(1))` to an int) rather than an error, which nothing
+// downstream could detect.  cel-cpp dispatches these on the runtime
+// kind; we have no dynamic conversion kernel, so the shape is
+// refused loudly instead of miscompiled.
+TEST_F(DynPassthroughE2ETest, ConversionOverDynIsRejected) {
+  for (const absl::string_view source :
+       {"int(dyn(1u))", "uint(dyn(1))", "double(dyn(1))", "string(dyn(1))",
+        "bytes(dyn('a'))", "bool(dyn('true'))"}) {
+    auto compiler = CompilerEmpty();
+    ASSERT_THAT(compiler, IsOk());
+    CompilerOptions opts;
+    opts.link_mode = e2e::kE2ELinkMode;
+    auto program = compiler->Compile(source, opts);
+    EXPECT_FALSE(program.ok())
+        << source << " compiled; it must be refused by the static subset";
+    if (!program.ok()) {
+      EXPECT_TRUE(absl::StrContains(program.status().message(),
+                                    "cannot be resolved statically"))
+          << source << ": " << program.status();
+    }
+  }
+}
+
+// The passthrough itself still admits — only a CONVERSION consuming a
+// dyn is refused.
 TEST_F(DynPassthroughE2ETest, DynScalarEqualsCrossNumeric) {
   // `dyn(int) == uint` reaches the runtime's cross-numeric ladder
   // — the kernel returns true since 1 and 1u compare equal under
