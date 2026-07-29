@@ -299,6 +299,42 @@
       "match": "LiftPluginArgs",
       "verdict": "by-design",
       "evidence": "Uncovered lines are the per-arg lift failure propagation arm; the successful lifts for every supported carrier are covered by demo_plugin_e2e_test's KindMatrixEchoRoundTrips."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelResolveMessageTypeNameImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is defensive only: the wrong-kind guard (the runtime helper already routes on kind \u2014 the comment says so), the ExternrefTable miss (`a host-adapter bug`), and the non-proto-backing arm.  The happy path (type(msg) -> FQN) is e2e-covered by type_value_test."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelMakeMessageImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the type_id-out-of-range guard, the null-descriptor arm (FQN unresolvable at Plan time), the null-prototype arm (dynamic descriptors, a documented follow-up), and prototype->New() returning null (allocator failure).  The construction happy path is e2e-covered by proto_literal_test / wkt_field_set_test."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelMessageEqImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the ExternrefTable-miss FailedPrecondition and the out-of-enum CompareProtoMessages CHECK; the equal / unequal / not-comparable outcomes are e2e-covered by arena_message_aggregate_eq_test."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "ResolveOwnedSetTarget",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder guards a checker regression: a `Foo{...}` literal must construct a fresh OwnedProtoBacking, so a host-bound (immutable) ProtoBacking reaching the set path is a pipeline bug, not user input \u2014 the dynamic_cast mismatch arm says so in place."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "EncodeValue",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is unreachable by construction, and each arm documents why in place: backings never return unknowns (operand-pair propagation runs first), aggregate kinds route through EncodeFieldResult / EncodeAggregateIfAny rather than the inline path, and type(x) lowers to the cel_type_of_at_v runtime helper instead of a Layer-1 backing call."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetNestedSingularMessage",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is kind/descriptor-mismatch rejects on a nested message field; the checker types `Foo{nested: Bar{...}}` before codegen emits the set, so reaching them means a codegen regression.  The success path is e2e-covered by wkt_field_set_test's nested-message rows."
     }
   ]
 }
