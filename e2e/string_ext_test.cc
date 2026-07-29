@@ -167,6 +167,27 @@ TEST_F(SearchE2ETest, PositionBoundedSearchEdges) {
   }
 }
 
+// The empty-needle branch of indexOf / lastIndexOf walks code points to
+// honour `pos`, a path no non-corpus workload reached.  Substring at
+// exactly the code-point count is the empty tail; one past it errors.
+// Pinned by cel_cpp_oracle_test's EmptyNeedleAndSubstringEdgesAgree.
+// (A `pos` between the byte length and the code-point count is
+// mis-bounded — see CELW-0020 in e2e/known_bugs_test.cc.)
+TEST_F(SearchE2ETest, EmptyNeedleAndSubstringEdges) {
+  EXPECT_TRUE(EvalBool(R"("héllo".indexOf("", 2) == 2)"));
+  EXPECT_TRUE(EvalBool(R"("héllo".lastIndexOf("", 2) == 2)"));
+  EXPECT_EQ(EvalString(R"("abc".substring(3))"), "");
+  EXPECT_EQ(EvalString(R"("héllo".substring(5))"), "");
+  Compiler::Builder b;
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto instance = CompilePlan(*compiler, R"("héllo".substring(6))");
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(v->IsError()) << "kind=" << static_cast<int>(v->kind());
+}
+
 TEST_F(SearchE2ETest, Substring) {
   EXPECT_EQ(EvalString(R"("hello world".substring(6))"), "world");
 }

@@ -1944,5 +1944,48 @@ issue: none
   }
 }
 
+// ──────────────────────────────────────────────────────────────────
+// The 3-arg search/substring position bound is measured in BYTES;
+// cel-cpp measures it in CODE POINTS.  They coincide for ASCII, so
+// every existing fixture agreed — `"héllo"` (6 bytes, 5 code points)
+// separates them.  Found by the oracle while covering the
+// empty-needle walk.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, SearchPositionBoundIsBytesNotCodePoints) {
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0020
+severity: P1
+kind: over-permissive
+summary: indexOf/lastIndexOf bound `pos` by the haystack's BYTE length; cel-cpp bounds it by the code-point count, so a pos between the two is accepted instead of rejected
+repro: "héllo".indexOf("", 6)
+bindings: none
+actual: -1
+expected: an evaluation error ("index out of range: 6")
+layer: runtime/cel_string_ext_search.cc (ValidatePos, called with s->payload.s.len)
+blocked-by: none
+found-by: cel_cpp_oracle_test EmptyNeedleAndSubstringEdgesAgree, 2026-07-29; "héllo".lastIndexOf("", 6) diverges identically
+fix-hint: ValidatePos receives `s->payload.s.len`, the BYTE length.  The
+  upstream guards compare against `haystack.Size()`, and
+  StringValue::Size() is `internal::Utf8CodePointCount(alternative)`
+  (common/values/string_value.cc:141-145) -- code points, not bytes.  The
+  two coincide for ASCII, which is why every existing fixture agreed;
+  "héllo" is 6 bytes and 5 code points and separates them.  Pass the
+  code-point count instead (the substring path already computes one --
+  see the `cp_count` local).  NOTE two comments assert the opposite and
+  must be corrected in the same change: the ValidatePos header comment,
+  and cel_string_ext_search_test.cc's IndexOfPosBeyondHaystackErrors
+  ("exceeds the haystack BYTE size -- not the code-point count"); its
+  pos=100 assertion passes under either rule, so it did not catch this.
+issue: none
+)CELBUG";
+  for (const absl::string_view source : {R"("héllo".indexOf("", 6))",
+                                         R"("héllo".lastIndexOf("", 6))"}) {
+    auto v = TryEval(source);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << source << " kind=" << static_cast<int>(v->kind());
+  }
+}
+
 }  // namespace
 }  // namespace celwasm

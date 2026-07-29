@@ -164,6 +164,20 @@ TEST(CelCppOracle, LastIndexOfAgrees) {
   ExpectAgree(R"("abcb".lastIndexOf("b"))", kP3);
   ExpectAgree(R"("abcb".lastIndexOf("b", 1))", kP3);
 }
+// The empty-needle branch of indexOf / lastIndexOf walks code points
+// to honour `pos`, and its multi-byte path plus the past-the-end
+// return had no non-corpus workload.  Substring at exactly the
+// code-point count is the empty tail; one past it is an error.
+TEST(CelCppOracle, EmptyNeedleAndSubstringEdgesAgree) {
+  for (const char* src : {R"("héllo".indexOf("", 2))",
+                          R"("héllo".lastIndexOf("", 2))",
+                          R"("abc".substring(3))",
+                          R"("héllo".substring(5))",
+                          R"("héllo".substring(6))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
 // Index-by-non-int, duplicate map keys, cross-kind element equality,
 // and the multi-byte / negative-position search paths — each has its
 // own runtime arm and only the conformance corpus was reaching them.
