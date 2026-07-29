@@ -567,6 +567,68 @@ TEST_F(HostNarrowingRangeTest, HostMapKeyAndValueOutOfRangePoison) {
   EXPECT_TRUE(val.IsError()) << "kind=" << static_cast<int>(val.kind());
 }
 
+// Singular-field READ matrix off a bound message.  These reach the
+// read-side classifier arms that construction never touches: the
+// string / bytes branch of ReadScalarField (the view-vs-scratch
+// split), and ReadClassifiedMessageField's nested-message, wrapper,
+// and temporal arms.
+TEST_F(MessageBackedReadTest, SingularFieldReadKindMatrix) {
+  const Decls decls = {
+      {"msg", CelType::Message("cel.expr.conformance.proto3.TestAllTypes")}};
+  const auto fill = [](TestAllTypes& m) {
+    m.set_single_string("hello");
+    m.set_single_bytes("ab");
+    m.set_single_int32(5);
+    m.set_single_uint64(7);
+    m.set_single_float(1.5F);
+    m.set_single_bool(true);
+    // `single_nested_message` and `single_nested_enum` share
+    // `oneof nested_type`, so a message cannot carry both — the
+    // plain-message read uses the non-oneof `standalone_message`
+    // and the enum keeps the oneof slot.
+    m.set_single_nested_enum(TestAllTypes::BAR);
+    m.mutable_standalone_message()->set_bb(9);
+    m.mutable_single_int32_wrapper()->set_value(11);
+    m.mutable_single_string_wrapper()->set_value("w");
+    m.mutable_single_duration()->set_seconds(90);
+    m.mutable_single_timestamp()->set_seconds(1234567890);
+  };
+  const absl::string_view kTrueSources[] = {
+      // scalar branch: string / bytes go through the view-or-scratch
+      // arm, the rest through ReadNumericField.
+      "msg.single_string == 'hello'",
+      "size(msg.single_string) == 5",
+      "msg.single_bytes == b'ab'",
+      "msg.single_int32 == 5",
+      "msg.single_uint64 == 7u",
+      "msg.single_float == 1.5",
+      "msg.single_bool",
+      "msg.single_nested_enum == 1",
+      // message branch: a plain nested message stays a message, and
+      // its own field reads recurse through the same classifier.
+      "msg.standalone_message.bb == 9",
+      // wrapper fields auto-peel to their inner scalar on read.
+      "msg.single_int32_wrapper == 11",
+      "msg.single_string_wrapper == 'w'",
+      // temporal fields peel to Duration / Timestamp.
+      "msg.single_duration == duration('90s')",
+      "msg.single_timestamp == timestamp('2009-02-13T23:31:30Z')",
+  };
+  for (const absl::string_view src : kTrueSources) {
+    ExpectBoundTrue(src, decls, {{"msg", BoundTestAllTypes(fill)}});
+  }
+}
+
+// An UNSET wrapper field reads as null, not as the inner type's zero
+// (langdef "Wrapper types": the unset-wrapper-evaluates-to-null
+// exception).  Same classifier arm, opposite has-bit.
+TEST_F(MessageBackedReadTest, UnsetWrapperFieldReadsAsNull) {
+  const Decls decls = {
+      {"msg", CelType::Message("cel.expr.conformance.proto3.TestAllTypes")}};
+  ExpectBoundTrue("msg.single_int32_wrapper == null", decls,
+                  {{"msg", BoundTestAllTypes([](TestAllTypes&) {})}});
+}
+
 TEST_F(MessageBackedReadTest, CrossNumericHostMapKeyLookup) {
   // Map-key equality is value-based across int/uint/double (langdef
   // §Maps): a host-bound map whose STORED key kind differs from the
