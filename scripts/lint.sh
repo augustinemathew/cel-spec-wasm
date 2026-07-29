@@ -195,6 +195,7 @@ echo "lint.sh: running $CLANG_TIDY on ${#targets[@]} file(s) — jobs=$JOBS, pch
 # C translation unit shared with C++ tests (wrapped in `extern "C"`).
 declare -a c_targets=()
 declare -a cpp_targets=()
+declare -a wasm_targets=()
 # `runtime/*_internal.h` and `string_ext_test_helpers.h`
 # are C++-only orphan headers (use absl + gtest, no matching `.cc`
 # basename clang-tidy could pull a compile entry from).  Skip the
@@ -211,6 +212,27 @@ for f in "${targets[@]}"; do
     # Transitively covered by memory_grow_stability_test.cc.
     eval/internal/instance_test_peer.h) continue ;;
   esac
+  # Plugin-fixture sources compile for wasm32-wasip2, not the host.
+  # The shared PCH is a host artifact, so clang-tidy rejects it for
+  # these TUs ("compiled for target arm64-apple-macosx ... but the
+  # current translation unit is being compiled for wasm32"); lint them
+  # through the same checks, just without the PCH.
+  if grep -q -- '--target=wasm32\|wasm32-unknown-wasi' \
+       <<<"$(python3 - "$f" <<'PYQ' 2>/dev/null
+import json, sys
+try:
+    db = json.load(open("compile_commands.json"))
+except Exception:
+    sys.exit(0)
+for e in db:
+    if e.get("file", "").endswith(sys.argv[1]):
+        print(" ".join(e.get("arguments", [])))
+        break
+PYQ
+)"; then
+    wasm_targets+=("$f")
+    continue
+  fi
   case "$f" in
     *.c)                          c_targets+=("$f") ;;
     runtime/*.h)                  c_targets+=("$f") ;;
@@ -226,6 +248,13 @@ if [[ ${#cpp_targets[@]} -gt 0 ]]; then
   printf '%s\n' "${cpp_targets[@]}" \
     | xargs -n 1 -P "$JOBS" "$CLANG_TIDY" "${tidy_args[@]}" \
         "${cpp_pch_args[@]}" --warnings-as-errors='*' --quiet \
+    || rc=$?
+fi
+# wasm32-target TUs: same checks, no host PCH (see the grouping note).
+if [[ ${#wasm_targets[@]} -gt 0 ]]; then
+  printf '%s\n' "${wasm_targets[@]}" \
+    | xargs -n 1 -P "$JOBS" "$CLANG_TIDY" "${tidy_args[@]}" \
+        --warnings-as-errors='*' --quiet \
     || rc=$?
 fi
 # Runtime .h files are freestanding C; don't pass `-p .` for them because

@@ -56,6 +56,49 @@ if [[ -z "$exec_root" ]] \
     >/dev/null 2>&1 || true
 fi
 
+# Repair pass.  The `bazel build` above only materialises the external
+# symlinks that its own actions need, and bazel prunes the farm on
+# every subsequent narrow invocation — so repos referenced by
+# compile_commands.json but not by $PROJ's actions (google_benchmark
+# for the benches, the wasmtime / wasi repos for the plugin fixtures)
+# stay missing no matter how many times that build reruns.  They do
+# exist unpacked under the output base, so link them in directly —
+# that is what the bazel action would have done transiently.  Without
+# this, clang-tidy reports `'benchmark/benchmark.h' file not found`
+# for a file whose bazel build is perfectly green, and the resulting
+# error-recovery cascade reads like a pile of real code findings.
+output_base="$(bazel info output_base 2>/dev/null || true)"
+if [[ -n "$exec_root" && -n "$output_base" && -f compile_commands.json ]]; then
+  python3 - "$exec_root" "$output_base" <<'PYREPAIR' || true
+import json, os, re, sys
+
+exec_root, output_base = sys.argv[1], sys.argv[2]
+try:
+    with open("compile_commands.json") as fh:
+        db = json.load(fh)
+except (OSError, ValueError):
+    sys.exit(0)
+
+pattern = re.compile(r"(?:^|/)external/([^/\s]+)")
+repos = set()
+for entry in db:
+    for arg in entry.get("arguments", ()):
+        repos.update(pattern.findall(arg))
+
+dest_root = os.path.join(exec_root, "external")
+os.makedirs(dest_root, exist_ok=True)
+for repo in sorted(repos):
+    dest = os.path.join(dest_root, repo)
+    src = os.path.join(output_base, "external", repo)
+    if os.path.lexists(dest) or not os.path.isdir(src):
+        continue
+    try:
+        os.symlink(src, dest)
+    except OSError:
+        pass
+PYREPAIR
+fi
+
 if [[ -f "$PCH_OUT" \
       && "$PCH_OUT" -nt "$PCH_HEADER" \
       && "$PCH_OUT" -nt compile_commands.json ]]; then

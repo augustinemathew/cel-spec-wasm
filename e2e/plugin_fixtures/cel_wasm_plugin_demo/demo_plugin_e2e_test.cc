@@ -268,7 +268,8 @@ TEST(CelWasmPluginDemo, OneNounFlowProtoArg) {
          "gets a proto runtime that does not drag absl (upb, or an IDL "
          "surface that passes fields rather than messages).  Everything else "
          "in the proto path is FIXED and unit-pinned: the export-symbol "
-         "lowercasing (cpp_stub_emitter_test ProtoDeclExportSymbolIsLowercased) "
+         "lowercasing (cpp_stub_emitter_test "
+         "ProtoDeclExportSymbolIsLowercased) "
          "and the -pthread strip (wasm_clang.sh).";
   // Intended body: Plugin::Load(demo_plugin_proto bytes) ->
   // Compiler::Builder::Use -> Compile("is_adult(u)") -> Engine::Use ->

@@ -149,10 +149,10 @@ void BM_IntEq(benchmark::State& state) {
   uint32_t a = cel_make_int(42);
   uint32_t b = cel_make_int(42);
   uint32_t out = AllocSlot();
-  // The production path: codegen lowers every `==` to the polymorphic
-  // dispatcher (the historical per-kind eq arms were deleted).
+  // The production path for two ints: codegen lowers `==` on numeric
+  // operands to the numeric dispatcher.
   for (auto _ : state) {
-    cel_equals_at_vv(out, a, b);
+    cel_numeric_eq_at_vv(out, a, b);
     benchmark::DoNotOptimize(out);
   }
 }

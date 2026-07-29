@@ -202,9 +202,9 @@ constexpr absl::string_view kExportProtoTpl =
     "}\n\n";
 
 // One emitted export-fn body.
-absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
-                                          absl::string_view ns,
-                                          absl::string_view exports_prefix) {
+// `optional` / `type` are rejected at declaration parse time, so a decl
+// carrying one here means the front half of the pipeline let it through.
+absl::Status RejectUnsupportedKinds(const CelfnDecl& d) {
   using K = CelType::Kind;
   if (d.return_type.kind() == K::kOptional ||
       d.return_type.kind() == K::kType) {
@@ -219,6 +219,65 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
                        d.fn_name, "`.", p.name));
     }
   }
+  return absl::OkStatus();
+}
+
+// The C declarator and the call-site argument for one parameter: a
+// scalar passes straight through, every carried kind lifts through the
+// codec.
+void AppendParamPieces(const CelfnParam& p, absl::string_view ns,
+                       absl::string_view exports_prefix,
+                       std::vector<std::string>& param_decls,
+                       std::vector<std::string>& call_args) {
+  switch (CarrierFor(p.type)) {
+    case Carrier::kScalarValue:
+      param_decls.push_back(absl::StrCat(ScalarCType(p.type), " ", p.name));
+      call_args.emplace_back(p.name);
+      return;
+    case Carrier::kAuthorPtr:
+      param_decls.push_back(absl::StrCat(AuthorCStruct(p.type), "* ", p.name));
+      call_args.push_back(absl::StrCat(ns, "::codec::lift(*", p.name, ")"));
+      return;
+    case Carrier::kRecordPtr:
+      param_decls.push_back(
+          absl::StrCat(RecordCType(p.type, exports_prefix), "* ", p.name));
+      call_args.push_back(absl::StrCat(ns, "::codec::lift(*", p.name, ")"));
+      return;
+    case Carrier::kProtoPtr:
+      param_decls.push_back(absl::StrCat("customfn_list_u8_t* ", p.name));
+      call_args.push_back(absl::StrCat(
+          ns, "::codec::lift_proto<",
+          absl::StrReplaceAll(p.type.message_fully_qualified_name(),
+                              {{".", "::"}}),
+          ">(*", p.name, ")"));
+      return;
+  }
+  ABSL_CHECK(false) << "AppendParamPieces: unhandled carrier for param `"
+                    << p.name << "`";
+}
+
+// The C type the out-param `ret` points at, for the non-scalar shapes.
+std::string OutParamType(const CelType& ret, Carrier ret_c,
+                         absl::string_view exports_prefix) {
+  switch (ret_c) {
+    case Carrier::kAuthorPtr:
+      return AuthorCStruct(ret);
+    case Carrier::kRecordPtr:
+      return RecordCType(ret, exports_prefix);
+    case Carrier::kProtoPtr:
+      return "customfn_list_u8_t";
+    case Carrier::kScalarValue:
+      break;
+  }
+  ABSL_CHECK(false) << "OutParamType: scalar carrier has no out-param type";
+  return {};
+}
+
+// One emitted export-fn body.
+absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
+                                          absl::string_view ns,
+                                          absl::string_view exports_prefix) {
+  if (auto s = RejectUnsupportedKinds(d); !s.ok()) return s;
 
   const std::string fn_camel = SnakeToCamel(d.fn_name);
   // The export symbol must match what wit-bindgen derives from the WIT
@@ -239,31 +298,7 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
   param_decls.reserve(d.params.size());
   call_args.reserve(d.params.size());
   for (const auto& p : d.params) {
-    Carrier c = CarrierFor(p.type);
-    switch (c) {
-      case Carrier::kScalarValue:
-        param_decls.push_back(absl::StrCat(ScalarCType(p.type), " ", p.name));
-        call_args.push_back(std::string(p.name));
-        break;
-      case Carrier::kAuthorPtr:
-        param_decls.push_back(
-            absl::StrCat(AuthorCStruct(p.type), "* ", p.name));
-        call_args.push_back(absl::StrCat(ns, "::codec::lift(*", p.name, ")"));
-        break;
-      case Carrier::kRecordPtr:
-        param_decls.push_back(
-            absl::StrCat(RecordCType(p.type, exports_prefix), "* ", p.name));
-        call_args.push_back(absl::StrCat(ns, "::codec::lift(*", p.name, ")"));
-        break;
-      case Carrier::kProtoPtr:
-        param_decls.push_back(absl::StrCat("customfn_list_u8_t* ", p.name));
-        call_args.push_back(absl::StrCat(
-            ns, "::codec::lift_proto<",
-            absl::StrReplaceAll(p.type.message_fully_qualified_name(),
-                                {{".", "::"}}),
-            ">(*", p.name, ")"));
-        break;
-    }
+    AppendParamPieces(p, ns, exports_prefix, param_decls, call_args);
   }
 
   // Signature.
@@ -280,20 +315,8 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
   }
 
   // Out-param shape.
-  std::string ret_type;
-  switch (ret_c) {
-    case Carrier::kAuthorPtr:
-      ret_type = AuthorCStruct(d.return_type);
-      break;
-    case Carrier::kRecordPtr:
-      ret_type = RecordCType(d.return_type, exports_prefix);
-      break;
-    case Carrier::kProtoPtr:
-      ret_type = "customfn_list_u8_t";
-      break;
-    default:
-      ret_type = "<unreachable>";
-  }
+  const std::string ret_type =
+      OutParamType(d.return_type, ret_c, exports_prefix);
   const std::string ret_arg =
       sig_args.empty() ? absl::StrCat(ret_type, "* ret")
                        : absl::StrCat(sig_args, ", ", ret_type, "* ret");

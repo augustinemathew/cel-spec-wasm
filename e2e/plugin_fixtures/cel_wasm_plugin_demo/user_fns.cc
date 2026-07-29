@@ -49,8 +49,9 @@ std::map<std::string, int64_t> EchoMap(
 
 int64_t SumList(const std::vector<int64_t>& xs) {
   int64_t total = 0;
-  for (int64_t x : xs)
+  for (int64_t x : xs) {
     total += x;
+  }
   return total;
 }
 
@@ -70,8 +71,9 @@ std::vector<std::vector<int64_t>> EchoNested(
 std::vector<int64_t> Iota(int64_t n) {
   std::vector<int64_t> out;
   out.reserve(static_cast<size_t>(n));
-  for (int64_t i = 0; i < n; ++i)
+  for (int64_t i = 0; i < n; ++i) {
     out.push_back(i);
+  }
   return out;
 }
 
