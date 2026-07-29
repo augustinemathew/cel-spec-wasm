@@ -557,6 +557,54 @@
       "match": "EncodeType",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the host-string-arena OOM arm; the kind-mismatch arm is reachable and is covered by the activation-boundary suite."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_ip_parse_at_v",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-string operand poison \u2014 the checker types ip()'s argument \u2014 and the CEL_ERR_OVERFLOW arm, which fires only on arena exhaustion."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_ip_to_string_at_v",
+      "verdict": "by-design",
+      "evidence": "Same pair: a non-IP operand cannot reach a checker-typed string(ip) call, and OVERFLOW is arena exhaustion."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_parse_at_v",
+      "verdict": "by-design",
+      "evidence": "Same pair for cidr()."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_to_string_at_v",
+      "verdict": "by-design",
+      "evidence": "Same pair for string(cidr)."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_contains_ip_at_vv",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the operand-kind poison and the INVALID_ARGUMENT arm for a malformed pair; both operands are checker-typed."
+    },
+    {
+      "file": "runtime/cel_optional.c",
+      "match": "cel_optional_or_at_vv",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-optional operand poison on both sides; optional.or() is checker-typed to optional operands."
+    },
+    {
+      "file": "runtime/cel_optional.c",
+      "match": "dispatch_lookup",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the closed-dispatch __builtin_trap and the type-mismatch poison behind it \u2014 the caller routes only the kinds the switch enumerates."
+    },
+    {
+      "file": "runtime/cel_optional.c",
+      "match": "host_value_is_zero",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the arena-OOM early return and the closed-dispatch __builtin_trap.  The CEL_LIST_HOST / CEL_MAP_HOST probe arms are now e2e-covered by optional_test's OfNonZeroValueHostBacked rows."
     }
   ]
 }
