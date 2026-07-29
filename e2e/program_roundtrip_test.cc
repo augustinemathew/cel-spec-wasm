@@ -17,8 +17,11 @@
 // (Engine::Plan → Instance::Eval) — same cost as m2/m4/m5; included
 // in `scripts/run_full_suite.sh`'s closeout gate.
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <iterator>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -294,6 +297,65 @@ TEST(ProgramFactsE2E, DescribeReportsRequiredHostFn) {
   EXPECT_EQ(facts->required_fns[0].name, "tax_rate");
   EXPECT_TRUE(facts->required_fns[0].is_host);
   EXPECT_FALSE(facts->required_fns[0].signature.empty());
+}
+
+// Every declarable variable kind's `type_spec` as DescribeProgram
+// renders it (abi/program_facts.cc RenderVarTypeSpec).  This string is
+// user-visible — `cel inspect` prints it and `TypeSpecForBinding`
+// round-trips it into a `--var` spec — so a wrong spelling ships as a
+// wrong CLI contract.
+TEST(ProgramFactsE2E, DescribeRendersEveryDeclarableVarTypeSpec) {
+  struct Row {
+    absl::string_view name;
+    CelType type;
+    absl::string_view spec;
+  };
+  const Row kRows[] = {
+      {"vb", CelType::Bool(), "bool"},
+      {"vi", CelType::Int(), "int"},
+      {"vu", CelType::Uint(), "uint"},
+      {"vd", CelType::Double(), "double"},
+      {"vs", CelType::String(), "string"},
+      {"vy", CelType::Bytes(), "bytes"},
+      {"vdur", CelType::Duration(), "duration"},
+      {"vts", CelType::Timestamp(), "timestamp"},
+      {"vt", CelType::Type(), "type"},
+      {"vm", CelType::Message("celwasm.testdata.Customer"),
+       "celwasm.testdata.Customer"},
+      {"vl", CelType::List(CelType::Bytes()), "list<bytes>"},
+      {"vmap", CelType::Map(CelType::Uint(), CelType::Double()),
+       "map<uint,double>"},
+      // Nesting recurses through the same renderer.
+      {"vnest", CelType::List(CelType::Map(CelType::String(), CelType::Int())),
+       "list<map<string,int>>"},
+  };
+  auto b = Compiler::NewBuilder();
+  for (const Row& row : kRows) {
+    b.DeclareVariable(std::string(row.name), row.type);
+  }
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  // cel.abi records only the variables the expression REFERENCES, so
+  // every row has to appear in the source.
+  auto program = compiler->Compile(
+      "vb && vi == 1 && vu == 1u && vd == 1.0 && vs == '' && vy == b'' && "
+      "vdur == duration('0s') && "
+      "vts == timestamp('1970-01-01T00:00:00Z') && vt == int && "
+      "vm.name == '' && size(vl) == 0 && size(vmap) == 0 && size(vnest) == 0",
+      e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto facts = abi::DescribeProgram(program->wasm_bytes());
+  ASSERT_TRUE(facts.ok()) << facts.status();
+  // Match by name — the ABI's ordering is its own business.
+  for (const Row& row : kRows) {
+    const auto it = std::find_if(facts->vars.begin(), facts->vars.end(),
+                                 [&](const abi::DeclaredVar& v) {
+                                   return v.name == row.name;
+                                 });
+    ASSERT_NE(it, facts->vars.end()) << row.name << " missing from cel.abi";
+    EXPECT_EQ(it->type_spec, row.spec) << row.name;
+  }
 }
 
 TEST(ProgramFactsE2E, DescribeRendersSignaturesAcrossTypeFamilies) {

@@ -21,19 +21,17 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
 #include "eval/value.h"
-#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
-
-using ::absl_testing::IsOk;
 
 // `GlobalEngine`, `CompilePlan`, and `EvalOk` come from the shared
 // link-mode-aware e2e helpers — pulling them in here means this
@@ -205,6 +203,26 @@ TEST_F(FormatE2ETest, MidStringSubstitution) {
             "str is filler and some more");
 }
 
+// `%s` over a Duration uses the canonical proto-JSON form
+// (cel_string_format_render.cc AppendDurationCanonical): zero renders
+// "0s"; the sign is a single leading "-" for a negative whole or
+// fractional part; and the fraction width steps 3 / 6 / 9 digits
+// depending on the lowest non-zero place, rather than being stripped.
+TEST_F(FormatE2ETest, DurationCanonicalForms) {
+  EXPECT_EQ(EvalString(R"("%s".format([duration("0s")]))"), "0s");
+  EXPECT_EQ(EvalString(R"("%s".format([duration("90s")]))"), "90s");
+  EXPECT_EQ(EvalString(R"("%s".format([duration("-90s")]))"), "-90s");
+  // millisecond place -> 3 digits
+  EXPECT_EQ(EvalString(R"("%s".format([duration("1.500s")]))"), "1.500s");
+  // microsecond place -> 6 digits
+  EXPECT_EQ(EvalString(R"("%s".format([duration("0.000500s")]))"), "0.000500s");
+  // nanosecond place -> 9 digits
+  EXPECT_EQ(EvalString(R"("%s".format([duration("0.000000001s")]))"),
+            "0.000000001s");
+  // a negative fraction takes the same single leading sign
+  EXPECT_EQ(EvalString(R"("%s".format([duration("-0.500s")]))"), "-0.500s");
+}
+
 TEST_F(FormatE2ETest, PercentEscaping) {
   EXPECT_EQ(EvalString(R"("%% and also %%".format([]))"), "% and also %");
 }
@@ -285,8 +303,7 @@ TEST_F(MultiFunctionE2ETest, FormatKindMismatchSurfacesError) {
   Compiler::Builder b;
   auto compiler = std::move(b).Build();
   ABSL_CHECK_OK(compiler);
-  auto instance =
-      CompilePlan(*compiler, R"("%d".format(["not a number"]))");
+  auto instance = CompilePlan(*compiler, R"("%d".format(["not a number"]))");
   Activation a;
   auto v = instance.Eval(a);
   ASSERT_TRUE(v.ok()) << v.status();
