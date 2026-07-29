@@ -179,6 +179,26 @@ TEST(CelCppOracle, EmptyNeedleAndSubstringEdgesAgree) {
   }
 }
 
+// Two's-complement edges of the int kernels: a multiply whose negative
+// result is exactly INT64_MIN is representable, while INT64_MIN / -1
+// and INT64_MIN * -1 overflow.  Also the prefix/suffix-longer-than-
+// subject arms, and the contains scan continuing past a first-byte
+// false positive.
+TEST(CelCppOracle, IntTwosComplementEdgesAgree) {
+  for (const char* src : {"(0 - 4611686018427387904) * 2",
+                          "(0 - 9223372036854775807 - 1) / (0 - 1)",
+                          "(0 - 9223372036854775807 - 1) * (0 - 1)"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, PrefixSuffixAndScanEdgesAgree) {
+  for (const char* src :
+       {R"("ab".startsWith("abc"))", R"("ab".endsWith("abc"))",
+        R"("aXaY".contains("aY"))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
 // A positioned search that finds nothing returns -1 (the walk's
 // fall-through), and a substring whose end exceeds the string is an
 // error — neither had a non-corpus workload.

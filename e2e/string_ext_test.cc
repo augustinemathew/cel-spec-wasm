@@ -191,6 +191,16 @@ TEST_F(SearchE2ETest, EmptyNeedleAndSubstringEdges) {
 // A positioned search that finds nothing falls through the walk to
 // -1, and a substring end past the string errors.  Pinned by
 // cel_cpp_oracle_test's PositionedMissAndSubstringEndAgree.
+// A prefix or suffix longer than the subject short-circuits to false
+// before any byte compare, and the contains scan resumes past a
+// first-byte false positive rather than giving up.  Pinned by
+// cel_cpp_oracle_test's PrefixSuffixAndScanEdgesAgree.
+TEST_F(SearchE2ETest, PrefixSuffixAndScanEdges) {
+  EXPECT_TRUE(EvalBool(R"(!"ab".startsWith("abc"))"));
+  EXPECT_TRUE(EvalBool(R"(!"ab".endsWith("abc"))"));
+  EXPECT_TRUE(EvalBool(R"("aXaY".contains("aY"))"));
+}
+
 TEST_F(SearchE2ETest, PositionedMissAndSubstringEnd) {
   EXPECT_TRUE(EvalBool(R"("tacocat".indexOf("z", 2) == -1)"));
   Compiler::Builder b;

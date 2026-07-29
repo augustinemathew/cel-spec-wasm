@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -237,8 +238,7 @@ struct RelCase {
   bool expected;
 };
 
-class NonScalarRelationalE2ETest
-    : public ::testing::TestWithParam<RelCase> {};
+class NonScalarRelationalE2ETest : public ::testing::TestWithParam<RelCase> {};
 
 TEST_P(NonScalarRelationalE2ETest, MatchesCelCpp) {
   const RelCase& p = GetParam();
@@ -251,21 +251,20 @@ TEST_P(NonScalarRelationalE2ETest, MatchesCelCpp) {
 
 INSTANTIATE_TEST_SUITE_P(
     EveryOrderedKind, NonScalarRelationalE2ETest,
-    ::testing::Values(
-        RelCase{"StringGtTrue", R"("b" > "a")", true},
-        RelCase{"StringGtFalse", R"("a" > "b")", false},
-        RelCase{"StringGeEqual", R"("b" >= "b")", true},
-        RelCase{"StringGeFalse", R"("a" >= "b")", false},
-        RelCase{"StringLeEqual", R"("a" <= "a")", true},
-        RelCase{"StringLeFalse", R"("b" <= "a")", false},
-        RelCase{"BytesLt", R"(b"a" < b"b")", true},
-        RelCase{"BytesGt", R"(b"b" > b"a")", true},
-        RelCase{"BytesGeEqual", R"(b"b" >= b"b")", true},
-        RelCase{"BytesLe", R"(b"a" <= b"b")", true},
-        RelCase{"BoolGt", "true > false", true},
-        RelCase{"BoolGeEqual", "true >= true", true},
-        RelCase{"BoolLe", "false <= true", true},
-        RelCase{"BoolGeFalse", "false >= true", false}),
+    ::testing::Values(RelCase{"StringGtTrue", R"("b" > "a")", true},
+                      RelCase{"StringGtFalse", R"("a" > "b")", false},
+                      RelCase{"StringGeEqual", R"("b" >= "b")", true},
+                      RelCase{"StringGeFalse", R"("a" >= "b")", false},
+                      RelCase{"StringLeEqual", R"("a" <= "a")", true},
+                      RelCase{"StringLeFalse", R"("b" <= "a")", false},
+                      RelCase{"BytesLt", R"(b"a" < b"b")", true},
+                      RelCase{"BytesGt", R"(b"b" > b"a")", true},
+                      RelCase{"BytesGeEqual", R"(b"b" >= b"b")", true},
+                      RelCase{"BytesLe", R"(b"a" <= b"b")", true},
+                      RelCase{"BoolGt", "true > false", true},
+                      RelCase{"BoolGeEqual", "true >= true", true},
+                      RelCase{"BoolLe", "false <= true", true},
+                      RelCase{"BoolGeFalse", "false >= true", false}),
     [](const ::testing::TestParamInfo<RelCase>& info) {
       return info.param.label;
     });
@@ -370,8 +369,8 @@ struct ArithErrorCase {
   std::string source;
 };
 
-class ArithmeticErrorE2ETest
-    : public ::testing::TestWithParam<ArithErrorCase> {};
+class ArithmeticErrorE2ETest : public ::testing::TestWithParam<ArithErrorCase> {
+};
 
 TEST_P(ArithmeticErrorE2ETest, PoisonsRatherThanTraps) {
   const ArithErrorCase& p = GetParam();
@@ -400,6 +399,29 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<ArithErrorCase>& info) {
       return info.param.label;
     });
+
+// Two's-complement edges of the int kernels.  A multiply whose
+// negative result is exactly INT64_MIN is representable (the sign
+// branch admits |result| == INT64_MAX + 1), while INT64_MIN / -1 and
+// INT64_MIN * -1 have no positive counterpart and overflow.  Pinned by
+// cel_cpp_oracle_test's IntTwosComplementEdgesAgree.
+TEST_F(ScalarArithmeticE2ETest, IntMinTwosComplementEdges) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  Activation a;
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "(0 - 4611686018427387904) * 2"), a)
+                 .AsInt(),
+            std::numeric_limits<int64_t>::min());
+  for (const absl::string_view source :
+       {"(0 - 9223372036854775807 - 1) / (0 - 1)",
+        "(0 - 9223372036854775807 - 1) * (0 - 1)"}) {
+    auto instance = CompilePlan(*compiler, source);
+    auto v = instance.Eval(a);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << source << " kind=" << static_cast<int>(v->kind());
+  }
+}
 
 class BoundVarArithmeticE2ETest : public ::testing::Test {};
 
@@ -1118,11 +1140,11 @@ TEST_F(SameKindCompareE2ETest, ElementEqualityAcrossKinds) {
             false);
   EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "[null] == [null]"), a).AsBool(),
             true);
-  EXPECT_EQ(*EvalOk(CompilePlan(*compiler,
-                                R"([duration("1s")] == [duration("1s")])"),
-                    a)
-                 .AsBool(),
-            true);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*compiler, R"([duration("1s")] == [duration("1s")])"),
+              a)
+           .AsBool(),
+      true);
   EXPECT_EQ(
       *EvalOk(CompilePlan(*compiler, "[timestamp(0)] == [timestamp(0)]"), a)
            .AsBool(),
@@ -1148,12 +1170,10 @@ class DynPassthroughE2ETest : public ::testing::Test {};
 // error, as is a non-numeric key.  Pinned by cel_cpp_oracle_test's
 // DynIndexKindsAgree.
 TEST_F(DynPassthroughE2ETest, DynSubscriptKinds) {
-  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "[1,2][dyn(1u)]"), {})
-                 .AsInt(),
-            2);
-  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "[1,2][dyn(1.0)]"), {})
-                 .AsInt(),
-            2);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*CompilerEmpty(), "[1,2][dyn(1u)]"), {}).AsInt(), 2);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*CompilerEmpty(), "[1,2][dyn(1.0)]"), {}).AsInt(), 2);
   for (const absl::string_view source :
        {R"([1,2][dyn(1.5)])", R"([1,2][dyn("x")])"}) {
     auto instance = CompilePlan(*CompilerEmpty(), source);
