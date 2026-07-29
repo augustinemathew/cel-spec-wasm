@@ -124,6 +124,25 @@ TEST_F(SearchE2ETest, LastIndexOf) {
   EXPECT_TRUE(EvalBool(R"("hello world".lastIndexOf("o") == 7)"));
 }
 
+// The two-argument `lastIndexOf` has its own runtime kernel
+// (`cel_string_last_index_of_at_vvv`) from the one-argument form; only
+// the conformance corpus was reaching it.  Value pinned against
+// cel-cpp by cel_cpp_oracle_test's LastIndexOfAgrees.
+TEST_F(SearchE2ETest, LastIndexOfWithPos) {
+  // Two `b`s at 1 and 3; searching back from 1 finds the first.
+  EXPECT_TRUE(EvalBool(R"("abcb".lastIndexOf("b", 1) == 1)"));
+  EXPECT_TRUE(EvalBool(R"("abcb".lastIndexOf("b") == 3)"));
+}
+
+// Multi-byte code points take the `Utf8DecodeMulti` path, which the
+// ASCII fixtures above never reach: `size()` counts code points rather
+// than bytes, and `charAt` indexes by code point.  Pinned by
+// cel_cpp_oracle_test's MultiByteUtf8Agrees.
+TEST_F(CodePointE2ETest, MultiByteCodePoints) {
+  EXPECT_TRUE(EvalBool(R"(size("héllo") == 5)"));
+  EXPECT_EQ(EvalString(R"("héllo".charAt(1))"), "é");
+}
+
 TEST_F(SearchE2ETest, Substring) {
   EXPECT_EQ(EvalString(R"("hello world".substring(6))"), "world");
 }
@@ -201,6 +220,45 @@ TEST_F(FormatE2ETest, NoSubstitution) {
 TEST_F(FormatE2ETest, MidStringSubstitution) {
   EXPECT_EQ(EvalString(R"("str is %s and some more".format(["filler"]))"),
             "str is filler and some more");
+}
+
+// Out-of-range code-point and substring indices are CEL errors, not
+// traps — they route through the string-ext kernels' shared `Poison`
+// helper, which no e2e row was reaching.  Agreement with cel-cpp on
+// all three is pinned by cel_cpp_oracle_test's
+// StringExtRangeErrorsAgree.
+TEST_F(CodePointE2ETest, OutOfRangeIndicesAreErrors) {
+  for (const absl::string_view src : {R"("abc".charAt(9))",
+                                      R"("abc".substring(9))",
+                                      R"("abc".substring(2, 1))"}) {
+    Compiler::Builder b;
+    auto compiler = std::move(b).Build();
+    ASSERT_TRUE(compiler.ok()) << compiler.status();
+    auto instance = CompilePlan(*compiler, src);
+    Activation a;
+    auto v = instance.Eval(a);
+    ASSERT_TRUE(v.ok()) << src << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << src << " kind=" << static_cast<int>(v->kind());
+  }
+}
+
+// `%e` (scientific) and `%o` (octal) each have their own renderer;
+// only the conformance corpus was reaching them.  Values pinned
+// against cel-cpp by cel_cpp_oracle_test's
+// ScientificAndOctalFormatAgree.
+TEST_F(FormatE2ETest, ScientificAndOctalVerbs) {
+  EXPECT_EQ(EvalString(R"("%e".format([1.5]))"), "1.500000e+00");
+  EXPECT_EQ(EvalString(R"("%o".format([8]))"), "10");
+}
+
+// `%s` over a timestamp and over a type name each have their own
+// append helper alongside the duration one.  Pinned by
+// cel_cpp_oracle_test's TimestampAndTypeFormatAgree.
+TEST_F(FormatE2ETest, TimestampAndTypeVerbs) {
+  EXPECT_EQ(EvalString(R"("%s".format([timestamp(0)]))"),
+            "1970-01-01T00:00:00Z");
+  EXPECT_EQ(EvalString(R"("%s".format([type(1)]))"), "int");
 }
 
 // `%s` over a Duration uses the canonical proto-JSON form

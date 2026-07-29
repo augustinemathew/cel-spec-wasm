@@ -225,6 +225,70 @@ TEST_F(SameKindCompareE2ETest, BoolOrdering) {
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
+// Each relational operator on string / bytes / bool has its own runtime
+// kernel (`cel_string_ge_at_vv`, `cel_bytes_gt_at_vv`, …), and the
+// suite only ever drove the `<` arm of each — so `>`, `>=` and `<=`
+// reached no e2e workload.  Expected values are pinned against cel-cpp
+// by cel_cpp_oracle_test's {String,Bytes,Bool}RelationalAgrees.
+struct RelCase {
+  std::string label;
+  std::string source;
+  bool expected;
+};
+
+class NonScalarRelationalE2ETest
+    : public ::testing::TestWithParam<RelCase> {};
+
+TEST_P(NonScalarRelationalE2ETest, MatchesCelCpp) {
+  const RelCase& p = GetParam();
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, p.source);
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), p.expected) << p.source;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    EveryOrderedKind, NonScalarRelationalE2ETest,
+    ::testing::Values(
+        RelCase{"StringGtTrue", R"("b" > "a")", true},
+        RelCase{"StringGtFalse", R"("a" > "b")", false},
+        RelCase{"StringGeEqual", R"("b" >= "b")", true},
+        RelCase{"StringGeFalse", R"("a" >= "b")", false},
+        RelCase{"StringLeEqual", R"("a" <= "a")", true},
+        RelCase{"StringLeFalse", R"("b" <= "a")", false},
+        RelCase{"BytesLt", R"(b"a" < b"b")", true},
+        RelCase{"BytesGt", R"(b"b" > b"a")", true},
+        RelCase{"BytesGeEqual", R"(b"b" >= b"b")", true},
+        RelCase{"BytesLe", R"(b"a" <= b"b")", true},
+        RelCase{"BoolGt", "true > false", true},
+        RelCase{"BoolGeEqual", "true >= true", true},
+        RelCase{"BoolLe", "false <= true", true},
+        RelCase{"BoolGeFalse", "false >= true", false}),
+    [](const ::testing::TestParamInfo<RelCase>& info) {
+      return info.param.label;
+    });
+
+// The uint subtract / divide / modulo kernels and the double negate /
+// subtract kernels likewise had only unit coverage.  Pinned by
+// cel_cpp_oracle_test's UintArithmeticAgrees / DoubleNegAndSubAgree.
+TEST_F(ScalarArithmeticE2ETest, UintSubDivMod) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  Activation a;
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "3u - 1u"), a).AsUint(), 2u);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "6u / 2u"), a).AsUint(), 3u);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "7u % 3u"), a).AsUint(), 1u);
+}
+
+TEST_F(ScalarArithmeticE2ETest, DoubleNegateAndSubtract) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  Activation a;
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "-1.5"), a).AsDouble(), -1.5);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "1.5 - 0.5"), a).AsDouble(), 1.0);
+}
+
 // ──────────────────────────────────────────────────────────────
 //  StringOps — concat + receiver-form contains/startsWith/endsWith.
 //  M5.C runtime helpers; the receiver form `s.contains(sub)`

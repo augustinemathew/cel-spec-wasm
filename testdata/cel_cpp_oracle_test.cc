@@ -126,6 +126,60 @@ TEST(CelCppOracle, IntArithmeticAgrees) {
 // interleave/explode code paths (runtime/cel_string_ext_search.cc /
 // cel_string_ext_list.cc) whose semantics were transcribed from
 // cel-cpp — these differentials keep the transcription honest.
+// Relational operators on string / bytes / bool, the uint arithmetic
+// arms, and the `%e` / `%o` format verbs each have a dedicated runtime
+// kernel that no e2e row exercised; these differentials fix the
+// expected values against cel-cpp before the e2e rows assert them.
+TEST(CelCppOracle, StringRelationalAgrees) {
+  for (const char* src : {R"("b" > "a")", R"("a" > "b")", R"("b" >= "b")",
+                          R"("a" >= "b")", R"("a" <= "a")", R"("b" <= "a")"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, BytesRelationalAgrees) {
+  for (const char* src : {R"(b"b" > b"a")", R"(b"a" < b"b")",
+                          R"(b"b" >= b"b")", R"(b"a" <= b"b")"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, BoolRelationalAgrees) {
+  for (const char* src :
+       {"true > false", "true >= true", "false <= true", "false >= true"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, UintArithmeticAgrees) {
+  for (const char* src : {"3u - 1u", "6u / 2u", "7u % 3u"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, DoubleNegAndSubAgree) {
+  for (const char* src : {"-1.5", "1.5 - 0.5"}) ExpectAgree(src, kP3);
+}
+TEST(CelCppOracle, ScientificAndOctalFormatAgree) {
+  ExpectAgree(R"("%e".format([1.5]))", kP3);
+  ExpectAgree(R"("%o".format([8]))", kP3);
+}
+TEST(CelCppOracle, LastIndexOfAgrees) {
+  ExpectAgree(R"("abcb".lastIndexOf("b"))", kP3);
+  ExpectAgree(R"("abcb".lastIndexOf("b", 1))", kP3);
+}
+TEST(CelCppOracle, TimestampAndTypeFormatAgree) {
+  ExpectAgree(R"("%s".format([timestamp(0)]))", kP3);
+  ExpectAgree(R"("%s".format([type(1)]))", kP3);
+}
+TEST(CelCppOracle, StringExtRangeErrorsAgree) {
+  for (const char* src : {R"("abc".charAt(9))", R"("abc".substring(9))",
+                          R"("abc".substring(2, 1))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+TEST(CelCppOracle, MultiByteUtf8Agrees) {
+  ExpectAgree(R"(size("héllo"))", kP3);
+  ExpectAgree(R"("héllo".charAt(1))", kP3);
+}
+
 // Duration `%s` rendering has three fractional-digit widths (3 / 6 / 9)
 // plus a zero and a negative form, and the widths are cel-cpp's, not a
 // generic float format — these differentials pin every branch of
