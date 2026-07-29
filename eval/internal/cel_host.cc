@@ -5069,15 +5069,12 @@ absl::Status DispatchFieldSet(google::protobuf::Message& msg,
   if (field.is_repeated()) {
     return SetRepeatedField(msg, field, value_cv, ctx.mem, ctx.refs);
   }
-  if (value_cv.kind == CEL_UNKNOWN || value_cv.kind == CEL_ERROR) {
-    // 3VL on `Foo{a: <unknown>}` is unaddressed; surfacing as a clean
-    // trap matches the "trust the checker" stance — a properly-typed
-    // CEL program won't pass an Unknown / Error to a typed scalar
-    // field.  Revisit when partial-eval × construction is exercised.
-    return absl::UnimplementedError(absl::StrCat(
-        "CelSetFieldImpl: 3VL value kind=", static_cast<int>(value_cv.kind),
-        " on field set not yet supported"));
-  }
+  // 3VL operands never reach here: `CelSetFieldImpl` absorbs them into
+  // the message slot before dispatching, so one arriving is an
+  // invariant break rather than user input.
+  ABSL_CHECK(value_cv.kind != CEL_UNKNOWN && value_cv.kind != CEL_ERROR)
+      << "DispatchFieldSet: 3VL value kind=" << static_cast<int>(value_cv.kind)
+      << " should have been absorbed by CelSetFieldImpl";
   return SetScalarField(msg, field, value_cv, ctx.mem, &ctx.refs);
 }
 
@@ -5107,6 +5104,19 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
   }
 
   const CelValue value_cv = ctx.mem.ReadCelValue(value_slot);
+  // 3VL absorption — the same guard every other trampoline opens
+  // with.  `Foo{a: 1/0}` type-checks (the field expression is
+  // int-typed) and evaluates to an error, and under PartialEval any
+  // field expression can be Unknown.  Per langdef the construction
+  // then IS that error / unknown, so stamp it into the message slot,
+  // overwriting the partially-built message; the construction's
+  // trailing `(i32.const out_slot)` carries it onward.  Absorbing
+  // here rather than in DispatchFieldSet keeps the map / repeated /
+  // scalar arms free of 3VL handling.
+  if (value_cv.kind == CEL_UNKNOWN || value_cv.kind == CEL_ERROR) {
+    ctx.mem.WriteCelValue(msg_slot, value_cv);
+    return absl::OkStatus();
+  }
   absl::Status set_status = DispatchFieldSet(*msg, *field, value_cv, ctx);
 
   // Poison-on-range-error (the write side of the poison contract).  An
@@ -5117,8 +5127,8 @@ absl::Status CelSetFieldImpl(uint32_t msg_slot, uint32_t field_ref_id,
   // msg_slot, overwriting the partially-built message, and report
   // success.  The construction's trailing `(i32.const out_slot)` then
   // naturally carries the error.  Every other non-OK status is an
-  // internal invariant violation (kind mismatch, missing reflection,
-  // unsupported 3VL) and stays non-OK → trap, per the "a release build
+  // internal invariant violation (kind mismatch, missing reflection)
+  // and stays non-OK → trap, per the "a release build
   // that miscompiles silently is worse than one that crashes" rule.
   if (set_status.code() == absl::StatusCode::kOutOfRange) {
     WriteWireError(CEL_ERR_OVERFLOW, msg_slot, ctx.mem);

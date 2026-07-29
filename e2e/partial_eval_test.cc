@@ -54,6 +54,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -1226,6 +1227,120 @@ TEST(AttributeModelReportTest, UnrenderableKeyRejectsLoudly) {
   const Attribute attr("m", {bad});
   EXPECT_THAT(attr.AsString(), StatusIs(absl::StatusCode::kInvalidArgument));
 }
+
+// ──────────────────────────────────────────────────────────────
+//  13. 3VL absorption at the HOST-TRAMPOLINE boundary.
+//
+//  Every `cel_host.*` trampoline opens with an absorb guard: an
+//  operand arriving as CEL_UNKNOWN or CEL_ERROR is written straight
+//  through to the out slot, before any type check or backing lookup.
+//  Those guards are what make partial evaluation and error
+//  propagation total across the host boundary — a trampoline that
+//  forgot one would surface a spurious type-mismatch instead of the
+//  operand's own unknown/error.
+//
+//  Both poisons are driven end-to-end: an unknown from a PartialEval
+//  pattern on a bound variable, an error from a division by zero in
+//  the operand position.  Bound (not literal) aggregates throughout —
+//  a literal map/list is arena-backed and never reaches a host
+//  trampoline at all.
+// ──────────────────────────────────────────────────────────────
+
+struct AbsorbCase {
+  std::string label;
+  std::string source;
+};
+
+class HostTrampolineAbsorbTest : public ::testing::TestWithParam<AbsorbCase> {
+ protected:
+  static Compiler MakeCompiler() {
+    auto c = BuildCompiler([](Compiler::Builder& b) {
+      b.DeclareVariable("m", CelType::Map(CelType::String(), CelType::Int()));
+      b.DeclareVariable("xs", CelType::List(CelType::Int()));
+      b.DeclareVariable("t", CelType::Timestamp());
+    });
+    ABSL_CHECK_OK(c.status());
+    return *std::move(c);
+  }
+  static void BindAll(Activation& a) {
+    a.Bind("m", Value::Map({{Value::String("k"), Value::Int(1)}}));
+    a.Bind("xs", Value::List({Value::Int(1), Value::Int(2)}));
+    a.Bind("t", Value::Timestamp(absl::UnixEpoch()));
+  }
+};
+
+TEST_P(HostTrampolineAbsorbTest, UnknownOperandPropagates) {
+  const AbsorbCase& p = GetParam();
+  Compiler compiler = MakeCompiler();
+  auto instance = CompilePlan(compiler, p.source);
+  Activation a;
+  BindAll(a);
+  // Mark every root unknown: whichever one the source touches, the
+  // trampoline must absorb it rather than type-check it.
+  AttributePattern patterns[] = {MakePattern("m"), MakePattern("xs"),
+                                 MakePattern("t")};
+  Value v = PartialEvalOk(instance, a, patterns);
+  EXPECT_EQ(v.kind(), Value::Kind::kUnknown)
+      << p.source << " kind=" << static_cast<int>(v.kind());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    HostBoundary, HostTrampolineAbsorbTest,
+    ::testing::Values(AbsorbCase{"MapLookup", "m['k'] == 1"},
+                      AbsorbCase{"MapSize", "size(m) == 1"},
+                      AbsorbCase{"MapIn", "'k' in m"},
+                      AbsorbCase{"ListAt", "xs[0] == 1"},
+                      AbsorbCase{"ListSize", "size(xs) == 2"},
+                      AbsorbCase{"ListIn", "1 in xs"},
+                      AbsorbCase{"TsAccessor", "t.getFullYear() == 1970"},
+                      AbsorbCase{"TsAccessorTz", "t.getHours('UTC') == 0"},
+                      AbsorbCase{"TsCompare",
+                                 "t == timestamp('1970-01-01T00:00:00Z')"},
+                      AbsorbCase{"TsToString", "string(t) == 'x'"}),
+    [](const ::testing::TestParamInfo<AbsorbCase>& info) {
+      return info.param.label;
+    });
+
+// The error half of the same guard.  `1/0` is the poison: it
+// type-checks as int and evaluates to a CEL error, so it can sit in
+// any int-typed operand position.
+class HostTrampolineErrorAbsorbTest
+    : public ::testing::TestWithParam<AbsorbCase> {};
+
+TEST_P(HostTrampolineErrorAbsorbTest, ErrorOperandPropagates) {
+  const AbsorbCase& p = GetParam();
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()));
+    b.DeclareVariable("m", CelType::Map(CelType::Int(), CelType::Int()));
+  });
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto instance = CompilePlan(*compiler, p.source);
+  Activation a;
+  a.Bind("xs", Value::List({Value::Int(1)}));
+  a.Bind("m", Value::Map({{Value::Int(1), Value::Int(2)}}));
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << p.source << ": " << v.status();
+  EXPECT_TRUE(v->IsError())
+      << p.source << " kind=" << static_cast<int>(v->kind());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    HostBoundary, HostTrampolineErrorAbsorbTest,
+    ::testing::Values(
+        AbsorbCase{"ListAtErrorIndex", "xs[1 / 0] == 1"},
+        AbsorbCase{"MapLookupErrorKey", "m[1 / 0] == 2"},
+        AbsorbCase{"ListInErrorNeedle", "(1 / 0) in xs"},
+        AbsorbCase{"MapInErrorKey", "(1 / 0) in m"},
+        AbsorbCase{"WrapperUnwrapError",
+                   "google.protobuf.Int32Value{value: 1 / 0} == 0"},
+        AbsorbCase{"WrapperUnwrapErrorInt64",
+                   "google.protobuf.Int64Value{value: 1 / 0} == 0"},
+        AbsorbCase{"TimeUnwrapError",
+                   "google.protobuf.Duration{seconds: 1 / 0} == "
+                   "duration('0s')"}),
+    [](const ::testing::TestParamInfo<AbsorbCase>& info) {
+      return info.param.label;
+    });
 
 }  // namespace
 }  // namespace celwasm
