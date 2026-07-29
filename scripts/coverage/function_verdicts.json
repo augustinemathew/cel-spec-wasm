@@ -479,6 +479,42 @@
       "match": "DecodeHostMessage",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the externref-miss and null-proto-message guards on a CEL_MESSAGE the runtime produced \u2014 host-adapter invariants, mirroring instance.cc DecodeHostMessageAt."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetScalarIntegerField",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the per-cpp_type ScalarKindMismatch rejects; the checker types the field expression against the descriptor before codegen emits the set, so a mismatch is a pipeline regression.  The int32/uint32 range paths are e2e-covered by wkt_field_set_test."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "EncodeByRepr",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the kEnum / kUnknown UnimplementedError arms \u2014 the CLAUDE.md `stub until <milestone>` form, deliberately loud \u2014 plus the kNull encoder, which no declared variable can reach because CelType::IsDeclarableAsVariable rejects kNull outright."
+    },
+    {
+      "file": "compiler/codegen/expr_lower_comprehension.cc",
+      "match": "EmitComprehension",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder rejects a comprehension whose iter_range is neither list nor map; the checker constrains comprehension ranges to those two before codegen runs."
+    },
+    {
+      "file": "compiler/codegen/expr_lower.cc",
+      "match": "EmitCallExpr",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the empty-overload_id UnimplementedError, whose message names its own cause: ResolvePass left the annotation unstamped, i.e. a pipeline regression."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "ReadScalarField",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the null-reflection InternalError, the cord-backed-scratch branch (reflection materialising a string into the caller's scratch, which generated-message storage does not do), and the unhandled-cpp_type arm."
+    },
+    {
+      "file": "compiler/internal/compile.cc",
+      "match": "ValidateExprStaticRegion",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the ResourceExhausted arm for a static region past the reserved low-memory window.  The limit itself is pinned in e2e/limits_test.cc per the compilation-limits rule; this is the internal assertion behind it."
     }
   ]
 }

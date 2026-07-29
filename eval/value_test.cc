@@ -385,5 +385,6 @@ TEST(StructurallyEqualsTest, ErrorComparesByPayload) {
   EXPECT_FALSE(a.StructurallyEquals(c));
 }
 
+
 }  // namespace
 }  // namespace celwasm

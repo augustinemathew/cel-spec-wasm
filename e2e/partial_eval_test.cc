@@ -1258,6 +1258,7 @@ class HostTrampolineAbsorbTest : public ::testing::TestWithParam<AbsorbCase> {
       b.DeclareVariable("m", CelType::Map(CelType::String(), CelType::Int()));
       b.DeclareVariable("xs", CelType::List(CelType::Int()));
       b.DeclareVariable("t", CelType::Timestamp());
+      b.DeclareVariable("tz", CelType::String());
     });
     ABSL_CHECK_OK(c.status());
     return *std::move(c);
@@ -1266,6 +1267,7 @@ class HostTrampolineAbsorbTest : public ::testing::TestWithParam<AbsorbCase> {
     a.Bind("m", Value::Map({{Value::String("k"), Value::Int(1)}}));
     a.Bind("xs", Value::List({Value::Int(1), Value::Int(2)}));
     a.Bind("t", Value::Timestamp(absl::UnixEpoch()));
+    a.Bind("tz", Value::String("UTC"));
   }
 };
 
@@ -1278,7 +1280,7 @@ TEST_P(HostTrampolineAbsorbTest, UnknownOperandPropagates) {
   // Mark every root unknown: whichever one the source touches, the
   // trampoline must absorb it rather than type-check it.
   AttributePattern patterns[] = {MakePattern("m"), MakePattern("xs"),
-                                 MakePattern("t")};
+                                 MakePattern("t"), MakePattern("tz")};
   Value v = PartialEvalOk(instance, a, patterns);
   EXPECT_EQ(v.kind(), Value::Kind::kUnknown)
       << p.source << " kind=" << static_cast<int>(v.kind());
@@ -1294,6 +1296,12 @@ INSTANTIATE_TEST_SUITE_P(
                       AbsorbCase{"ListIn", "1 in xs"},
                       AbsorbCase{"TsAccessor", "t.getFullYear() == 1970"},
                       AbsorbCase{"TsAccessorTz", "t.getHours('UTC') == 0"},
+                      // The TZ ARGUMENT is the unknown here, not the
+                      // timestamp — TzAccessorPrelude guards both
+                      // operand positions independently.
+                      AbsorbCase{"TsAccessorTzArgUnknown",
+                                 "timestamp('1970-01-01T00:00:00Z')"
+                                 ".getHours(tz) == 0"},
                       AbsorbCase{"TsCompare",
                                  "t == timestamp('1970-01-01T00:00:00Z')"},
                       AbsorbCase{"TsToString", "string(t) == 'x'"}),

@@ -722,6 +722,16 @@ TEST_F(LiteralFieldSetMatrixTest, RepeatedLiteralElementKindMatrix) {
   ExpectEvalError("TestAllTypes{repeated_uint32: [4294967296u]}", kP3);
 }
 
+TEST_F(LiteralFieldSetMatrixTest, RepeatedEnumNarrowsAndRangeChecks) {
+  // A repeated enum field is written through the int32 narrowing path,
+  // so it range-checks like `repeated_int32` does — an out-of-int32
+  // value poisons the construction rather than wrapping.
+  ExpectBoolTrue(
+      "TestAllTypes{repeated_nested_enum: [1]}.repeated_nested_enum[0] == 1",
+      kP3);
+  ExpectEvalError("TestAllTypes{repeated_nested_enum: [2147483648]}", kP3);
+}
+
 TEST_F(LiteralFieldSetMatrixTest, MapLiteralFieldMatrix) {
   ExpectBoolTrue(
       "TestAllTypes{map_int32_int64: {1: 2}}.map_int32_int64[1] == 2", kP3);
