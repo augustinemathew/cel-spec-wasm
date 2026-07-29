@@ -533,6 +533,30 @@
       "match": "cel_value_eq",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the bytes / null / duration / timestamp / IP arms.  Every caller is a map-key lookup (cel_map_index.c:90,128 and cel_runtime.c:129,179,224), and langdef restricts map keys to bool/int/uint/string, so no legal program can present those kinds here.  The kernel is written generically; the callers are not."
+    },
+    {
+      "file": "compiler/codegen/expr_lower_comprehension.cc",
+      "match": "EmitTransformMapEntry",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-literal map-entry ABSL_CHECK, in both the plain and conditional arms.  Its own message names the missing piece \u2014 `needs runtime map-merge helper` \u2014 i.e. the CLAUDE.md stub-until-a-later-milestone form, deliberately loud rather than silently wrong."
+    },
+    {
+      "file": "compiler/codegen/expr_lower_comprehension.cc",
+      "match": "EmitComprehensionRange",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder rejects an iter_range whose storage kind is kNone; the accepted set (kWorkspaceSlot, kStaticRodata, kLocal) is spelled in the message, and LayoutPass assigns one of those before codegen runs."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "GrowHostStringArena",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is guest malloc failure \u2014 wasmtime error, guest trap, and a NULL return.  Allocator-exhaustion arms with no e2e trigger."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "EncodeType",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the host-string-arena OOM arm; the kind-mismatch arm is reachable and is covered by the activation-boundary suite."
     }
   ]
 }

@@ -68,6 +68,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -698,6 +699,26 @@ TEST_F(TypeActivationE2ETest, BoundTypeEqualsLiteralIdent) {
   Activation a;
   a.Bind("t", Value::Type("bool"));
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+// Binding a non-type Value to a `type`-declared variable is an
+// embedder mistake, and the activation marshal must reject it by
+// NAME and expected kind rather than marshalling garbage
+// (instance.cc EncodeType's kind guard).
+TEST_F(TypeActivationE2ETest, BindingNonTypeToTypeVarIsRejected) {
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("t", CelType::Type());
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "t == bool");
+  for (const Value& wrong :
+       {Value::Int(1), Value::String("bool"), Value::Bool(true)}) {
+    Activation a;
+    a.Bind("t", wrong);
+    auto v = instance.Eval(a);
+    ASSERT_FALSE(v.ok()) << "kind=" << static_cast<int>(wrong.kind());
+    EXPECT_TRUE(absl::StrContains(v.status().message(), "t")) << v.status();
+  }
 }
 
 TEST_F(TypeActivationE2ETest, BoundTypeEqualsTypeOfRuntimeValue) {
