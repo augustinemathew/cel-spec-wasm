@@ -103,11 +103,30 @@ TEST_F(StringExtFixture, IndexOfFullStringFromZero) {
 
 TEST_F(StringExtFixture, IndexOfPosBeyondHaystackErrors) {
   // cel-cpp's `IndexOf3` returns CEL_ERROR(InvalidArgument) when pos
-  // exceeds the haystack BYTE size — not the code-point count.
+  // exceeds the haystack's CODE-POINT count: it compares against
+  // `haystack.Size()`, which is `internal::Utf8CodePointCount(...)`
+  // (common/values/string_value.cc:141-145).  This comment previously
+  // claimed the bound was the byte size; pos=100 satisfies either
+  // rule, so the case did not distinguish them.  A multi-byte case
+  // that does is `IndexOfPosBeyondCodePointCountErrors` below.
   uint32_t out = MakeOut();
   cel_string_index_of_at_vvv(out, MakeStr("tacocat"), MakeStr("a"),
                              MakeInt(100));
   ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
+}
+
+// "h\u00e9llo" is 6 bytes and 5 code points: pos=6 is within the byte
+// length but past the code-point count, so it must error.  This is the
+// case that separates the two bounds.
+TEST_F(StringExtFixture, IndexOfPosBeyondCodePointCountErrors) {
+  uint32_t out = MakeOut();
+  cel_string_index_of_at_vvv(out, MakeStr("h\u00e9llo"), MakeStr(""),
+                             MakeInt(6));
+  ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
+  uint32_t out2 = MakeOut();
+  cel_string_index_of_at_vvv(out2, MakeStr("h\u00e9llo"), MakeStr(""),
+                             MakeInt(5));
+  ExpectInt(out2, 5);
 }
 
 TEST_F(StringExtFixture, IndexOfPosNegativeIsAnError) {
