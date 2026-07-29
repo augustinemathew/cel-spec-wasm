@@ -479,6 +479,30 @@ TEST_F(MessageBackedReadTest, ComprehensionOverProtoRepeatedField) {
         })}});
 }
 
+// Wrapper-typed fields on a host-backed message collapse to their
+// inner scalar on read, and to null when unset (`doc/langdef.md`,
+// "Wrapper Types").
+TEST_F(MessageBackedReadTest, BoundWrapperFieldsReadAsNullableScalars) {
+  ExpectBoundTrue(
+      "msg.single_int32_wrapper == 7 && "
+      "msg.single_int64_wrapper == 8 && "
+      "msg.single_uint32_wrapper == 9u && "
+      "msg.single_double_wrapper == 1.5 && "
+      "msg.single_bool_wrapper && "
+      "msg.single_string_wrapper == 'hi' && "
+      "msg.single_bytes_wrapper == b'ab'",
+      {{"msg", CelType::Message("cel.expr.conformance.proto3.TestAllTypes")}},
+      {{"msg", BoundTestAllTypes([](TestAllTypes& m) {
+          m.mutable_single_int32_wrapper()->set_value(7);
+          m.mutable_single_int64_wrapper()->set_value(8);
+          m.mutable_single_uint32_wrapper()->set_value(9);
+          m.mutable_single_double_wrapper()->set_value(1.5);
+          m.mutable_single_bool_wrapper()->set_value(true);
+          m.mutable_single_string_wrapper()->set_value("hi");
+          m.mutable_single_bytes_wrapper()->set_value("ab");
+        })}});
+}
+
 TEST_F(MessageBackedReadTest, BoundTimestampEqualsLiteral) {
   // TemporalBackingEqualsQuery: host-backed timestamp vs arena literal.
   ExpectBoundTrue(
@@ -626,8 +650,9 @@ TEST_F(MessageBackedReadTest, SingularFieldReadKindMatrix) {
 TEST_F(MessageBackedReadTest, UnsetWrapperFieldReadsAsNull) {
   const Decls decls = {
       {"msg", CelType::Message("cel.expr.conformance.proto3.TestAllTypes")}};
-  ExpectBoundTrue("msg.single_int32_wrapper == null", decls,
-                  {{"msg", BoundTestAllTypes([](TestAllTypes&) {})}});
+  ExpectBoundTrue(
+      "msg.single_int32_wrapper == null && msg.single_string_wrapper == null",
+      decls, {{"msg", BoundTestAllTypes([](TestAllTypes&) {})}});
 }
 
 // size() over a BOUND map/list goes through cel_map_count /
@@ -638,6 +663,39 @@ TEST_F(MessageBackedReadTest, UnsetWrapperFieldReadsAsNull) {
 // A repeated google.protobuf.Any element unwraps on read, the same
 // as a singular Any field — ReadRepeatedElement mirrors the singular
 // peel chain rather than handing back the Any wrapper.
+// Element-wise equality over BOUND lists goes through WireValueEq ->
+// HostScalarSameKindEq, whose per-kind arms are only reachable with a
+// host-origin aggregate of that element type.  Existing equality rows
+// compare scalars or literal aggregates, so the double / duration /
+// timestamp / bytes arms were dark.
+TEST_F(MessageBackedReadTest, BoundListEqualityPerElementKind) {
+  auto row = [](const CelType& elem, Value a, Value b, bool want_equal) {
+    const Decls decls = {{"xs", CelType::List(elem)},
+                         {"ys", CelType::List(elem)}};
+    Value v = EvalBound("xs == ys", decls,
+                        {{"xs", std::move(a)}, {"ys", std::move(b)}});
+    auto got = v.AsBool();
+    ASSERT_THAT(got, IsOk()) << "kind=" << static_cast<int>(v.kind());
+    EXPECT_EQ(*got, want_equal);
+  };
+  row(CelType::Double(), Value::List({Value::Double(1.5)}),
+      Value::List({Value::Double(1.5)}), true);
+  row(CelType::Double(), Value::List({Value::Double(1.5)}),
+      Value::List({Value::Double(2.5)}), false);
+  row(CelType::Duration(), Value::List({Value::Duration(absl::Seconds(3))}),
+      Value::List({Value::Duration(absl::Seconds(3))}), true);
+  row(CelType::Duration(), Value::List({Value::Duration(absl::Seconds(3))}),
+      Value::List({Value::Duration(absl::Seconds(4))}), false);
+  row(CelType::Timestamp(), Value::List({Value::Timestamp(absl::UnixEpoch())}),
+      Value::List({Value::Timestamp(absl::UnixEpoch())}), true);
+  row(CelType::Bytes(), Value::List({Value::Bytes("ab")}),
+      Value::List({Value::Bytes("ab")}), true);
+  row(CelType::Bytes(), Value::List({Value::Bytes("ab")}),
+      Value::List({Value::Bytes("ba")}), false);
+  row(CelType::Bool(), Value::List({Value::Bool(true)}),
+      Value::List({Value::Bool(true)}), true);
+}
+
 TEST_F(MessageBackedReadTest, RepeatedAnyElementUnwrapsOnRead) {
   ExpectBoundTrue(
       "msg.repeated_any[0] == 42",

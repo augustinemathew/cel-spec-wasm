@@ -14,6 +14,7 @@ import "google/protobuf/any.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/wrappers.proto";
 
 message HostMsg3 {
   enum Kind {
@@ -85,4 +86,20 @@ message HostMsg3 {
   google.protobuf.ListValue      single_list_value = 37;
   repeated google.protobuf.Timestamp repeated_timestamp = 38;
   map<string, google.protobuf.Timestamp> map_str_to_ts = 39;
+
+  // Well-known wrapper fields.  CEL models these as nullable scalars
+  // (`doc/langdef.md`, "Wrapper Types"): a set wrapper reads back as
+  // the inner scalar, an unset one as null, and a field-init assigns
+  // the scalar straight into the wrapper's `value` field.  One field
+  // per wrapper cpp_type so every arm of the wrapper set/read paths
+  // has a fixture.
+  google.protobuf.BoolValue   wrap_b   = 40;
+  google.protobuf.Int32Value  wrap_i32 = 41;
+  google.protobuf.Int64Value  wrap_i64 = 42;
+  google.protobuf.UInt32Value wrap_u32 = 43;
+  google.protobuf.UInt64Value wrap_u64 = 44;
+  google.protobuf.FloatValue  wrap_f32 = 45;
+  google.protobuf.DoubleValue wrap_f64 = 46;
+  google.protobuf.StringValue wrap_s   = 47;
+  google.protobuf.BytesValue  wrap_by  = 48;
 }

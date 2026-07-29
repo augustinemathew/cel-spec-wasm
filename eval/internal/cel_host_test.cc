@@ -17,6 +17,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/string_view.h"
 #include "cel/expr/conformance/proto2/test_all_types.pb.h"
 #include "cel/expr/conformance/proto2/test_all_types_extensions.pb.h"
 #include "eval/error.h"
@@ -38,6 +39,7 @@ namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
+using ::absl_testing::StatusIs;
 using ::celwasm::testdata::Address;
 using ::celwasm::testdata::Customer;
 using ::celwasm::testdata::HostMsg2;
@@ -1203,6 +1205,15 @@ class PackHarness {
     return cv;
   }
 
+  // Stage an arbitrary CelValue at kSrcSlot verbatim.  Used to drive
+  // the kind-mismatch arms of the scalar / repeated set paths, which a
+  // type-checked expression can never reach (the checker types the
+  // field-init operand) but a misbehaving plugin or a checker
+  // regression would.
+  void StageRaw(const CelValue& cv) {
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
   // Drive CelSetFieldImpl pointing at `field_name`.  Returns the
   // trampoline's Status; on OK the caller reads back via outer().
   absl::Status SetField(uint32_t field_number, absl::string_view field_name) {
@@ -1997,4 +2008,261 @@ TEST(AnyOfWktTimeTest, DurationUnwrapsToDuration) {
 }
 
 }  // namespace
+
+// ═══════════ Set-field kind-mismatch arms ═══════════
+//
+// Every singular-scalar and repeated-element set arm range-checks the
+// incoming wire kind before handing the payload to Reflection.  A
+// type-checked CEL expression cannot reach these — `Foo{i32: 'x'}`
+// fails in the checker — so they are only observable by driving the
+// trampoline directly with a mismatched CelValue, which is what a
+// plugin returning a value inconsistent with its declared return type
+// would produce.
+
+namespace {
+
+CelValue RawScalar(uint8_t kind, int64_t i) {
+  CelValue cv{};
+  cv.kind = kind;
+  cv.payload.i = i;
+  return cv;
+}
+
+CelValue RawDouble(double d) {
+  CelValue cv{};
+  cv.kind = CEL_DOUBLE;
+  cv.payload.d = d;
+  return cv;
+}
+
+struct ScalarMismatchCase {
+  uint32_t field_number;
+  absl::string_view field_name;
+  CelValue wrong;
+  absl::string_view want_type_token;
+};
+
+class ScalarKindMismatchTest
+    : public testing::TestWithParam<ScalarMismatchCase> {};
+
+}  // namespace
+
+TEST_P(ScalarKindMismatchTest, RejectsWrongWireKind) {
+  const ScalarMismatchCase& c = GetParam();
+  PackHarness h;
+  h.StageRaw(c.wrong);
+  const absl::Status s = h.SetField(c.field_number, c.field_name);
+  EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument,
+                          testing::AllOf(testing::HasSubstr(c.field_name),
+                                         testing::HasSubstr(c.want_type_token),
+                                         testing::HasSubstr("value kind is"))));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Singular, ScalarKindMismatchTest,
+    testing::Values(
+        ScalarMismatchCase{1, "b", RawScalar(CEL_INT, 1), "BOOL"},
+        ScalarMismatchCase{2, "i32", RawScalar(CEL_UINT, 1), "INT32"},
+        ScalarMismatchCase{3, "i64", RawScalar(CEL_BOOL, 1), "INT64"},
+        ScalarMismatchCase{4, "u32", RawScalar(CEL_INT, 1), "UINT32"},
+        ScalarMismatchCase{5, "u64", RawScalar(CEL_INT, 1), "UINT64"},
+        ScalarMismatchCase{12, "f32", RawScalar(CEL_INT, 1), "FLOAT"},
+        ScalarMismatchCase{13, "f64", RawScalar(CEL_INT, 1), "DOUBLE"},
+        ScalarMismatchCase{16, "kind", RawScalar(CEL_UINT, 7), "ENUM"}));
+
+// STRING / BYTES share CPPTYPE_STRING and are distinguished by
+// `field.type()`, so each rejects the *other* CEL kind as well as the
+// unrelated ones.
+TEST(ScalarKindMismatchStringBytesTest, StringFieldRejectsBytes) {
+  PackHarness h;
+  CelValue by = h.MakeArenaString("ab");
+  by.kind = CEL_BYTES;
+  h.StageRaw(by);
+  EXPECT_THAT(h.SetField(14, "s"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("is STRING but value kind is")));
+}
+
+TEST(ScalarKindMismatchStringBytesTest, BytesFieldRejectsString) {
+  PackHarness h;
+  h.StageRaw(h.MakeArenaString("ab"));
+  EXPECT_THAT(h.SetField(15, "by"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("is BYTES but value kind is")));
+}
+
+// Repeated element append checks the element kind per cpp_type; the
+// arms live in a separate helper from the singular ones, so each needs
+// its own row.
+TEST(RepeatedAppendMismatchTest, RejectsWrongElementKind) {
+  struct Row {
+    uint32_t number;
+    absl::string_view name;
+    CelValue elem;
+    absl::string_view token;
+  };
+  const Row rows[] = {
+      {18, "rep_i32", RawScalar(CEL_UINT, 1), "INT32"},
+      {25, "rep_b", RawScalar(CEL_INT, 1), "BOOL"},
+      {26, "rep_f64", RawScalar(CEL_INT, 1), "DOUBLE"},
+  };
+  for (const Row& r : rows) {
+    PackHarness h;
+    h.StageArenaList({r.elem});
+    EXPECT_THAT(h.SetField(r.number, r.name),
+                StatusIs(absl::StatusCode::kInvalidArgument,
+                         testing::HasSubstr(r.token)))
+        << "field " << r.name;
+  }
+}
+
+TEST(RepeatedAppendMismatchTest, StringElementRejectsNonString) {
+  PackHarness h;
+  h.StageArenaList({RawScalar(CEL_INT, 1)});
+  EXPECT_THAT(h.SetField(24, "rep_s"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("STRING/BYTES")));
+}
+
+TEST(RepeatedAppendMismatchTest, MessageElementRejectsNonMessage) {
+  PackHarness h;
+  h.StageArenaList({RawDouble(1.5)});
+  EXPECT_THAT(h.SetField(27, "rep_msg"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("element kind=")));
+}
+
+// ═══════════ WKT wrapper fields ═══════════
+//
+// CEL models `google.protobuf.*Value` fields as nullable scalars
+// (`doc/langdef.md`, "Wrapper Types").  On the write side a field-init
+// hands the trampoline a bare scalar and `SetWrapperFieldFromScalar`
+// synthesises the wrapper message; on the read side
+// `UnpackWrapperMessage` collapses a set wrapper back to its inner
+// scalar.  One row per wrapper cpp_type covers both directions plus
+// the inner-kind guard.
+
+namespace {
+
+struct WrapperCase {
+  uint32_t field_number;
+  absl::string_view field_name;
+  CelValue good;
+  CelValue bad;
+  absl::string_view want_expected_kind;
+};
+
+class WrapperFieldTest : public testing::TestWithParam<WrapperCase> {};
+
+}  // namespace
+
+TEST_P(WrapperFieldTest, ScalarSetSynthesisesWrapperMessage) {
+  const WrapperCase& c = GetParam();
+  PackHarness h;
+  h.StageRaw(c.good);
+  ASSERT_THAT(h.SetField(c.field_number, c.field_name), IsOk());
+  const google::protobuf::Message& outer = *h.outer();
+  const google::protobuf::FieldDescriptor* fd =
+      outer.GetDescriptor()->FindFieldByNumber(
+          static_cast<int>(c.field_number));
+  ASSERT_NE(fd, nullptr);
+  EXPECT_TRUE(outer.GetReflection()->HasField(outer, fd))
+      << "wrapper field `" << c.field_name << "` not set";
+}
+
+TEST_P(WrapperFieldTest, WrongInnerKindIsRejected) {
+  const WrapperCase& c = GetParam();
+  PackHarness h;
+  h.StageRaw(c.bad);
+  EXPECT_THAT(
+      h.SetField(c.field_number, c.field_name),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               testing::AllOf(testing::HasSubstr("SetWrapperInnerValue"),
+                              testing::HasSubstr(c.want_expected_kind))));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    EveryInnerCppType, WrapperFieldTest,
+    testing::Values(WrapperCase{40, "wrap_b", RawScalar(CEL_BOOL, 1),
+                                RawScalar(CEL_INT, 1), "CEL_BOOL"},
+                    WrapperCase{41, "wrap_i32", RawScalar(CEL_INT, 7),
+                                RawScalar(CEL_UINT, 7), "CEL_INT"},
+                    WrapperCase{42, "wrap_i64", RawScalar(CEL_INT, 7),
+                                RawScalar(CEL_BOOL, 1), "CEL_INT"},
+                    WrapperCase{43, "wrap_u32", RawScalar(CEL_UINT, 7),
+                                RawScalar(CEL_INT, 7), "CEL_UINT"},
+                    WrapperCase{44, "wrap_u64", RawScalar(CEL_UINT, 7),
+                                RawScalar(CEL_INT, 7), "CEL_UINT"},
+                    WrapperCase{45, "wrap_f32", RawDouble(1.5),
+                                RawScalar(CEL_INT, 1), "CEL_DOUBLE"},
+                    WrapperCase{46, "wrap_f64", RawDouble(1.5),
+                                RawScalar(CEL_INT, 1), "CEL_DOUBLE"}));
+
+// STRING / BYTES wrappers need an arena-resident payload, so they get
+// focused cases rather than a table row.
+TEST(WrapperFieldStringBytesTest, StringWrapperRoundTrips) {
+  PackHarness h;
+  h.StageRaw(h.MakeArenaString("hi"));
+  ASSERT_THAT(h.SetField(47, "wrap_s"), IsOk());
+  EXPECT_EQ(h.outer()->wrap_s().value(), "hi");
+}
+
+TEST(WrapperFieldStringBytesTest, BytesWrapperRoundTrips) {
+  PackHarness h;
+  CelValue by = h.MakeArenaString("ab");
+  by.kind = CEL_BYTES;
+  h.StageRaw(by);
+  ASSERT_THAT(h.SetField(48, "wrap_by"), IsOk());
+  EXPECT_EQ(h.outer()->wrap_by().value(), "ab");
+}
+
+TEST(WrapperFieldStringBytesTest, StringWrapperRejectsBytes) {
+  PackHarness h;
+  CelValue by = h.MakeArenaString("ab");
+  by.kind = CEL_BYTES;
+  h.StageRaw(by);
+  EXPECT_THAT(h.SetField(47, "wrap_s"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("CEL_STRING")));
+}
+
+TEST(WrapperFieldStringBytesTest, BytesWrapperRejectsString) {
+  PackHarness h;
+  h.StageRaw(h.MakeArenaString("ab"));
+  EXPECT_THAT(h.SetField(48, "wrap_by"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("CEL_BYTES")));
+}
+
+// Read side: a set wrapper collapses to the inner scalar, an unset one
+// reads as null.
+TEST(WrapperFieldReadTest, SetWrapperReadsAsInnerScalar) {
+  auto msg = std::make_shared<HostMsg3>();
+  msg->mutable_wrap_i32()->set_value(7);
+  msg->mutable_wrap_s()->set_value("hi");
+  msg->mutable_wrap_b()->set_value(true);
+  msg->mutable_wrap_f64()->set_value(1.5);
+  ProtoBacking backing(msg.get());
+  auto i32 = backing.ReadField(41, "wrap_i32", CelType::Int());
+  ASSERT_THAT(i32, IsOk());
+  EXPECT_EQ(i32->kind(), Value::Kind::kInt);
+  auto s = backing.ReadField(47, "wrap_s", CelType::String());
+  ASSERT_THAT(s, IsOk());
+  EXPECT_EQ(s->kind(), Value::Kind::kString);
+  auto b = backing.ReadField(40, "wrap_b", CelType::Bool());
+  ASSERT_THAT(b, IsOk());
+  EXPECT_EQ(b->kind(), Value::Kind::kBool);
+  auto d = backing.ReadField(46, "wrap_f64", CelType::Double());
+  ASSERT_THAT(d, IsOk());
+  EXPECT_EQ(d->kind(), Value::Kind::kDouble);
+}
+
+TEST(WrapperFieldReadTest, UnsetWrapperReadsAsNull) {
+  auto msg = std::make_shared<HostMsg3>();
+  ProtoBacking backing(msg.get());
+  auto v = backing.ReadField(41, "wrap_i32", CelType::Int());
+  ASSERT_THAT(v, IsOk());
+  EXPECT_EQ(v->kind(), Value::Kind::kNull);
+}
+
 }  // namespace celwasm

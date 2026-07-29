@@ -126,6 +126,29 @@ TEST(CelCppOracle, IntArithmeticAgrees) {
 // interleave/explode code paths (runtime/cel_string_ext_search.cc /
 // cel_string_ext_list.cc) whose semantics were transcribed from
 // cel-cpp — these differentials keep the transcription honest.
+// Duration `%s` rendering has three fractional-digit widths (3 / 6 / 9)
+// plus a zero and a negative form, and the widths are cel-cpp's, not a
+// generic float format — these differentials pin every branch of
+// `AppendDurationCanonical` against the reference implementation.
+TEST(CelCppOracle, DurationFormatZeroAgrees) {
+  ExpectAgree(R"("%s".format([duration("0s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatNegativeAgrees) {
+  ExpectAgree(R"("%s".format([duration("-1.5s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatMillisAgrees) {
+  ExpectAgree(R"("%s".format([duration("1.5s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatMicrosAgrees) {
+  ExpectAgree(R"("%s".format([duration("1.000001s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatNanosAgrees) {
+  ExpectAgree(R"("%s".format([duration("1.000000001s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatNegativeSubSecondAgrees) {
+  ExpectAgree(R"("%s".format([duration("-0.25s")]))", kP3);
+}
+
 TEST(CelCppOracle, StringReplaceEmptyNeedleAgrees) {
   ExpectAgree(R"("abc".replace("", "-"))", kP3);
 }

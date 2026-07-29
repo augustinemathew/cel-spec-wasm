@@ -671,6 +671,36 @@
       "match": "LiftMap",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is the ForEach-over-visits-Size InternalError: it fires only if a HostMapBacking's ForEach disagrees with its own Size(), which is a backing-implementation invariant, not user input."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "EncodeUnknownSet",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the empty-UnknownSet fast path and the arena-OOM arm.  Per cel_unknown_merge's comment every production writer mints a non-empty descriptor, so the empty case reaches here only from hand-built fixtures."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SnapshotMapEntries",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is key/value decode-failure propagation out of the ForEach lambda, over entries the backing itself produced."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetArenaMapEntryMessageValue",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-message value-kind reject and the missing-backing arm for a map<K, message> entry; the checker types the entry value before codegen emits the insert."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "ProtoList",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder in ProtoList::At is the cord-backed-scratch string branch and the unhandled-cpp_type InternalError over a closed descriptor enum."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "GrowActivationArena",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is guest malloc failure during activation marshalling \u2014 wasmtime error, guest trap, and NULL return.  Allocator-exhaustion arms."
     }
   ]
 }
