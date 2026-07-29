@@ -2265,4 +2265,195 @@ TEST(WrapperFieldReadTest, UnsetWrapperReadsAsNull) {
   EXPECT_EQ(v->kind(), Value::Kind::kNull);
 }
 
+// ═══════════ WKT unwrap trampolines ═══════════
+//
+// `CelWktUnwrapWrapperImpl` / `CelWktUnwrapTimeImpl` are the
+// kStructExpr tail-unwrap arms: codegen emits them for a construction
+// whose type is one of the 9 wrapper FQNs or Timestamp/Duration, and
+// they peel the inner scalar out of the message.  Every guard below
+// the happy path is a codegen-regression tripwire — a type-checked
+// expression cannot reach them — so they are only observable by
+// driving the trampoline with a hand-staged CelValue.
+
+namespace {
+
+// Stage `cv` at the fixture's message slot and unwrap it as a wrapper
+// expecting inner kind `wrapper_kind`.
+CelValue UnwrapWrapper(Layer2Fixture& f, const CelValue& cv,
+                       uint32_t wrapper_kind) {
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(
+      CelWktUnwrapWrapperImpl(Layer2Fixture::kOutSlot, Layer2Fixture::kMsgSlot,
+                              wrapper_kind, f.Ctx()),
+      IsOk());
+  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+}
+
+CelValue UnwrapTime(Layer2Fixture& f, const CelValue& cv) {
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(CelWktUnwrapTimeImpl(Layer2Fixture::kOutSlot,
+                                   Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+}
+
+// A CEL_MESSAGE CelValue pointing at a freshly interned backing.
+CelValue InternedMessage(Layer2Fixture& f,
+                         std::shared_ptr<HostMessageBacking> backing) {
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = f.refs.Intern(std::move(backing));
+  return cv;
+}
+
+}  // namespace
+
+TEST(WktUnwrapWrapperTest, HappyPathPeelsInnerScalar) {
+  Layer2Fixture f;
+  auto wrapper = std::make_unique<google::protobuf::Int32Value>();
+  wrapper->set_value(7);
+  const CelValue in = InternedMessage(
+      f, std::make_shared<OwnedProtoBacking>(std::move(wrapper)));
+  const CelValue out = UnwrapWrapper(f, in, CEL_INT);
+  EXPECT_EQ(out.kind, CEL_INT);
+  EXPECT_EQ(out.payload.i, 7);
+}
+
+TEST(WktUnwrapWrapperTest, AbsorbsErrorAndUnknown) {
+  Layer2Fixture f;
+  CelValue err{};
+  err.kind = CEL_ERROR;
+  err.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
+  const CelValue got_err = UnwrapWrapper(f, err, CEL_INT);
+  EXPECT_EQ(got_err.kind, CEL_ERROR);
+  EXPECT_EQ(got_err.payload.err,
+            static_cast<uint32_t>(celwasm::ErrorCode::kOverflow));
+
+  CelValue unk{};
+  unk.kind = CEL_UNKNOWN;
+  unk.payload.unk = 3;
+  const CelValue got_unk = UnwrapWrapper(f, unk, CEL_INT);
+  EXPECT_EQ(got_unk.kind, CEL_UNKNOWN);
+  EXPECT_EQ(got_unk.payload.unk, 3u);
+}
+
+TEST(WktUnwrapWrapperTest, NonMessageInputPoisons) {
+  Layer2Fixture f;
+  CelValue i{};
+  i.kind = CEL_INT;
+  i.payload.i = 1;
+  EXPECT_EQ(UnwrapWrapper(f, i, CEL_INT).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapWrapperTest, UninternedRefIsAnInfrastructureFailure) {
+  Layer2Fixture f;
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = 999;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(
+      CelWktUnwrapWrapperImpl(Layer2Fixture::kOutSlot, Layer2Fixture::kMsgSlot,
+                              CEL_INT, f.Ctx()),
+      StatusIs(absl::StatusCode::kFailedPrecondition,
+               testing::HasSubstr("not found in ExternrefTable")));
+}
+
+TEST(WktUnwrapWrapperTest, BackingWithoutAProtoPoisons) {
+  Layer2Fixture f;
+  const CelValue in = InternedMessage(
+      f, std::make_shared<JsonLikeBacking>(
+             absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  EXPECT_EQ(UnwrapWrapper(f, in, CEL_INT).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapWrapperTest, NonWrapperMessagePoisons) {
+  Layer2Fixture f;
+  const CelValue in = InternedMessage(
+      f, std::make_shared<OwnedProtoBacking>(std::make_unique<HostMsg3>()));
+  EXPECT_EQ(UnwrapWrapper(f, in, CEL_INT).kind, CEL_ERROR);
+}
+
+// The kind cross-check is the codegen tripwire: the wrapper unwraps
+// cleanly, but to a kind the caller did not claim.
+TEST(WktUnwrapWrapperTest, InnerKindDisagreeingWithCallerPoisons) {
+  Layer2Fixture f;
+  auto wrapper = std::make_unique<google::protobuf::Int32Value>();
+  wrapper->set_value(7);
+  const CelValue in = InternedMessage(
+      f, std::make_shared<OwnedProtoBacking>(std::move(wrapper)));
+  EXPECT_EQ(UnwrapWrapper(f, in, CEL_STRING).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapTimeTest, HappyPathPeelsTimestampAndDuration) {
+  {
+    Layer2Fixture f;
+    auto ts = std::make_unique<google::protobuf::Timestamp>();
+    ts->set_seconds(1234567890);
+    const CelValue in =
+        InternedMessage(f, std::make_shared<OwnedProtoBacking>(std::move(ts)));
+    const CelValue out = UnwrapTime(f, in);
+    EXPECT_EQ(out.kind, CEL_TIMESTAMP);
+    EXPECT_EQ(out.payload.ts.seconds, 1234567890);
+  }
+  {
+    Layer2Fixture f;
+    auto d = std::make_unique<google::protobuf::Duration>();
+    d->set_seconds(5);
+    const CelValue in =
+        InternedMessage(f, std::make_shared<OwnedProtoBacking>(std::move(d)));
+    const CelValue out = UnwrapTime(f, in);
+    EXPECT_EQ(out.kind, CEL_DURATION);
+    EXPECT_EQ(out.payload.dur.seconds, 5);
+  }
+}
+
+TEST(WktUnwrapTimeTest, AbsorbsErrorAndUnknown) {
+  Layer2Fixture f;
+  CelValue err{};
+  err.kind = CEL_ERROR;
+  err.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
+  EXPECT_EQ(UnwrapTime(f, err).kind, CEL_ERROR);
+
+  CelValue unk{};
+  unk.kind = CEL_UNKNOWN;
+  unk.payload.unk = 3;
+  const CelValue got = UnwrapTime(f, unk);
+  EXPECT_EQ(got.kind, CEL_UNKNOWN);
+  EXPECT_EQ(got.payload.unk, 3u);
+}
+
+TEST(WktUnwrapTimeTest, NonMessageInputPoisons) {
+  Layer2Fixture f;
+  CelValue i{};
+  i.kind = CEL_INT;
+  EXPECT_EQ(UnwrapTime(f, i).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapTimeTest, UninternedRefIsAnInfrastructureFailure) {
+  Layer2Fixture f;
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = 999;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(CelWktUnwrapTimeImpl(Layer2Fixture::kOutSlot,
+                                   Layer2Fixture::kMsgSlot, f.Ctx()),
+              StatusIs(absl::StatusCode::kFailedPrecondition,
+                       testing::HasSubstr("not found in ExternrefTable")));
+}
+
+TEST(WktUnwrapTimeTest, BackingWithoutAProtoPoisons) {
+  Layer2Fixture f;
+  const CelValue in = InternedMessage(
+      f, std::make_shared<JsonLikeBacking>(
+             absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  EXPECT_EQ(UnwrapTime(f, in).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapTimeTest, NonTemporalMessagePoisons) {
+  Layer2Fixture f;
+  const CelValue in = InternedMessage(
+      f, std::make_shared<OwnedProtoBacking>(std::make_unique<HostMsg3>()));
+  EXPECT_EQ(UnwrapTime(f, in).kind, CEL_ERROR);
+}
+
 }  // namespace celwasm

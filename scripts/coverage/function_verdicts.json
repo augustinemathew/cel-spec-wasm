@@ -82,7 +82,7 @@
       "file": "runtime/cel_make.c",
       "match": "cel_make_null",
       "verdict": "test-only",
-      "evidence": "Callers: native kernel unit tests only (grep of runtime/ + codegen emit sites). Relocation to a test-support TU recommended in the m38 doc."
+      "evidence": "Called only from native kernel unit tests (cel_make_test, cel_compare_test); no codegen emit site and no wasm-path caller."
     },
     {
       "file": "runtime/cel_make.c",
@@ -107,12 +107,6 @@
       "match": "cel_make_double",
       "verdict": "test-only",
       "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
-    },
-    {
-      "file": "runtime/cel_make.c",
-      "match": "cel_make_bytes_view",
-      "verdict": "test-only",
-      "evidence": "Native kernel unit tests only (cel_make_bytes/cel_make_string have cel_net_ext.c callers; the view variants do not)."
     },
     {
       "file": "runtime/cel_arena.c",
@@ -339,14 +333,14 @@
     {
       "file": "eval/internal/cel_host.cc",
       "match": "CelWktUnwrapTimeImpl",
-      "verdict": "by-design",
-      "evidence": "Uncovered remainder is the non-CEL_MESSAGE kind guard, the ExternrefTable miss, the null-message arm, and the WKT-descriptor-mismatch arm whose own comment says `codegen only emits this for matching s.name()`.  Codegen emits the call only immediately after cel_make_message for a Timestamp/Duration literal; the 3VL absorb arm is e2e-covered by partial_eval_test's TimeUnwrapError row."
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the non-CEL_MESSAGE kind guard, the ExternrefTable miss, the null-message arm, and the WKT-descriptor-mismatch arm whose own comment says `codegen only emits this for matching s.name()`.  Codegen emits the call only immediately after cel_make_message for a Timestamp/Duration literal; the 3VL absorb arm is e2e-covered by partial_eval_test's TimeUnwrapError row. Downgraded from by-design: the guards are reachable by driving the trampoline directly with a staged CelValue, and cel_host_test now does so, so exempting them from the tests metric was too generous."
     },
     {
       "file": "eval/internal/cel_host.cc",
       "match": "CelWktUnwrapWrapperImpl",
-      "verdict": "by-design",
-      "evidence": "Same shape as CelWktUnwrapTimeImpl, plus the produced-kind vs wrapper_kind cross-check the code labels in place as a `codegen-regression tripwire`.  The absorb arm is e2e-covered by partial_eval_test's WrapperUnwrapError rows."
+      "verdict": "test-only",
+      "evidence": "Same shape as CelWktUnwrapTimeImpl, plus the produced-kind vs wrapper_kind cross-check the code labels in place as a `codegen-regression tripwire`.  The absorb arm is e2e-covered by partial_eval_test's WrapperUnwrapError rows. Downgraded from by-design: the guards are reachable by driving the trampoline directly with a staged CelValue, and cel_host_test now does so, so exempting them from the tests metric was too generous."
     },
     {
       "file": "eval/internal/cel_host.cc",
