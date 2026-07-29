@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <fstream>
 #include <ios>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -50,11 +51,13 @@
 #include "compiler/celfn/function_library.h"
 #include "compiler/compiler.h"
 #include "e2e/link_mode_e2e_helpers.h"
+#include "e2e/plugin_fixtures/cel_wasm_plugin_demo/user.pb.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
 #include "gmock/gmock.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 #include "tools/cpp/runfiles/runfiles.h"
@@ -163,7 +166,7 @@ TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
   ASSERT_THAT(plugin, IsOk()) << plugin.status();
   EXPECT_EQ(plugin->celfn_source(), idl_text);
   EXPECT_EQ(plugin->wit_interface(), "cel:customfn/fns@0.1.0");
-  ASSERT_EQ(plugin->decls().size(), 10);
+  ASSERT_EQ(plugin->decls().size(), 13);
   EXPECT_EQ(plugin->decls()[0].fn_name, "greet");
   EXPECT_EQ(plugin->decls()[0].overload_id, "greet_string_int");
   EXPECT_EQ(plugin->decls()[1].fn_name, "add");
@@ -209,6 +212,14 @@ TEST(CelWasmPluginDemo, KindMatrixEchoRoundTrips) {
       // kMapTpl change that landed with this fixture.
       "echo_map({'a': 1, 'b': 2})['b'] == 2",
       "size(echo_map({})) == 0",
+      // Nested / non-string-key carriers: the recursive list template,
+      // the map lower's non-string-key branch, and a list whose
+      // element is itself an aggregate.
+      "echo_strings(['a', 'b'])[1] == 'b'",
+      "size(echo_strings([])) == 0",
+      "echo_int_map({1: 2, 3: 4})[3] == 4",
+      "echo_nested([[1, 2], [3]])[0][1] == 2",
+      "size(echo_nested([])) == 0",
   };
   for (const absl::string_view source : kTrueSources) {
     ExpectPluginBoolTrue(*plugin_or, source);
@@ -248,16 +259,22 @@ TEST(CelWasmPluginDemo, OneNounFlowLoadUseCompileUsePlanEval) {
 
 TEST(CelWasmPluginDemo, OneNounFlowProtoArg) {
   GTEST_SKIP()
-      << "blocked on the demo_plugin_proto fixture's pre-existing, "
-         "unrelated wasm32-wasip2 cross-compile break (absl "
-         "synchronization does not build under the wasip2 sysroot), so "
-         "this test cannot depend on demo_plugin_proto bytes.  Un-skip "
-         "by porting this body onto demo_plugin_proto once that build "
-         "is fixed.";
-  // Intended: Plugin::Load(demo_plugin_proto bytes) →
-  // Compiler::Builder::Use → Compile("is_adult(u)") → Engine::Use →
-  // Plan → Eval with a bound acme.User message, asserting the
-  // proto-as-bytes marshalling path through the one-noun surface.
+      << "demo_plugin_proto cannot build without patching absl to compile "
+         "threadless (cctz's time-zone mutex, absl::Mutex's yield hook, the "
+         "stdcpp waiter + spinlock lock_guard).  Those patches were tried and "
+         "REVERTED deliberately on 2026-07-28: the direction chosen instead is "
+         "to keep absl out of the wasm side entirely — see "
+         "doc/design/10-plugin-wit-pipeline.md §4.  Un-skip when the guest "
+         "gets a proto runtime that does not drag absl (upb, or an IDL "
+         "surface that passes fields rather than messages).  Everything else "
+         "in the proto path is FIXED and unit-pinned: the export-symbol "
+         "lowercasing (cpp_stub_emitter_test ProtoDeclExportSymbolIsLowercased) "
+         "and the -pthread strip (wasm_clang.sh).";
+  // Intended body: Plugin::Load(demo_plugin_proto bytes) ->
+  // Compiler::Builder::Use -> Compile("is_adult(u)") -> Engine::Use ->
+  // Plan -> Eval with a bound acme.User, both directions.  Verified
+  // GREEN on 2026-07-28 with the absl patches applied, so the only
+  // blocker is the absl-in-guest dependency itself.
 }
 
 TEST(CelWasmPluginDemo, AddRoundTrips) {

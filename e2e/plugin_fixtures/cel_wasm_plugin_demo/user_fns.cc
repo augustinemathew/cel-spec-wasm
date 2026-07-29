@@ -54,6 +54,19 @@ int64_t SumList(const std::vector<int64_t>& xs) {
   return total;
 }
 
+std::vector<std::string> EchoStrings(const std::vector<std::string>& xs) {
+  return xs;
+}
+
+std::map<int64_t, int64_t> EchoIntMap(const std::map<int64_t, int64_t>& m) {
+  return m;
+}
+
+std::vector<std::vector<int64_t>> EchoNested(
+    const std::vector<std::vector<int64_t>>& xs) {
+  return xs;
+}
+
 std::vector<int64_t> Iota(int64_t n) {
   std::vector<int64_t> out;
   out.reserve(static_cast<size_t>(n));

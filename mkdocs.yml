@@ -105,6 +105,7 @@ nav:
       - ABI wire format: design/08-abi-wire-format.md
       - Runtime: design/04-runtime.md
       - Custom functions: design/05-custom-functions.md
+      - Plugin / WIT pipeline: design/10-plugin-wit-pipeline.md
       - Testing strategy: design/06-testing-strategy.md
       - Benchmarking: design/07-benchmarking.md
   - Reference:

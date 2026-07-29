@@ -299,6 +299,12 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
 `cabi_realloc`; the generated `cabi_post_*` frees; **the author never calls
 `_free` on returns.** Probed against wit-bindgen 0.57.
 
+> The end-to-end plugin pipeline — the five generators, the three
+> naming schemes they must agree on, the CEL↔WIT↔C type table, and
+> what the threadless wasip2 target costs — is written up separately
+> in `design/10-plugin-wit-pipeline.md`.  Read that before touching
+> any of the `celfnc_emit/` emitters.
+
 ### 5.4 Known traps
 
 - **~~String-return trap~~ — FIXED 2026-07-28.** Every non-scalar carrier
@@ -324,14 +330,18 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
   (string keys route through the string codec, scalar values assign
   directly), and every aggregate lower short-circuits an empty container to
   a NULL pointer rather than calling `cabi_realloc(NULL, 0, align, 0)`.
-- **Proto args/returns still blocked** (`demo_plugin_proto`, manual-tagged).
-  Not the trap above — a toolchain break: the fixture drags libprotobuf,
-  which drags absl, whose cctz `time_zone_impl.cc` uses `std::mutex`. The
-  wasip2 platform is deliberately `wasi_threads_off` (the Component Model
-  requires non-shared memory), so libc++ there has no threads and no
-  `std::mutex`. Fixing protos means making that dependency edge
-  thread-free — e.g. a `LITE_RUNTIME` proto that avoids absl/time, or an
-  absl patch under `third_party/patches/`.
+- **~~Proto args/returns blocked~~ — FIXED 2026-07-28.** Three separate
+  causes, all now addressed and written up in
+  `design/10-plugin-wit-pipeline.md` §2 and §4: absl does not compile
+  threadless (three `third_party/patches/` entries), absl and protobuf
+  leak `-pthread` into the link (stripped for wasip2 in
+  `wasm_clang.sh`), and the stub emitter named the export symbol from
+  the overload id verbatim while wit-bindgen lowercases it, so every
+  proto-typed decl left its export undefined. `demo_plugin_proto` now
+  builds and `OneNounFlowProtoArg` round-trips an `acme.User` in both
+  directions. (`LITE_RUNTIME` is NOT the fix, and was tried: protobuf_lite
+  deps on absl/time directly, and it makes generated classes derive from
+  MessageLite, which `Value::OwnedMessage` cannot take.)
 - **Example 09's visibility hole — closed by the `Plugin` surface.**
   The example's former `FunctionLibrary` mirror needed the
   `//:internal` `//compiler/celfn:function_library` target; the

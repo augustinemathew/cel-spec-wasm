@@ -28,3 +28,11 @@ map<string, int> @plugin.echo_map(map<string, int> m);
 // and returns a scalar, the other takes a scalar and returns a list.
 int @plugin.sum_list(list<int> xs);
 list<int> @plugin.iota(int n);
+
+// Nested / non-string-key carriers — these reach codec arms the flat
+// matrix above does not: the RECURSIVE list template (element needs
+// its own lift/lower), the map lower's non-string-key branch, and
+// LiftList/LowerList's recursion through a nested element type.
+list<string> @plugin.echo_strings(list<string> xs);
+map<int, int> @plugin.echo_int_map(map<int, int> m);
+list<list<int>> @plugin.echo_nested(list<list<int>> xs);

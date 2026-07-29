@@ -3,12 +3,14 @@
 #include "compiler/celfn/celfnc_emit/cpp_stub_emitter.h"
 
 #include <cctype>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -27,7 +29,7 @@ std::string NormalizePkg(absl::string_view p) {
 }
 
 // Top-level argument/return categories.  Drives signature shape.
-enum class Carrier {
+enum class Carrier : uint8_t {
   kScalarValue,  // bool / int64 / uint64 / double — pass by value
   kAuthorPtr,    // customfn_T* — pointer carrier
   kRecordPtr,    // exports_<pkg>_<iface>_T* — record pointer
@@ -69,6 +71,19 @@ absl::string_view ScalarCType(const CelType& t) {
   }
 }
 
+std::string AuthorCStruct(const CelType& t);
+
+// The element-name fragment of a nested carrier: `AuthorCStruct`
+// minus the `customfn_` prefix and `_t` suffix, so it can be spliced
+// into an enclosing list / tuple2 struct name.
+std::string CStructSuffix(const CelType& t) {
+  const std::string full = AuthorCStruct(t);
+  absl::string_view v = full;
+  if (absl::StartsWith(v, "customfn_")) v.remove_prefix(9);
+  if (absl::EndsWith(v, "_t")) v.remove_suffix(2);
+  return std::string(v);
+}
+
 // C struct name for an aggregate/string/bytes/list/map carrier.
 // Mirrors cpp_codec_emitter's StructFor.
 std::string AuthorCStruct(const CelType& t) {
@@ -80,31 +95,12 @@ std::string AuthorCStruct(const CelType& t) {
       return "customfn_list_u8_t";
     case K::kNull:
       return "customfn_option_u8_t";
-    case K::kList: {
-      // Reuse the same suffix shape as cpp_codec_emitter.
-      auto inner = AuthorCStruct(t.list_element());
-      // Replace `customfn_` and trailing `_t` to get the inner suffix.
-      absl::string_view innerv = inner;
-      if (absl::StartsWith(innerv, "customfn_"))
-        innerv.remove_prefix(9);  // strip "customfn_"
-      if (absl::EndsWith(innerv, "_t")) innerv.remove_suffix(2);
-      return absl::StrCat("customfn_list_", innerv, "_t");
-    }
-    case K::kMap: {
-      auto k = AuthorCStruct(t.map_key());
-      auto v = AuthorCStruct(t.map_value());
-      absl::string_view kv = k;
-      if (absl::StartsWith(kv, "customfn_"))
-        kv.remove_prefix(9);  // strip "customfn_"
-      if (absl::EndsWith(kv, "_t")) kv.remove_suffix(2);
-      absl::string_view vv = v;
-      if (absl::StartsWith(vv, "customfn_"))
-        vv.remove_prefix(9);  // strip "customfn_"
-      if (absl::EndsWith(vv, "_t")) vv.remove_suffix(2);
-      // For primitive list/map elements AuthorCStruct returns
-      // "customfn_<scalar>_t" via a fallthrough below — handle that.
-      return absl::StrCat("customfn_list_tuple2_", kv, "_", vv, "_t");
-    }
+    case K::kList:
+      return absl::StrCat("customfn_list_", CStructSuffix(t.list_element()),
+                          "_t");
+    case K::kMap:
+      return absl::StrCat("customfn_list_tuple2_", CStructSuffix(t.map_key()),
+                          "_", CStructSuffix(t.map_value()), "_t");
     case K::kBool:
       return "customfn_bool_t";  // unused at top-level; only as list elt
     case K::kInt:
@@ -225,7 +221,16 @@ absl::StatusOr<std::string> EmitOneExport(const CelfnDecl& d,
   }
 
   const std::string fn_camel = SnakeToCamel(d.fn_name);
-  const std::string export_name = absl::StrCat(exports_prefix, d.overload_id);
+  // The export symbol must match what wit-bindgen derives from the WIT
+  // function name, and WIT identifiers are lowercase-only — so the WIT
+  // emitter flattens case (wit_emitter.cc SnakeToKebab).  Overload ids
+  // for proto-typed decls carry the proto type's CamelCase segment
+  // (`is_adult_message_acme_User`), so the same flattening has to
+  // happen here or the stub defines `..._acme_User` while wit-bindgen
+  // declares `..._acme_user`, the export stays undefined, and the
+  // component encoder reports it as an unresolved `env` import.
+  const std::string export_name =
+      absl::StrCat(exports_prefix, absl::AsciiStrToLower(d.overload_id));
   const Carrier ret_c = CarrierFor(d.return_type);
 
   // Argument list pieces.

@@ -7,11 +7,6 @@ syntax = "proto3";
 
 package acme;
 
-// LITE_RUNTIME so the guest links protobuf-lite: the full runtime
-// drags absl, whose cctz uses std::mutex, which the threadless
-// wasip2 libc++ does not provide.  The plugin boundary only needs
-// serialize / parse, which MessageLite covers.
-option optimize_for = LITE_RUNTIME;
 
 message User {
   string name = 1;
