@@ -1103,7 +1103,67 @@ TEST_F(StringBytesActivationE2ETest, BindBytesWithNul) {
 //  equality kernel.  Each test pins one cross-numeric / cross-kind
 //  shape from the conformance corpus.
 // ──────────────────────────────────────────────────────────────
+// Element-wise equality dispatches per element kind; the bytes, null,
+// duration and timestamp arms of that switch had no e2e row.  A
+// duplicate literal map key is a distinct runtime poison arm.  Both
+// pinned by cel_cpp_oracle_test's ElementEqualityAcrossKindsAgrees and
+// DuplicateMapKeyAgrees.
+TEST_F(SameKindCompareE2ETest, ElementEqualityAcrossKinds) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  Activation a;
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, R"([b"a"] == [b"a"])"), a).AsBool(),
+            true);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, R"([b"a"] == [b"b"])"), a).AsBool(),
+            false);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "[null] == [null]"), a).AsBool(),
+            true);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler,
+                                R"([duration("1s")] == [duration("1s")])"),
+                    a)
+                 .AsBool(),
+            true);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*compiler, "[timestamp(0)] == [timestamp(0)]"), a)
+           .AsBool(),
+      true);
+}
+
+TEST_F(SameKindCompareE2ETest, DuplicateLiteralMapKeyIsAnError) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, R"({1: "a", 1: "b"})");
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(v->IsError()) << "kind=" << static_cast<int>(v->kind());
+}
+
 class DynPassthroughE2ETest : public ::testing::Test {};
+
+// A list index is int-typed to the checker, so the uint / double /
+// wrong-kind arms of the index kernel are only reachable through a
+// `dyn` subscript — the route the conformance corpus takes, and the
+// only workload that was reaching them.  A non-integral double is an
+// error, as is a non-numeric key.  Pinned by cel_cpp_oracle_test's
+// DynIndexKindsAgree.
+TEST_F(DynPassthroughE2ETest, DynSubscriptKinds) {
+  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "[1,2][dyn(1u)]"), {})
+                 .AsInt(),
+            2);
+  EXPECT_EQ(*EvalOk(CompilePlan(*CompilerEmpty(), "[1,2][dyn(1.0)]"), {})
+                 .AsInt(),
+            2);
+  for (const absl::string_view source :
+       {R"([1,2][dyn(1.5)])", R"([1,2][dyn("x")])"}) {
+    auto instance = CompilePlan(*CompilerEmpty(), source);
+    Activation a;
+    auto v = instance.Eval(a);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << source << " kind=" << static_cast<int>(v->kind());
+  }
+}
 
 // A conversion over `dyn` is rejected at the static-subset gate.
 // `dyn(x)` is the identity at codegen and forwards its argument's

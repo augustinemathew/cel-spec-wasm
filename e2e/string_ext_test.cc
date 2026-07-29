@@ -143,6 +143,30 @@ TEST_F(CodePointE2ETest, MultiByteCodePoints) {
   EXPECT_EQ(EvalString(R"("héllo".charAt(1))"), "é");
 }
 
+// Position-bounded search over MULTI-BYTE text walks the code-point
+// loop rather than the byte fast path, and a negative position is an
+// error for both directions.  `indexOf` used to clamp a negative pos
+// and return 0 -- an earlier reading of cel-cpp's IndexOf3 took its
+// missing `pos < 0` check at face value, missing that the comparison
+// against an unsigned Size() rejects negatives anyway.  Pinned by
+// cel_cpp_oracle_test's SearchPositionEdgesAgree.
+TEST_F(SearchE2ETest, PositionBoundedSearchEdges) {
+  EXPECT_TRUE(EvalBool(R"("héllo".indexOf("l", 1) == 2)"));
+  EXPECT_TRUE(EvalBool(R"("héllo".lastIndexOf("l", 3) == 3)"));
+  for (const absl::string_view source :
+       {R"("abc".indexOf("a", -1))", R"("abc".lastIndexOf("a", -1))"}) {
+    Compiler::Builder b;
+    auto compiler = std::move(b).Build();
+    ASSERT_TRUE(compiler.ok()) << compiler.status();
+    auto instance = CompilePlan(*compiler, source);
+    Activation a;
+    auto v = instance.Eval(a);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << source << " kind=" << static_cast<int>(v->kind());
+  }
+}
+
 TEST_F(SearchE2ETest, Substring) {
   EXPECT_EQ(EvalString(R"("hello world".substring(6))"), "world");
 }

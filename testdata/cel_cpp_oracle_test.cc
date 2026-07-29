@@ -164,6 +164,36 @@ TEST(CelCppOracle, LastIndexOfAgrees) {
   ExpectAgree(R"("abcb".lastIndexOf("b"))", kP3);
   ExpectAgree(R"("abcb".lastIndexOf("b", 1))", kP3);
 }
+// Index-by-non-int, duplicate map keys, cross-kind element equality,
+// and the multi-byte / negative-position search paths — each has its
+// own runtime arm and only the conformance corpus was reaching them.
+TEST(CelCppOracle, DynIndexKindsAgree) {
+  for (const char* src : {"[1,2][dyn(1u)]", "[1,2][dyn(1.0)]",
+                          "[1,2][dyn(1.5)]", "[1,2][dyn(\"x\")]"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, DuplicateMapKeyAgrees) {
+  ExpectAgree(R"({1: "a", 1: "b"})", kP3);
+}
+TEST(CelCppOracle, ElementEqualityAcrossKindsAgrees) {
+  for (const char* src :
+       {R"([b"a"] == [b"a"])", "[null] == [null]",
+        R"([duration("1s")] == [duration("1s")])",
+        "[timestamp(0)] == [timestamp(0)]",
+        R"([b"a"] == [b"b"])"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, SearchPositionEdgesAgree) {
+  for (const char* src : {R"("héllo".indexOf("l", 1))",
+                          R"("héllo".lastIndexOf("l", 3))",
+                          R"("abc".indexOf("a", -1))",
+                          R"("abc".lastIndexOf("a", -1))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
 // The math extension's kernels guard their operand kind at runtime.
 // A `dyn()`-wrapped operand of the wrong kind clears the static-subset
 // gate at compile time and then trips the guard — the same route the

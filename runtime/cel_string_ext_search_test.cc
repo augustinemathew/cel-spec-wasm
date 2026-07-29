@@ -110,13 +110,17 @@ TEST_F(StringExtFixture, IndexOfPosBeyondHaystackErrors) {
   ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
 }
 
-TEST_F(StringExtFixture, IndexOfPosNegativeClamps) {
-  // cel-cpp `IndexOf(string, pos)` clamps negative pos to 0.  The
-  // pre-flight `IndexOf3` byte-bound check passes for negative pos
-  // (it only rejects pos > byte_size, not pos < 0).
+TEST_F(StringExtFixture, IndexOfPosNegativeIsAnError) {
+  // A negative pos is an error, matching cel-cpp.  Its `IndexOf3`
+  // guard reads `pos > haystack.Size()` with no explicit `pos < 0`
+  // (extensions/strings.cc:120), but `Size()` is unsigned, so a
+  // negative `pos` promotes to a huge unsigned value and trips it.
+  // This case previously asserted a clamp to 0, transcribed from that
+  // missing check; `cel_cpp_oracle_test` SearchPositionEdgesAgree
+  // showed cel-cpp errors.
   uint32_t out = MakeOut();
   cel_string_index_of_at_vvv(out, MakeStr("abc"), MakeStr("a"), MakeInt(-5));
-  ExpectInt(out, 0);
+  ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
 }
 
 TEST_F(StringExtFixture, IndexOfEnvelopeBinary) {

@@ -188,18 +188,21 @@ int64_t CodepointToByteOffset(absl::string_view s, int64_t n) {
 }
 
 // Pre-flight pos validation common to the 3-arg `indexOf` /
-// `lastIndexOf` shapes.  `allow_negative` matches cel-cpp's split:
-// `IndexOf3` clamps negative pos (allow_negative=true), while
-// `LastIndexOf3` rejects negative pos (allow_negative=false).
+// `lastIndexOf` shapes.  Both reject a negative pos.
+//
+// The two guards read differently upstream but behave identically:
+// `LastIndexOf3` tests `pos < 0 || pos > haystack.Size()`, while
+// `IndexOf3` tests only `pos > haystack.Size()` — but `Size()` is
+// unsigned, so a negative `pos` promotes to a huge unsigned value and
+// trips that guard too (cel-cpp extensions/strings.cc:120, :133).  An
+// earlier reading of the source took the missing `pos < 0` in
+// `IndexOf3` at face value and clamped instead, which made
+// `"abc".indexOf("a", -1)` return 0 where cel-cpp errors.
+//
 // Returns true on error (caller should bail; `out` has been
 // poisoned).
-bool ValidatePos(CelValue* out, int64_t pos, size_t haystack_bytes,
-                 bool allow_negative) {
-  if (!allow_negative && pos < 0) {
-    Poison(out, CEL_ERR_INVALID_ARGUMENT);
-    return true;
-  }
-  if (pos >= 0 && static_cast<uint64_t>(pos) > haystack_bytes) {
+bool ValidatePos(CelValue* out, int64_t pos, size_t haystack_bytes) {
+  if (pos < 0 || static_cast<uint64_t>(pos) > haystack_bytes) {
     Poison(out, CEL_ERR_INVALID_ARGUMENT);
     return true;
   }
@@ -308,9 +311,8 @@ extern "C" void cel_string_index_of_at_vvv(uint32_t out_slot, uint32_t s_slot,
     Poison(out, CEL_ERR_TYPE_MISMATCH);
     return;
   }
-  // cel-cpp `IndexOf3` byte-size bound — see header.
-  if (ValidatePos(out, pos->payload.i, s->payload.s.len,
-                  /*allow_negative=*/true)) {
+  // cel-cpp `IndexOf3` bound — see the ValidatePos header comment.
+  if (ValidatePos(out, pos->payload.i, s->payload.s.len)) {
     return;
   }
   WriteInt(out, IndexOfImpl(BorrowSpan(s->payload.s),
@@ -353,8 +355,7 @@ extern "C" void cel_string_last_index_of_at_vvv(uint32_t out_slot,
     return;
   }
   // cel-cpp `LastIndexOf3` byte-size bound + negative-pos reject.
-  if (ValidatePos(out, pos->payload.i, s->payload.s.len,
-                  /*allow_negative=*/false)) {
+  if (ValidatePos(out, pos->payload.i, s->payload.s.len)) {
     return;
   }
   WriteInt(out, LastIndexOfImpl(BorrowSpan(s->payload.s),
@@ -379,8 +380,7 @@ extern "C" void cel_string_substring_at_vv(uint32_t out_slot, uint32_t s_slot,
   // Mirrors cel-cpp `Substring(start)` (lines ~647-700): start<0
   // and start>byte_size are early-out errors; the code-point walk
   // refines start>codepoint_count to an error.
-  if (ValidatePos(out, start->payload.i, s->payload.s.len,
-                  /*allow_negative=*/false)) {
+  if (ValidatePos(out, start->payload.i, s->payload.s.len)) {
     return;
   }
   const absl::string_view text = BorrowSpan(s->payload.s);
