@@ -827,6 +827,18 @@
       "match": "OverloadTableIsExplicitlyUnimplemented",
       "verdict": "test-only",
       "evidence": "Query helper reporting whether an overload id is a known-unimplemented entry. Exercised by overload_table unit tests; codegen consults the table through Lookup, so no e2e workload reaches this predicate."
+    },
+    {
+      "file": "eval/host/cel_log.h",
+      "match": "lines",
+      "verdict": "test-only",
+      "evidence": "Accessor on `CapturingCelLogSink`, a test-support sink: it has no production instantiation anywhere (its only non-test reference is its own Emit definition at cel_log.cc:339), and the production path uses DefaultCelLogSink. Exercised by the cel_log unit tests; no e2e workload installs a capturing sink, because compiled CEL emits no log calls."
+    },
+    {
+      "file": "eval/host/cel_log.cc",
+      "match": "Emit",
+      "verdict": "test-only",
+      "evidence": "`CapturingCelLogSink::Emit` \u2014 the test-support sink's implementation. Same reasoning as its `lines()` accessor: no production instantiation, and the diagnostics path installs DefaultCelLogSink instead."
     }
   ]
 }
