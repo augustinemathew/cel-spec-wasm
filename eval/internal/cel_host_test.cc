@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -2454,6 +2455,131 @@ TEST(WktUnwrapTimeTest, NonTemporalMessagePoisons) {
   const CelValue in = InternedMessage(
       f, std::make_shared<OwnedProtoBacking>(std::make_unique<HostMsg3>()));
   EXPECT_EQ(UnwrapTime(f, in).kind, CEL_ERROR);
+}
+
+// ═══════════ JSON well-known-type reads ═══════════
+//
+// A `google.protobuf.Struct` / `ListValue` / `Value` field unpacks into
+// the corresponding CEL value on read: Struct to a map, ListValue to a
+// list, and Value to whichever scalar its `kind` oneof holds (an unset
+// Value being null per the JSON rules).
+//
+// These are not reachable end-to-end: a read of such a field types as
+// `dyn`, and the static subset rejects dyn before codegen, so the whole
+// unpack path had no workload at all.  `ProtoBacking::ReadField` is
+// native, so the unpackers are exercised directly here.
+
+TEST(JsonWktReadTest, StructReadsAsMapOfScalars) {
+  auto msg = std::make_shared<HostMsg3>();
+  auto& f = *msg->mutable_single_struct()->mutable_fields();
+  f["s"].set_string_value("x");
+  f["n"].set_number_value(1.5);
+  f["b"].set_bool_value(true);
+  f["z"].set_null_value(google::protobuf::NULL_VALUE);
+  ProtoBacking backing(msg.get());
+  auto v = backing.ReadField(36, "single_struct",
+                             CelType::Map(CelType::String(), CelType::Int()));
+  ASSERT_THAT(v, IsOk());
+  ASSERT_EQ(v->kind(), Value::Kind::kMap);
+  auto m = v->MapBacking();
+  ASSERT_THAT(m, IsOk());
+  EXPECT_EQ((*m)->Size(), 4u);
+}
+
+TEST(JsonWktReadTest, ListValueReadsAsList) {
+  auto msg = std::make_shared<HostMsg3>();
+  auto* lv = msg->mutable_single_list_value();
+  lv->add_values()->set_string_value("x");
+  lv->add_values()->set_number_value(2.0);
+  ProtoBacking backing(msg.get());
+  auto v =
+      backing.ReadField(37, "single_list_value", CelType::List(CelType::Int()));
+  ASSERT_THAT(v, IsOk());
+  ASSERT_EQ(v->kind(), Value::Kind::kList);
+  auto l = v->ListBacking();
+  ASSERT_THAT(l, IsOk());
+  EXPECT_EQ((*l)->Size(), 2u);
+}
+
+// One row per arm of `google.protobuf.Value`'s `kind` oneof, plus the
+// unset case, plus the two that recurse back into Struct / ListValue.
+TEST(JsonWktReadTest, ValueUnwrapsEveryKindArm) {
+  auto read = [](const std::function<void(google::protobuf::Value&)>& fill) {
+    auto msg = std::make_shared<HostMsg3>();
+    fill(*msg->mutable_single_value());
+    ProtoBacking backing(msg.get());
+    return backing.ReadField(35, "single_value", CelType::Int());
+  };
+  auto null_v = read([](google::protobuf::Value& v) {
+    v.set_null_value(google::protobuf::NULL_VALUE);
+  });
+  ASSERT_THAT(null_v, IsOk());
+  EXPECT_EQ(null_v->kind(), Value::Kind::kNull);
+
+  auto num = read([](google::protobuf::Value& v) {
+    v.set_number_value(1.5);
+  });
+  ASSERT_THAT(num, IsOk());
+  EXPECT_EQ(num->kind(), Value::Kind::kDouble);
+
+  auto str = read([](google::protobuf::Value& v) {
+    v.set_string_value("hi");
+  });
+  ASSERT_THAT(str, IsOk());
+  EXPECT_EQ(str->kind(), Value::Kind::kString);
+
+  auto boolean = read([](google::protobuf::Value& v) {
+    v.set_bool_value(true);
+  });
+  ASSERT_THAT(boolean, IsOk());
+  EXPECT_EQ(boolean->kind(), Value::Kind::kBool);
+
+  auto nested_struct = read([](google::protobuf::Value& v) {
+    (*v.mutable_struct_value()->mutable_fields())["k"].set_number_value(1.0);
+  });
+  ASSERT_THAT(nested_struct, IsOk());
+  EXPECT_EQ(nested_struct->kind(), Value::Kind::kMap);
+
+  auto nested_list = read([](google::protobuf::Value& v) {
+    v.mutable_list_value()->add_values()->set_number_value(1.0);
+  });
+  ASSERT_THAT(nested_list, IsOk());
+  EXPECT_EQ(nested_list->kind(), Value::Kind::kList);
+
+  // An unset Value has no oneof arm set and decodes to null.
+  auto unset = read([](google::protobuf::Value&) {});
+  ASSERT_THAT(unset, IsOk());
+  EXPECT_EQ(unset->kind(), Value::Kind::kNull);
+}
+
+// Route 2 into the JSON unpackers: an `Any` whose payload is a JSON
+// well-known type.  `ReadAnyMessageArm` shares `MaybeUnpackWktMessage`
+// with the field-read arm, so unwrapping the Any should chain straight
+// into `UnpackJsonStruct` rather than handing back a message backing.
+TEST(JsonWktReadTest, AnyPayloadOfStructChainsIntoTheJsonUnpacker) {
+  auto msg = std::make_shared<HostMsg3>();
+  google::protobuf::Struct payload;
+  (*payload.mutable_fields())["k"].set_number_value(7.0);
+  ASSERT_TRUE(msg->mutable_single_any()->PackFrom(payload));
+  ProtoBacking backing(msg.get());
+  auto v = backing.ReadField(30, "single_any", IgnoredType());
+  ASSERT_THAT(v, IsOk());
+  EXPECT_EQ(v->kind(), Value::Kind::kMap)
+      << "Any(Struct) should unpack to a CEL map, got kind "
+      << static_cast<int>(v->kind());
+}
+
+TEST(JsonWktReadTest, AnyPayloadOfListValueChainsIntoTheJsonUnpacker) {
+  auto msg = std::make_shared<HostMsg3>();
+  google::protobuf::ListValue payload;
+  payload.add_values()->set_number_value(1.0);
+  ASSERT_TRUE(msg->mutable_single_any()->PackFrom(payload));
+  ProtoBacking backing(msg.get());
+  auto v = backing.ReadField(30, "single_any", IgnoredType());
+  ASSERT_THAT(v, IsOk());
+  EXPECT_EQ(v->kind(), Value::Kind::kList)
+      << "Any(ListValue) should unpack to a CEL list, got kind "
+      << static_cast<int>(v->kind());
 }
 
 }  // namespace celwasm
