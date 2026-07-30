@@ -1086,6 +1086,28 @@ class PackHarness {
     f_.mem.WriteCelValue(kSrcSlot, cv);
   }
 
+  // Stage an arbitrary backing (not necessarily proto-carrying) in the
+  // externref table and point a CEL_MESSAGE CelValue at it.  Reaches
+  // the "backing has no proto message" arm, which a real proto backing
+  // cannot.
+  void StageBackingSrc(std::shared_ptr<HostMessageBacking> backing) {
+    const uint32_t src_slot = f_.refs.Intern(std::move(backing));
+    CelValue cv{};
+    cv.kind = CEL_MESSAGE;
+    cv.payload.msg_slot = src_slot;
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Intern `backing` and return a CEL_MESSAGE CelValue pointing at it,
+  // without touching kSrcSlot — for embedding inside a staged arena
+  // list.
+  CelValue InternBackingElement(std::shared_ptr<HostMessageBacking> backing) {
+    CelValue cv{};
+    cv.kind = CEL_MESSAGE;
+    cv.payload.msg_slot = f_.refs.Intern(std::move(backing));
+    return cv;
+  }
+
   // Stage a null src at kSrcSlot — exercises the null-clear arm
   // ordering (must not reach WriteMessageOrPack).
   void StageNullSrc() {
@@ -2667,6 +2689,69 @@ TEST(MapTrampolineGuardTest, InOnUninternedRefIsAnInfrastructureFailure) {
                            Layer2Fixture::kMsgSlot, f.Ctx()),
               StatusIs(absl::StatusCode::kFailedPrecondition,
                        testing::HasSubstr("not found in ExternrefTable")));
+}
+
+// ═══════════ Nested singular-message set guards ═══════════
+//
+// `SetNestedSingularMessage` validates the incoming wire value before
+// touching Reflection: it must be a CEL_MESSAGE, its externref must
+// resolve, and the backing must carry a real proto.  A type-checked
+// field-init cannot violate any of those, so each is staged directly.
+
+TEST(NestedMessageSetGuardTest, NonMessageValueIsRejected) {
+  PackHarness h;
+  CelValue i{};
+  i.kind = CEL_INT;
+  i.payload.i = 1;
+  h.StageRaw(i);
+  EXPECT_THAT(h.SetField(17, "inner"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("is MESSAGE but value kind is")));
+}
+
+TEST(NestedMessageSetGuardTest, UninternedSourceIsRejected) {
+  PackHarness h;
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = 999;
+  h.StageRaw(cv);
+  EXPECT_THAT(h.SetField(17, "inner"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("has no externref entry")));
+}
+
+TEST(NestedMessageSetGuardTest, BackingWithoutAProtoIsRejected) {
+  PackHarness h;
+  h.StageBackingSrc(std::make_shared<JsonLikeBacking>(
+      absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  EXPECT_THAT(h.SetField(17, "inner"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("has no proto message")));
+}
+
+// Repeated-message element guards, the arena-list path.  Each element
+// must resolve through the externref table to a backing that carries a
+// real proto; batch-27's rows covered only the element-kind arm.
+TEST(RepeatedMessageElementGuardTest, UninternedElementIsRejected) {
+  PackHarness h;
+  CelValue elem{};
+  elem.kind = CEL_MESSAGE;
+  elem.payload.msg_slot = 999;
+  h.StageArenaList({elem});
+  EXPECT_THAT(h.SetField(27, "rep_msg"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("element has no externref entry")));
+}
+
+TEST(RepeatedMessageElementGuardTest, ElementBackingWithoutAProtoIsRejected) {
+  PackHarness h;
+  CelValue elem = h.InternBackingElement(std::make_shared<JsonLikeBacking>(
+      absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  h.StageArenaList({elem});
+  EXPECT_THAT(
+      h.SetField(27, "rep_msg"),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               testing::HasSubstr("element backing has no proto message")));
 }
 
 }  // namespace celwasm
