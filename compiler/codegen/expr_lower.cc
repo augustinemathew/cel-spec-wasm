@@ -27,40 +27,6 @@ namespace {
 // Human-readable name for an `ExprKindCase`, used in unimplemented
 // diagnostics so the error points at the offending kind by name rather
 // than an integer enum value.
-absl::string_view ExprKindName(cel::ExprKindCase k) {
-  switch (k) {
-    case cel::ExprKindCase::kUnspecifiedExpr:
-      return "unspecified";
-    case cel::ExprKindCase::kConstant:
-      return "constant";
-    case cel::ExprKindCase::kIdentExpr:
-      return "ident";
-    case cel::ExprKindCase::kSelectExpr:
-      return "select";
-    case cel::ExprKindCase::kCallExpr:
-      return "call";
-    case cel::ExprKindCase::kListExpr:
-      return "list";
-    case cel::ExprKindCase::kStructExpr:
-      return "struct";
-    case cel::ExprKindCase::kMapExpr:
-      return "map";
-    case cel::ExprKindCase::kComprehensionExpr:
-      return "comprehension";
-  }
-  // Closed enum; reaching here means cel-cpp grew a variant we haven't
-  // mirrored.  Crash loudly per CLAUDE.md — a silent fallback here
-  // would miscompile on a new kind.
-  ABSL_CHECK(false) << "ExprKindName: unknown ExprKindCase "
-                    << static_cast<int>(k);
-  return "<unreachable>";
-}
-
-absl::Status Unimplemented(cel::ExprKindCase kind, int64_t id) {
-  return absl::UnimplementedError(
-      absl::StrCat("expr_lower: expression kind `", ExprKindName(kind),
-                   "` is not supported yet (expr id ", id, ")"));
-}
 
 }  // namespace
 
@@ -1025,7 +991,7 @@ absl::string_view MaybeRepickCrossNumericOverload(
 }
 
 // Resolves `ann.overload_id` to a runtime helper name, returning an
-// `Unimplemented` Status if (a) the annotation is empty
+// `UnimplementedError` if (a) the annotation is empty
 // (ResolvePass didn't stamp it — codegen invariant), or (b) no
 // entry in OverloadTable matches.  The returned string_view is
 // the wasm import name codegen emits a `BinaryenCall` to.
@@ -1334,7 +1300,7 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
     case cel::ExprKindCase::kComprehensionExpr:
       return LowerComprehension(ctx, expr, expr.comprehension_expr(), *ann);
     case cel::ExprKindCase::kUnspecifiedExpr:
-      return Unimplemented(expr.kind_case(), expr.id());
+      break;  // kind-less Expr: malformed node; the CHECK below fires
   }
   ABSL_CHECK(false) << "Emit: unknown ExprKindCase "
                     << static_cast<int>(expr.kind_case());

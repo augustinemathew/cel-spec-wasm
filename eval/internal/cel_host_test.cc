@@ -2675,6 +2675,53 @@ TEST(MapTrampolineGuardTest, InOnNonMapPoisons) {
   EXPECT_EQ(f.mem.ReadCelValue(Layer2Fixture::kOutSlot).kind, CEL_ERROR);
 }
 
+// `cel_map_in` decodes the key to a `celwasm::Value` before asking the
+// backing.  A key kind outside the map-key set (langdef restricts them
+// to bool / int / uint / string) fails to decode and poisons — the
+// checker prevents it, so only a staged wire value reaches the arm.
+TEST(MapTrampolineGuardTest, InWithUndecodableKeyPoisons) {
+  Layer2Fixture f;
+  constexpr uint32_t kKeySlot = 96;
+  // A double is not a valid map-key kind.
+  CelValue key{};
+  key.kind = CEL_DOUBLE;
+  key.payload.d = 1.5;
+  f.mem.WriteCelValue(kKeySlot, key);
+  CelValue map_cv{};
+  map_cv.kind = CEL_MAP_HOST;
+  map_cv.payload.ref_slot = f.refs.InternMap(std::make_shared<HostMap>(
+      std::vector<std::pair<celwasm::Value, celwasm::Value>>{
+          {celwasm::Value::Int(1), celwasm::Value::Int(2)}}));
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, map_cv);
+  EXPECT_THAT(CelMapInImpl(Layer2Fixture::kOutSlot, kKeySlot,
+                           Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  EXPECT_EQ(f.mem.ReadCelValue(Layer2Fixture::kOutSlot).kind, CEL_ERROR);
+}
+
+// The happy path through the same trampoline, so the poison rows above
+// are not the only thing pinning it.
+TEST(MapTrampolineGuardTest, InWithValidKeyReportsMembership) {
+  Layer2Fixture f;
+  constexpr uint32_t kKeySlot = 96;
+  CelValue key{};
+  key.kind = CEL_INT;
+  key.payload.i = 1;
+  f.mem.WriteCelValue(kKeySlot, key);
+  CelValue map_cv{};
+  map_cv.kind = CEL_MAP_HOST;
+  map_cv.payload.ref_slot = f.refs.InternMap(std::make_shared<HostMap>(
+      std::vector<std::pair<celwasm::Value, celwasm::Value>>{
+          {celwasm::Value::Int(1), celwasm::Value::Int(2)}}));
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, map_cv);
+  EXPECT_THAT(CelMapInImpl(Layer2Fixture::kOutSlot, kKeySlot,
+                           Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  const CelValue out = f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+  EXPECT_EQ(out.kind, CEL_BOOL);
+  EXPECT_NE(out.payload.b, 0);
+}
+
 TEST(MapTrampolineGuardTest, InOnUninternedRefIsAnInfrastructureFailure) {
   Layer2Fixture f;
   constexpr uint32_t kKeySlot = 96;
