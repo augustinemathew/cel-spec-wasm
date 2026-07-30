@@ -324,11 +324,24 @@ once-per-process quirk, noted in the .cc).
 > first — both ledger errors this session came from writing the
 > evidence before finishing that check.
 >
-> **The tests gap needs infrastructure, not batches.**  ~1150 lines
-> remain, concentrated in `eval/engine.cc` and `eval/instance.cc`
-> wasmtime-trap and malloc-failure paths.  Reaching them needs a
-> fault-injection harness; no amount of guard-arm unit testing gets
-> there (that lever has decayed to +0.00).
+> **The tests gap is ~1150 lines, concentrated in `eval/engine.cc` and
+> `eval/instance.cc` wasmtime-trap and allocation-failure paths.**
+> Guard-arm unit testing does not reach them (that lever has decayed to
+> +0.00).
+>
+> An earlier draft of this note claimed those need a fault-injection
+> harness "that does not exist".  That is wrong for the
+> arena-exhaustion class: `e2e/activation_boundary_test.cc`'s
+> `ListStringBindBoundary` already drives it by binding a 64 MiB
+> element, so `arena_alloc` returns 0 and the path emits a graceful
+> `ResourceExhausted` (>=64 MiB fails, <=60 MiB succeeds, both link
+> modes).  START THERE: the same pattern plausibly reaches
+> `instance.cc`'s `Activation[...]: malloc(...)` arms, and it means the
+> `CEL_ERR_OVERFLOW` arena arms classified in `runtime/cel_net_ext.c`
+> may be testable rather than permanently dark — that verdict's
+> evidence already flags them as an open gap and should be revisited.
+> What genuinely has no harness is the wasmtime-TRAP class (a trap
+> returned from an instance call), which is a different mechanism.
 >
 > **Watch for tests that do not test what they are named.**  Four found
 > this session: `IndexOfPosNegativeClamps` asserted the bug it should
