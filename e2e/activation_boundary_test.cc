@@ -195,6 +195,19 @@ class StringBindBoundary : public ::testing::Test {
   }
 };
 
+// The activation buffer is malloc'd inside linear memory and grown per
+// Eval.  A single string too large for dlmalloc to carve out fails that
+// growth, which surfaces as a non-OK Status from
+// `instance.cc`'s `Activation[<var>]: malloc(<n>)` arm rather than a
+// crash.  Same graceful-ceiling contract the list-element case pins at
+// ElementOverLinearMemoryGraceful; this is the scalar-binding twin, and
+// it is the only route to that arm.
+TEST_F(StringBindBoundary, OverLinearMemoryGraceful) {
+  ExpectGracefulCell(
+      "size(s)", Decl(),
+      {{"s", Value::String(AsciiPayload(size_t{64} * 1024 * 1024))}});
+}
+
 TEST_F(StringBindBoundary, Empty) {
   ExpectSize(0);
 }
