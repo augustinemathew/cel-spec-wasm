@@ -297,6 +297,47 @@ once-per-process quirk, noted in the .cc).
 > tests +0.55 but costs e2e 4.35 (runtime lines enter the e2e
 > denominator while already counted via wasm), so it was NOT adopted.
 >
+> **2026-07-30 — lever returns, measured over batches 27-49.**  e2e
+> 85.64 -> 87.73, tests 92.76 -> 93.81 (both on the corrected metric).
+> Neither target met.  What each lever actually returns:
+>
+> | lever | e2e | tests |
+> |---|---|---|
+> | delete dead code | **+0.18** | **+0.18** |
+> | verdict classification | +0.02 .. +0.15 | **0** |
+> | unit tests on unreachable guards | 0 | +0.00 .. +0.02 |
+> | e2e rows on conformance-only lines | +0.70 (once) | 0 |
+>
+> Deletion is the ONLY lever moving both, because it shrinks the
+> denominator.  Classification cannot move tests at all: `test-only`
+> exempts from e2e only, and `by-design` must be true.  The
+> conformance-only pool that gave +0.70 in batch 29 is exhausted.
+>
+> **Do not bulk-tag the verdict ledger.**  ~215 functions read as
+> e2e-dark-and-unclassified, but the density of legitimately taggable
+> ones is far lower: a large share are template instantiations keyed to
+> a test lambda (`BindTypedFunction`, `BindParsedFunction`) where a
+> name-keyed verdict would exempt production instantiations too, and
+> others have production callers a narrow grep misses (`BackendPrefix`
+> is called from engine.cc:1397 and plugin_validate.cc:36).  Three
+> near-misses in two batches.  Every verdict needs its callers read
+> first — both ledger errors this session came from writing the
+> evidence before finishing that check.
+>
+> **The tests gap needs infrastructure, not batches.**  ~1150 lines
+> remain, concentrated in `eval/engine.cc` and `eval/instance.cc`
+> wasmtime-trap and malloc-failure paths.  Reaching them needs a
+> fault-injection harness; no amount of guard-arm unit testing gets
+> there (that lever has decayed to +0.00).
+>
+> **Watch for tests that do not test what they are named.**  Four found
+> this session: `IndexOfPosNegativeClamps` asserted the bug it should
+> have caught; `cel_smoke_test`'s "not an FDS" row exercises the CLI's
+> own loader (tools/cel/cel.cc:198), not `parse_and_check.cc:152`; and
+> two of my own drafts (a `has(...)` row that would have claimed to read
+> Struct-as-map, and a schema row whose runfiles-relative path silently
+> took the NotFound arm).
+>
 > Verdict ledger
 > = `scripts/coverage/function_verdicts.json`; per-iteration
 > measurement = cached `bazel coverage` re-run + incremental
