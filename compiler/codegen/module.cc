@@ -195,13 +195,6 @@ void WasmModule::ExportFunction(absl::string_view internal_name,
   BinaryenAddFunctionExport(module_, a.c_str(), b.c_str());
 }
 
-void WasmModule::ExportMemory(absl::string_view internal_name,
-                              absl::string_view external_name) {
-  const std::string a = Cstr(internal_name);
-  const std::string b = Cstr(external_name);
-  BinaryenAddMemoryExport(module_, a.c_str(), b.c_str());
-}
-
 void WasmModule::AddCustomSection(absl::string_view name,
                                   absl::Span<const uint8_t> bytes) {
   const std::string name_c = Cstr(name);
@@ -286,10 +279,6 @@ absl::StatusOr<std::vector<uint8_t>> WasmModule::Serialize() const {
   }
   const auto* bytes = static_cast<const uint8_t*>(written.binary);
   return std::vector<uint8_t>(bytes, bytes + written.binaryBytes);
-}
-
-void WasmModule::PrintToStderr() const {
-  BinaryenModulePrint(module_);
 }
 
 }  // namespace celwasm

@@ -109,8 +109,6 @@ class WasmModule {
   // Exports a previously-declared entity under `external_name`.
   void ExportFunction(absl::string_view internal_name,
                       absl::string_view external_name);
-  void ExportMemory(absl::string_view internal_name,
-                    absl::string_view external_name);
 
   // Adds a raw wasm custom section.  Used for the `cel.abi` header the
   // host loader reads to discover rodata / workspace / arena offsets
@@ -175,9 +173,6 @@ class WasmModule {
 
   // Serialises the module to its canonical `.wasm` byte encoding.
   ABSL_MUST_USE_RESULT absl::StatusOr<std::vector<uint8_t>> Serialize() const;
-
-  // Prints the module in Binaryen's s-expression format to stderr.
-  void PrintToStderr() const;
 
  private:
   BinaryenModuleRef module_;
