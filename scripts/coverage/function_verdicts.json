@@ -785,6 +785,24 @@
       "match": "cel_bytes_to_string_at_v",
       "verdict": "test-only",
       "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_contains_cidr_at_vv",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is this kernel's two guards. (1) The wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` arm: a type-checked expression cannot reach it because the checker fixes the operand kinds for every net-ext overload, and runtime/cel_net_ext_test.cc DOES cover it natively (7 TYPE_MISMATCH assertions) -- but runtime/* rows here come from the wasm gcov layer alone (runtime/ is not in native_cov_report.py's DEFAULT_SCOPES), so that native coverage cannot score. (2) The `poison(out, CEL_ERR_OVERFLOW)` arm, taken only when the per-Eval arena cannot fit the result: this one is covered by NOTHING today -- no e2e row and no unit test -- and reaching it needs arena exhaustion, so it is an open gap rather than a satisfied one. Happy paths are e2e-covered by e2e/network_ext_test.cc. test-only, not by-design, because arm (1) is genuinely unit-exercised."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_ip_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is this kernel's two guards. (1) The wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` arm: a type-checked expression cannot reach it because the checker fixes the operand kinds for every net-ext overload, and runtime/cel_net_ext_test.cc DOES cover it natively (7 TYPE_MISMATCH assertions) -- but runtime/* rows here come from the wasm gcov layer alone (runtime/ is not in native_cov_report.py's DEFAULT_SCOPES), so that native coverage cannot score. (2) The `poison(out, CEL_ERR_OVERFLOW)` arm, taken only when the per-Eval arena cannot fit the result: this one is covered by NOTHING today -- no e2e row and no unit test -- and reaching it needs arena exhaustion, so it is an open gap rather than a satisfied one. Happy paths are e2e-covered by e2e/network_ext_test.cc. test-only, not by-design, because arm (1) is genuinely unit-exercised."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_masked_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is this kernel's two guards. (1) The wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` arm: a type-checked expression cannot reach it because the checker fixes the operand kinds for every net-ext overload, and runtime/cel_net_ext_test.cc DOES cover it natively (7 TYPE_MISMATCH assertions) -- but runtime/* rows here come from the wasm gcov layer alone (runtime/ is not in native_cov_report.py's DEFAULT_SCOPES), so that native coverage cannot score. (2) The `poison(out, CEL_ERR_OVERFLOW)` arm, taken only when the per-Eval arena cannot fit the result: this one is covered by NOTHING today -- no e2e row and no unit test -- and reaching it needs arena exhaustion, so it is an open gap rather than a satisfied one. Happy paths are e2e-covered by e2e/network_ext_test.cc. test-only, not by-design, because arm (1) is genuinely unit-exercised."
     }
   ]
 }
