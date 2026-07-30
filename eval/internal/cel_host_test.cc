@@ -2801,4 +2801,26 @@ TEST(RepeatedMessageElementGuardTest, ElementBackingWithoutAProtoIsRejected) {
                testing::HasSubstr("element backing has no proto message")));
 }
 
+// The host-list repeated-message path has its own copies of the
+// element guards (the arena-list path's are covered above): the element
+// must be a kMessage, and its backing must carry a real proto.  A
+// type-checked field-init cannot violate either.
+TEST(HostListRepeatedMessageGuardTest, NonMessageElementIsRejected) {
+  PackHarness h;
+  h.StageHostListSrc({celwasm::Value::Int(1)});
+  EXPECT_THAT(h.SetField(27, "rep_msg"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("element kind != kMessage")));
+}
+
+TEST(HostListRepeatedMessageGuardTest, ElementBackingWithoutAProtoIsRejected) {
+  PackHarness h;
+  h.StageHostListSrc(
+      {celwasm::Value::HostMessage(std::make_shared<JsonLikeBacking>(
+          absl::flat_hash_map<std::string, int64_t>{{"x", 1}}))});
+  EXPECT_THAT(h.SetField(27, "rep_msg"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("backing has no proto message")));
+}
+
 }  // namespace celwasm
