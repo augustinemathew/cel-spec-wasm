@@ -70,8 +70,6 @@ namespace {
 
 using ::absl_testing::IsOk;
 
-using ::celwasm::e2e::GlobalEngine;
-
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
   Compiler::Builder b;
@@ -863,6 +861,25 @@ TEST_F(DeferredTimestampE2ETest, DurationFromString) {
       CompilePlan(*compiler, R"(duration("60s") == duration("1m"))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+// Nanosecond carry normalisation in duration arithmetic.  Two negative
+// sub-second parts summing past -1s take the negative-carry arm, and a
+// negative seconds field paired with a positive nanos field is
+// renormalised back into canonical form.  Neither arm had a non-corpus
+// workload.  Pinned by cel_cpp_oracle_test's DurationNanosCarryAgrees.
+TEST_F(DeferredTimestampE2ETest, DurationNanosCarryNormalisation) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  for (const absl::string_view source :
+       {R"(duration("-0.6s") + duration("-0.6s") == duration("-1.2s"))",
+        R"(duration("-2s") + duration("0.5s") == duration("-1.5s"))",
+        R"(timestamp(0) + duration("-0.5s") ==
+           timestamp("1969-12-31T23:59:59.5Z"))"}) {
+    auto instance = CompilePlan(*compiler, source);
+    Activation a;
+    EXPECT_EQ(*EvalOk(instance, a).AsBool(), true) << source;
+  }
 }
 
 // 4-byte UTF-8 (RFC3629 §4, U+10000..U+10FFFF): the longest encoding

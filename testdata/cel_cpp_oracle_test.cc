@@ -179,6 +179,18 @@ TEST(CelCppOracle, EmptyNeedleAndSubstringEdgesAgree) {
   }
 }
 
+// Nanosecond carry normalisation in duration arithmetic: two negative
+// sub-second parts summing past -1s take the negative-carry arm, and a
+// negative seconds field with a positive nanos field is renormalised.
+// Neither had a non-corpus workload.
+TEST(CelCppOracle, DurationNanosCarryAgrees) {
+  for (const char* src : {R"(duration("-0.6s") + duration("-0.6s"))",
+                          R"(duration("-2s") + duration("0.5s"))",
+                          R"(timestamp(0) + duration("-0.5s"))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
 // Two's-complement edges of the int kernels: a multiply whose negative
 // result is exactly INT64_MIN is representable, while INT64_MIN / -1
 // and INT64_MIN * -1 overflow.  Also the prefix/suffix-longer-than-
