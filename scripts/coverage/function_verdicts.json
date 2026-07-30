@@ -695,6 +695,96 @@
       "match": "GrowActivationArena",
       "verdict": "by-design",
       "evidence": "Uncovered remainder is guest malloc failure during activation marshalling \u2014 wasmtime error, guest trap, and NULL return.  Allocator-exhaustion arms."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_uint_to_int_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_double_to_int_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_int_to_uint_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_double_to_uint_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_int_to_double_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_uint_to_double_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_int_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_uint_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_double_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_bool_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_int_to_string_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_uint_to_string_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_bool_to_string_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_bytes_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_bytes_to_string_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
     }
   ]
 }

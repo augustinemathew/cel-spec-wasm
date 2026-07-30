@@ -2582,4 +2582,91 @@ TEST(JsonWktReadTest, AnyPayloadOfListValueChainsIntoTheJsonUnpacker) {
       << static_cast<int>(v->kind());
 }
 
+// ═══════════ Map-trampoline guards ═══════════
+//
+// `cel_map_size` / `cel_map_in` open with an absorb, then guard the
+// operand kind, the externref lookup, and (for `in`) whether the key
+// decodes to a valid map-key kind.  A type-checked expression cannot
+// deliver a non-map or an undecodable key, so these arms are reached by
+// staging the wire values directly.
+
+namespace {
+
+// Stage `cv` at the fixture's message slot and run cel_map_size.
+CelValue MapSize(Layer2Fixture& f, const CelValue& cv) {
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(
+      CelMapSizeImpl(Layer2Fixture::kOutSlot, Layer2Fixture::kMsgSlot, f.Ctx()),
+      IsOk());
+  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+}
+
+}  // namespace
+
+TEST(MapTrampolineGuardTest, SizeOnNonMapPoisons) {
+  Layer2Fixture f;
+  CelValue i{};
+  i.kind = CEL_INT;
+  i.payload.i = 1;
+  EXPECT_EQ(MapSize(f, i).kind, CEL_ERROR);
+}
+
+TEST(MapTrampolineGuardTest, SizeAbsorbsErrorAndUnknown) {
+  Layer2Fixture f;
+  CelValue err{};
+  err.kind = CEL_ERROR;
+  err.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
+  EXPECT_EQ(MapSize(f, err).kind, CEL_ERROR);
+  CelValue unk{};
+  unk.kind = CEL_UNKNOWN;
+  unk.payload.unk = 5;
+  const CelValue got = MapSize(f, unk);
+  EXPECT_EQ(got.kind, CEL_UNKNOWN);
+  EXPECT_EQ(got.payload.unk, 5u);
+}
+
+TEST(MapTrampolineGuardTest, SizeOnUninternedRefIsAnInfrastructureFailure) {
+  Layer2Fixture f;
+  CelValue cv{};
+  cv.kind = CEL_MAP_HOST;
+  cv.payload.ref_slot = 999;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(
+      CelMapSizeImpl(Layer2Fixture::kOutSlot, Layer2Fixture::kMsgSlot, f.Ctx()),
+      StatusIs(absl::StatusCode::kFailedPrecondition,
+               testing::HasSubstr("not found in ExternrefTable")));
+}
+
+TEST(MapTrampolineGuardTest, InOnNonMapPoisons) {
+  Layer2Fixture f;
+  constexpr uint32_t kKeySlot = 96;
+  CelValue key{};
+  key.kind = CEL_INT;
+  key.payload.i = 1;
+  f.mem.WriteCelValue(kKeySlot, key);
+  CelValue not_a_map{};
+  not_a_map.kind = CEL_INT;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, not_a_map);
+  EXPECT_THAT(CelMapInImpl(Layer2Fixture::kOutSlot, kKeySlot,
+                           Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  EXPECT_EQ(f.mem.ReadCelValue(Layer2Fixture::kOutSlot).kind, CEL_ERROR);
+}
+
+TEST(MapTrampolineGuardTest, InOnUninternedRefIsAnInfrastructureFailure) {
+  Layer2Fixture f;
+  constexpr uint32_t kKeySlot = 96;
+  CelValue key{};
+  key.kind = CEL_INT;
+  f.mem.WriteCelValue(kKeySlot, key);
+  CelValue cv{};
+  cv.kind = CEL_MAP_HOST;
+  cv.payload.ref_slot = 999;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(CelMapInImpl(Layer2Fixture::kOutSlot, kKeySlot,
+                           Layer2Fixture::kMsgSlot, f.Ctx()),
+              StatusIs(absl::StatusCode::kFailedPrecondition,
+                       testing::HasSubstr("not found in ExternrefTable")));
+}
+
 }  // namespace celwasm
