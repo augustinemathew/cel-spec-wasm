@@ -18,8 +18,8 @@ void cel_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 void cel_not_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
 }
 }  // namespace celwasm
-#include "runtime/cel_memory.h"
 #include "gtest/gtest.h"
+#include "runtime/cel_memory.h"
 
 // M5.B comparison helper coverage.  The bulk of the matrix
 // (per-kind eq/ne/lt/le/gt/ge happy/false pairs) consolidates
@@ -153,13 +153,6 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 INSTANTIATE_TEST_SUITE_P(
-    Double, SameKindCmpTest,
-    ::testing::Values(),
-    [](const auto& info) {
-      return info.param.name;
-    });
-
-INSTANTIATE_TEST_SUITE_P(
     BoolFamily, SameKindCmpTest,
     ::testing::Values(CmpCase{"bool_eq_true", cel_bool_eq_at_vv,
                               +[]() {
@@ -177,7 +170,7 @@ INSTANTIATE_TEST_SUITE_P(
                                 return cel_make_bool(0);
                               },
                               false},
-// langdef §"Booleans": false < true.  Spot-check each
+                      // langdef §"Booleans": false < true.  Spot-check each
                       // ordering op at both directions.
                       CmpCase{"bool_lt_false_true", cel_bool_lt_at_vv,
                               +[]() {
@@ -614,7 +607,6 @@ TEST_F(CompareTest, NullEqWithNonNullPoisons) {
   EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
-
 // 3VL absorption — the shared `absorb_3vl_binary` is used by every
 // cmp helper; spot-check on one int_eq path with each operand
 // position.
@@ -711,7 +703,7 @@ TEST_F(CompareTest, NumericIntDoubleBoundary) {
   // (double)INT64_MAX is exactly representable; INT64_MAX's int
   // value vs the same number as a double compares equal.
   cel_numeric_eq_at_vv(out, cel_make_int(INT64_MAX),
-                       cel_make_double((double)INT64_MAX));
+                       cel_make_double(static_cast<double>(INT64_MAX)));
   EXPECT_TRUE(ReadBool(out));
   // double strictly > kInt64Max: every int64 is less.
   cel_numeric_lt_at_vv(out, cel_make_int(INT64_MAX), cel_make_double(1e30));

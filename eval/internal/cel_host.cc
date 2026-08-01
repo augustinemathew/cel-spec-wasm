@@ -4664,37 +4664,39 @@ absl::Status InsertArenaMapEntry(google::protobuf::Message& msg,
 
 // INT32/INT64/UINT32/UINT64 arms of SetHostMapEntryKey.  Returns
 // nullopt for a non-integer key cpp_type (caller handles bool/string).
-std::optional<absl::Status> SetHostMapEntryIntegerKey(
+// Integer-typed map-entry set, shared by the KEY and VALUE call sites:
+// the two differed only in parameter names.  `fd` is whichever of the
+// entry's key/value FieldDescriptors the caller is filling.
+std::optional<absl::Status> SetHostMapEntryInteger(
     google::protobuf::Message& entry,
     const google::protobuf::Reflection& entry_refl,
-    const google::protobuf::FieldDescriptor& key_fd,
-    const celwasm::Value& key) {
+    const google::protobuf::FieldDescriptor& fd, const celwasm::Value& v) {
   using FD = google::protobuf::FieldDescriptor;
-  switch (key_fd.cpp_type()) {
+  switch (fd.cpp_type()) {
     case FD::CPPTYPE_INT32: {
-      auto i = key.AsInt();
+      auto i = v.AsInt();
       if (!i.ok()) return i.status();
-      if (auto s = CheckInt32Range(*i, key_fd.name()); !s.ok()) return s;
-      entry_refl.SetInt32(&entry, &key_fd, static_cast<int32_t>(*i));
+      if (auto s = CheckInt32Range(*i, fd.name()); !s.ok()) return s;
+      entry_refl.SetInt32(&entry, &fd, static_cast<int32_t>(*i));
       return absl::OkStatus();
     }
     case FD::CPPTYPE_INT64: {
-      auto i = key.AsInt();
+      auto i = v.AsInt();
       if (!i.ok()) return i.status();
-      entry_refl.SetInt64(&entry, &key_fd, *i);
+      entry_refl.SetInt64(&entry, &fd, *i);
       return absl::OkStatus();
     }
     case FD::CPPTYPE_UINT32: {
-      auto u = key.AsUint();
+      auto u = v.AsUint();
       if (!u.ok()) return u.status();
-      if (auto s = CheckUint32Range(*u, key_fd.name()); !s.ok()) return s;
-      entry_refl.SetUInt32(&entry, &key_fd, static_cast<uint32_t>(*u));
+      if (auto s = CheckUint32Range(*u, fd.name()); !s.ok()) return s;
+      entry_refl.SetUInt32(&entry, &fd, static_cast<uint32_t>(*u));
       return absl::OkStatus();
     }
     case FD::CPPTYPE_UINT64: {
-      auto u = key.AsUint();
+      auto u = v.AsUint();
       if (!u.ok()) return u.status();
-      entry_refl.SetUInt64(&entry, &key_fd, *u);
+      entry_refl.SetUInt64(&entry, &fd, *u);
       return absl::OkStatus();
     }
     default:
@@ -4711,7 +4713,7 @@ absl::Status SetHostMapEntryKey(google::protobuf::Message& entry,
                                 const google::protobuf::FieldDescriptor& key_fd,
                                 const celwasm::Value& key) {
   using FD = google::protobuf::FieldDescriptor;
-  if (auto s = SetHostMapEntryIntegerKey(entry, entry_refl, key_fd, key);
+  if (auto s = SetHostMapEntryInteger(entry, entry_refl, key_fd, key);
       s.has_value()) {
     return *s;
   }
@@ -4737,43 +4739,6 @@ absl::Status SetHostMapEntryKey(google::protobuf::Message& entry,
 
 // INT32/INT64/UINT32/UINT64 arms of SetHostMapEntryValue.  Returns
 // nullopt for a non-integer cpp_type (caller handles the rest).
-std::optional<absl::Status> SetHostMapEntryIntegerValue(
-    google::protobuf::Message& entry,
-    const google::protobuf::Reflection& entry_refl,
-    const google::protobuf::FieldDescriptor& val_fd,
-    const celwasm::Value& value) {
-  using FD = google::protobuf::FieldDescriptor;
-  switch (val_fd.cpp_type()) {
-    case FD::CPPTYPE_INT32: {
-      auto i = value.AsInt();
-      if (!i.ok()) return i.status();
-      if (auto s = CheckInt32Range(*i, val_fd.name()); !s.ok()) return s;
-      entry_refl.SetInt32(&entry, &val_fd, static_cast<int32_t>(*i));
-      return absl::OkStatus();
-    }
-    case FD::CPPTYPE_INT64: {
-      auto i = value.AsInt();
-      if (!i.ok()) return i.status();
-      entry_refl.SetInt64(&entry, &val_fd, *i);
-      return absl::OkStatus();
-    }
-    case FD::CPPTYPE_UINT32: {
-      auto u = value.AsUint();
-      if (!u.ok()) return u.status();
-      if (auto s = CheckUint32Range(*u, val_fd.name()); !s.ok()) return s;
-      entry_refl.SetUInt32(&entry, &val_fd, static_cast<uint32_t>(*u));
-      return absl::OkStatus();
-    }
-    case FD::CPPTYPE_UINT64: {
-      auto u = value.AsUint();
-      if (!u.ok()) return u.status();
-      entry_refl.SetUInt64(&entry, &val_fd, *u);
-      return absl::OkStatus();
-    }
-    default:
-      return std::nullopt;
-  }
-}
 
 // FLOAT / DOUBLE arms of SetHostMapEntryValue (both read AsDouble;
 // FLOAT narrows).  Returns nullopt for a non-float cpp_type.
@@ -4815,15 +4780,13 @@ std::optional<absl::Status> MaybePackWktFromHostValue(
     google::protobuf::Message& dst, const celwasm::Value& value) {
   const google::protobuf::Descriptor* d = dst.GetDescriptor();
   const absl::string_view fqn = d != nullptr ? d->full_name() : "";
-  CelDurTs dur_ts;
+  CelDurTs dur_ts{};
   if (fqn == "google.protobuf.Duration") {
     auto dv = value.AsDuration();
     if (!dv.ok()) return std::nullopt;
-    // Sign-correlated (seconds, nanos): IDivDuration truncates toward
-    // zero, so the remainder's sign matches the input's.
-    absl::Duration rem;
-    dur_ts.seconds = absl::IDivDuration(*dv, absl::Seconds(1), &rem);
-    dur_ts.nanos = static_cast<int32_t>(absl::ToInt64Nanoseconds(rem));
+    // Sign-correlated (seconds, nanos) with `_pad` zeroed — the shared
+    // decomposer, not a second copy of the same arithmetic.
+    DecomposeAbslDuration(*dv, &dur_ts);
   } else if (fqn == "google.protobuf.Timestamp") {
     auto tv = value.AsTimestamp();
     if (!tv.ok()) return std::nullopt;
@@ -4832,6 +4795,7 @@ std::optional<absl::Status> MaybePackWktFromHostValue(
     dur_ts.seconds = absl::ToUnixSeconds(*tv);
     dur_ts.nanos = static_cast<int32_t>(
         absl::ToInt64Nanoseconds(*tv - absl::FromUnixSeconds(dur_ts.seconds)));
+    dur_ts._pad = 0;
   } else {
     return std::nullopt;
   }
@@ -4897,7 +4861,7 @@ absl::Status SetHostMapEntryValue(
     const google::protobuf::FieldDescriptor& val_fd,
     const celwasm::Value& value) {
   using FD = google::protobuf::FieldDescriptor;
-  if (auto s = SetHostMapEntryIntegerValue(entry, entry_refl, val_fd, value);
+  if (auto s = SetHostMapEntryInteger(entry, entry_refl, val_fd, value);
       s.has_value()) {
     return *s;
   }

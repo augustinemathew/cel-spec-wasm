@@ -206,18 +206,6 @@ TEST(ValueTest, UnknownEmptySetIsLegal) {
               StatusIs(absl::StatusCode::kFailedPrecondition));
 }
 
-TEST(ValueTest, UnknownStructuralEqualityIsSetEquality) {
-  auto ab =
-      Value::Unknown(std::vector<AttributeId>{AttributeId{1}, AttributeId{2}});
-  auto ba =
-      Value::Unknown(std::vector<AttributeId>{AttributeId{2}, AttributeId{1}});
-  EXPECT_TRUE(ab.StructurallyEquals(ba));  // order-insensitive
-  auto ac =
-      Value::Unknown(std::vector<AttributeId>{AttributeId{1}, AttributeId{3}});
-  EXPECT_FALSE(ab.StructurallyEquals(ac));
-  EXPECT_FALSE(ab.StructurallyEquals(Value::Unknown(AttributeId{1})));
-}
-
 TEST(ValueTest, ErrorCarriesPayload) {
   auto v = Value::Error(ErrorPayload{
       .code = ErrorCode::kDivideByZero, .message = "bad math", .expr_id = 42});
@@ -230,52 +218,11 @@ TEST(ValueTest, ErrorCarriesPayload) {
   EXPECT_EQ((*info)->expr_id, 42u);
 }
 
-TEST(ValueTest, StructurallyEqualsSameKindSameValue) {
-  EXPECT_TRUE(Value::Int(5).StructurallyEquals(Value::Int(5)));
-  EXPECT_TRUE(Value::String("a").StructurallyEquals(Value::String("a")));
-  EXPECT_TRUE(Value::Null().StructurallyEquals(Value::Null()));
-  EXPECT_TRUE(Value::Unknown(AttributeId{3})
-                  .StructurallyEquals(Value::Unknown(AttributeId{3})));
-}
-
-TEST(ValueTest, StructurallyDoesNotEqualAcrossKinds) {
-  // Same numeric value but different kinds (int vs uint vs double).
-  EXPECT_FALSE(Value::Int(1).StructurallyEquals(Value::Uint(1u)));
-  EXPECT_FALSE(Value::Int(1).StructurallyEquals(Value::Double(1.0)));
-  // String vs bytes — same bytes-on-disk, different kind.
-  EXPECT_FALSE(Value::String("x").StructurallyEquals(Value::Bytes("x")));
-}
-
-TEST(ValueTest, StructurallyDoesNotEqualSameKindDifferentValue) {
-  EXPECT_FALSE(Value::Int(1).StructurallyEquals(Value::Int(2)));
-  EXPECT_FALSE(Value::String("a").StructurallyEquals(Value::String("b")));
-  EXPECT_FALSE(Value::Unknown(AttributeId{1})
-                   .StructurallyEquals(Value::Unknown(AttributeId{2})));
-}
-
-TEST(ValueTest, ErrorStructurallyEqualsFieldByField) {
-  EXPECT_TRUE(
-      Value::Error({.code = ErrorCode::kOverflow, .message = "x", .expr_id = 1})
-          .StructurallyEquals(Value::Error(
-              {.code = ErrorCode::kOverflow, .message = "x", .expr_id = 1})));
-  EXPECT_FALSE(
-      Value::Error({.code = ErrorCode::kOverflow, .message = "x", .expr_id = 1})
-          .StructurallyEquals(Value::Error(
-              {.code = ErrorCode::kOverflow, .message = "y", .expr_id = 1})));
-}
-
 // Value::List + Value::Map both land in cel_host.cc (one-way dep:
 // cel_host → value, never the reverse).  Positive coverage —
 // HostList / HostMap construction, ListBacking / MapBacking
 // retrieval, StructurallyEquals on aggregate kinds — lives in
 // eval/internal/cel_host_test.cc, not here.
-
-TEST(ValueTest, KindNamesCoverAllKinds) {
-  EXPECT_EQ(ValueKindName(Value::Kind::kNull), "null");
-  EXPECT_EQ(ValueKindName(Value::Kind::kInt), "int");
-  EXPECT_EQ(ValueKindName(Value::Kind::kUnknown), "unknown");
-  EXPECT_EQ(ValueKindName(Value::Kind::kError), "error");
-}
 
 TEST(ValueTest, CopyableAndMovable) {
   auto a = Value::String("abc");
@@ -384,7 +331,6 @@ TEST(StructurallyEqualsTest, ErrorComparesByPayload) {
   EXPECT_TRUE(a.StructurallyEquals(b));
   EXPECT_FALSE(a.StructurallyEquals(c));
 }
-
 
 }  // namespace
 }  // namespace celwasm

@@ -1228,15 +1228,6 @@ class PackHarness {
     return cv;
   }
 
-  // Stage an arbitrary CelValue at kSrcSlot verbatim.  Used to drive
-  // the kind-mismatch arms of the scalar / repeated set paths, which a
-  // type-checked expression can never reach (the checker types the
-  // field-init operand) but a misbehaving plugin or a checker
-  // regression would.
-  void StageRaw(const CelValue& cv) {
-    f_.mem.WriteCelValue(kSrcSlot, cv);
-  }
-
   // Drive CelSetFieldImpl pointing at `field_name`.  Returns the
   // trampoline's Status; on OK the caller reads back via outer().
   absl::Status SetField(uint32_t field_number, absl::string_view field_name) {
@@ -2073,7 +2064,7 @@ class ScalarKindMismatchTest
 TEST_P(ScalarKindMismatchTest, RejectsWrongWireKind) {
   const ScalarMismatchCase& c = GetParam();
   PackHarness h;
-  h.StageRaw(c.wrong);
+  h.StageScalar(c.wrong);
   const absl::Status s = h.SetField(c.field_number, c.field_name);
   EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument,
                           testing::AllOf(testing::HasSubstr(c.field_name),
@@ -2100,7 +2091,7 @@ TEST(ScalarKindMismatchStringBytesTest, StringFieldRejectsBytes) {
   PackHarness h;
   CelValue by = h.MakeArenaString("ab");
   by.kind = CEL_BYTES;
-  h.StageRaw(by);
+  h.StageScalar(by);
   EXPECT_THAT(h.SetField(14, "s"),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        testing::HasSubstr("is STRING but value kind is")));
@@ -2108,7 +2099,7 @@ TEST(ScalarKindMismatchStringBytesTest, StringFieldRejectsBytes) {
 
 TEST(ScalarKindMismatchStringBytesTest, BytesFieldRejectsString) {
   PackHarness h;
-  h.StageRaw(h.MakeArenaString("ab"));
+  h.StageScalar(h.MakeArenaString("ab"));
   EXPECT_THAT(h.SetField(15, "by"),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        testing::HasSubstr("is BYTES but value kind is")));
@@ -2182,7 +2173,7 @@ class WrapperFieldTest : public testing::TestWithParam<WrapperCase> {};
 TEST_P(WrapperFieldTest, ScalarSetSynthesisesWrapperMessage) {
   const WrapperCase& c = GetParam();
   PackHarness h;
-  h.StageRaw(c.good);
+  h.StageScalar(c.good);
   ASSERT_THAT(h.SetField(c.field_number, c.field_name), IsOk());
   const google::protobuf::Message& outer = *h.outer();
   const google::protobuf::FieldDescriptor* fd =
@@ -2196,7 +2187,7 @@ TEST_P(WrapperFieldTest, ScalarSetSynthesisesWrapperMessage) {
 TEST_P(WrapperFieldTest, WrongInnerKindIsRejected) {
   const WrapperCase& c = GetParam();
   PackHarness h;
-  h.StageRaw(c.bad);
+  h.StageScalar(c.bad);
   EXPECT_THAT(
       h.SetField(c.field_number, c.field_name),
       StatusIs(absl::StatusCode::kInvalidArgument,
@@ -2225,7 +2216,7 @@ INSTANTIATE_TEST_SUITE_P(
 // focused cases rather than a table row.
 TEST(WrapperFieldStringBytesTest, StringWrapperRoundTrips) {
   PackHarness h;
-  h.StageRaw(h.MakeArenaString("hi"));
+  h.StageScalar(h.MakeArenaString("hi"));
   ASSERT_THAT(h.SetField(47, "wrap_s"), IsOk());
   EXPECT_EQ(h.outer()->wrap_s().value(), "hi");
 }
@@ -2234,7 +2225,7 @@ TEST(WrapperFieldStringBytesTest, BytesWrapperRoundTrips) {
   PackHarness h;
   CelValue by = h.MakeArenaString("ab");
   by.kind = CEL_BYTES;
-  h.StageRaw(by);
+  h.StageScalar(by);
   ASSERT_THAT(h.SetField(48, "wrap_by"), IsOk());
   EXPECT_EQ(h.outer()->wrap_by().value(), "ab");
 }
@@ -2243,7 +2234,7 @@ TEST(WrapperFieldStringBytesTest, StringWrapperRejectsBytes) {
   PackHarness h;
   CelValue by = h.MakeArenaString("ab");
   by.kind = CEL_BYTES;
-  h.StageRaw(by);
+  h.StageScalar(by);
   EXPECT_THAT(h.SetField(47, "wrap_s"),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        testing::HasSubstr("CEL_STRING")));
@@ -2251,7 +2242,7 @@ TEST(WrapperFieldStringBytesTest, StringWrapperRejectsBytes) {
 
 TEST(WrapperFieldStringBytesTest, BytesWrapperRejectsString) {
   PackHarness h;
-  h.StageRaw(h.MakeArenaString("ab"));
+  h.StageScalar(h.MakeArenaString("ab"));
   EXPECT_THAT(h.SetField(48, "wrap_by"),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        testing::HasSubstr("CEL_BYTES")));
@@ -2750,7 +2741,7 @@ TEST(NestedMessageSetGuardTest, NonMessageValueIsRejected) {
   CelValue i{};
   i.kind = CEL_INT;
   i.payload.i = 1;
-  h.StageRaw(i);
+  h.StageScalar(i);
   EXPECT_THAT(h.SetField(17, "inner"),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        testing::HasSubstr("is MESSAGE but value kind is")));
@@ -2761,7 +2752,7 @@ TEST(NestedMessageSetGuardTest, UninternedSourceIsRejected) {
   CelValue cv{};
   cv.kind = CEL_MESSAGE;
   cv.payload.msg_slot = 999;
-  h.StageRaw(cv);
+  h.StageScalar(cv);
   EXPECT_THAT(h.SetField(17, "inner"),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        testing::HasSubstr("has no externref entry")));
