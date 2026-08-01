@@ -62,11 +62,19 @@ std::string SuffixFor(const CelType& t) {
       return "f64";
     case K::kString:
       return "string";
-    // bytes is list<u8>, null is option<u8> — the ELEMENT suffix is
-    // `u8` for both; only the container shape differs.
+    // `SuffixFor` is only ever reached for a type in ELEMENT position
+    // (list element, map key/value) — `StructFor` answers the bare
+    // forms with hard-coded names and never calls in here.  So these
+    // must name the element's OWN container, not its inner scalar:
+    // bytes is `list<u8>` on the wire, so `list<bytes>` is
+    // `list<list<u8>>` -> `customfn_list_list_u8_t`.  Returning "u8"
+    // collapsed that to `customfn_list_u8_t`, colliding with bare
+    // bytes and emitting two `lift` overloads differing only in
+    // return type.
     case K::kBytes:
+      return "list_u8";
     case K::kNull:
-      return "u8";
+      return "option_u8";
     case K::kList:
       return absl::StrCat("list_", SuffixFor(t.list_element()));
     case K::kMap:
@@ -79,7 +87,7 @@ std::string SuffixFor(const CelType& t) {
       return absl::StrCat("list_tuple2_", SuffixFor(t.map_key()), "_",
                           SuffixFor(t.map_value()));
     case K::kMessage:
-      return "u8";  // same shape as list<u8>
+      return "list_u8";  // serialized bytes: same wire shape as list<u8>
     case K::kDuration:
     case K::kTimestamp:
     case K::kOptional:

@@ -44,6 +44,7 @@ list<int> @plugin.iota(int n);
 // emits std::vector<bool>, whose bit-packed specialisation has no
 // .data(), so the generated header does not compile (CELW-0021).
 // bool reaches SuffixFor as a MAP VALUE instead.
+list<bytes>  @plugin.echo_byteses(list<bytes> xs);
 list<uint>   @plugin.echo_uints(list<uint> xs);
 list<double> @plugin.echo_doubles(list<double> xs);
 map<uint, bool> @plugin.echo_uint_bool_map(map<uint, bool> m);

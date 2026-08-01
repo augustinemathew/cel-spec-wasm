@@ -63,6 +63,11 @@ int64_t SumList(const std::vector<int64_t>& xs) {
   return total;
 }
 
+std::vector<std::vector<uint8_t>> EchoByteses(
+    const std::vector<std::vector<uint8_t>>& xs) {
+  return xs;
+}
+
 std::vector<uint64_t> EchoUints(const std::vector<uint64_t>& xs) {
   return xs;
 }

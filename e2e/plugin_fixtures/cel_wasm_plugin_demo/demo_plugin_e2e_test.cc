@@ -177,7 +177,7 @@ TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
   EXPECT_THAT(names, ::testing::ElementsAre(
                          "greet", "add", "len", "echo_double", "echo_uint",
                          "echo_string", "negate", "rev_bytes", "echo_list",
-                         "echo_map", "sum_list", "iota", "echo_uints",
+                         "echo_map", "sum_list", "iota", "echo_byteses", "echo_uints",
                          "echo_doubles", "echo_uint_bool_map", "echo_strings",
                          "echo_int_map", "echo_nested"));
   // Overload ids carry the arg-kind slugs; spot-check the three shapes.
@@ -233,6 +233,12 @@ TEST(CelWasmPluginDemo, KindMatrixEchoRoundTrips) {
       // to appear as a list element or map key/value — a bare argument
       // passes through unwrapped and never touches those arms.
       "echo_uints([1u, 2u])[1] == 2u",
+      // list<bytes> is list<list<u8>> on the wire: its element suffix
+      // must name the element's own container, or it collides with
+      // bare bytes (both become customfn_list_u8_t) and the emitter
+      // produces two `lift`s differing only in return type.
+      "echo_byteses([b'ab', b'cd'])[1] == b'cd'",
+      "size(echo_byteses([])) == 0",
       "echo_doubles([1.5, 2.5])[0] == 1.5",
       "echo_uint_bool_map({1u: true, 2u: false})[2u] == false",
       "size(echo_uint_bool_map({})) == 0",
