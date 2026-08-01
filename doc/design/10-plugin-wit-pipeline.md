@@ -129,11 +129,27 @@ non-shared linear memory — and everything awkward about the plugin
 build follows from it:
 
 - **libc++ has no `<mutex>`, `<thread>`, or `<condition_variable>`.**
-  Anything absl-dependent (i.e. anything protobuf-dependent) needs
-  patching to compile. Three patches under `third_party/patches/`
-  handle it: cctz's time-zone map guard, `absl::Mutex`'s yield hook,
-  and the stdcpp waiter backend plus `spinlock.h`'s `lock_guard`. All
-  are `__wasm__`/`__wasi__`-guarded, so native builds are untouched.
+  Anything absl-dependent — which means anything protobuf-dependent —
+  will not compile. Three patches (cctz's time-zone map guard,
+  `absl::Mutex`'s yield hook, and the stdcpp waiter backend plus
+  `spinlock.h`'s `lock_guard`) made it build end-to-end on 2026-07-28
+  and were **reverted the same day**: absl does not belong in a shipped
+  wasm guest. `protobuf_lite` does not help — it depends on
+  `absl/time` directly.
+
+  So this is the live constraint, not a solved one: **a proto-typed
+  plugin argument does not work today.** The rest of the proto path is
+  fixed and unit-pinned (the export-symbol lowercasing, the `-pthread`
+  strip below); what remains is the guest runtime. Unblocking it needs
+  a proto surface that does not drag absl — upb, or an IDL that passes
+  fields rather than whole messages. The e2e fixture carries a skip
+  recording exactly that.
+
+  The one patch still under `third_party/patches/` is
+  `abseil-cpp-wasm-sysinfo.patch` (`GetNumCPUs()` returns 1 under
+  `__wasm__`/`__wasi__`). It predates this work, serves the runtime
+  build rather than the plugin path, and is `__wasm__`-guarded so
+  native builds are untouched.
 - **`-pthread` must not reach the link.** absl and protobuf carry it in
   their own linkopts via a select whose default arm assumes a threaded
   POSIX host. `-pthread` makes clang pass `--shared-memory` to wasm-ld,
