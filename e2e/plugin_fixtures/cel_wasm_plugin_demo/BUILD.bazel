@@ -26,6 +26,10 @@ load("//e2e:link_mode_e2e_test.bzl", "link_mode_e2e_cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
+# The taxonomy drift guard (//e2e:taxonomy_validate_test) reads this
+# BUILD file to verify external_e2e_workloads entries name real targets.
+exports_files(["BUILD.bazel"])
+
 # Non-proto demo — the fast hermetic gate.
 cel_wasm_plugin(
     name = "demo_plugin",
@@ -48,6 +52,7 @@ link_mode_e2e_cc_test(
         ":demo_plugin",
     ],
     deps = [
+        ":user_cc_proto",
         "//abi:plugin",
         "//abi:wasm_binary",
         "//compiler:compiler",

@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <fstream>
 #include <ios>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -50,11 +51,13 @@
 #include "compiler/celfn/function_library.h"
 #include "compiler/compiler.h"
 #include "e2e/link_mode_e2e_helpers.h"
+#include "e2e/plugin_fixtures/cel_wasm_plugin_demo/user.pb.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
 #include "gmock/gmock.h"
+#include "google/protobuf/message.h"
 #include "gtest/gtest.h"
 #include "shared/type.h"
 #include "tools/cpp/runfiles/runfiles.h"
@@ -110,6 +113,37 @@ FunctionLibrary BuildDemoLibrary() {
   return *std::move(lib_or);
 }
 
+// Compile + Plan + Eval `source` against `plugin`.  Each call builds
+// its own Compiler and Engine — plugin registrations are per-Engine
+// state.
+absl::StatusOr<Value> EvalPluginSource(const Plugin& plugin,
+                                       absl::string_view source) {
+  auto builder = Compiler::NewBuilder();
+  builder.Use(plugin);
+  auto compiler = std::move(builder).Build();
+  if (!compiler.ok()) return compiler.status();
+  auto program = compiler->Compile(source, e2e::DefaultOpts());
+  if (!program.ok()) return program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  if (!engine.ok()) return engine.status();
+  if (auto s = engine->Use(plugin); !s.ok()) return s;
+  auto instance = engine->Plan(*program);
+  if (!instance.ok()) return instance.status();
+
+  Activation act;
+  return instance->Eval(act);
+}
+
+// Assert `source` evaluates to boolean true through `plugin`.
+void ExpectPluginBoolTrue(const Plugin& plugin, absl::string_view source) {
+  auto v = EvalPluginSource(plugin, source);
+  ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+  auto b = v->AsBool();
+  ASSERT_TRUE(b.ok()) << source << " kind=" << static_cast<int>(v->kind());
+  EXPECT_TRUE(*b) << source;
+}
+
 // The macro-built artifact is self-describing: it CARRIES the
 // `cel.fns` section (verbatim fns.idl bytes, embedded by the macro's
 // `cel embed-decls` step) and `Plugin::Load` round-trips it.
@@ -132,23 +166,93 @@ TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
   ASSERT_THAT(plugin, IsOk()) << plugin.status();
   EXPECT_EQ(plugin->celfn_source(), idl_text);
   EXPECT_EQ(plugin->wit_interface(), "cel:customfn/fns@0.1.0");
-  ASSERT_EQ(plugin->decls().size(), 3);
-  EXPECT_EQ(plugin->decls()[0].fn_name, "greet");
+  // Names in declaration order.  Listed rather than indexed one by one
+  // so adding a decl to fns.idl does not silently renumber the
+  // assertions below it — the previous form broke that way when
+  // echo_uint / echo_string were added.
+  std::vector<std::string> names;
+  names.reserve(plugin->decls().size());
+  for (const auto& d : plugin->decls())
+    names.push_back(d.fn_name);
+  EXPECT_THAT(names, ::testing::ElementsAre(
+                         "greet", "add", "len", "echo_double", "echo_uint",
+                         "echo_string", "negate", "rev_bytes", "echo_list",
+                         "echo_map", "sum_list", "iota", "echo_byteses", "echo_uints",
+                         "echo_doubles", "echo_uint_bool_map", "echo_strings",
+                         "echo_int_map", "echo_nested"));
+  // Overload ids carry the arg-kind slugs; spot-check the three shapes.
   EXPECT_EQ(plugin->decls()[0].overload_id, "greet_string_int");
-  EXPECT_EQ(plugin->decls()[1].fn_name, "add");
   EXPECT_EQ(plugin->decls()[1].overload_id, "add_int_int");
-  EXPECT_EQ(plugin->decls()[2].fn_name, "len");
   EXPECT_EQ(plugin->decls()[2].overload_id, "len_string");
 }
 
-// ─── m35 — the one-noun flow ─────────────────────────────────────
+// ─── kind-matrix dispatch: the carriers that work today ──────────
 //
-// The quickstart contract (m35-plugin-ergonomics.md §2): one noun
-// carries bytes, declarations, and hash from artifact to both
-// pipeline halves.  Plugin::Load(macro-built bytes) →
-// Compiler::Builder::Use(plugin) → Compile → Engine::Use(plugin)
-// (static export check, no instantiation) → Plan → Eval.  No
-// hand-maintained FunctionLibrary mirror anywhere.
+// The scalar carriers are the supported envelope (doc/design/
+// 05-custom-functions.md §5.4).  Each row is echo-shaped, so one
+// call drives BOTH directions of the host codec
+// (LiftCelToComponent for the arg, LowerComponentToCel for the
+// result).  Every NON-scalar carrier is pinned below.
+TEST(CelWasmPluginDemo, KindMatrixEchoRoundTrips) {
+  // One echo-shaped call per canonical-ABI carrier: each row drives
+  // BOTH directions of the host codec (LiftCelToComponent for the
+  // arg, LowerComponentToCel for the result) for its kind.  The
+  // aggregate rows used to trap ("cannot leave component instance")
+  // until the guest stopped importing wasi:random — see
+  // bazel/plugin_rng_stub.c for why that import was fatal here.
+  auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
+  ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
+  const absl::string_view kTrueSources[] = {
+      // Every primitive CEL type, so no carrier's lift/lower arm is
+      // left unexecuted.  `int` is covered by add/sum_list/iota below;
+      // uint and bare string had NO declaration in the fixture at all
+      // until this row set, so their arms never ran.
+      "echo_double(1.5) == 1.5",
+      "negate(true) == false",
+      "echo_uint(7u) == 7u",
+      "echo_uint(18446744073709551615u) == 18446744073709551615u",
+      "echo_string('hi') == 'hi'",
+      "echo_string('') == ''",
+      // bytes (list<u8> on the wire)
+      "rev_bytes(b'ab') == b'ba'",
+      // list<int>, both directions and the empty case
+      "echo_list([1, 2])[1] == 2",
+      "size(echo_list([])) == 0",
+      "sum_list([1, 2, 3]) == 6",
+      "iota(3)[2] == 2",
+      // map<string,int> (list<tuple2> on the wire), incl. empty —
+      // the lower half of the map codec only exists as of the
+      // kMapTpl change that landed with this fixture.
+      "echo_map({'a': 1, 'b': 2})['b'] == 2",
+      "size(echo_map({})) == 0",
+      // Nested / non-string-key carriers: the recursive list template,
+      // the map lower's non-string-key branch, and a list whose
+      // element is itself an aggregate.
+      // Element-suffix carriers: `SuffixFor` in cpp_codec_emitter.cc is
+      // reached only through a container, so uint / double / bool need
+      // to appear as a list element or map key/value — a bare argument
+      // passes through unwrapped and never touches those arms.
+      "echo_uints([1u, 2u])[1] == 2u",
+      // list<bytes> is list<list<u8>> on the wire: its element suffix
+      // must name the element's own container, or it collides with
+      // bare bytes (both become customfn_list_u8_t) and the emitter
+      // produces two `lift`s differing only in return type.
+      "echo_byteses([b'ab', b'cd'])[1] == b'cd'",
+      "size(echo_byteses([])) == 0",
+      "echo_doubles([1.5, 2.5])[0] == 1.5",
+      "echo_uint_bool_map({1u: true, 2u: false})[2u] == false",
+      "size(echo_uint_bool_map({})) == 0",
+      "echo_strings(['a', 'b'])[1] == 'b'",
+      "size(echo_strings([])) == 0",
+      "echo_int_map({1: 2, 3: 4})[3] == 4",
+      "echo_nested([[1, 2], [3]])[0][1] == 2",
+      "size(echo_nested([])) == 0",
+  };
+  for (const absl::string_view source : kTrueSources) {
+    ExpectPluginBoolTrue(*plugin_or, source);
+  }
+}
+
 TEST(CelWasmPluginDemo, OneNounFlowLoadUseCompileUsePlanEval) {
   auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
   ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
@@ -185,15 +289,22 @@ TEST(CelWasmPluginDemo, OneNounFlowProtoArg) {
 reason: harness-limit
 why-not-a-bug: the demo_plugin_proto fixture does not build for
   wasm32-wasip2 -- absl synchronization does not compile under that sysroot
-  -- so this test cannot depend on its bytes.  Pre-existing and unrelated to
-  the plugin path being exercised.  Un-skip by porting this body onto
-  demo_plugin_proto once that build is fixed.
-citation: e2e/plugin_fixtures/cel_wasm_plugin_demo (demo_plugin_proto target)
+  -- so this test cannot depend on its bytes.  Patching absl to compile
+  threadless was tried and REVERTED deliberately on 2026-07-28; the chosen
+  direction is to keep absl out of the wasm side entirely.  Everything else
+  in the proto path is fixed and unit-pinned: the export-symbol lowercasing
+  (cpp_stub_emitter_test ProtoDeclExportSymbolIsLowercased) and the -pthread
+  strip (wasm_clang.sh).  Un-skip when the guest gets a proto runtime that
+  does not drag absl (upb, or an IDL surface passing fields not messages).
+citation: doc/design/10-plugin-wit-pipeline.md section 4;
+  e2e/plugin_fixtures/cel_wasm_plugin_demo (demo_plugin_proto target)
 )CELSKIP";
-  // Intended: Plugin::Load(demo_plugin_proto bytes) →
-  // Compiler::Builder::Use → Compile("is_adult(u)") → Engine::Use →
-  // Plan → Eval with a bound acme.User message, asserting the
+  // Intended: Plugin::Load(demo_plugin_proto bytes) ->
+  // Compiler::Builder::Use -> Compile("is_adult(u)") -> Engine::Use ->
+  // Plan -> Eval with a bound acme.User message, asserting the
   // proto-as-bytes marshalling path through the one-noun surface.
+  // Verified GREEN on 2026-07-28 with the absl patches applied, so the
+  // only blocker is the absl-in-guest dependency itself.
 }
 
 TEST(CelWasmPluginDemo, AddRoundTrips) {
@@ -222,18 +333,6 @@ TEST(CelWasmPluginDemo, AddRoundTrips) {
 }
 
 TEST(CelWasmPluginDemo, GreetRoundTripsString) {
-  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
-reason: harness-limit
-why-not-a-bug: a wasmtime C API gap, not a defect in our code.  Engine now
-  stubs wasi:random/random.get-random-bytes with a deterministic-bytes host
-  fn, so the AddRoundTrips path passes; but std::to_string + std::string
-  concat still traps "cannot leave component instance" INSIDE libc++ AFTER
-  random_get returns, at the wasm function level post-adapter (likely
-  thread-local destructor registration or a canonical-ABI re-entrancy
-  guard).  Un-skip once the wasmtime C API exposes a real wasi-preview2
-  store context.
-citation: eval/engine.cc (wasi:random stub); m26 item 44
-)CELSKIP";
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   const auto lib = BuildDemoLibrary();
