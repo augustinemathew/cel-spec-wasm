@@ -63,6 +63,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A cold run compiles all of cel-cpp from source, and the bazel
+      # output tree plus disk cache overruns the ~14 GB an
+      # ubuntu-24.04 runner leaves free.  The failure surfaces as an
+      # unrelated-looking compile error ("Compiling runtime/cel_make.c
+      # failed") with the real cause buried in the sandbox's
+      # "No space left on device" note, so reclaim first.  The
+      # toolchains removed here are preinstalled on the image and
+      # nothing in this build uses them.
+      - name: Reclaim runner disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
+                      /opt/ghc /usr/local/.ghcup \
+                      /usr/local/share/boost /usr/share/swift || true
+          sudo docker image prune -af || true
+          df -h / | tail -1
+
       - name: Install host deps (mirrors docker/Dockerfile)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
 
