@@ -962,13 +962,16 @@ TEST_F(HostCallContextTest, MismatchDiagnosticNamesWireKind) {
 // backing, which this host-side check must not do.  (Tested here
 // rather than in value_test because the aggregate factories live in
 // this target's dep, not //eval:value's.)
-TEST(ValueStructuralEqualityAggregateTest, ComparesByBackingIdentity) {
+// Backing-identity semantics themselves are pinned by
+// host_list_test.cc's ValueListTest.StructurallyEqualsIsPointerIdentity,
+// which builds the backing explicitly.  What is unique here is the
+// `Value::List(...)` FACTORY path — it mints a fresh backing per call,
+// so two equal-content lists compare unequal — plus the empty
+// aggregate, whose emptiness must not make it equal to a non-aggregate.
+TEST(ValueStructuralEqualityAggregateTest, FactoryMintsDistinctBackings) {
   const Value a = Value::List({Value::Int(1)});
   const Value b = Value::List({Value::Int(1)});
   EXPECT_FALSE(a.StructurallyEquals(b)) << "distinct backings, equal contents";
-  const Value a_alias = a;  // shares the backing
-  EXPECT_TRUE(a.StructurallyEquals(a_alias));
-  // Cross-kind stays unequal even for an empty aggregate.
   EXPECT_FALSE(Value::List({}).StructurallyEquals(Value::Null()));
 }
 

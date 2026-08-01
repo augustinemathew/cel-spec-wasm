@@ -84,6 +84,10 @@ TEST(NameCoverageDeathTest, OriginNameOnePastMaxFires) {
 }
 // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
 
+// These two pin the exact SPELLINGS; NameCoverageTest above pins
+// EXHAUSTIVENESS (every enumerator has some name, and one past the last
+// has none).  Neither subsumes the other — a missing row here still
+// fails there, and a wrong string there still passes.
 TEST(ReprNameTest, CoversEveryEnumerator) {
   struct Row {
     Repr r;
@@ -97,7 +101,7 @@ TEST(ReprNameTest, CoversEveryEnumerator) {
       {Repr::kList, "list"},         {Repr::kMap, "map"},
       {Repr::kMessage, "message"},   {Repr::kEnum, "enum"},
       {Repr::kDuration, "duration"}, {Repr::kTimestamp, "timestamp"},
-      {Repr::kType, "type"},
+      {Repr::kType, "type"},         {Repr::kOptional, "optional"},
   };
   for (const auto& row : rows) {
     EXPECT_EQ(ReprName(row.r), row.name) << "repr=" << static_cast<int>(row.r);
@@ -106,18 +110,11 @@ TEST(ReprNameTest, CoversEveryEnumerator) {
   }
 }
 
-TEST(ReprNameTest, FallsBackForOutOfRangeValue) {
-  // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-  EXPECT_EQ(ReprName(static_cast<Repr>(250)), "?");
-}
-
 TEST(StorageKindNameTest, CoversEveryEnumerator) {
   EXPECT_EQ(StorageKindName(StorageKind::kNone), "none");
   EXPECT_EQ(StorageKindName(StorageKind::kStaticRodata), "static_rodata");
   EXPECT_EQ(StorageKindName(StorageKind::kWorkspaceSlot), "workspace_slot");
   EXPECT_EQ(StorageKindName(StorageKind::kLocal), "local");
-  // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-  EXPECT_EQ(StorageKindName(static_cast<StorageKind>(250)), "?");
 }
 
 TEST(WasmAnnotationsTest, OperatorIndexCreatesDefaultEntry) {
