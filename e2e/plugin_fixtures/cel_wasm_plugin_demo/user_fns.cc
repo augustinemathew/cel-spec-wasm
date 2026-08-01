@@ -30,6 +30,14 @@ double EchoDouble(double d) {
   return d;
 }
 
+uint64_t EchoUint(uint64_t u) {
+  return u;
+}
+
+std::string EchoString(std::string_view s) {
+  return std::string(s);
+}
+
 bool Negate(bool b) {
   return !b;
 }
@@ -53,6 +61,18 @@ int64_t SumList(const std::vector<int64_t>& xs) {
     total += x;
   }
   return total;
+}
+
+std::vector<uint64_t> EchoUints(const std::vector<uint64_t>& xs) {
+  return xs;
+}
+
+std::vector<double> EchoDoubles(const std::vector<double>& xs) {
+  return xs;
+}
+
+std::map<uint64_t, bool> EchoUintBoolMap(const std::map<uint64_t, bool>& m) {
+  return m;
 }
 
 std::vector<std::string> EchoStrings(const std::vector<std::string>& xs) {

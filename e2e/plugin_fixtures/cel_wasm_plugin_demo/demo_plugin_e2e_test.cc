@@ -166,18 +166,24 @@ TEST(CelWasmPluginDemo, MacroOutputCarriesCelFnsAndPluginLoadRoundTrips) {
   ASSERT_THAT(plugin, IsOk()) << plugin.status();
   EXPECT_EQ(plugin->celfn_source(), idl_text);
   EXPECT_EQ(plugin->wit_interface(), "cel:customfn/fns@0.1.0");
-  ASSERT_EQ(plugin->decls().size(), 13);
-  EXPECT_EQ(plugin->decls()[0].fn_name, "greet");
+  // Names in declaration order.  Listed rather than indexed one by one
+  // so adding a decl to fns.idl does not silently renumber the
+  // assertions below it — the previous form broke that way when
+  // echo_uint / echo_string were added.
+  std::vector<std::string> names;
+  names.reserve(plugin->decls().size());
+  for (const auto& d : plugin->decls())
+    names.push_back(d.fn_name);
+  EXPECT_THAT(names, ::testing::ElementsAre(
+                         "greet", "add", "len", "echo_double", "echo_uint",
+                         "echo_string", "negate", "rev_bytes", "echo_list",
+                         "echo_map", "sum_list", "iota", "echo_uints",
+                         "echo_doubles", "echo_uint_bool_map", "echo_strings",
+                         "echo_int_map", "echo_nested"));
+  // Overload ids carry the arg-kind slugs; spot-check the three shapes.
   EXPECT_EQ(plugin->decls()[0].overload_id, "greet_string_int");
-  EXPECT_EQ(plugin->decls()[1].fn_name, "add");
   EXPECT_EQ(plugin->decls()[1].overload_id, "add_int_int");
-  EXPECT_EQ(plugin->decls()[2].fn_name, "len");
   EXPECT_EQ(plugin->decls()[2].overload_id, "len_string");
-  EXPECT_EQ(plugin->decls()[3].fn_name, "echo_double");
-  EXPECT_EQ(plugin->decls()[4].fn_name, "negate");
-  EXPECT_EQ(plugin->decls()[5].fn_name, "rev_bytes");
-  EXPECT_EQ(plugin->decls()[6].fn_name, "echo_list");
-  EXPECT_EQ(plugin->decls()[7].fn_name, "echo_map");
 }
 
 // ─── kind-matrix dispatch: the carriers that work today ──────────
@@ -197,9 +203,16 @@ TEST(CelWasmPluginDemo, KindMatrixEchoRoundTrips) {
   auto plugin_or = Plugin::Load(LoadDemoPluginBytes());
   ASSERT_THAT(plugin_or, IsOk()) << plugin_or.status();
   const absl::string_view kTrueSources[] = {
-      // scalars
+      // Every primitive CEL type, so no carrier's lift/lower arm is
+      // left unexecuted.  `int` is covered by add/sum_list/iota below;
+      // uint and bare string had NO declaration in the fixture at all
+      // until this row set, so their arms never ran.
       "echo_double(1.5) == 1.5",
       "negate(true) == false",
+      "echo_uint(7u) == 7u",
+      "echo_uint(18446744073709551615u) == 18446744073709551615u",
+      "echo_string('hi') == 'hi'",
+      "echo_string('') == ''",
       // bytes (list<u8> on the wire)
       "rev_bytes(b'ab') == b'ba'",
       // list<int>, both directions and the empty case
@@ -215,6 +228,14 @@ TEST(CelWasmPluginDemo, KindMatrixEchoRoundTrips) {
       // Nested / non-string-key carriers: the recursive list template,
       // the map lower's non-string-key branch, and a list whose
       // element is itself an aggregate.
+      // Element-suffix carriers: `SuffixFor` in cpp_codec_emitter.cc is
+      // reached only through a container, so uint / double / bool need
+      // to appear as a list element or map key/value — a bare argument
+      // passes through unwrapped and never touches those arms.
+      "echo_uints([1u, 2u])[1] == 2u",
+      "echo_doubles([1.5, 2.5])[0] == 1.5",
+      "echo_uint_bool_map({1u: true, 2u: false})[2u] == false",
+      "size(echo_uint_bool_map({})) == 0",
       "echo_strings(['a', 'b'])[1] == 'b'",
       "size(echo_strings([])) == 0",
       "echo_int_map({1: 2, 3: 4})[3] == 4",

@@ -14,11 +14,14 @@ int    @plugin.add(int a, int b);
 int    @plugin.len(string s);
 
 // Kind-matrix echo fns — one per canonical-ABI carrier the plugin
-// boundary supports without protobuf (double / bool / bytes /
-// list<int> / map<string,int>).  Each is echo-shaped so a single
+// boundary supports without protobuf: every primitive CEL type
+// (int via `add` above, uint / double / bool / string / bytes here)
+// plus list<int> and map<string,int>.  Each is echo-shaped so a single
 // call exercises BOTH the lift (CEL -> component) and lower
 // (component -> CEL) arm for its kind.
 double @plugin.echo_double(double d);
+uint   @plugin.echo_uint(uint u);
+string @plugin.echo_string(string s);
 bool   @plugin.negate(bool b);
 bytes  @plugin.rev_bytes(bytes b);
 list<int> @plugin.echo_list(list<int> xs);
@@ -33,6 +36,18 @@ list<int> @plugin.iota(int n);
 // matrix above does not: the RECURSIVE list template (element needs
 // its own lift/lower), the map lower's non-string-key branch, and
 // LiftList/LowerList's recursion through a nested element type.
+// Element-suffix coverage: `SuffixFor` (cpp_codec_emitter.cc) is only
+// reached through a CONTAINER — a bare bool/int/uint/double passes
+// through unwrapped with an empty struct name — so its bool / u64 /
+// f64 arms need the primitive as a list element or map key/value, not
+// as a plain argument.  `list<bool>` is deliberately ABSENT: the codec
+// emits std::vector<bool>, whose bit-packed specialisation has no
+// .data(), so the generated header does not compile (CELW-0021).
+// bool reaches SuffixFor as a MAP VALUE instead.
+list<uint>   @plugin.echo_uints(list<uint> xs);
+list<double> @plugin.echo_doubles(list<double> xs);
+map<uint, bool> @plugin.echo_uint_bool_map(map<uint, bool> m);
+
 list<string> @plugin.echo_strings(list<string> xs);
 map<int, int> @plugin.echo_int_map(map<int, int> m);
 list<list<int>> @plugin.echo_nested(list<list<int>> xs);
