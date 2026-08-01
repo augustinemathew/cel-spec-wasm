@@ -337,6 +337,36 @@ TEST_F(AggregateNestingCrossProductTest, StructOfMap) {
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 5);
 }
 
+// Wrapper-typed fields are nullable scalars (`doc/langdef.md`,
+// "Wrapper Types"): a field-init takes the bare scalar, and reading a
+// set wrapper collapses back to it.
+TEST_F(AggregateNestingCrossProductTest, StructOfWrapperInt) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{wrap_i32: 7}.wrap_i32");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 7);
+}
+
+TEST_F(AggregateNestingCrossProductTest, StructOfWrapperString) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler, R"(celwasm.testdata.HostMsg3{wrap_s: "hi"}.wrap_s)");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsString(), "hi");
+}
+
+TEST_F(AggregateNestingCrossProductTest, UnsetWrapperReadsNull) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "celwasm.testdata.HostMsg3{i32: 1}.wrap_i32");
+  Activation a;
+  EXPECT_TRUE(EvalOk(instance, a).IsNull());
+}
+
 TEST_F(AggregateNestingCrossProductTest, StructOfStruct) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());

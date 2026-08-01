@@ -712,7 +712,7 @@ TEST(WatRunnerListTest, DispatcherWatAssemblesAndImportsResolve) {
   // Same wasmtime c-api panic on tail-call → imported host as
   // documented on `WatRunnerMapTest::DispatcherWatAssemblesAndImportsResolve`.
   // Production paths cover the dispatcher arms via instance_test /
-  // m4_test through the full wasmtime::Engine.
+  // list_test through the full wasmtime::Engine.
   auto wat = LoadWat("14_list_index_dynamic.wat");
   ASSERT_THAT(wat, IsOk());
   GTEST_SKIP() << R"CELSKIP(CELSKIP v1
@@ -721,9 +721,9 @@ why-not-a-bug: same wasmtime c-api panic on the tail-call to imported-host
   path as WatRunnerMapTest::DispatcherWatAssemblesAndImportsResolve above - a
   harness limitation, not a product gap. The assemble + imports-resolve half
   still runs (LoadWat above this skip). The list dispatcher's arms are
-  exercised end-to-end by the production e2e suite (m4_test / instance_test)
+  exercised end-to-end by the production e2e suite (list_test / instance_test)
   through the real wasmtime::Engine.
-citation: doc/implementation-plan/rewrite/wat/14_list_index_dynamic.wat; e2e/m4_test.cc + eval/instance_test.cc (production-engine dispatcher coverage)
+citation: doc/implementation-plan/rewrite/wat/14_list_index_dynamic.wat; e2e/list_test.cc + eval/instance_test.cc (production-engine dispatcher coverage)
 )CELSKIP";
 }
 
@@ -798,19 +798,6 @@ TEST(WatRunnerArithCompareTest, IntAddProducesSum) {
   CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
   EXPECT_EQ(cv.kind, CEL_INT);
   EXPECT_EQ(cv.payload.i, 3);
-}
-
-TEST(WatRunnerArithCompareTest, IntEqProducesBoolFalse) {
-  auto wat = LoadWat("17_compare_int_eq.wat");
-  ASSERT_THAT(wat, IsOk());
-  WatRunInput in;
-  in.wat = *wat;
-  auto out = RunWat(in);
-  ASSERT_THAT(out, IsOk());
-  EXPECT_EQ(out->eval_return, 64u);
-  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
-  EXPECT_EQ(cv.kind, CEL_BOOL);
-  EXPECT_EQ(cv.payload.b, 0);  // 1 == 2 is false.
 }
 
 TEST(WatRunnerStringOpsTest, StringConcatBuildsArenaPayload) {

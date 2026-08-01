@@ -1,7 +1,7 @@
 // M9 e2e test suite — the spec of "done" for the type subsystem
 // (`type(x)` standard function + type-identifier idents like
 // `int` / `bool` / `<message-fqn>` standalone + CEL_TYPE
-// equality).  Mirrors the m7_test shape: every test asserts a
+// equality).  Mirrors the proto_literal_test shape: every test asserts a
 // capability `m9-type-subsystem.md` says M9 must light up;
 // running this binary today (with `cel.abi.type_names[]` not yet
 // in the ABI, `Value::Kind::kType` not yet on the public surface,
@@ -11,7 +11,7 @@
 //
 // The 47-row `type_deduction.textproto` cohort is unlocked via
 // the `typed_result:` runner matcher in M9.F (harness-only) and
-// is NOT exercised here — m9_test asserts user-visible
+// is NOT exercised here — type_value_test asserts user-visible
 // capabilities, not harness behaviour.  Those rows are covered
 // by `conformance/runner_test.cc`.
 //
@@ -68,6 +68,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -85,7 +86,6 @@
 
 namespace celwasm {
 namespace {
-using ::celwasm::AttributePattern;
 
 using ::absl_testing::IsOk;
 using ::celwasm::testdata::HostMsg2;
@@ -98,8 +98,6 @@ using ::celwasm::testdata::HostMsg3;
       google::protobuf::LinkMessageReflection<HostMsg3>();
       return 0;
     }();
-
-using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -417,7 +415,19 @@ INSTANTIATE_TEST_SUITE_P(
         TypeIdentCase{"String", "string"}, TypeIdentCase{"Bytes", "bytes"},
         TypeIdentCase{"NullType", "null_type"}, TypeIdentCase{"List", "list"},
         TypeIdentCase{"Map", "map"}, TypeIdentCase{"Type", "type"},
-        TypeIdentCase{"MessageHostMsg3", "celwasm.testdata.HostMsg3"}),
+        TypeIdentCase{"MessageHostMsg3", "celwasm.testdata.HostMsg3"},
+        // Wrapper type idents rewrite through WrapperTypeName to
+        // their google.protobuf FQNs; Timestamp / Duration through
+        // WellKnownTypeName.  Same standalone-ident surface as the
+        // primitives above.
+        TypeIdentCase{"WrapperBool", "google.protobuf.BoolValue"},
+        TypeIdentCase{"WrapperInt64", "google.protobuf.Int64Value"},
+        TypeIdentCase{"WrapperUint64", "google.protobuf.UInt64Value"},
+        TypeIdentCase{"WrapperDouble", "google.protobuf.DoubleValue"},
+        TypeIdentCase{"WrapperString", "google.protobuf.StringValue"},
+        TypeIdentCase{"WrapperBytes", "google.protobuf.BytesValue"},
+        TypeIdentCase{"WellKnownTimestamp", "google.protobuf.Timestamp"},
+        TypeIdentCase{"WellKnownDuration", "google.protobuf.Duration"}),
     [](const ::testing::TestParamInfo<TypeIdentCase>& info) {
       return info.param.label;
     });
@@ -689,6 +699,26 @@ TEST_F(TypeActivationE2ETest, BoundTypeEqualsLiteralIdent) {
   Activation a;
   a.Bind("t", Value::Type("bool"));
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+// Binding a non-type Value to a `type`-declared variable is an
+// embedder mistake, and the activation marshal must reject it by
+// NAME and expected kind rather than marshalling garbage
+// (instance.cc EncodeType's kind guard).
+TEST_F(TypeActivationE2ETest, BindingNonTypeToTypeVarIsRejected) {
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("t", CelType::Type());
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "t == bool");
+  for (const Value& wrong :
+       {Value::Int(1), Value::String("bool"), Value::Bool(true)}) {
+    Activation a;
+    a.Bind("t", wrong);
+    auto v = instance.Eval(a);
+    ASSERT_FALSE(v.ok()) << "kind=" << static_cast<int>(wrong.kind());
+    EXPECT_TRUE(absl::StrContains(v.status().message(), "t")) << v.status();
+  }
 }
 
 TEST_F(TypeActivationE2ETest, BoundTypeEqualsTypeOfRuntimeValue) {
