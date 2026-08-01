@@ -24,7 +24,7 @@ namespace {
 
 // Force generated-pool registration of descriptors referenced by the
 // proto-literal `?field:` tests below.  Runs once at static init;
-// mirrors the m8_test shape but scoped to just the proto3
+// mirrors the wrapper_test shape but scoped to just the proto3
 // TestAllTypes needed by the Slice E tests.
 [[maybe_unused]] const int
     kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
@@ -302,7 +302,7 @@ TEST(OptionalE2ETest, OptFlatMapBodyMayReturnNone) {
 // semantics — `has()` returns false on an unset field).  Runtime
 // kernel: `cel_set_field_at_if_present`.  All three rows use
 // `cel.expr.conformance.proto3.TestAllTypes` which is registered
-// in the Compiler builder via the same descriptor pool m8_test
+// in the Compiler builder via the same descriptor pool wrapper_test
 // uses.
 
 TEST(OptionalE2ETest, ProtoLiteralOptionalFieldSomeMaterialises) {
@@ -807,6 +807,68 @@ TEST(ProtoOptionalFieldE2ETest,
       "?single_double_wrapper: optional.ofNonZeroValue(0.0)}).hasValue()");
   ASSERT_EQ(v.kind(), Value::Kind::kBool) << static_cast<int>(v.kind());
   EXPECT_FALSE(*v.AsBool());
+}
+
+// ── ofNonZeroValue over HOST-backed aggregates ──────────────────────
+//
+// `optional.ofNonZeroValue(x)` asks the runtime whether x is its
+// type's zero value.  For a LITERAL list/map that answer comes from
+// the arena header, but for a BOUND (host-backed) one the runtime has
+// to call back out — cel_optional.c's host_value_is_zero issues a
+// cel_host list/map size probe.  Only a bound aggregate reaches that
+// path, so it needs its own rows.
+
+class OfNonZeroValueHostBackedTest : public ::testing::Test {
+ protected:
+  static Value Eval(absl::string_view source,
+                    const std::vector<std::pair<std::string, CelType>>& decls,
+                    std::vector<std::pair<std::string, Value>> binds) {
+    Compiler::Builder b;
+    for (const auto& [name, type] : decls) {
+      b.DeclareVariable(name, type);
+    }
+    auto compiler = std::move(b).Build();
+    ABSL_CHECK_OK(compiler) << source;
+    auto program = compiler->Compile(source, e2e::DefaultOpts());
+    ABSL_CHECK_OK(program) << source;
+    auto instance = GlobalEngine().Plan(*program);
+    ABSL_CHECK_OK(instance) << source;
+    Activation a;
+    for (auto& [name, value] : binds) {
+      a.Bind(name, std::move(value));
+    }
+    auto v = instance->Eval(a);
+    ABSL_CHECK_OK(v) << source;
+    return *std::move(v);
+  }
+};
+
+TEST_F(OfNonZeroValueHostBackedTest, BoundListProbesHostSize) {
+  const std::vector<std::pair<std::string, CelType>> decls = {
+      {"xs", CelType::List(CelType::Int())}};
+  // Non-empty -> Some, so orValue keeps the bound list's first element.
+  EXPECT_EQ(*Eval("optional.ofNonZeroValue(xs).hasValue()", decls,
+                  {{"xs", Value::List({Value::Int(1)})}})
+                 .AsBool(),
+            true);
+  // Empty -> the zero value -> None.
+  EXPECT_EQ(*Eval("optional.ofNonZeroValue(xs).hasValue()", decls,
+                  {{"xs", Value::List({})}})
+                 .AsBool(),
+            false);
+}
+
+TEST_F(OfNonZeroValueHostBackedTest, BoundMapProbesHostSize) {
+  const std::vector<std::pair<std::string, CelType>> decls = {
+      {"m", CelType::Map(CelType::String(), CelType::Int())}};
+  EXPECT_EQ(*Eval("optional.ofNonZeroValue(m).hasValue()", decls,
+                  {{"m", Value::Map({{Value::String("k"), Value::Int(1)}})}})
+                 .AsBool(),
+            true);
+  EXPECT_EQ(*Eval("optional.ofNonZeroValue(m).hasValue()", decls,
+                  {{"m", Value::Map({})}})
+                 .AsBool(),
+            false);
 }
 
 }  // namespace

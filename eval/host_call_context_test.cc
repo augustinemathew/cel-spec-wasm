@@ -839,5 +839,138 @@ TEST_F(HostCallContextTest, UnknownArgWithOutOfBoundsDescriptorErrors) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
+// ════════════════ wire-error decode + kind diagnostics ════════════════
+
+// A CEL_ERROR arg decodes to a Value error whose ErrorPayload code
+// mirrors the wire byte 1:1 (DecodeWireError's recognized set).
+TEST_F(HostCallContextTest, ArgValueDecodesRecognizedWireErrorCodes) {
+  const ErrorCode codes[] = {
+      ErrorCode::kOverflow,         ErrorCode::kDivideByZero,
+      ErrorCode::kDuplicateKey,     ErrorCode::kIndexOutOfBounds,
+      ErrorCode::kInvalidArgument,  ErrorCode::kFieldNotFound,
+      ErrorCode::kUnknownType,      ErrorCode::kCustomFnFailed,
+      ErrorCode::kHostAdapterError, ErrorCode::kTimeout,
+  };
+  for (ErrorCode code : codes) {
+    CelValue cv{};
+    cv.kind = CEL_ERROR;
+    cv.payload.err = static_cast<uint32_t>(code);
+    mem_.Place(kArg0, cv);
+    auto ctx = Ctx({kArg0});
+    auto v_or = ctx.ArgValue(0);
+    ASSERT_TRUE(v_or.ok()) << static_cast<int>(code);
+    ASSERT_TRUE(v_or->IsError()) << static_cast<int>(code);
+    auto payload = v_or->ErrorInfo();
+    ASSERT_TRUE(payload.ok());
+    EXPECT_EQ((*payload)->code, code);
+    EXPECT_EQ((*payload)->message, ErrorCodeName(code));
+  }
+}
+
+// An unrecognized wire byte degrades to kHostAdapterError naming the
+// raw code — the decoder must not crash on future/corrupt bytes.
+TEST_F(HostCallContextTest, ArgValueDegradesUnknownWireErrorByte) {
+  CelValue cv{};
+  cv.kind = CEL_ERROR;
+  cv.payload.err = 250;  // not a recognized ErrorCode
+  mem_.Place(kArg0, cv);
+  auto ctx = Ctx({kArg0});
+  auto v_or = ctx.ArgValue(0);
+  ASSERT_TRUE(v_or.ok());
+  ASSERT_TRUE(v_or->IsError());
+  auto payload = v_or->ErrorInfo();
+  ASSERT_TRUE(payload.ok());
+  EXPECT_EQ((*payload)->code, ErrorCode::kHostAdapterError);
+  EXPECT_THAT((*payload)->message, ::testing::HasSubstr("250"));
+}
+
+// A CEL_MAP_ARENA arg eagerly decodes its entries through ArgValue
+// (DecodeArenaMapEntries) — distinct from the lazy HostMapView path.
+TEST_F(HostCallContextTest, ArgValueDecodesArenaMapEntries) {
+  mem_.Place(kArg0, MakeArenaMap({{MakeInt(1), MakeInt(10)},
+                                  {MakeInt(2), MakeInt(20)}}));
+  auto ctx = Ctx({kArg0});
+  auto v_or = ctx.ArgValue(0);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kMap);
+  auto backing = v_or->MapBacking();
+  ASSERT_TRUE(backing.ok());
+  EXPECT_EQ((*backing)->Size(), 2u);
+  auto v1 = (*backing)->Get(Value::Int(1), CelType::Int());
+  auto v2 = (*backing)->Get(Value::Int(2), CelType::Int());
+  ASSERT_TRUE(v1.ok() && v2.ok());
+  EXPECT_EQ(*v1->AsInt(), 10);
+  EXPECT_EQ(*v2->AsInt(), 20);
+}
+
+// header_ptr == 0 is the empty-map wire sentinel.
+TEST_F(HostCallContextTest, ArgValueDecodesEmptyArenaMapSentinel) {
+  CelValue cv{};
+  cv.kind = CEL_MAP_ARENA;
+  cv.payload.arena_map.header_ptr = 0;
+  mem_.Place(kArg0, cv);
+  auto ctx = Ctx({kArg0});
+  auto v_or = ctx.ArgValue(0);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  ASSERT_EQ(v_or->kind(), Value::Kind::kMap);
+  auto backing = v_or->MapBacking();
+  ASSERT_TRUE(backing.ok());
+  EXPECT_EQ((*backing)->Size(), 0u);
+}
+
+// A kind-mismatch diagnostic names the offending wire kind — one row
+// per WireKindName arm the scalar reject cases above don't reach.
+TEST_F(HostCallContextTest, MismatchDiagnosticNamesWireKind) {
+  struct Row {
+    CelValue slot;
+    absl::string_view kind_name;
+  };
+  CelValue type_cv{};
+  type_cv.kind = CEL_TYPE;
+  CelValue unknown_cv{};
+  unknown_cv.kind = CEL_UNKNOWN;
+  CelValue error_cv{};
+  error_cv.kind = CEL_ERROR;
+  const Row rows[] = {
+      {MakeNull(), "null"},
+      {MakeDuration(absl::Seconds(1)), "duration"},
+      {MakeTimestamp(absl::UnixEpoch()), "timestamp"},
+      {MakeArenaList({}), "list"},
+      {MakeArenaMap({}), "map"},
+      {MakeMessage(1), "message"},
+      {type_cv, "type"},
+      {unknown_cv, "unknown"},
+      {error_cv, "error"},
+  };
+  for (const Row& row : rows) {
+    mem_.Place(kArg0, row.slot);
+    auto ctx = Ctx({kArg0});
+    const absl::Status s = ctx.ArgInt(0).status();
+    EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument))
+        << row.kind_name;
+    EXPECT_THAT(std::string(s.message()),
+                ::testing::HasSubstr(std::string(row.kind_name)))
+        << row.kind_name;
+  }
+}
+
+// Value::StructurallyEquals over AGGREGATE kinds compares by backing
+// IDENTITY, not by contents: two separately-built lists with equal
+// elements are structurally unequal, while two Values sharing one
+// backing are equal.  That is deliberate — deep comparison of a
+// host-backed aggregate would mean calling back into the embedder's
+// backing, which this host-side check must not do.  (Tested here
+// rather than in value_test because the aggregate factories live in
+// this target's dep, not //eval:value's.)
+TEST(ValueStructuralEqualityAggregateTest, ComparesByBackingIdentity) {
+  const Value a = Value::List({Value::Int(1)});
+  const Value b = Value::List({Value::Int(1)});
+  EXPECT_FALSE(a.StructurallyEquals(b)) << "distinct backings, equal contents";
+  const Value a_alias = a;  // shares the backing
+  EXPECT_TRUE(a.StructurallyEquals(a_alias));
+  // Cross-kind stays unequal even for an empty aggregate.
+  EXPECT_FALSE(Value::List({}).StructurallyEquals(Value::Null()));
+}
+
 }  // namespace
 }  // namespace celwasm

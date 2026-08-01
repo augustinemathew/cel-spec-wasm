@@ -27,40 +27,6 @@ namespace {
 // Human-readable name for an `ExprKindCase`, used in unimplemented
 // diagnostics so the error points at the offending kind by name rather
 // than an integer enum value.
-absl::string_view ExprKindName(cel::ExprKindCase k) {
-  switch (k) {
-    case cel::ExprKindCase::kUnspecifiedExpr:
-      return "unspecified";
-    case cel::ExprKindCase::kConstant:
-      return "constant";
-    case cel::ExprKindCase::kIdentExpr:
-      return "ident";
-    case cel::ExprKindCase::kSelectExpr:
-      return "select";
-    case cel::ExprKindCase::kCallExpr:
-      return "call";
-    case cel::ExprKindCase::kListExpr:
-      return "list";
-    case cel::ExprKindCase::kStructExpr:
-      return "struct";
-    case cel::ExprKindCase::kMapExpr:
-      return "map";
-    case cel::ExprKindCase::kComprehensionExpr:
-      return "comprehension";
-  }
-  // Closed enum; reaching here means cel-cpp grew a variant we haven't
-  // mirrored.  Crash loudly per CLAUDE.md — a silent fallback here
-  // would miscompile on a new kind.
-  ABSL_CHECK(false) << "ExprKindName: unknown ExprKindCase "
-                    << static_cast<int>(k);
-  return "<unreachable>";
-}
-
-absl::Status Unimplemented(cel::ExprKindCase kind, int64_t id) {
-  return absl::UnimplementedError(
-      absl::StrCat("expr_lower: expression kind `", ExprKindName(kind),
-                   "` is not supported yet (expr id ", id, ")"));
-}
 
 }  // namespace
 
@@ -1025,7 +991,7 @@ absl::string_view MaybeRepickCrossNumericOverload(
 }
 
 // Resolves `ann.overload_id` to a runtime helper name, returning an
-// `Unimplemented` Status if (a) the annotation is empty
+// `UnimplementedError` if (a) the annotation is empty
 // (ResolvePass didn't stamp it — codegen invariant), or (b) no
 // entry in OverloadTable matches.  The returned string_view is
 // the wasm import name codegen emits a `BinaryenCall` to.
@@ -1334,7 +1300,7 @@ absl::StatusOr<BinaryenExpressionRef> Emit(EmitCtx& ctx,
     case cel::ExprKindCase::kComprehensionExpr:
       return LowerComprehension(ctx, expr, expr.comprehension_expr(), *ann);
     case cel::ExprKindCase::kUnspecifiedExpr:
-      return Unimplemented(expr.kind_case(), expr.id());
+      break;  // kind-less Expr: malformed node; the CHECK below fires
   }
   ABSL_CHECK(false) << "Emit: unknown ExprKindCase "
                     << static_cast<int>(expr.kind_case());
@@ -1394,110 +1360,6 @@ absl::StatusOr<LoweredFunction> LowerToEvalFunction(
       BinaryenGetFunction(mod.raw(), func_name_c.c_str());
   ABSL_CHECK(func != nullptr)
       << "expr_lower: Binaryen did not register function `" << func_name
-      << "` after AddFunction";
-  return LoweredFunction{func, std::move(field_refs)};
-}
-
-namespace {
-
-// `(call $cel_copy_slot <dst_expr> <src_expr>)` — variant of the
-// fixed-slot `EmitCelCopySlot` whose dst/src are i32-valued
-// sub-expressions instead of compile-time constants.  Used by the
-// CEL-defined custom-fn lowerer where `dst` is `(local.get 0)`
-// (the wasm param holding the caller's out_slot) and `src` is the
-// `Emit`-returned slot offset of the body's root expression.
-BinaryenExpressionRef EmitCelCopySlotDyn(WasmModule& mod,
-                                         BinaryenExpressionRef dst,
-                                         BinaryenExpressionRef src) {
-  BinaryenExpressionRef args[2] = {dst, src};
-  return BinaryenCall(mod.raw(), "cel_copy_slot", args, 2, BinaryenTypeNone());
-}
-
-// One prelude row per referenced free variable in a CEL-defined
-// custom-fn body: `(local.set <var_local> (local.get <param_idx>))`
-// — copies the wasm-param-held slot offset into the variable's
-// codegen-assigned wasm local.  Comprehension-scope variables (if
-// any sneak past the front-end gate) are CHECKed.
-std::vector<BinaryenExpressionRef> EmitCustomFnParamPrelude(
-    WasmModule& mod, absl::Span<const LaidOutVariable> variables,
-    const absl::flat_hash_map<std::string, uint32_t>& param_for_name,
-    uint32_t wasm_local_offset) {
-  std::vector<BinaryenExpressionRef> out;
-  out.reserve(variables.size());
-  for (const LaidOutVariable& v : variables) {
-    ABSL_CHECK(v.kind == ResolvedVariableKind::kFreeVariable)
-        << "LowerToCustomFn: variable `" << v.name << "` has non-free kind "
-        << static_cast<int>(v.kind)
-        << " — CEL-defined bodies may only reference declared params"
-           " (m13-custom-fns §3.5)";
-    auto it = param_for_name.find(v.name);
-    ABSL_CHECK(it != param_for_name.end())
-        << "LowerToCustomFn: body references undeclared name `" << v.name
-        << "` (checker should have rejected — m13-custom-fns §3.5)";
-    out.push_back(BinaryenLocalSet(
-        mod.raw(), v.local_index + wasm_local_offset,
-        BinaryenLocalGet(mod.raw(), it->second, BinaryenTypeInt32())));
-  }
-  return out;
-}
-
-}  // namespace
-
-absl::StatusOr<LoweredFunction> LowerToCustomFn(
-    const TypedAst& ast, const StaticLayout& layout,
-    absl::string_view export_name, absl::Span<const CustomFnParam> params,
-    WasmModule& mod, const OverloadTable& overload_table) {
-  ABSL_CHECK(ast.has_ast())
-      << "LowerToCustomFn: TypedAst has no checked cel::Ast";
-
-  const auto num_wasm_params = static_cast<uint32_t>(1u + params.size());
-
-  std::vector<FieldRefRow> field_refs;
-  field_refs.push_back(FieldRefRow{});
-  EmitCtx ctx{mod,
-              ast,
-              layout,
-              field_refs,
-              overload_table,
-              /*wasm_local_offset=*/num_wasm_params};
-
-  auto root_ref = Emit(ctx, ast.ast().root_expr());
-  if (!root_ref.ok()) return root_ref.status();
-
-  absl::flat_hash_map<std::string, uint32_t> param_for_name;
-  param_for_name.reserve(params.size());
-  for (const CustomFnParam& p : params) {
-    ABSL_CHECK_GE(p.wasm_param_index, 1u)
-        << "LowerToCustomFn: param `" << p.name
-        << "` wasm_param_index must be >= 1 (param 0 is out_slot)";
-    param_for_name[p.name] = p.wasm_param_index;
-  }
-
-  std::vector<BinaryenExpressionRef> instrs = EmitCustomFnParamPrelude(
-      mod, layout.variables, param_for_name, ctx.wasm_local_offset);
-  // Result write-back: `cel_copy_slot(local.get 0, <root>)`.
-  instrs.push_back(EmitCelCopySlotDyn(
-      mod, BinaryenLocalGet(mod.raw(), 0, BinaryenTypeInt32()), *root_ref));
-  BinaryenExpressionRef body = BinaryenBlock(
-      mod.raw(), /*name=*/nullptr, instrs.data(),
-      static_cast<BinaryenIndex>(instrs.size()), BinaryenTypeNone());
-
-  const std::string export_name_c(export_name);
-  const std::vector<BinaryenType> wasm_params(num_wasm_params,
-                                              BinaryenTypeInt32());
-  const uint32_t locals_count =
-      layout.total_wasm_locals != 0
-          ? layout.total_wasm_locals
-          : static_cast<uint32_t>(layout.variables.size());
-  const std::vector<BinaryenType> local_types(locals_count,
-                                              BinaryenTypeInt32());
-  mod.AddFunction(export_name, wasm_params, BinaryenTypeNone(), local_types,
-                  body);
-
-  BinaryenFunctionRef func =
-      BinaryenGetFunction(mod.raw(), export_name_c.c_str());
-  ABSL_CHECK(func != nullptr)
-      << "LowerToCustomFn: Binaryen did not register function `" << export_name
       << "` after AddFunction";
   return LoweredFunction{func, std::move(field_refs)};
 }

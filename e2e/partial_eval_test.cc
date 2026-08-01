@@ -42,16 +42,19 @@
 // differs from a naive "whole-var unknown propagates" expectation, the
 // test asserts the ACTUAL (concrete) result and the comment names why.
 // Int leaves / keys / values throughout to avoid the host-arena
-// string-marshal gap (e2e/m4_test.cc BoundStringListUnimplemented).
+// string-marshal gap (e2e/list_test.cc BoundStringListUnimplemented).
 
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -69,6 +72,7 @@
 namespace celwasm {
 namespace {
 
+using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::celwasm::testdata::Customer;
 
@@ -81,7 +85,7 @@ using ::celwasm::testdata::Customer;
     }();
 
 // ──────────────────────────────────────────────────────────────
-//  Harness — mirrors e2e/m2_test.cc.
+//  Harness — mirrors e2e/ident_select_test.cc.
 // ──────────────────────────────────────────────────────────────
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
@@ -1150,6 +1154,222 @@ TEST_F(MergedUnknownProvenanceTest, SingleUnknownThroughArithKeepsIdentity) {
   ASSERT_TRUE(v.UnknownAttribute().ok()) << "one-element set";
   EXPECT_THAT(UnknownIds(v), ::testing::SizeIs(1));
 }
+
+// ──────────────────────────────────────────────────────────────
+//  12. The attribute model an embedder uses to interpret unknowns.
+//
+//  PartialEval reports unknowns as dense AttributeIds; the embedder
+//  side of the contract is the attribute model itself — building the
+//  Attributes its patterns name, matching them back against the
+//  patterns it evaluated with, ordering / deduping them for a stable
+//  report, and rendering the dotted diagnostic form.  These pin that
+//  public model (eval/attribute.h) in the same suite that exercises
+//  the ids referring into it.
+// ──────────────────────────────────────────────────────────────
+
+TEST(AttributeModelReportTest, DottedRenderAndPatternMatchRoundTrip) {
+  const Attribute attr("c", {AttributeQualifier::OfString("order"),
+                             AttributeQualifier::OfString("total")});
+  EXPECT_TRUE(attr.has_variable_name());
+  ASSERT_EQ(attr.qualifier_path().size(), 2u);
+  EXPECT_EQ(attr.qualifier_path()[0].value(), "order");
+  EXPECT_THAT(attr.AsString(), IsOkAndHolds("c.order.total"));
+
+  // Full match on the exact pattern (and through a wildcard);
+  // partial when the pattern digs strictly deeper; none across
+  // roots.  `AttributePatternMatchTypeName` is the diagnostic
+  // rendering of the verdicts.
+  EXPECT_EQ(AttributePatternMatchTypeName(  //
+                MakePattern("c.order.total").IsMatch(attr)),
+            "full");
+  EXPECT_EQ(
+      AttributePatternMatchTypeName(MakePattern("c.*.total").IsMatch(attr)),
+      "full");
+  EXPECT_EQ(AttributePatternMatchTypeName(
+                MakePattern("c.order.total.currency").IsMatch(attr)),
+            "partial");
+  EXPECT_EQ(AttributePatternMatchTypeName(MakePattern("d").IsMatch(attr)),
+            "none");
+}
+
+TEST(AttributeModelReportTest, ReportOrderingIsStableAndDeduped) {
+  // A report over several unknown paths: `std::sort` + `std::unique`
+  // over Attribute's `<` / `==` give a stable, deduplicated listing —
+  // root name first, then per-segment key order, with a path prefix
+  // ordering before its extensions.
+  std::vector<Attribute> report = {
+      Attribute("m", {AttributeQualifier::OfString("b")}),
+      Attribute("m", {AttributeQualifier::OfString("a"),
+                      AttributeQualifier::OfString("x")}),
+      Attribute("m", {AttributeQualifier::OfString("a")}),
+      Attribute("a"),
+      Attribute("m", {AttributeQualifier::OfString("a")}),
+  };
+  std::sort(report.begin(), report.end());
+  report.erase(std::unique(report.begin(), report.end()), report.end());
+  std::vector<std::string> rendered;
+  rendered.reserve(report.size());
+  for (const Attribute& attr : report) {
+    auto s = attr.AsString();
+    ASSERT_TRUE(s.ok()) << s.status();
+    rendered.push_back(*std::move(s));
+  }
+  EXPECT_THAT(rendered, ::testing::ElementsAre("a", "m.a", "m.a.x", "m.b"));
+}
+
+TEST(AttributeModelReportTest, UnrenderableKeyRejectsLoudly) {
+  // Keys with unprintable / quote bytes refuse to render rather than
+  // producing an ambiguous diagnostic string — both through the
+  // qualifier's canonical form and the attribute's dotted form.
+  const auto bad = AttributeQualifier::OfString(std::string("\x01", 1));
+  EXPECT_THAT(bad.AsCanonicalString(),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  const Attribute attr("m", {bad});
+  EXPECT_THAT(attr.AsString(), StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+// ──────────────────────────────────────────────────────────────
+//  13. 3VL absorption at the HOST-TRAMPOLINE boundary.
+//
+//  Every `cel_host.*` trampoline opens with an absorb guard: an
+//  operand arriving as CEL_UNKNOWN or CEL_ERROR is written straight
+//  through to the out slot, before any type check or backing lookup.
+//  Those guards are what make partial evaluation and error
+//  propagation total across the host boundary — a trampoline that
+//  forgot one would surface a spurious type-mismatch instead of the
+//  operand's own unknown/error.
+//
+//  Both poisons are driven end-to-end: an unknown from a PartialEval
+//  pattern on a bound variable, an error from a division by zero in
+//  the operand position.  Bound (not literal) aggregates throughout —
+//  a literal map/list is arena-backed and never reaches a host
+//  trampoline at all.
+// ──────────────────────────────────────────────────────────────
+
+struct AbsorbCase {
+  std::string label;
+  std::string source;
+};
+
+class HostTrampolineAbsorbTest : public ::testing::TestWithParam<AbsorbCase> {
+ protected:
+  static Compiler MakeCompiler() {
+    auto c = BuildCompiler([](Compiler::Builder& b) {
+      b.DeclareVariable("m", CelType::Map(CelType::String(), CelType::Int()));
+      b.DeclareVariable("xs", CelType::List(CelType::Int()));
+      b.DeclareVariable("t", CelType::Timestamp());
+      b.DeclareVariable("tz", CelType::String());
+      b.DeclareVariable("i", CelType::Int());
+      b.DeclareVariable("s", CelType::String());
+    });
+    ABSL_CHECK_OK(c.status());
+    return *std::move(c);
+  }
+  static void BindAll(Activation& a) {
+    a.Bind("m", Value::Map({{Value::String("k"), Value::Int(1)}}));
+    a.Bind("xs", Value::List({Value::Int(1), Value::Int(2)}));
+    a.Bind("t", Value::Timestamp(absl::UnixEpoch()));
+    a.Bind("tz", Value::String("UTC"));
+    a.Bind("i", Value::Int(0));
+    a.Bind("s", Value::String("a"));
+  }
+};
+
+TEST_P(HostTrampolineAbsorbTest, UnknownOperandPropagates) {
+  const AbsorbCase& p = GetParam();
+  Compiler compiler = MakeCompiler();
+  auto instance = CompilePlan(compiler, p.source);
+  Activation a;
+  BindAll(a);
+  // Mark every root unknown: whichever one the source touches, the
+  // trampoline must absorb it rather than type-check it.
+  AttributePattern patterns[] = {MakePattern("m"), MakePattern("xs"),
+                                 MakePattern("t"), MakePattern("tz"),
+                                 MakePattern("i"), MakePattern("s")};
+  Value v = PartialEvalOk(instance, a, patterns);
+  EXPECT_EQ(v.kind(), Value::Kind::kUnknown)
+      << p.source << " kind=" << static_cast<int>(v.kind());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    HostBoundary, HostTrampolineAbsorbTest,
+    ::testing::Values(
+        AbsorbCase{"MapLookup", "m['k'] == 1"},
+        AbsorbCase{"MapSize", "size(m) == 1"}, AbsorbCase{"MapIn", "'k' in m"},
+        AbsorbCase{"ListAt", "xs[0] == 1"},
+        AbsorbCase{"ListSize", "size(xs) == 2"},
+        AbsorbCase{"ListIn", "1 in xs"},
+        AbsorbCase{"TsAccessor", "t.getFullYear() == 1970"},
+        AbsorbCase{"TsAccessorTz", "t.getHours('UTC') == 0"},
+        // The TZ ARGUMENT is the unknown here, not the
+        // timestamp — TzAccessorPrelude guards both
+        // operand positions independently.
+        // ARENA-side kernels: a LITERAL list/map is
+        // arena-backed, so these reach
+        // cel_list_at_arena / the arena map lookup
+        // rather than the host trampolines above.
+        AbsorbCase{"ArenaListAtUnknownIndex", "[1, 2][i] == 1"},
+        AbsorbCase{"ArenaMapLookupUnknownKey", "{'a': 1, 'b': 2}[s] == 1"},
+        // Building a map literal whose KEY is unknown: cel_map_insert_at
+        // absorbs into the map slot rather than inserting.
+        AbsorbCase{"ArenaMapInsertUnknownKey", "{s: 1}['a'] == 1"},
+        // Map equality with an unknown operand.
+        AbsorbCase{"MapEqUnknown", "m == {'k': 1}"},
+        AbsorbCase{"TsAccessorTzArgUnknown",
+                   "timestamp('1970-01-01T00:00:00Z')"
+                   ".getHours(tz) == 0"},
+        AbsorbCase{"TsCompare", "t == timestamp('1970-01-01T00:00:00Z')"},
+        AbsorbCase{"TsToString", "string(t) == 'x'"}),
+    [](const ::testing::TestParamInfo<AbsorbCase>& info) {
+      return info.param.label;
+    });
+
+// The error half of the same guard.  `1/0` is the poison: it
+// type-checks as int and evaluates to a CEL error, so it can sit in
+// any int-typed operand position.
+class HostTrampolineErrorAbsorbTest
+    : public ::testing::TestWithParam<AbsorbCase> {};
+
+TEST_P(HostTrampolineErrorAbsorbTest, ErrorOperandPropagates) {
+  const AbsorbCase& p = GetParam();
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::Int()));
+    b.DeclareVariable("m", CelType::Map(CelType::Int(), CelType::Int()));
+  });
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto instance = CompilePlan(*compiler, p.source);
+  Activation a;
+  a.Bind("xs", Value::List({Value::Int(1)}));
+  a.Bind("m", Value::Map({{Value::Int(1), Value::Int(2)}}));
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << p.source << ": " << v.status();
+  EXPECT_TRUE(v->IsError())
+      << p.source << " kind=" << static_cast<int>(v->kind());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    HostBoundary, HostTrampolineErrorAbsorbTest,
+    ::testing::Values(
+        AbsorbCase{"ListAtErrorIndex", "xs[1 / 0] == 1"},
+        AbsorbCase{"MapLookupErrorKey", "m[1 / 0] == 2"},
+        AbsorbCase{"ListInErrorNeedle", "(1 / 0) in xs"},
+        AbsorbCase{"MapInErrorKey", "(1 / 0) in m"},
+        // ARENA-side: literal aggregates, so the error rides into
+        // cel_list_at_arena / the arena map kernel, and into the
+        // string-format kernel's poison arms.
+        AbsorbCase{"ArenaListAtErrorIndex", "[1, 2][1 / 0] == 1"},
+        AbsorbCase{"ArenaMapLookupErrorKey", "{1: 2}[1 / 0] == 2"},
+        AbsorbCase{"FormatErrorArg", R"("%d".format([1 / 0]) == "")"},
+        AbsorbCase{"WrapperUnwrapError",
+                   "google.protobuf.Int32Value{value: 1 / 0} == 0"},
+        AbsorbCase{"WrapperUnwrapErrorInt64",
+                   "google.protobuf.Int64Value{value: 1 / 0} == 0"},
+        AbsorbCase{"TimeUnwrapError",
+                   "google.protobuf.Duration{seconds: 1 / 0} == "
+                   "duration('0s')"}),
+    [](const ::testing::TestParamInfo<AbsorbCase>& info) {
+      return info.param.label;
+    });
 
 }  // namespace
 }  // namespace celwasm

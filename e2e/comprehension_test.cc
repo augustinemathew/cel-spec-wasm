@@ -3,7 +3,7 @@
 // macros over list / map sources, and the `comprehensions_v2`
 // two-iter-var / `transformMap` / `transformMapEntry` cohort).
 //
-// Mirrors the m7_test / m8_test shape: every test asserts a
+// Mirrors the proto_literal_test / wrapper_test shape: every test asserts a
 // capability the comprehension plan says M5.B must light up.  The
 // M5.B slices have shipped per `m5-comprehensions-followon.md` §5;
 // the few remaining GTEST_SKIPs each cite their concrete blocker
@@ -13,7 +13,7 @@
 // suffix because M5.B is the comprehension follow-on per
 // `m5-comprehensions-followon.md` §0.  No other M5 surface is
 // covered here — arithmetic / comparison rows live in
-// `m5_test.cc`.
+// `operators_test.cc`.
 //
 // Fixtures grouped by slice (one section per arm):
 //
@@ -1089,6 +1089,54 @@ TEST_F(ComprehensionConsumerE2ETest, FilterResultEqualsEmptyList) {
   auto instance = CompilePlan(*compiler, "[1, 2, 3].filter(v, v > 100) == []");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+// ── Comprehension over a poisoned range ──────────────────────────────
+//
+// When the range expression itself evaluates to an error (here: an
+// out-of-bounds index producing an error-valued list / map), the
+// comprehension must propagate the error, not iterate.  Exercises the
+// runtime's poisoned-view vending (`vend_poison_list_view` /
+// `vend_poison_map_iter` in runtime/cel_runtime.c): the macro asks the
+// errored slot for a list view / map iterator and must receive a
+// poisoned one that walks zero elements and carries the error out.
+
+TEST(PoisonedRangeE2ETest, ListRangeErrorPropagatesThroughAll) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // [[1]][5] is a checker-valid list<int> expression that errors at
+  // eval (index out of bounds); .all over it must yield that error.
+  auto instance =
+      CompilePlan(*compiler, "([[1]][5]).all(x, x > 0)");
+  Activation a;
+  auto v_or = instance.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
+}
+
+TEST(PoisonedRangeE2ETest, ListRangeErrorPropagatesThroughMap) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, "([[1]][5]).map(x, x + 1)");
+  Activation a;
+  auto v_or = instance.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
+}
+
+TEST(PoisonedRangeE2ETest, MapRangeErrorPropagatesThroughAll) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // {'a': {'b': 1}}['zzz'] is a checker-valid map<string,int>
+  // expression that errors at eval (no such key); iterating its keys
+  // must carry the error out through the poisoned map iterator.
+  auto instance = CompilePlan(
+      *compiler, "({'a': {'b': 1}}['zzz']).all(k, k != '')");
+  Activation a;
+  auto v_or = instance.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
 }
 
 }  // namespace

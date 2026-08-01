@@ -103,20 +103,43 @@ TEST_F(StringExtFixture, IndexOfFullStringFromZero) {
 
 TEST_F(StringExtFixture, IndexOfPosBeyondHaystackErrors) {
   // cel-cpp's `IndexOf3` returns CEL_ERROR(InvalidArgument) when pos
-  // exceeds the haystack BYTE size — not the code-point count.
+  // exceeds the haystack's CODE-POINT count: it compares against
+  // `haystack.Size()`, which is `internal::Utf8CodePointCount(...)`
+  // (common/values/string_value.cc:141-145).  This comment previously
+  // claimed the bound was the byte size; pos=100 satisfies either
+  // rule, so the case did not distinguish them.  A multi-byte case
+  // that does is `IndexOfPosBeyondCodePointCountErrors` below.
   uint32_t out = MakeOut();
   cel_string_index_of_at_vvv(out, MakeStr("tacocat"), MakeStr("a"),
                              MakeInt(100));
   ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
 }
 
-TEST_F(StringExtFixture, IndexOfPosNegativeClamps) {
-  // cel-cpp `IndexOf(string, pos)` clamps negative pos to 0.  The
-  // pre-flight `IndexOf3` byte-bound check passes for negative pos
-  // (it only rejects pos > byte_size, not pos < 0).
+// "h\u00e9llo" is 6 bytes and 5 code points: pos=6 is within the byte
+// length but past the code-point count, so it must error.  This is the
+// case that separates the two bounds.
+TEST_F(StringExtFixture, IndexOfPosBeyondCodePointCountErrors) {
+  uint32_t out = MakeOut();
+  cel_string_index_of_at_vvv(out, MakeStr("h\u00e9llo"), MakeStr(""),
+                             MakeInt(6));
+  ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
+  uint32_t out2 = MakeOut();
+  cel_string_index_of_at_vvv(out2, MakeStr("h\u00e9llo"), MakeStr(""),
+                             MakeInt(5));
+  ExpectInt(out2, 5);
+}
+
+TEST_F(StringExtFixture, IndexOfPosNegativeIsAnError) {
+  // A negative pos is an error, matching cel-cpp.  Its `IndexOf3`
+  // guard reads `pos > haystack.Size()` with no explicit `pos < 0`
+  // (extensions/strings.cc:120), but `Size()` is unsigned, so a
+  // negative `pos` promotes to a huge unsigned value and trips it.
+  // This case previously asserted a clamp to 0, transcribed from that
+  // missing check; `cel_cpp_oracle_test` SearchPositionEdgesAgree
+  // showed cel-cpp errors.
   uint32_t out = MakeOut();
   cel_string_index_of_at_vvv(out, MakeStr("abc"), MakeStr("a"), MakeInt(-5));
-  ExpectInt(out, 0);
+  ExpectError(out, CEL_ERR_INVALID_ARGUMENT);
 }
 
 TEST_F(StringExtFixture, IndexOfEnvelopeBinary) {

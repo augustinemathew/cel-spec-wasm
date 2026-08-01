@@ -4,8 +4,8 @@
 // in naming and semantics; a user familiar with cel-cpp should see
 // no surprises here.
 //
-//   AttributeQualifier        — one typed segment (int/uint/string/bool)
-//                               of a resolved attribute path.
+//   AttributeQualifier        — one string-keyed segment of a
+//                               resolved attribute path.
 //   AttributeQualifierPattern — one segment of a pattern; may be a
 //                               wildcard ("any value matches").
 //   Attribute                 — a resolved path: variable + qualifiers.
@@ -36,7 +36,6 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "absl/status/statusor.h"
@@ -47,49 +46,46 @@ namespace celwasm {
 
 // ————————— AttributeQualifier —————————
 //
-// One segment in a resolved attribute path.  A segment is typed:
-// integer index (`foo[3]`), uint index (`foo[3u]`), string key
-// (`foo["bar"]` or `foo.bar`), or boolean key (`foo[true]`).  Kinds
-// are the four CEL types legal as map keys, per `langdef.md`.
+// One segment in a resolved attribute path.  Segments are string
+// keys only (`foo["bar"]` or `foo.bar`): the resolver interns string
+// `.field` qualifiers exclusively (index / key access breaks the
+// attribute chain — see e2e/partial_eval_test.cc §8), so an int /
+// uint / bool qualifier can never be built or matched.  cel-cpp's
+// typed-variant breadth was deliberately dropped here; restore it
+// from git if index-qualified attributes ever become internable.
 class AttributeQualifier final {
  public:
-  enum class Kind : uint8_t { kInt, kUint, kString, kBool };
-
-  // Only the string-keyed factory is constructible: the resolver
-  // interns string `.field` qualifiers exclusively (index / key
-  // access breaks the attribute chain), so int / uint / bool
-  // qualifiers can never be built or matched.  The Kind enum and the
-  // typed accessors stay for the canonical-string / ordering logic.
   static AttributeQualifier OfString(std::string value);
 
-  Kind kind() const;
-
-  // Typed accessors — return std::nullopt on kind mismatch (cel-cpp
-  // idiom; cleaner than StatusOr when the caller is pattern-matching
-  // across kinds).
-  std::optional<int64_t> AsInt() const;
-  std::optional<uint64_t> AsUint() const;
-  std::optional<absl::string_view> AsString() const;
-  std::optional<bool> AsBool() const;
+  // The string key this segment selects.
+  absl::string_view value() const {
+    return value_;
+  }
 
   // String-key equivalence — short-circuit for the common case of
   // field-like access in a `has()` / `select` resolution.
-  bool MatchesStringKey(absl::string_view key) const;
+  bool MatchesStringKey(absl::string_view key) const {
+    return value_ == key;
+  }
 
-  // Canonical string form (for diagnostics): `"[3]"`, `"[\"key\"]"`,
-  // `"[true]"`.  Returns InvalidArgument on unprintable bytes.
+  // Canonical bracketed form (for diagnostics): `"[\"key\"]"`.
+  // Returns InvalidArgument on unprintable or quote bytes — they
+  // can't be rendered unambiguously without escaping.
   absl::StatusOr<std::string> AsCanonicalString() const;
 
-  bool operator==(const AttributeQualifier& other) const;
+  bool operator==(const AttributeQualifier& other) const {
+    return value_ == other.value_;
+  }
   bool operator!=(const AttributeQualifier& other) const {
     return !(*this == other);
   }
-  bool operator<(const AttributeQualifier& other) const;
+  bool operator<(const AttributeQualifier& other) const {
+    return value_ < other.value_;
+  }
 
  private:
-  using Variant = std::variant<int64_t, uint64_t, std::string, bool>;
-  explicit AttributeQualifier(Variant v) : value_(std::move(v)) {}
-  Variant value_;
+  explicit AttributeQualifier(std::string v) : value_(std::move(v)) {}
+  std::string value_;
 };
 
 // ————————— AttributeQualifierPattern —————————
@@ -102,9 +98,8 @@ class AttributeQualifierPattern final {
   // Wildcard — matches any qualifier value at this position.
   static AttributeQualifierPattern Wildcard();
 
-  // Exact-match constructor.  Only string-keyed patterns are
-  // constructible — see AttributeQualifier::OfString for why int /
-  // uint / bool qualifiers are unconstructable.
+  // Exact-match constructor.  Patterns are string-keyed, matching
+  // the qualifier model (see AttributeQualifier).
   static AttributeQualifierPattern OfString(std::string value);
 
   // Wrap an existing qualifier as an exact-match pattern.
@@ -162,9 +157,8 @@ class Attribute final {
   bool operator<(const Attribute& other) const;
 
   // Canonical dotted form for diagnostics: `"request.auth.claims"`.
-  // Non-string qualifiers render as `"[3]"` / `"[true]"` per the
-  // AttributeQualifier canonical form.  Returns InvalidArgument if
-  // any qualifier fails to stringify.
+  // Returns InvalidArgument if any qualifier fails to stringify
+  // (unprintable / quote bytes in a key).
   absl::StatusOr<std::string> AsString() const;
 
  private:

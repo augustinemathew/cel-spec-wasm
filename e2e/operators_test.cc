@@ -1,9 +1,8 @@
-// M5 e2e test suite — the spec of "done" for the general kCall
-// arm (M5.F) wired into Compile → Plan → Eval.
+// Operators e2e suite — the built-in operator/overload surface
+// through Compile → Plan → Eval.
 //
-// Mirrors the m2_test / m4_test shape: every test asserts a
-// capability M5.F lights up.  Each fixture group covers one
-// pipeline-traversal axis:
+// Mirrors the ident_select_test / list_test shape.  Each fixture
+// group covers one pipeline-traversal axis:
 //
 //   - ScalarArithmetic   — int/uint/double arithmetic.
 //   - SameKindCompare    — `<` / `<=` / `>` / `>=` per kind.
@@ -13,21 +12,21 @@
 //                          expression over the bound CelValue.
 //   - ProtoFieldArithmetic — proto field reads feed into arithmetic.
 //   - BoolOrdering       — langdef §"Booleans": false < true.
-//   - PendingDispatcher  — `size([1,2,3])` etc. surface
-//                          Unimplemented per `kPendingRuntimeExports`.
-//
-// `equals` / `not_equals` (langdef §"Equality") are M5.B step 2b
-// and intentionally absent here — the polymorphic dispatcher lands
-// after M5.D step 2.
+//   - FullPipelineSmoke  — the `"foo" + "bar"` vertical-slice pair
+//                          (single eval + 1024-eval arena-reset lock),
+//                          folded in from the retired
+//                          mvp_concat_test.cc.
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
 #include <utility>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
@@ -228,6 +227,68 @@ TEST_F(SameKindCompareE2ETest, BoolOrdering) {
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
+// Each relational operator on string / bytes / bool has its own runtime
+// kernel (`cel_string_ge_at_vv`, `cel_bytes_gt_at_vv`, …), and the
+// suite only ever drove the `<` arm of each — so `>`, `>=` and `<=`
+// reached no e2e workload.  Expected values are pinned against cel-cpp
+// by cel_cpp_oracle_test's {String,Bytes,Bool}RelationalAgrees.
+struct RelCase {
+  std::string label;
+  std::string source;
+  bool expected;
+};
+
+class NonScalarRelationalE2ETest : public ::testing::TestWithParam<RelCase> {};
+
+TEST_P(NonScalarRelationalE2ETest, MatchesCelCpp) {
+  const RelCase& p = GetParam();
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, p.source);
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), p.expected) << p.source;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    EveryOrderedKind, NonScalarRelationalE2ETest,
+    ::testing::Values(RelCase{"StringGtTrue", R"("b" > "a")", true},
+                      RelCase{"StringGtFalse", R"("a" > "b")", false},
+                      RelCase{"StringGeEqual", R"("b" >= "b")", true},
+                      RelCase{"StringGeFalse", R"("a" >= "b")", false},
+                      RelCase{"StringLeEqual", R"("a" <= "a")", true},
+                      RelCase{"StringLeFalse", R"("b" <= "a")", false},
+                      RelCase{"BytesLt", R"(b"a" < b"b")", true},
+                      RelCase{"BytesGt", R"(b"b" > b"a")", true},
+                      RelCase{"BytesGeEqual", R"(b"b" >= b"b")", true},
+                      RelCase{"BytesLe", R"(b"a" <= b"b")", true},
+                      RelCase{"BoolGt", "true > false", true},
+                      RelCase{"BoolGeEqual", "true >= true", true},
+                      RelCase{"BoolLe", "false <= true", true},
+                      RelCase{"BoolGeFalse", "false >= true", false}),
+    [](const ::testing::TestParamInfo<RelCase>& info) {
+      return info.param.label;
+    });
+
+// The uint subtract / divide / modulo kernels and the double negate /
+// subtract kernels likewise had only unit coverage.  Pinned by
+// cel_cpp_oracle_test's UintArithmeticAgrees / DoubleNegAndSubAgree.
+TEST_F(ScalarArithmeticE2ETest, UintSubDivMod) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  Activation a;
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "3u - 1u"), a).AsUint(), 2u);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "6u / 2u"), a).AsUint(), 3u);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "7u % 3u"), a).AsUint(), 1u);
+}
+
+TEST_F(ScalarArithmeticE2ETest, DoubleNegateAndSubtract) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  Activation a;
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "-1.5"), a).AsDouble(), -1.5);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "1.5 - 0.5"), a).AsDouble(), 1.0);
+}
+
 // ──────────────────────────────────────────────────────────────
 //  StringOps — concat + receiver-form contains/startsWith/endsWith.
 //  M5.C runtime helpers; the receiver form `s.contains(sub)`
@@ -298,7 +359,86 @@ TEST_F(BytesOpsE2ETest, Concat) {
 //  helper consumes that slot directly.
 // ──────────────────────────────────────────────────────────────
 
+// Overflow / divide / modulus errors.  Each arithmetic kernel poisons
+// its out slot with a distinct error code, and only `1 / 0` had any
+// e2e row — the rest were reached solely by the conformance corpus.
+// Every case here is pinned against cel-cpp by cel_cpp_oracle_test's
+// {Int,Uint}ArithmeticErrorsAgree.
+struct ArithErrorCase {
+  std::string label;
+  std::string source;
+};
+
+class ArithmeticErrorE2ETest : public ::testing::TestWithParam<ArithErrorCase> {
+};
+
+TEST_P(ArithmeticErrorE2ETest, PoisonsRatherThanTraps) {
+  const ArithErrorCase& p = GetParam();
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, p.source);
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << p.source << ": " << v.status();
+  EXPECT_TRUE(v->IsError())
+      << p.source << " kind=" << static_cast<int>(v->kind());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    EveryKernel, ArithmeticErrorE2ETest,
+    ::testing::Values(
+        ArithErrorCase{"IntAddOverflow", "9223372036854775807 + 1"},
+        ArithErrorCase{"IntMulOverflow", "9223372036854775807 * 2"},
+        ArithErrorCase{"IntSubOverflow", "-9223372036854775807 - 2"},
+        ArithErrorCase{"IntModByZero", "1 % 0"},
+        ArithErrorCase{"UintAddOverflow", "18446744073709551615u + 1u"},
+        ArithErrorCase{"UintSubUnderflow", "0u - 1u"},
+        ArithErrorCase{"UintMulOverflow", "18446744073709551615u * 2u"},
+        ArithErrorCase{"UintDivByZero", "1u / 0u"},
+        ArithErrorCase{"UintModByZero", "1u % 0u"}),
+    [](const ::testing::TestParamInfo<ArithErrorCase>& info) {
+      return info.param.label;
+    });
+
+// Two's-complement edges of the int kernels.  A multiply whose
+// negative result is exactly INT64_MIN is representable (the sign
+// branch admits |result| == INT64_MAX + 1), while INT64_MIN / -1 and
+// INT64_MIN * -1 have no positive counterpart and overflow.  Pinned by
+// cel_cpp_oracle_test's IntTwosComplementEdgesAgree.
+TEST_F(ScalarArithmeticE2ETest, IntMinTwosComplementEdges) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  Activation a;
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "(0 - 4611686018427387904) * 2"), a)
+                 .AsInt(),
+            std::numeric_limits<int64_t>::min());
+  for (const absl::string_view source :
+       {"(0 - 9223372036854775807 - 1) / (0 - 1)",
+        "(0 - 9223372036854775807 - 1) * (0 - 1)"}) {
+    auto instance = CompilePlan(*compiler, source);
+    auto v = instance.Eval(a);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << source << " kind=" << static_cast<int>(v->kind());
+  }
+}
+
 class BoundVarArithmeticE2ETest : public ::testing::Test {};
+
+// Unary minus on a literal is folded by the parser into a negative
+// constant, so `-1.5` never calls the negate kernel — only a bound
+// operand reaches `cel_double_neg_at_v`.  (The oracle takes no
+// activation bindings, so this one cannot be routed through it.)
+TEST_F(BoundVarArithmeticE2ETest, DoubleNegateOnBoundOperand) {
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("d", CelType::Double());
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "-d");
+  Activation a;
+  a.Bind("d", Value::Double(1.5));
+  EXPECT_EQ(*EvalOk(instance, a).AsDouble(), -1.5);
+}
 
 TEST_F(BoundVarArithmeticE2ETest, IntPlusOne) {
   auto compiler = BuildCompiler([](Compiler::Builder& b) {
@@ -812,7 +952,7 @@ TEST_F(ControlFlowUnknownE2ETest, TernaryUnknownCondPropagatesUnknown) {
 
 // Note: the both-UNKNOWN merge e2e cases (decoded result carries
 // BOTH attribute identities) live in
-// `e2e/m2_partial_eval_test.cc::MergedUnknownProvenanceTest`; the
+// `e2e/partial_eval_test.cc::MergedUnknownProvenanceTest`; the
 // merge's sorted/dedup invariant is unit-pinned in
 // `cel_3vl_test.cc::UnknownMerge*`.
 
@@ -985,8 +1125,97 @@ TEST_F(StringBytesActivationE2ETest, BindBytesWithNul) {
 //  equality kernel.  Each test pins one cross-numeric / cross-kind
 //  shape from the conformance corpus.
 // ──────────────────────────────────────────────────────────────
+// Element-wise equality dispatches per element kind; the bytes, null,
+// duration and timestamp arms of that switch had no e2e row.  A
+// duplicate literal map key is a distinct runtime poison arm.  Both
+// pinned by cel_cpp_oracle_test's ElementEqualityAcrossKindsAgrees and
+// DuplicateMapKeyAgrees.
+TEST_F(SameKindCompareE2ETest, ElementEqualityAcrossKinds) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  Activation a;
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, R"([b"a"] == [b"a"])"), a).AsBool(),
+            true);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, R"([b"a"] == [b"b"])"), a).AsBool(),
+            false);
+  EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "[null] == [null]"), a).AsBool(),
+            true);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*compiler, R"([duration("1s")] == [duration("1s")])"),
+              a)
+           .AsBool(),
+      true);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*compiler, "[timestamp(0)] == [timestamp(0)]"), a)
+           .AsBool(),
+      true);
+}
+
+TEST_F(SameKindCompareE2ETest, DuplicateLiteralMapKeyIsAnError) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, R"({1: "a", 1: "b"})");
+  Activation a;
+  auto v = instance.Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(v->IsError()) << "kind=" << static_cast<int>(v->kind());
+}
+
 class DynPassthroughE2ETest : public ::testing::Test {};
 
+// A list index is int-typed to the checker, so the uint / double /
+// wrong-kind arms of the index kernel are only reachable through a
+// `dyn` subscript — the route the conformance corpus takes, and the
+// only workload that was reaching them.  A non-integral double is an
+// error, as is a non-numeric key.  Pinned by cel_cpp_oracle_test's
+// DynIndexKindsAgree.
+TEST_F(DynPassthroughE2ETest, DynSubscriptKinds) {
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*CompilerEmpty(), "[1,2][dyn(1u)]"), {}).AsInt(), 2);
+  EXPECT_EQ(
+      *EvalOk(CompilePlan(*CompilerEmpty(), "[1,2][dyn(1.0)]"), {}).AsInt(), 2);
+  for (const absl::string_view source :
+       {R"([1,2][dyn(1.5)])", R"([1,2][dyn("x")])"}) {
+    auto instance = CompilePlan(*CompilerEmpty(), source);
+    Activation a;
+    auto v = instance.Eval(a);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << source << " kind=" << static_cast<int>(v->kind());
+  }
+}
+
+// A conversion over `dyn` is rejected at the static-subset gate.
+// `dyn(x)` is the identity at codegen and forwards its argument's
+// annotation, so the checker resolves `int(dyn(1u))` to the identity
+// `int -> int` overload: no conversion and no kind check are emitted,
+// and the uint reaches the result slot untouched.  That produced a
+// silently wrong VALUE (`int(dyn(1u))` evaluated to `1u`, and
+// `double(dyn(1))` to an int) rather than an error, which nothing
+// downstream could detect.  cel-cpp dispatches these on the runtime
+// kind; we have no dynamic conversion kernel, so the shape is
+// refused loudly instead of miscompiled.
+TEST_F(DynPassthroughE2ETest, ConversionOverDynIsRejected) {
+  for (const absl::string_view source :
+       {"int(dyn(1u))", "uint(dyn(1))", "double(dyn(1))", "string(dyn(1))",
+        "bytes(dyn('a'))", "bool(dyn('true'))"}) {
+    auto compiler = CompilerEmpty();
+    ASSERT_THAT(compiler, IsOk());
+    CompilerOptions opts;
+    opts.link_mode = e2e::kE2ELinkMode;
+    auto program = compiler->Compile(source, opts);
+    EXPECT_FALSE(program.ok())
+        << source << " compiled; it must be refused by the static subset";
+    if (!program.ok()) {
+      EXPECT_TRUE(absl::StrContains(program.status().message(),
+                                    "cannot be resolved statically"))
+          << source << ": " << program.status();
+    }
+  }
+}
+
+// The passthrough itself still admits — only a CONVERSION consuming a
+// dyn is refused.
 TEST_F(DynPassthroughE2ETest, DynScalarEqualsCrossNumeric) {
   // `dyn(int) == uint` reaches the runtime's cross-numeric ladder
   // — the kernel returns true since 1 and 1u compare equal under
@@ -1624,6 +1853,104 @@ TEST_F(MessageEqualityE2ETest, MessageReflexiveEquality) {
   act.Bind("c", Value::Message(m));
   EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c == c"), act).AsBool(), true);
   EXPECT_EQ(*EvalOk(CompilePlan(*compiler, "c != c"), act).AsBool(), false);
+}
+
+// ── Bool-element membership + runtime-error operator paths ───────────
+
+// `_in_` over a bool-element list takes the runtime's bool scan arm
+// (`arena_list_scan_bool` in cel_runtime.c) — every other suite (and
+// the conformance corpus) exercises only int/uint/double/string
+// element scans.
+TEST(BoolListInE2ETest, PresentAndAbsent) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  struct Case {
+    absl::string_view source;
+    bool expected;
+  };
+  for (const Case& c : {Case{"true in [false, true]", true},
+                        Case{"true in [false, false]", false},
+                        Case{"false in [true, false, true]", true}}) {
+    auto program = compiler->Compile(c.source, e2e::DefaultOpts());
+    ASSERT_TRUE(program.ok()) << c.source << ": " << program.status();
+    auto instance = engine->Plan(*program);
+    ASSERT_TRUE(instance.ok()) << instance.status();
+    auto value = instance->Eval();
+    ASSERT_TRUE(value.ok()) << value.status();
+    EXPECT_EQ(*value->AsBool(), c.expected) << c.source;
+  }
+}
+
+// `matches` with a pattern that fails to compile at eval time (an
+// unterminated character class) must produce a CEL error Value —
+// the regex-compile poison path, unreachable via valid patterns.
+TEST(MatchesErrorE2ETest, InvalidPatternSurfacesError) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  auto program = compiler->Compile(R"("abc".matches("["))", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  auto value = instance->Eval();
+  ASSERT_TRUE(value.ok()) << value.status();
+  EXPECT_TRUE(value->IsError());
+}
+
+// ── FullPipelineSmoke — folded in from the retired mvp_concat_test.cc ──
+//
+// `"foo" + "bar"` exercises the full pipeline in one expression:
+// frontend parse/check, kConst rodata packing, the kCall arm for
+// `_+_` on strings (`cel_string_concat_at_vv`), the runtime arena
+// allocation for the concat payload, and the host decoder reading
+// the result span out of wasmtime memory.  Referenced by
+// `doc/implementation-plan/rewrite/wasi/DESIGN.md` §2 as the
+// canonical vertical-slice smoke.
+
+TEST(FullPipelineSmokeE2ETest, StringConcatFooBar) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  auto program = compiler->Compile(R"("foo" + "bar")", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  auto value = instance->Eval();
+  ASSERT_TRUE(value.ok()) << value.status();
+  ASSERT_EQ(value->kind(), Value::Kind::kString);
+  auto s = value->AsString();
+  ASSERT_TRUE(s.ok()) << s.status();
+  EXPECT_EQ(*s, "foobar");
+}
+
+// Multi-eval lock — proves `arena_reset` works across Evals: the
+// Instance lives across many Evals and the codegen prologue rewinds
+// the arena each time.  Without correct reset, the second Eval's
+// allocations would either overflow (cursor accumulates) or read
+// stale bytes from the first Eval's output.  1024 iterations is well
+// past the 64 KiB arena capacity had the cursor not been reset
+// (each concat allocates ~32 payload bytes + a header).
+TEST(FullPipelineSmokeE2ETest, StringConcatRepeatedAcrossManyEvals) {
+  auto compiler = Compiler::NewBuilder().Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  auto program = compiler->Compile(R"("foo" + "bar")", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  for (int i = 0; i < 1024; ++i) {
+    auto value = instance->Eval();
+    ASSERT_TRUE(value.ok()) << "iter " << i << ": " << value.status();
+    ASSERT_EQ(value->kind(), Value::Kind::kString) << "iter " << i;
+    auto s = value->AsString();
+    ASSERT_TRUE(s.ok()) << "iter " << i << ": " << s.status();
+    EXPECT_EQ(*s, "foobar") << "iter " << i;
+  }
 }
 
 }  // namespace

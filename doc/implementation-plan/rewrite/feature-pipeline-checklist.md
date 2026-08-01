@@ -372,7 +372,7 @@ for declared-variable metadata).  Updated as each slice lands.
         write to `slot_offset`, call `$eval`.
   - [ ] `api/activation.cc` — no changes (Find() already does
         what we need).
-  - [ ] `e2e/m2_test.cc` — flip every `IdentE2ETest.*` green.
+  - [ ] `e2e/ident_select_test.cc` — flip every `IdentE2ETest.*` green.
   - [ ] Close M2.B section in the plan doc.
 
 ### Planned: M2.C (selects)

@@ -21,6 +21,26 @@ struck through or removed.
 
 ## Open
 
+- [ ] **#54** — `%f` / `%e` coerce an int or uint operand to double and
+      render it; cel-cpp's formatter requires an actual double and
+      errors ("expected a double but got a uint").  Pinned as
+      `CELW-0019` (`e2e/known_bugs_test.cc`
+      `FixedAndScientificVerbsCoerceIntegers`), which asserts the
+      spec-correct rejection for all four {`%f`,`%e`} x {int,uint}
+      combinations.
+      Surfaced: 2026-07-29, by adding the format-verb operand-kind
+      matrix to `cel_cpp_oracle_test` while closing conformance-only
+      coverage.
+      Files: `runtime/cel_string_format_render.cc` (`CoerceToDouble`'s
+      CEL_INT / CEL_UINT arms, reached from `RenderFixed` and
+      `RenderScientific`).
+      Why P1 not P0: over-permissive rather than silently wrong — we
+      accept a program cel-cpp rejects, so no valid program gets a
+      wrong answer.  Note `%d` legitimately DOES accept a double
+      (oracle-confirmed), so the fix must be scoped to the
+      fixed/scientific verbs rather than to every `CoerceToDouble`
+      caller.
+
 - [ ] **#52** — m35 dedupe items deliberately deferred at the
       post-review cleanup: (a) **D6** — a third first-party UTF-8
       validator (`IsValidUtf8` in `abi/plugin.cc`) alongside
@@ -1199,7 +1219,7 @@ struck through or removed.
       inner-cell-offset recursion pin); trampoline matrix in
       `eval/internal/cel_host_test.cc` (`CelMessageIsZeroTest`, 11
       cases incl. only-unknown-fields and non-proto-backing poison);
-      e2e in `e2e/m14_test.cc`
+      e2e in `e2e/optional_test.cc`
       (`ProtoOptionalFieldE2ETest.{OfNonZeroValueOnNonZeroMessageHasValue,
       OfNonZeroValueOnZeroMessageIsNone,
       OptionalOfNonZeroValueStructOptionalOfNonZeroValueMapOptindexField}`,
@@ -1300,7 +1320,7 @@ struck through or removed.
       straight to the comprehension result slot and skip the loop
       (3VL absorption, mirroring how `+` / index / select already
       absorb).  Pinned by GTEST_SKIP in
-      `e2e/m2_partial_eval_test.cc::ListPrimitivePartialEvalTest`
+      `e2e/partial_eval_test.cc::ListPrimitivePartialEvalTest`
       `.ComprehensionOverUnknownListIsUnknown`, carrying the assertion
       it will make once fixed.
       Surfaced: 2026-05-25 partial-eval whole-variable-unknown work.
@@ -1332,7 +1352,7 @@ struck through or removed.
       error-range-dominates-unknown-body, concrete-range +
       3VL-body controls — all match cel-cpp
       `comprehension_step.cc:165-169` / `:350-354`).  Tests: the 2
-      pinned `GTEST_SKIP`s in `e2e/m2_partial_eval_test.cc` deleted
+      pinned `GTEST_SKIP`s in `e2e/partial_eval_test.cc` deleted
       (`ComprehensionOverUnknownListIsUnknown`,
       `ShadowedRangeVarUnknownIsUnknown`); new
       `ComprehensionUnknownRangeE2E` / `ComprehensionErrorRangeE2E`
@@ -2006,14 +2026,14 @@ follow-up cleanup, not a current regression.
       returned, leaving the bound `ProtoBacking` pointers dangling.
       `ReadField` then dereferenced freed memory and jumped to garbage.
       It looked PartialEval-specific only because the matrix's message
-      cases used that helper while `m4_test`'s message case keeps
+      cases used that helper while `list_test`'s message case keeps
       `c0`/`c1` in test-body scope; plain `Eval` through the same
       helper crashes identically.  Fix: hoist the bound messages to
       fixture members so they outlive every Eval (commit message cites
       this entry).  The 4 GTEST_SKIPs are removed and the cases pass —
       the container-root reads stay CONCRETE as the file header
       documents.  Surfaced + fixed: 2026-05-25 partial-eval matrix work.
-      Files: `e2e/m2_partial_eval_test.cc`.
+      Files: `e2e/partial_eval_test.cc`.
 
 - [x] **#8** — `compiler/codegen/expr_lower.cc` had two
       `ABSL_CHECK(false)` stubs that Slice A of M14 converted to

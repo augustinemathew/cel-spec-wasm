@@ -1,0 +1,844 @@
+{
+  "_comment": [
+    "Curated dead-code verdicts joined into the coverage report by",
+    "native_cov_report.py (see apply_verdicts).  Verdict vocabulary:",
+    "  dead      \u2014 no caller anywhere in first-party code; delete.",
+    "  test-only \u2014 only unit tests call it; relocate to test support.",
+    "  by-design \u2014 unreachable tripwire / defense-in-depth; keep.",
+    "  gap       \u2014 (default for unmatched zero-hit fns) needs a test.",
+    "Every entry needs evidence a reviewer can check without rerunning",
+    "the analysis: the caller search that proved it, or the design",
+    "invariant (with doc citation) that makes the path unreachable.",
+    "Entries match by file prefix + substring of the (de)mangled name."
+  ],
+  "verdicts": [
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "UnpackJsonStruct",
+      "verdict": "by-design",
+      "evidence": "google.protobuf.Struct fields peel to map<string, dyn>; RejectDyn refuses dyn before codegen, so no checked program reaches the unpack. Unlock = dyn passthrough (PROPOSALS-scale change)."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "UnpackJsonListValue",
+      "verdict": "by-design",
+      "evidence": "google.protobuf.ListValue peels to list<dyn>; RejectDyn refuses dyn before codegen. Unlock = dyn passthrough."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "UnpackJsonValueMessage",
+      "verdict": "by-design",
+      "evidence": "Dispatcher over the two dyn-typed JSON peels above; same RejectDyn gate."
+    },
+    {
+      "file": "runtime/cel_map_hash.h",
+      "match": "cel_hash_double_key",
+      "verdict": "by-design",
+      "evidence": "Double map keys are checker-rejected in the static subset (langdef: map keys are int|uint|bool|string); arm is a tripwire for codegen drift."
+    },
+    {
+      "file": "runtime/cel_map_hash.h",
+      "match": "cel_hash_double_sentinel",
+      "verdict": "by-design",
+      "evidence": "Only caller is the checker-rejected double-key arm above."
+    },
+    {
+      "file": "runtime/cel_runtime.c",
+      "match": "vend_poison_list_view",
+      "verdict": "by-design",
+      "evidence": "Comprehension prologue pre-checks CEL_ERROR/CEL_UNKNOWN before vending a view; fires only on codegen drift. Miscompile tripwire per CLAUDE.md."
+    },
+    {
+      "file": "runtime/cel_runtime.c",
+      "match": "vend_poison_map_iter",
+      "verdict": "by-design",
+      "evidence": "Same prologue pre-check as vend_poison_list_view; codegen-drift tripwire."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "WasmTrapToStatus",
+      "verdict": "by-design",
+      "evidence": "Engine-side trap conversion: reachable only on codegen/runtime drift (kernel poisons instead of trapping on every legal path). Tripwire, keep."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "WasmTrapToStatus",
+      "verdict": "by-design",
+      "evidence": "Runtime kernel poisons instead of trapping on every reachable path; a trap means codegen/runtime drift. Tripwire, keep."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeUnknownSet",
+      "verdict": "by-design",
+      "evidence": "Strict dispatch absorbs CEL_UNKNOWN args before the callback runs (same 3VL family as DecodeWireError); pinned by e2e HostFnTest.UnknownValuedArgContract. Unlock = a non-strict-functions AddFunction API."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeWireError",
+      "verdict": "by-design",
+      "evidence": "3VL absorbs error-valued args before host-fn dispatch, so a wire error can't reach ArgValue decode; pinned by e2e HostFnTest.ErrorValuedArgContract. Unlock = a non-strict-functions AddFunction API."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_null",
+      "verdict": "test-only",
+      "evidence": "Called only from native kernel unit tests (cel_make_test, cel_compare_test); no codegen emit site and no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_bool",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_int",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_uint",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_make.c",
+      "match": "cel_make_double",
+      "verdict": "test-only",
+      "evidence": "Native kernel unit tests only; no codegen emit site, no wasm-path caller."
+    },
+    {
+      "file": "runtime/cel_arena.c",
+      "match": "arena_cursor",
+      "verdict": "test-only",
+      "evidence": "Host-reentry export consumed by native tests; the engine allocator uses arena_alloc/arena_reset. Relocation candidate."
+    },
+    {
+      "file": "runtime/cel_arena.c",
+      "match": "arena_capacity",
+      "verdict": "test-only",
+      "evidence": "Same as arena_cursor."
+    },
+    {
+      "file": "runtime/cel_memory.c",
+      "match": "cel_memory_size_",
+      "verdict": "test-only",
+      "evidence": "Native tests only; wasm build answers size via memory.size intrinsic path."
+    },
+    {
+      "file": "runtime/cel_memory.c",
+      "match": "cel_mem_size",
+      "verdict": "test-only",
+      "evidence": "Native tests only; alias surface of cel_memory_size_."
+    },
+    {
+      "file": "abi/celfn_wire.cc",
+      "match": "WireKindForCelScalar",
+      "verdict": "by-design",
+      "evidence": "Sole caller TypeFromCelType dispatches composites (message/list/map/optional) before this scalar mapping; the uncovered arms are the composite/kUnknown case-breaks + the ABSL_CHECK(false) tripwire."
+    },
+    {
+      "file": "abi/celfn_wire.cc",
+      "match": "TypeFromCelType",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms are kOptional + kUnknown only.  No decl surface spells optional: parse_and_check.cc TypeParser has no optional production, and function_library.cc rejects optional<T> params/returns; kUnknown is the ABSL_CHECK tripwire for the default-constructed sentinel."
+    },
+    {
+      "file": "abi/celfn_wire.cc",
+      "match": "RequiredFunctionFromDecl",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are the kCelDefined ABSL_CHECK(false) arm \u2014 kCelDefined decls import under per-module aliases and never produce a cel_fn wire row; the CEL-defined backend itself was deleted 2026-07-27."
+    },
+    {
+      "file": "eval/attribute.cc",
+      "match": "PatternParser",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines in the FSM are the unreachable-state ABSL_CHECK(false) in Step (the State enum is closed and every value has a case)."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "DecodeListIndex",
+      "verdict": "by-design",
+      "evidence": "The checker admits only index_list(list(A), int) \u2014 codegen can emit CEL_INT (or absorbed error/unknown) indexes exclusively; the CEL_UINT / CEL_DOUBLE / kind-mismatch arms guard the wire against a codegen regression.  Verified: ListAtCallTarget in expr_lower.cc is the only emit family, and no uint/double list-index overload exists in the static subset."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "RejectDyn",
+      "verdict": "by-design",
+      "evidence": "The uncovered lines are the unchecked-AST FailedPrecondition guard; ParseAndCheck always checks before calling RejectDyn, so the arm is an internal-contract tripwire (unit-covered in parse_and_check_test)."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "DeclTypeToCheckerType",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are the kType/kOptional ABSL_CHECK tripwire \u2014 guarded upstream by ValidateDeclTypesMappable (compiler.cc), which rejects such decls at Build with a diagnostic (e2e: host_fn_test DeclDiagnosticsE2ETest)."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "PrimitiveTypeName",
+      "verdict": "by-design",
+      "evidence": "Remaining uncovered lines are the UNSPECIFIED/unhandled ABSL_CHECK tripwires; every name arm is e2e-covered by type_value_test's ident grid."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "WrapperTypeName",
+      "verdict": "by-design",
+      "evidence": "Remaining uncovered lines are the UNSPECIFIED/unhandled ABSL_CHECK tripwires; the six wrapper-name arms are e2e-covered by type_value_test's WrapperBool..WrapperBytes ident rows."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "WellKnownTypeName",
+      "verdict": "by-design",
+      "evidence": "Remaining uncovered lines are the UNSPECIFIED/unhandled ABSL_CHECK tripwires; Any/Timestamp/Duration name arms are e2e-covered by type_value_test ident rows and any_test."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InitWasmtime",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime engine/config creation failures (wasmtime_config_new / wasmtime_engine_new returning null, config-set errors) \u2014 allocator-failure arms with no e2e trigger."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InitStore",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are `wasmtime_store_new returned null` / `wasi_config_new returned null` (allocator failure) and the context_set_wasi error arm; none reachable without fault injection."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InitLinker",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime linker define/allocation failures; the success path is exercised by every planned instance."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "GetRuntimeMemoryExport",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms fire only if cel_runtime.wasm lacks a `memory` export or exports it non-shared.  That artifact is built by //runtime with the shared-memory linkopts, so the arms are tripwires against a corrupted / mismatched runtime build."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindRuntimeExport",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms are wasmtime linker-define failures plus `export missing from the runtime instance` \u2014 same corrupted-artifact tripwire as GetRuntimeMemoryExport."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindAllRuntimeExports",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines propagate BindRuntimeExport's tripwire status; the enumerated export list comes from the runtime catalogue we generate."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "DefineCelLinkerBindings",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime linker-define failure propagation."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindRuntimeFuncHandles",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms require cel_runtime.wasm to be missing `arena_alloc` / `malloc`, to export them as non-functions, or with a non-all-i32 signature.  All three contradict how //runtime builds the artifact."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "SeedRuntimeArena",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms require a missing / mistyped `arena_init` export, or a wasmtime call error / guest trap from it \u2014 the runtime's arena_init is a leaf that cannot trap under a correct build."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "EnforceRuntimeMemoryInvariants",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are ABSL_CHECK tripwires on the runtime's memory layout (shared-memory size, __heap_base kind/value).  By construction of the runtime build; a violation is a build regression, not an input."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindStaticModeHelpers",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are export-lookup failures on the statically-linked module, whose exports codegen itself emits."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InstantiateRuntime",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime instantiate error / trap arms for cel_runtime.wasm \u2014 a fixed, validated artifact."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InstantiateExpr",
+      "verdict": "by-design",
+      "evidence": "Uncovered arms require the expr module to lack an `eval` export, export it as a non-function, or with the wrong signature.  expr_lower always emits `$eval` with the pinned signature (WAT traces + module validation gate it)."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "HostCallbackTrampoline",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are arity / arg-kind mismatch arms on the wasm->host boundary; the call shape is emitted by codegen against the same decl the host registered, so a mismatch is a codegen regression tripwire."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "PluginCallbackTrampoline",
+      "verdict": "by-design",
+      "evidence": "Same as HostCallbackTrampoline for the plugin path: uncovered lines are the arity / lift / lower failure arms guarding a codegen-emitted call shape."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "RegisterHostCallbacks",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are wasmtime linker-define failures during callback registration."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "LiftPluginArgs",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are the per-arg lift failure propagation arm; the successful lifts for every supported carrier are covered by demo_plugin_e2e_test's KindMatrixEchoRoundTrips."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelResolveMessageTypeNameImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is defensive only: the wrong-kind guard (the runtime helper already routes on kind \u2014 the comment says so), the ExternrefTable miss (`a host-adapter bug`), and the non-proto-backing arm.  The happy path (type(msg) -> FQN) is e2e-covered by type_value_test."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelMakeMessageImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the type_id-out-of-range guard, the null-descriptor arm (FQN unresolvable at Plan time), the null-prototype arm (dynamic descriptors, a documented follow-up), and prototype->New() returning null (allocator failure).  The construction happy path is e2e-covered by proto_literal_test / wkt_field_set_test."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelMessageEqImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the ExternrefTable-miss FailedPrecondition and the out-of-enum CompareProtoMessages CHECK; the equal / unequal / not-comparable outcomes are e2e-covered by arena_message_aggregate_eq_test."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "ResolveOwnedSetTarget",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder guards a checker regression: a `Foo{...}` literal must construct a fresh OwnedProtoBacking, so a host-bound (immutable) ProtoBacking reaching the set path is a pipeline bug, not user input \u2014 the dynamic_cast mismatch arm says so in place."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "EncodeValue",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is unreachable by construction, and each arm documents why in place: backings never return unknowns (operand-pair propagation runs first), aggregate kinds route through EncodeFieldResult / EncodeAggregateIfAny rather than the inline path, and type(x) lowers to the cel_type_of_at_v runtime helper instead of a Layer-1 backing call."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetNestedSingularMessage",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is kind/descriptor-mismatch rejects on a nested message field; the checker types `Foo{nested: Bar{...}}` before codegen emits the set, so reaching them means a codegen regression.  The success path is e2e-covered by wkt_field_set_test's nested-message rows."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelWktUnwrapTimeImpl",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the non-CEL_MESSAGE kind guard, the ExternrefTable miss, the null-message arm, and the WKT-descriptor-mismatch arm whose own comment says `codegen only emits this for matching s.name()`.  Codegen emits the call only immediately after cel_make_message for a Timestamp/Duration literal; the 3VL absorb arm is e2e-covered by partial_eval_test's TimeUnwrapError row. Downgraded from by-design: the guards are reachable by driving the trampoline directly with a staged CelValue, and cel_host_test now does so, so exempting them from the tests metric was too generous."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelWktUnwrapWrapperImpl",
+      "verdict": "test-only",
+      "evidence": "Same shape as CelWktUnwrapTimeImpl, plus the produced-kind vs wrapper_kind cross-check the code labels in place as a `codegen-regression tripwire`.  The absorb arm is e2e-covered by partial_eval_test's WrapperUnwrapError rows. Downgraded from by-design: the guards are reachable by driving the trampoline directly with a staged CelValue, and cel_host_test now does so, so exempting them from the tests metric was too generous."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetWrapperInnerValue",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is per-cpp_type kind mismatch on a WKT wrapper's inner `value` field, plus the unexpected-inner-cpp_type CHECK.  The checker types `Int32Value{value: x}` before codegen emits the set, so a mismatch is a pipeline regression."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetWrapperIntegerValue",
+      "verdict": "by-design",
+      "evidence": "Same as SetWrapperInnerValue for the bool/int32/int64/uint32/uint64 arms; the range-check paths are e2e-covered by wkt_field_set_test's WrapperNarrowingRangeErrors."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetStringOrEnumField",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the BYTES / STRING / ENUM kind-mismatch rejects.  Field type comes from the descriptor and the value's type from the checker, so disagreement is a codegen regression."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "PackAnyFromScalar",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is descriptor-pool misses (inner FQN absent, no generated prototype) and a wrapper lacking its `value` field \u2014 all InternalError arms over the generated pool's own contents."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "AppendRepeatedMessage",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder guards a repeated-message element that is not CEL_MESSAGE, has no externref entry, or whose backing carries no proto message \u2014 each a host-adapter invariant, not user input."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "AppendRepeatedFromHostListValue",
+      "verdict": "by-design",
+      "evidence": "Same guards as AppendRepeatedMessage on the host-list path, plus the unknown-cpp_type CHECK."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelMapInImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-CEL_MAP_HOST kind guard (codegen routes only host-origin maps here; literal maps use the arena kernel), the ExternrefTable miss, and the DecodeKey failure \u2014 the absorb arm is e2e-covered by partial_eval_test's MapIn rows."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "ReadClassifiedMessageField",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the kMessageJson arm plus the unreachable scalar/map/repeated cases and their CHECK.  The JSON arm cannot be reached from e2e AT ALL: a google.protobuf.Struct field types as map(string, dyn) and a Value field as dyn, and RejectDyn refuses both before codegen \u2014 so it is e2e-unreachable by construction while remaining unit-reachable through cel_host_test.  The plain-message, wrapper and temporal arms are e2e-covered."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "DecodeSecondsNanosRecord",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder rejects a component value that is not a 2-field {seconds,nanos} record.  wit-bindgen generates that record from the WIT our own emitter wrote, so a mismatch is a generator regression \u2014 see doc/design/10-plugin-wit-pipeline.md \u00a73."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LowerMap",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the illegal-map-key-kind reject (FunctionLibrary::Builder rejects those at decl time), the non-list valkind guard, and the non-tuple-entry guard \u2014 all over a shape wit-bindgen produced from our own WIT."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LiftCelToComponent",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the per-kind CelfnVsValueMismatch arms: the declared CelType and the runtime Value disagreeing.  The checker types every plugin call site against the same decl, so a mismatch is a pipeline regression.  Every supported carrier's success path is e2e-covered by demo_plugin_e2e_test's KindMatrixEchoRoundTrips."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LowerComponentToCel",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the optional<T> and type-of-types return-shape rejects (both refused at decl time by FunctionLibrary::Builder) and the kUnknown invariant arm."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LowerProto",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-list valkind guard, the missing-generated-prototype InternalError (its message names the fix: link the cc_proto_library), and the parse-failure arm."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LiftProto",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the kind mismatch and the non-proto-backed-message reject (a custom HostMessageBacking cannot be serialised)."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "DecodeHostMessageAt",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the externref-miss and null-proto-message guards on a CEL_MESSAGE the runtime itself produced \u2014 host-adapter invariants."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "DecodeUnknownSetAt",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the impossible-id-count guard and propagation arms over a CEL_UNKNOWN descriptor the runtime wrote; malformed wire bytes there are an invariant break, not user input."
+    },
+    {
+      "file": "compiler/codegen/expr_lower.cc",
+      "match": "EmitSlotBaseAddress",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the kNone-storage ABSL_CHECK: the producing visitor must set storage before this call, so reaching it is a LayoutPass regression."
+    },
+    {
+      "file": "compiler/codegen/expr_lower.cc",
+      "match": "PickIndexCallTarget",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the unsupported-operand-repr CHECK over a closed set; parse_and_check.cc UnacceptableLabel rejects every other shape before codegen, as the message says in place."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "AddCheckerLibraries",
+      "verdict": "by-design",
+      "evidence": "Uncovered lines are `return s;` propagation arms for cel-cpp checker-library registration failures \u2014 each library is a compile-time constant of ours, so a failure is a vendored-dep regression."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "BuildMacroRegistry",
+      "verdict": "by-design",
+      "evidence": "Same shape: propagation arms for macro registration failures over a fixed macro set."
+    },
+    {
+      "file": "compiler/frontend/parse_and_check.cc",
+      "match": "ConfigureCheckerBuilder",
+      "verdict": "by-design",
+      "evidence": "Same shape: propagation arms over fixed checker configuration."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeHostMessage",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the externref-miss and null-proto-message guards on a CEL_MESSAGE the runtime produced \u2014 host-adapter invariants, mirroring instance.cc DecodeHostMessageAt."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetScalarIntegerField",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the per-cpp_type ScalarKindMismatch rejects; the checker types the field expression against the descriptor before codegen emits the set, so a mismatch is a pipeline regression.  The int32/uint32 range paths are e2e-covered by wkt_field_set_test."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "EncodeByRepr",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the kEnum / kUnknown UnimplementedError arms \u2014 the CLAUDE.md `stub until <milestone>` form, deliberately loud \u2014 plus the kNull encoder, which no declared variable can reach because CelType::IsDeclarableAsVariable rejects kNull outright."
+    },
+    {
+      "file": "compiler/codegen/expr_lower_comprehension.cc",
+      "match": "EmitComprehension",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder rejects a comprehension whose iter_range is neither list nor map; the checker constrains comprehension ranges to those two before codegen runs."
+    },
+    {
+      "file": "compiler/codegen/expr_lower.cc",
+      "match": "EmitCallExpr",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the empty-overload_id UnimplementedError, whose message names its own cause: ResolvePass left the annotation unstamped, i.e. a pipeline regression."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "ReadScalarField",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the null-reflection InternalError, the cord-backed-scratch branch (reflection materialising a string into the caller's scratch, which generated-message storage does not do), and the unhandled-cpp_type arm."
+    },
+    {
+      "file": "compiler/internal/compile.cc",
+      "match": "ValidateExprStaticRegion",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the ResourceExhausted arm for a static region past the reserved low-memory window.  The limit itself is pinned in e2e/limits_test.cc per the compilation-limits rule; this is the internal assertion behind it."
+    },
+    {
+      "file": "runtime/cel_3vl.c",
+      "match": "cel_unknown_merge",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-UNKNOWN-operand poison (codegen emits the merge only for two unknowns) and the empty-UnknownSet arms, which the function's own comment rules out: `Every production writer (host trampolines, activation marshal, host-fn returns) mints a non-empty descriptor, so an empty side reaches here only from hand-built fixtures`."
+    },
+    {
+      "file": "runtime/cel_runtime.c",
+      "match": "cel_list_at_arena",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the LIST-side unknown/error absorb: an arena list is materialised by the same expression that indexes it, so the list operand is never 3VL.  The INDEX-side absorb is e2e-covered by partial_eval_test's ArenaListAt rows."
+    },
+    {
+      "file": "runtime/cel_runtime.c",
+      "match": "cel_value_eq",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the bytes / null / duration / timestamp / IP arms.  Every caller is a map-key lookup (cel_map_index.c:90,128 and cel_runtime.c:129,179,224), and langdef restricts map keys to bool/int/uint/string, so no legal program can present those kinds here.  The kernel is written generically; the callers are not."
+    },
+    {
+      "file": "compiler/codegen/expr_lower_comprehension.cc",
+      "match": "EmitTransformMapEntry",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-literal map-entry ABSL_CHECK, in both the plain and conditional arms.  Its own message names the missing piece \u2014 `needs runtime map-merge helper` \u2014 i.e. the CLAUDE.md stub-until-a-later-milestone form, deliberately loud rather than silently wrong."
+    },
+    {
+      "file": "compiler/codegen/expr_lower_comprehension.cc",
+      "match": "EmitComprehensionRange",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder rejects an iter_range whose storage kind is kNone; the accepted set (kWorkspaceSlot, kStaticRodata, kLocal) is spelled in the message, and LayoutPass assigns one of those before codegen runs."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "GrowHostStringArena",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is guest malloc failure \u2014 wasmtime error, guest trap, and a NULL return.  Allocator-exhaustion arms with no e2e trigger."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "EncodeType",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the host-string-arena OOM arm; the kind-mismatch arm is reachable and is covered by the activation-boundary suite."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_ip_parse_at_v",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-string operand poison \u2014 the checker types ip()'s argument \u2014 and the CEL_ERR_OVERFLOW arm, which fires only on arena exhaustion."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_ip_to_string_at_v",
+      "verdict": "by-design",
+      "evidence": "Same pair: a non-IP operand cannot reach a checker-typed string(ip) call, and OVERFLOW is arena exhaustion."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_parse_at_v",
+      "verdict": "by-design",
+      "evidence": "Same pair for cidr()."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_to_string_at_v",
+      "verdict": "by-design",
+      "evidence": "Same pair for string(cidr)."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_contains_ip_at_vv",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the operand-kind poison and the INVALID_ARGUMENT arm for a malformed pair; both operands are checker-typed."
+    },
+    {
+      "file": "runtime/cel_optional.c",
+      "match": "cel_optional_or_at_vv",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-optional operand poison on both sides; optional.or() is checker-typed to optional operands."
+    },
+    {
+      "file": "runtime/cel_optional.c",
+      "match": "dispatch_lookup",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the closed-dispatch __builtin_trap and the type-mismatch poison behind it \u2014 the caller routes only the kinds the switch enumerates."
+    },
+    {
+      "file": "runtime/cel_optional.c",
+      "match": "host_value_is_zero",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the arena-OOM early return and the closed-dispatch __builtin_trap.  The CEL_LIST_HOST / CEL_MAP_HOST probe arms are now e2e-covered by optional_test's OfNonZeroValueHostBacked rows."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_convert",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder across the conversion kernels is the operand-kind poison: int()/uint()/double()/string()/bytes() are checker-typed, so a wrong-kind operand is a codegen regression rather than user input.  The conversions' value paths and their range/parse errors are e2e-covered by conversion_test."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeCelValue",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the CEL_TYPE arm and the unknown-kind default.  A host fn cannot declare a `type` parameter \u2014 function_library.cc's ExtractType has no `type` keyword and Build() rejects the kind \u2014 so no call can present one; the default guards the closed wire vocabulary."
+    },
+    {
+      "file": "eval/host_call_context.cc",
+      "match": "DecodeHostListAt",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the truncated-arena-header and missing-externref guards over a CelValue the runtime itself wrote."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetWrapperFieldFromScalar",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the missing-generated_factory-prototype and missing-value-field InternalErrors, both over the generated descriptor pool's own contents for a WKT wrapper."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelListSizeImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-CEL_LIST_HOST kind guard (codegen routes only host-origin lists here; literal lists use the arena kernel) and the ExternrefTable miss.  The absorb arm is e2e-covered by partial_eval_test's ListSize row."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelMapSizeImpl",
+      "verdict": "by-design",
+      "evidence": "Same shape as CelListSizeImpl for maps; the absorb arm is covered by the MapSize row."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "CelSetFieldImpl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the field_ref_id-out-of-range and field-not-found-on-descriptor guards.  Both ids come from the cel.abi table the compiler emitted against the same descriptor, so a miss is a pipeline regression.  The 3VL absorb and range-poison paths are e2e-covered."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindOnePluginDecl",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the export-is-not-a-function guard and the linker define failure.  Engine::Use already validates the component's export surface against the decls before Plan binds them (CheckPluginExportsStatically), so a mismatch here is a validation regression."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "BindPluginLibraryDecls",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the missing-interface guard, over the same pre-validated export surface."
+    },
+    {
+      "file": "eval/engine.cc",
+      "match": "InstantiateOnePlugin",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is wasmtime_component_linker_new returning null and the delete-on-error path \u2014 allocator-failure arms."
+    },
+    {
+      "file": "eval/internal/cel_plugin.cc",
+      "match": "LiftMap",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the ForEach-over-visits-Size InternalError: it fires only if a HostMapBacking's ForEach disagrees with its own Size(), which is a backing-implementation invariant, not user input."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "EncodeUnknownSet",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the empty-UnknownSet fast path and the arena-OOM arm.  Per cel_unknown_merge's comment every production writer mints a non-empty descriptor, so the empty case reaches here only from hand-built fixtures."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SnapshotMapEntries",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is key/value decode-failure propagation out of the ForEach lambda, over entries the backing itself produced."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "SetArenaMapEntryMessageValue",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is the non-message value-kind reject and the missing-backing arm for a map<K, message> entry; the checker types the entry value before codegen emits the insert."
+    },
+    {
+      "file": "eval/internal/cel_host.cc",
+      "match": "ProtoList",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder in ProtoList::At is the cord-backed-scratch string branch and the unhandled-cpp_type InternalError over a closed descriptor enum."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "GrowActivationArena",
+      "verdict": "by-design",
+      "evidence": "Uncovered remainder is guest malloc failure during activation marshalling \u2014 wasmtime error, guest trap, and NULL return.  Allocator-exhaustion arms."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_uint_to_int_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_double_to_int_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_int_to_uint_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_double_to_uint_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_int_to_double_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_uint_to_double_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_int_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_uint_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_double_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_bool_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_int_to_string_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_uint_to_string_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_bool_to_string_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_string_to_bytes_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_convert.c",
+      "match": "cel_bytes_to_string_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is the wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` guard: a type-checked CEL expression cannot deliver a mismatched kind to a conversion kernel, so the arm is a codegen-regression tripwire.  runtime/cel_convert_test.cc DOES cover it natively (e.g. UintToIntKindMismatch), but runtime/* rows in this report come from the wasm gcov layer alone -- runtime/ is not in native_cov_report.py's DEFAULT_SCOPES -- so native kernel tests cannot score here.  test-only rather than by-design precisely because a unit test does exercise it."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_contains_cidr_at_vv",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is this kernel's two guards. (1) The wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` arm: a type-checked expression cannot reach it because the checker fixes the operand kinds for every net-ext overload, and runtime/cel_net_ext_test.cc DOES cover it natively (7 TYPE_MISMATCH assertions) -- but runtime/* rows here come from the wasm gcov layer alone (runtime/ is not in native_cov_report.py's DEFAULT_SCOPES), so that native coverage cannot score. (2) The `poison(out, CEL_ERR_OVERFLOW)` arm, taken only when the per-Eval arena cannot fit the result: this one is covered by NOTHING today -- no e2e row and no unit test -- and reaching it needs arena exhaustion, so it is an open gap rather than a satisfied one. Happy paths are e2e-covered by e2e/network_ext_test.cc. test-only, not by-design, because arm (1) is genuinely unit-exercised.  SUSPECT as of 2026-07-30: batch 9ceaa7a showed arena exhaustion IS reachable from the e2e suite with one row against the existing ListStringBindBoundary harness (bind a 64 MiB value, arena_alloc returns 0, the path yields a graceful ResourceExhausted). If the same pattern reaches arm (2) here, this exemption is unearned and should be WITHDRAWN \u2014 which lowers the metric and makes the ledger honest. Verify before trusting it; the test design needs the arena nearly-but-not-fully exhausted at the point of the net-ext call, which is harder to size than the bind-time failure above."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_ip_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is this kernel's two guards. (1) The wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` arm: a type-checked expression cannot reach it because the checker fixes the operand kinds for every net-ext overload, and runtime/cel_net_ext_test.cc DOES cover it natively (7 TYPE_MISMATCH assertions) -- but runtime/* rows here come from the wasm gcov layer alone (runtime/ is not in native_cov_report.py's DEFAULT_SCOPES), so that native coverage cannot score. (2) The `poison(out, CEL_ERR_OVERFLOW)` arm, taken only when the per-Eval arena cannot fit the result: this one is covered by NOTHING today -- no e2e row and no unit test -- and reaching it needs arena exhaustion, so it is an open gap rather than a satisfied one. Happy paths are e2e-covered by e2e/network_ext_test.cc. test-only, not by-design, because arm (1) is genuinely unit-exercised.  SUSPECT as of 2026-07-30: batch 9ceaa7a showed arena exhaustion IS reachable from the e2e suite with one row against the existing ListStringBindBoundary harness (bind a 64 MiB value, arena_alloc returns 0, the path yields a graceful ResourceExhausted). If the same pattern reaches arm (2) here, this exemption is unearned and should be WITHDRAWN \u2014 which lowers the metric and makes the ledger honest. Verify before trusting it; the test design needs the arena nearly-but-not-fully exhausted at the point of the net-ext call, which is harder to size than the bind-time failure above."
+    },
+    {
+      "file": "runtime/cel_net_ext.c",
+      "match": "cel_cidr_masked_at_v",
+      "verdict": "test-only",
+      "evidence": "Uncovered remainder is this kernel's two guards. (1) The wrong-kind `poison(out, CEL_ERR_TYPE_MISMATCH)` arm: a type-checked expression cannot reach it because the checker fixes the operand kinds for every net-ext overload, and runtime/cel_net_ext_test.cc DOES cover it natively (7 TYPE_MISMATCH assertions) -- but runtime/* rows here come from the wasm gcov layer alone (runtime/ is not in native_cov_report.py's DEFAULT_SCOPES), so that native coverage cannot score. (2) The `poison(out, CEL_ERR_OVERFLOW)` arm, taken only when the per-Eval arena cannot fit the result: this one is covered by NOTHING today -- no e2e row and no unit test -- and reaching it needs arena exhaustion, so it is an open gap rather than a satisfied one. Happy paths are e2e-covered by e2e/network_ext_test.cc. test-only, not by-design, because arm (1) is genuinely unit-exercised.  SUSPECT as of 2026-07-30: batch 9ceaa7a showed arena exhaustion IS reachable from the e2e suite with one row against the existing ListStringBindBoundary harness (bind a 64 MiB value, arena_alloc returns 0, the path yields a graceful ResourceExhausted). If the same pattern reaches arm (2) here, this exemption is unearned and should be WITHDRAWN \u2014 which lowers the metric and makes the ledger honest. Verify before trusting it; the test design needs the arena nearly-but-not-fully exhausted at the point of the net-ext call, which is harder to size than the bind-time failure above."
+    },
+    {
+      "file": "eval/instance.cc",
+      "match": "memory_size_bytes",
+      "verdict": "test-only",
+      "evidence": "Public accessor on Instance reporting the wasm instance's linear-memory size. Exercised by eval unit tests; no e2e workload reads it, because the e2e suites assert on evaluation RESULTS rather than on instance introspection. Live public API, not dead."
+    },
+    {
+      "file": "compiler/compiler.h",
+      "match": "function_libraries",
+      "verdict": "test-only",
+      "evidence": "Public accessor on Compiler returning the registered function libraries. Exercised by compiler unit tests; the e2e suites drive Compile/Plan/Eval and never introspect the library list. Live public API, not dead."
+    },
+    {
+      "file": "eval/activation.cc",
+      "match": "BindLazy",
+      "verdict": "test-only",
+      "evidence": "Public Activation API for deferred binding. Exercised by eval unit tests; no e2e workload uses lazy binding, since the e2e suites bind eagerly through Activation::Bind. Live public API, not dead."
+    },
+    {
+      "file": "compiler/codegen/overload_table.cc",
+      "match": "OverloadTableIsExplicitlyUnimplemented",
+      "verdict": "test-only",
+      "evidence": "Query helper reporting whether an overload id is a known-unimplemented entry. Exercised by overload_table unit tests; codegen consults the table through Lookup, so no e2e workload reaches this predicate."
+    },
+    {
+      "file": "eval/host/cel_log.h",
+      "match": "lines",
+      "verdict": "test-only",
+      "evidence": "Accessor on `CapturingCelLogSink`, a test-support sink: it has no production instantiation anywhere (its only non-test reference is its own Emit definition at cel_log.cc:339), and the production path uses DefaultCelLogSink. Exercised by the cel_log unit tests; no e2e workload installs a capturing sink, because compiled CEL emits no log calls."
+    },
+    {
+      "file": "eval/host/cel_log.cc",
+      "match": "Emit",
+      "verdict": "test-only",
+      "evidence": "`CapturingCelLogSink::Emit` \u2014 the test-support sink's implementation. Same reasoning as its `lines()` accessor: no production instantiation, and the diagnostics path installs DefaultCelLogSink instead."
+    }
+  ]
+}

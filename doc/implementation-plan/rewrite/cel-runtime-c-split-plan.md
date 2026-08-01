@@ -90,6 +90,11 @@ of the existing topic groups.  Lines refer to the current file;
 | `cel_make_string`, `cel_make_bytes` | public | 197-205 | `cel_make.c` | `make_span_copy` |
 | `make_span_view` | static | 207-215 | `cel_make.c` | `alloc_cv`, `cv_at` |
 | `cel_make_string_view`, `cel_make_bytes_view` | public | 217-225 | `cel_make.c` | `make_span_view` |
+
+> Plan-vs-execution delta: `make_span_view` and its two public wrappers
+> were deleted later — literals are packed into static rodata at compile
+> time, so nothing ever called them.  The rest of the table stands.
+
 | `poison` | static | 238-241 | `cel_internal.h` static-inline | — |
 | `is_valid_map_key_kind` | static | 243-246 | `cel_map.c` private | — |
 | `numeric_keys_equal` | static | 252-272 | `cel_map.c` private | — |

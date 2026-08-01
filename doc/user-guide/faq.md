@@ -101,7 +101,7 @@ The contract, verbatim from `eval/engine.h` / `eval/instance.h`:
 |---|---|
 | `Program` | pure bytes, immutable — share and serialize freely |
 | `Engine::Plan` | **safe to call concurrently** from many threads |
-| `Engine::Use` / `BindFunction` / `AddFunction` / `AddModule` / `AddPlugin` | **not** thread-safe — configure once at startup, then `Plan` from many threads |
+| `Engine::Use` / `BindFunction` / `AddFunction` / `AddPlugin` | **not** thread-safe — configure once at startup, then `Plan` from many threads |
 | `Plugin` | immutable after `Load` — share across threads, register on many compilers/engines |
 | `Instance` | thread-owned, single-threaded — bind one per worker; it outlives the Engine handle (shared_ptr) |
 

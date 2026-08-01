@@ -26,7 +26,7 @@ On 2026-04-24, a routine validation of M2 found:
     described M2 as substantially shipped; subsequent work (M3
     map literals, conformance harness) had been built on top of
     that assumption.
-  - But `e2e:m2_test` is `tags = ["manual"]` and
+  - But `e2e:ident_select_test` is `tags = ["manual"]` and
     therefore excluded from `bazel test //...`.  Running it
     explicitly revealed **29 of 44 tests `GTEST_SKIP`ped at the
     fixture level**: every `SelectE2ETest` (12), every

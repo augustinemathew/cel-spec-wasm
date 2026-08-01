@@ -75,14 +75,8 @@ class TypedAst {
   const cel::Ast& ast() const {
     return *ast_;
   }
-  cel::Ast& mutable_ast() {
-    return *ast_;
-  }
 
   const WasmAnnotations& annotations() const {
-    return annotations_;
-  }
-  WasmAnnotations& mutable_annotations() {
     return annotations_;
   }
 

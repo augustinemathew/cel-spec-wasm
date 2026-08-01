@@ -43,12 +43,10 @@ struct EmitCtx {
   // this codegen emits a `BinaryenCall` to.
   const OverloadTable& overload_table;
   // Wasm-local index offset applied to every kIdent load.  `$eval`
-  // declares no wasm params and leaves this 0.  CEL-defined custom
-  // function bodies declare `num_args` i32 params at the front of
-  // the local space (`out_slot, arg0, ...`), so their referenced
-  // variables — which `ResolvePass` assigned 0-based `local_index`
-  // values to — live at wasm locals `[num_args, num_args + K)`.
-  // See `expr_lower.cc::EmitCustomFnParamPrelude`.
+  // declares no wasm params and leaves this 0.  A lowered function
+  // that declares i32 params at the front of the local space would
+  // set this so `ResolvePass`-assigned 0-based `local_index` values
+  // land past the params.
   uint32_t wasm_local_offset = 0;
 };
 

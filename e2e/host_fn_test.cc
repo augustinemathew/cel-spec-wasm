@@ -37,9 +37,13 @@
 #include <string>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/strings/ascii.h"
+#include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/time/time.h"
 #include "compiler/compiler.h"
 #include "compiler/program.h"
 #include "e2e/link_mode_e2e_helpers.h"
@@ -498,6 +502,359 @@ TEST(HostFnTest, TypedMapViewArg) {
   EXPECT_EQ(*v->AsInt(), 20);
 }
 
+// map arg via a LITERAL map — the wire shape is CEL_MAP_ARENA, so the
+// context decodes entries straight out of the eval arena
+// (`DecodeArenaMapEntries`, host_call_context.cc) rather than the
+// host-backed table walk the bound-variable case above takes.  (The
+// list sibling is covered by TypedListViewArg's `sum([4, 5, 6])`.)
+TEST(HostFnTest, TypedMapViewArgFromLiteralMap) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.lookup(map<string, int> m, string k);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program =
+      compiler->Compile("lookup({'a': 10, 'b': 20}, 'b')", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddTypedFunction(
+                      "lookup_map_string_int_string",
+                      [](HostMapView m,
+                         absl::string_view k) -> absl::StatusOr<int64_t> {
+                        auto got = m.Get(Value::String(std::string(k)));
+                        if (!got.ok()) return got.status();
+                        if (got->IsError()) return int64_t{-1};
+                        return got->AsInt();
+                      })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsInt(), 20);
+}
+
+// A context callback eagerly decoding a LITERAL map arg via
+// `ArgValue` — end-to-end through the real arena wire shape
+// (host_call_context.cc's DecodeArenaMapEntries), where the
+// HostMapView cases above decode lazily.  The callback sums the
+// values through the decoded Value's map backing.
+TEST(HostFnTest, ContextArgValueDecodesLiteralMapArg) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.msum(map<string, int> m);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program =
+      compiler->Compile("msum({'a': 10, 'b': 20})", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("msum_map_string_int", 2,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto v = ctx.ArgValue(0);
+                                  if (!v.ok()) return v.status();
+                                  auto backing = v->MapBacking();
+                                  if (!backing.ok()) return backing.status();
+                                  int64_t sum = 0;
+                                  for (absl::string_view k : {"a", "b"}) {
+                                    auto e = (*backing)->Get(
+                                        Value::String(std::string(k)),
+                                        CelType::Int());
+                                    if (!e.ok()) return e.status();
+                                    sum += *e->AsInt();
+                                  }
+                                  return ctx.ReturnInt(sum);
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsInt(), 30);
+}
+
+// An embedder callback reading an arg with the WRONG typed accessor:
+// the mismatch diagnostic must name the actual wire kind (the
+// WireKindName arms in host_call_context.cc) and surface as an eval
+// failure — end-to-end proof the context's kind check is not
+// bypassable from real wire values.
+TEST(HostFnTest, ContextWrongAccessorDiagnosticNamesWireKind) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("d", CelType::Duration());
+  b.AddFunction("int @host.dprobe(Duration d);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("dprobe(d)", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("dprobe_duration", 2,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  // Deliberate embedder bug: int read
+                                  // of a duration slot.
+                                  return ctx.ArgInt(0).status();
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  act.Bind("d", Value::Duration(absl::Seconds(5)));
+  auto v = instance->Eval(act);
+  ASSERT_FALSE(v.ok());
+  EXPECT_TRUE(absl::StrContains(v.status().message(), "duration"))
+      << v.status();
+}
+
+// What reaches the callback when an ARGUMENT evaluates to a runtime
+// error: pins the dispatch contract for error-valued args through the
+// full pipeline ([1][5] is int-typed but errors at eval).
+TEST(HostFnTest, ErrorValuedArgContract) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.echo7(int x);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("echo7([1][5])", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  int calls = 0;
+  ASSERT_TRUE(engine
+                  ->AddFunction("echo7_int", 2,
+                                [&calls](HostCallContext& ctx) -> absl::Status {
+                                  ++calls;
+                                  return ctx.ReturnInt(7);
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  // 3VL absorption: the error propagates without dispatching the
+  // callback (mirrors cel-cpp strict-function semantics).
+  EXPECT_TRUE(v->IsError());
+  EXPECT_EQ(calls, 0);
+}
+
+// The unknown-valued analog of ErrorValuedArgContract: strict
+// dispatch absorbs CEL_UNKNOWN args the same way it absorbs errors,
+// so the callback never runs and the unknown propagates as the
+// result (langdef partial-eval: unknown arguments short-circuit
+// strict functions).
+TEST(HostFnTest, UnknownValuedArgContract) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("x", CelType::Int());
+  b.AddFunction("int @host.echo8(int x);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("echo8(x)", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  int calls = 0;
+  ASSERT_TRUE(engine
+                  ->AddFunction("echo8_int", 2,
+                                [&calls](HostCallContext& ctx) -> absl::Status {
+                                  ++calls;
+                                  return ctx.ReturnInt(8);
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  act.Bind("x", Value::Int(41));
+  auto pattern = AttributePattern::Parse("x");
+  ASSERT_TRUE(pattern.ok()) << pattern.status();
+  AttributePattern patterns[] = {*std::move(pattern)};
+  auto v = instance->PartialEval(act, patterns);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(v->IsUnknown()) << static_cast<int>(v->kind());
+  EXPECT_EQ(calls, 0);
+}
+
+// A literal-list argument decoded through the context's ArgValue:
+// the arena-resident run decodes element-by-element (the
+// DecodeArenaList walk in host_call_context.cc), end-to-end.
+TEST(HostFnTest, ContextArgValueDecodesLiteralListArg) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.lsum(list<int> xs);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("lsum([1, 2, 3])", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("lsum_list_int", 2,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto v = ctx.ArgValue(0);
+                                  if (!v.ok()) return v.status();
+                                  auto backing = v->ListBacking();
+                                  if (!backing.ok()) return backing.status();
+                                  int64_t sum = 0;
+                                  for (size_t i = 0; i < (*backing)->Size();
+                                       ++i) {
+                                    auto e = (*backing)->At(i, CelType::Int());
+                                    if (!e.ok()) return e.status();
+                                    sum += *e->AsInt();
+                                  }
+                                  return ctx.ReturnInt(sum);
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsInt(), 6);
+}
+
+// HostMapView::ContainsKey from inside a callback — both the present
+// and absent probes, against a literal (arena-resident) map.
+// An EMPTY map argument takes HostCallContext's zero-count early
+// return, which builds a HostMapView over no entries rather than
+// reading an arena header.  Only an empty literal reaches it.
+TEST(HostFnTest, ContextMapViewOverEmptyMap) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("bool @host.haskey2(map<string, int> m, string k);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("!haskey2({}, 'a')", e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("haskey2_map_string_int_string", 3,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto m = ctx.ArgMap(0);
+                                  if (!m.ok()) return m.status();
+                                  auto k = ctx.ArgString(1);
+                                  if (!k.ok()) return k.status();
+                                  return ctx.ReturnBool(m->ContainsKey(
+                                      Value::String(std::string(*k))));
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation a;
+  auto v = instance->Eval(a);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_EQ(*v->AsBool(), true);
+}
+
+TEST(HostFnTest, ContextMapViewContainsKey) {
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("bool @host.haskey(map<string, int> m, string k);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile(
+      "haskey({'a': 1}, 'a') && "
+      "!haskey({'a': 1}, 'z')",
+      e2e::DefaultOpts());
+  ASSERT_TRUE(program.ok()) << program.status();
+
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  ASSERT_TRUE(engine
+                  ->AddFunction("haskey_map_string_int_string", 3,
+                                [](HostCallContext& ctx) -> absl::Status {
+                                  auto m = ctx.ArgMap(0);
+                                  if (!m.ok()) return m.status();
+                                  auto k = ctx.ArgString(1);
+                                  if (!k.ok()) return k.status();
+                                  return ctx.ReturnBool(m->ContainsKey(
+                                      Value::String(std::string(*k))));
+                                })
+                  .ok());
+  auto instance = engine->Plan(*program);
+  ASSERT_TRUE(instance.ok()) << instance.status();
+  Activation act;
+  auto v = instance->Eval(act);
+  ASSERT_TRUE(v.ok()) << v.status();
+  EXPECT_TRUE(*v->AsBool());
+}
+
+// Compile `kprobe(v)` with `v` declared as `type` / IDL `idl_type`.
+Program CompileKprobeProgram(absl::string_view idl_type, const CelType& type) {
+  auto b = Compiler::NewBuilder();
+  b.DeclareVariable("v", type);
+  b.AddFunction(absl::StrCat("int @host.kprobe(", idl_type, " v);"));
+  auto compiler = std::move(b).Build();
+  ABSL_CHECK_OK(compiler.status());
+  auto program = compiler->Compile("kprobe(v)", e2e::DefaultOpts());
+  ABSL_CHECK_OK(program.status()) << idl_type;
+  return *std::move(program);
+}
+
+// Register the wrong-accessor callback under `overload_id` and return
+// the eval status for `bind`.
+absl::Status WrongAccessorEvalStatus(const Program& program,
+                                     absl::string_view overload_id,
+                                     Value bind) {
+  auto engine = Engine::NewBuilder().Build();
+  ABSL_CHECK_OK(engine.status());
+  ABSL_CHECK_OK(engine->AddFunction(  // Deliberate misread: int accessor.
+      overload_id, 2, [](HostCallContext& ctx) -> absl::Status {
+        return ctx.ArgInt(0).status();
+      }));
+  auto instance = engine->Plan(program);
+  ABSL_CHECK_OK(instance.status()) << overload_id;
+  Activation act;
+  act.Bind("v", std::move(bind));
+  return instance->Eval(act).status();
+}
+
+// One wrong-accessor probe: the ArgInt(0) misread must fail eval with
+// a message naming `expect_kind` (that wire kind's WireKindName arm).
+void ExpectWrongAccessorNames(absl::string_view idl_type, const CelType& type,
+                              absl::string_view overload_id, Value bind,
+                              absl::string_view expect_kind) {
+  Program program = CompileKprobeProgram(idl_type, type);
+  absl::Status s =
+      WrongAccessorEvalStatus(program, overload_id, std::move(bind));
+  ASSERT_FALSE(s.ok()) << idl_type;
+  EXPECT_TRUE(absl::StrContains(s.message(), expect_kind))
+      << idl_type << ": " << s;
+}
+
+// The WireKindName matrix: every wire kind a wrong accessor can name
+// in its mismatch diagnostic, driven end-to-end from real bound
+// values (the Duration arm is pinned above).
+TEST(HostFnTest, WrongAccessorDiagnosticKindMatrix) {
+  ExpectWrongAccessorNames("uint", CelType::Uint(), "kprobe_uint",
+                           Value::Uint(5), "uint");
+  ExpectWrongAccessorNames("double", CelType::Double(), "kprobe_double",
+                           Value::Double(1.5), "double");
+  ExpectWrongAccessorNames("bool", CelType::Bool(), "kprobe_bool",
+                           Value::Bool(true), "bool");
+  ExpectWrongAccessorNames("string", CelType::String(), "kprobe_string",
+                           Value::String("s"), "string");
+  ExpectWrongAccessorNames("bytes", CelType::Bytes(), "kprobe_bytes",
+                           Value::Bytes("b"), "bytes");
+  ExpectWrongAccessorNames(
+      "Timestamp", CelType::Timestamp(), "kprobe_timestamp",
+      Value::Timestamp(absl::FromUnixSeconds(1)), "timestamp");
+  ExpectWrongAccessorNames("list<int>", CelType::List(CelType::Int()),
+                           "kprobe_list_int", Value::List({Value::Int(1)}),
+                           "list");
+  ExpectWrongAccessorNames(
+      "map<string, int>", CelType::Map(CelType::String(), CelType::Int()),
+      "kprobe_map_string_int",
+      Value::Map({{Value::String("a"), Value::Int(1)}}), "map");
+}
+
 // ── shared pieces for the deepest-composite tests ─────────────────
 //
 // Typed (TypedNestedMapStringListProtoArg) and context
@@ -671,6 +1028,62 @@ TEST(HostFnTest, TypedFunctionsCompose) {
 // registration-level validation matrix lives in eval/engine_test.cc
 // (EngineBindFunctionTest); this is the single end-to-end dispatch
 // proof through wasmtime.
+// One BindFunction signature-mismatch probe: `decl` declares the
+// parameter's CEL type; the bound callable takes int64_t (except the
+// int row, which takes bool).  Registration must fail InvalidArgument
+// naming the declared slug AND the callable's C++ spelling — the
+// CppParamMatchesDeclType arm and HostParamKindName arm for that kind.
+void ExpectBindMismatch(absl::string_view decl,
+                        absl::string_view expect_decl_slug,
+                        absl::string_view expect_cpp_name) {
+  auto engine = Engine::NewBuilder().Build();
+  ABSL_CHECK_OK(engine.status());
+  absl::Status s =
+      absl::StrContains(decl, "(int ")
+          ? engine->BindFunction(decl,
+                                 [](bool) -> absl::StatusOr<int64_t> {
+                                   return 0;
+                                 })
+          : engine->BindFunction(decl, [](int64_t) -> absl::StatusOr<int64_t> {
+              return 0;
+            });
+  ASSERT_FALSE(s.ok()) << decl;
+  EXPECT_TRUE(absl::StrContains(s.message(), expect_decl_slug))
+      << decl << ": " << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), expect_cpp_name))
+      << decl << ": " << s;
+}
+
+// The registration-time signature compare, one probe per declared CEL
+// kind (the matched half is exercised by the round-trip tests below
+// and the per-type matrix suite).
+TEST(HostFnTest, BindFunctionSignatureMismatchMatrix) {
+  ExpectBindMismatch("int @host.p1(bool b);", "bool", "int64_t");
+  ExpectBindMismatch("int @host.p2(int x);", "int", "bool");
+  ExpectBindMismatch("int @host.p3(uint u);", "uint", "int64_t");
+  ExpectBindMismatch("int @host.p4(double d);", "double", "int64_t");
+  ExpectBindMismatch("int @host.p5(string s);", "string", "int64_t");
+  ExpectBindMismatch("int @host.p6(bytes b);", "bytes", "int64_t");
+  ExpectBindMismatch("int @host.p7(Duration d);", "duration", "int64_t");
+  ExpectBindMismatch("int @host.p8(Timestamp t);", "timestamp", "int64_t");
+  ExpectBindMismatch("int @host.p9(list<int> xs);", "list", "int64_t");
+  ExpectBindMismatch("int @host.p10(map<string, int> m);", "map", "int64_t");
+  ExpectBindMismatch("int @host.p11(proto(celwasm.testdata.Customer) c);",
+                     "message", "int64_t");
+}
+
+// Arity mismatch: decl declares two params, callable takes one.
+TEST(HostFnTest, BindFunctionArityMismatch) {
+  auto engine = Engine::NewBuilder().Build();
+  ASSERT_TRUE(engine.ok()) << engine.status();
+  absl::Status s = engine->BindFunction("int @host.two(int a, int b);",
+                                        [](int64_t) -> absl::StatusOr<int64_t> {
+                                          return 0;
+                                        });
+  ASSERT_FALSE(s.ok());
+  EXPECT_TRUE(absl::StrContains(s.message(), "2 parameter(s)")) << s;
+}
+
 TEST(HostFnTest, BindFunctionDeclFirstRoundTrip) {
   constexpr absl::string_view kDecl = "int @host.discount_pct(string tier);";
   auto b = Compiler::NewBuilder();
@@ -1979,6 +2392,80 @@ TEST(HostFnTest, BytesArgWithEmbeddedNulRoundTrips) {
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBytes);
   EXPECT_EQ(std::string(*v->AsBytes()), payload);
+}
+
+// ── decl-surface diagnostics: the kind-naming reject arms ───────────
+// Each negative pins both the rejection AND the kind name in the
+// message (CelTypeKindName / DeclMessageToCheckerType) — the
+// diagnostic text is the API contract an embedder scripts against.
+
+class DeclDiagnosticsE2ETest : public ::testing::Test {};
+
+TEST_F(DeclDiagnosticsE2ETest, NonDeclarableVariableKindsNameTheKind) {
+  {
+    auto b = Compiler::NewBuilder();
+    b.DeclareVariable("x", CelType::Null());
+    auto c = std::move(b).Build();
+    ASSERT_FALSE(c.ok());
+    EXPECT_TRUE(absl::StrContains(c.status().message(), "`null`"))
+        << c.status();
+  }
+  {
+    auto b = Compiler::NewBuilder();
+    b.DeclareVariable("x", CelType::Optional(CelType::Int()));
+    auto c = std::move(b).Build();
+    ASSERT_FALSE(c.ok());
+    EXPECT_TRUE(absl::StrContains(c.status().message(), "`optional`"))
+        << c.status();
+  }
+}
+
+TEST_F(DeclDiagnosticsE2ETest, IllegalMapKeyKindsNameTheKind) {
+  // Map keys are the closed bool/int/uint/string set (langdef §Maps).
+  // The celfn grammar enforces it at PARSE time — the mismatched
+  // input is named in the diagnostic, spelled as written.
+  const struct {
+    absl::string_view decl;
+    absl::string_view kind;
+  } kRows[] = {
+      {"int @host.f(map<double, int> m);", "double"},
+      {"int @host.f(map<bytes, int> m);", "bytes"},
+      {"int @host.f(map<Duration, int> m);", "Duration"},
+      {"int @host.f(map<Timestamp, int> m);", "Timestamp"},
+  };
+  for (const auto& row : kRows) {
+    auto b = Compiler::NewBuilder();
+    b.AddFunction(row.decl);
+    auto c = std::move(b).Build();
+    ASSERT_FALSE(c.ok()) << row.decl;
+    EXPECT_TRUE(absl::StrContains(c.status().message(), row.kind))
+        << row.decl << ": " << c.status();
+  }
+}
+
+TEST_F(DeclDiagnosticsE2ETest, ReceiverModifierOnlyOnFirstParameter) {
+  // `this` marks the receiver, so it is meaningful only on parameter
+  // one; the celfn parser rejects it anywhere else by name.
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.f(int a, this int bad);");
+  auto c = std::move(b).Build();
+  ASSERT_FALSE(c.ok());
+  EXPECT_TRUE(absl::StrContains(c.status().message(), "first parameter"))
+      << c.status();
+}
+
+TEST_F(DeclDiagnosticsE2ETest, UnknownProtoMessageTypeInDeclFailsCompile) {
+  // The FQN only resolves against the descriptor pool at check time
+  // (DeclMessageToCheckerType), so Build succeeds and the first
+  // Compile reports the unknown message type by name.
+  auto b = Compiler::NewBuilder();
+  b.AddFunction("int @host.f(proto(no.such.Msg) x);");
+  auto compiler = std::move(b).Build();
+  ASSERT_TRUE(compiler.ok()) << compiler.status();
+  auto program = compiler->Compile("1 + 1", e2e::DefaultOpts());
+  ASSERT_FALSE(program.ok());
+  EXPECT_TRUE(absl::StrContains(program.status().message(), "no.such.Msg"))
+      << program.status();
 }
 
 }  // namespace

@@ -685,14 +685,6 @@ bool TryEncodeWktWrapperMessage(const Value& v, uint32_t want_kind,
   return WriteNumericWrapperPayload(*refl, *msg, *vf, dst);
 }
 
-absl::Status EncodeNull(const Value& v, absl::string_view name, CelValue* dst) {
-  if (v.kind() != Value::Kind::kNull) {
-    return KindMismatch(name, "null", v.kind());
-  }
-  dst->kind = CEL_NULL;
-  return absl::OkStatus();
-}
-
 // Wrapper-bind semantics: a `Value::Null()` bound against a
 // wrapper-typed declared variable (which `typed_ast.cc:56` has
 // already collapsed to scalar Repr) reads as `null` per langdef
@@ -947,8 +939,6 @@ absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
                               absl::string_view name, CelValue* dst,
                               EncoderContext& ec) {
   switch (repr) {
-    case celwasm::Repr::kNull:
-      return EncodeNull(v, name, dst);
     case celwasm::Repr::kBool:
       return EncodeBool(v, name, dst);
     case celwasm::Repr::kInt:
@@ -974,12 +964,16 @@ absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
       return EncodeTimestamp(v, name, dst);
     case celwasm::Repr::kMap:
       return EncodeMap(v, name, dst, ec.refs);
+    case celwasm::Repr::kNull:
     case celwasm::Repr::kEnum:
     case celwasm::Repr::kUnknown:
-      return absl::UnimplementedError(
+      // No variable can carry these reprs: `Compiler::Builder` rejects
+      // a `null`-typed declaration outright, and enum / unknown are not
+      // declarable types either.  Reaching here means the `cel.abi`
+      // section claims a repr the compiler never emits.
+      return absl::InvalidArgumentError(
           absl::StrCat("Activation[", name, "]: Repr=", celwasm::ReprName(repr),
-                       " marshal not implemented (later milestones for "
-                       "enum/unknown)"));
+                       " is not a bindable variable repr"));
   }
   return absl::InvalidArgumentError(absl::StrCat(
       "Activation[", name, "]: unknown Repr=", static_cast<int>(repr)));

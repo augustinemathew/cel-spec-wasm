@@ -104,6 +104,25 @@ TEST(EmitStubCc, ScalarReturnUsesNativeCType) {
   EXPECT_THAT(*t, HasSubstr("return rules::Add(a, b);"));
 }
 
+// Regression: the export symbol must be LOWERCASED, because
+// wit-bindgen derives it from the WIT function name and WIT
+// identifiers are lowercase-only (wit_emitter.cc SnakeToKebab).  A
+// proto-typed decl's overload id keeps the proto FQN's CamelCase
+// (`..._message_acme_User`), so emitting it verbatim here defines a
+// symbol wit-bindgen never declares — the export silently stays
+// undefined and the component encoder reports it as an unresolved
+// `env` import, far from the cause.  See
+// doc/design/10-plugin-wit-pipeline.md §2.
+TEST(EmitStubCc, ProtoDeclExportSymbolIsLowercased) {
+  auto lib = OneFn("is_adult", CelType::Bool(),
+                   {CelfnParam{false, CelType::Message("acme.User"), "u"}});
+  auto t = EmitStubCc(lib, kMod, kPkg, {});
+  ASSERT_THAT(t, IsOk());
+  EXPECT_THAT(*t, HasSubstr("exports_cel_customfn_fns_is_adult_message_acme_"
+                            "user("));
+  EXPECT_THAT(*t, Not(HasSubstr("acme_User")));
+}
+
 TEST(EmitStubCc, BoolReturnUsesBool) {
   auto lib = OneFn("allow", CelType::Bool(),
                    {CelfnParam{false, CelType::Bool(), "x"}});

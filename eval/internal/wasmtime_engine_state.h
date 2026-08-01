@@ -52,20 +52,6 @@ using wasmtime_component_t = struct wasmtime_component_t;
 
 namespace celwasm {
 
-// M13 Slice C.1: a foreign wasm module registered via
-// `Engine::AddModule(alias, bytes)`.  Parsed at registration time
-// (so syntactic errors surface there), instantiated per-Plan into
-// the fresh store (so concurrent Plans don't share instances).
-//
-// `helper_exports` lists the function-export names that look like
-// CEL overload ids (skips toolchain noise like `_initialize`,
-// `__data_end`, etc.).  Used by the engine's conflict-detection +
-// import-resolution paths.
-struct RegisteredCustomModule {
-  wasmtime_module_t* module = nullptr;
-  std::vector<std::string> helper_exports;
-};
-
 // `Engine::AddFunction`-registered host callback + arity.  Held as
 // a node in the map so the address of `callback` is stable across
 // later insertions (the wasmtime func-callback registration captures
@@ -105,15 +91,21 @@ struct WasmtimeEngineState {
   wasm_engine_t* engine = nullptr;
   wasmtime_module_t* runtime_module = nullptr;
 
-  // M13 Slice C.1 — engine-owned custom-fn state.  Populated by
-  // `Engine::AddModule` and `Engine::AddFunction`; consumed by
-  // `Engine::Plan` when resolving caller-side wasm imports.
-  std::map<std::string, RegisteredCustomModule> custom_modules;
+  // Engine-owned custom-fn state: populated by
+  // `Engine::AddFunction`; consumed by `Engine::Plan` when
+  // resolving caller-side wasm imports.
   std::map<std::string, RegisteredHostCallback> host_callbacks;
 
+  // Destination directory for wasm-side gcov collection, resolved
+  // once at `Engine::Builder::Build()` (explicit
+  // `CollectWasmCoverage(dir)` wins; else the CELWASM_WASM_GCOV_DIR
+  // env var; empty ⇒ disabled).  Each Plan hands it to the
+  // Instance's `WasmGcovEnv`.
+  std::string wasm_gcov_dir;
+
   // Plugins registered via `Engine::AddPlugin`.
-  // Order-preserving vector (vs map) — there is no natural keying name
-  // for a plugin the way `alias` keys a `RegisteredCustomModule`;
+  // Order-preserving vector (vs map) — there is no natural keying
+  // name for a plugin;
   // distinct plugins are distinguished by the overload-ids the
   // library declares.  Conflict detection still rejects duplicate
   // overload-ids (against host_callbacks + other plugins).

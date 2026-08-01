@@ -34,6 +34,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "abi/plugin.h"
 #include "absl/base/attributes.h"
@@ -118,26 +119,6 @@ class Engine {
   ABSL_MUST_USE_RESULT absl::StatusOr<Instance> Plan(
       const Program& program) const;
 
-  // Register a foreign wasm module under `alias`.  The module's
-  // exports become available to Planned programs as wasm imports of
-  // the form `(import "<alias>" "<helper>" …)`.  Slice E will broaden
-  // this to support modules that define their own memory (current
-  // Probe 2/3 shape); the v1 constraint is that the foreign module
-  // imports `cel.memory` from the engine.
-  //
-  // Conflict checks at registration time:
-  //   - `alias` already registered → AlreadyExists
-  //   - `alias` matches a reserved name (`cel`, `cel_host`, `cel_env`,
-  //     `cel_fn`, `host`) → InvalidArgument
-  //   - The module's wasm bytes fail to parse → InvalidArgument
-  //
-  // **NOT thread-safe** with concurrent calls to itself or to
-  // `AddFunction`.  Engine setup is single-threaded; only `Plan`
-  // promises concurrent-safe operation.  Configure once at startup,
-  // then `Plan` from many threads.
-  ABSL_MUST_USE_RESULT absl::Status AddModule(
-      absl::string_view alias, absl::Span<const uint8_t> wasm_bytes);
-
   // Register a C++ callback as the impl for a `@host.<name>`
   // declaration.  `overload_id` matches the synthesised id from
   // `FunctionLibrary::Builder::AddHost(...)` (e.g. `upper_string`,
@@ -154,7 +135,7 @@ class Engine {
   // §5.3) can only compare the wasm arity.  Register through
   // `BindFunction` to get the full recursive signature compare.
   //
-  // **NOT thread-safe** — same contract as `AddModule`.
+  // **NOT thread-safe** — same contract as `AddFunction`.
   ABSL_MUST_USE_RESULT absl::Status AddFunction(absl::string_view overload_id,
                                                 uint8_t num_args,
                                                 HostCallback impl);
@@ -198,7 +179,7 @@ class Engine {
   // trap (`Use` narrows this to export *existence*, checked
   // statically at registration).
   //
-  // **NOT thread-safe** — same contract as `AddFunction` / `AddModule`.
+  // **NOT thread-safe** — same contract as `AddFunction`.
   //
   // See `examples/09_plugin_functions.cc` for an end-to-end embed.
   ABSL_MUST_USE_RESULT absl::Status AddPlugin(
@@ -319,6 +300,29 @@ class Engine::Builder {
     return std::move(*this);
   }
 
+  // Collect wasm-side gcov coverage from a runtime built with
+  // `--//runtime:instrument_wasm`, writing merged .gcda files into
+  // `output_dir` (created if absent; counters from sequential runs
+  // are summed).  Every Instance this Engine Plans participates:
+  // its counters are dumped when the Instance is destroyed.
+  //
+  // Empty `output_dir` (the default) defers to the
+  // `CELWASM_WASM_GCOV_DIR` env var; unset env + empty dir means
+  // collection is disabled.  The destination is resolved once at
+  // Build() — fixed at engine instantiation, per the "configure
+  // once, Plan from many threads" contract.  Against a
+  // non-instrumented runtime the option is inert (the module never
+  // calls the gcov write-out imports).  See
+  // eval/internal/wasm_gcov.h for the collection machinery.
+  Builder& CollectWasmCoverage(absl::string_view output_dir) & {
+    wasm_coverage_dir_ = std::string(output_dir);
+    return *this;
+  }
+  Builder&& CollectWasmCoverage(absl::string_view output_dir) && {
+    wasm_coverage_dir_ = std::string(output_dir);
+    return std::move(*this);
+  }
+
   // Allocate the wasm engine + parse `cel_runtime.wasm` into a
   // module.  Returns Internal on wasmtime allocation failure.
   // Single-use: && enforces consumption at the call site (const so
@@ -327,6 +331,7 @@ class Engine::Builder {
 
  private:
   bool jit_perf_map_ = false;
+  std::string wasm_coverage_dir_;
 };
 
 }  // namespace celwasm

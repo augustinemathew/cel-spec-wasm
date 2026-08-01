@@ -299,20 +299,49 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
 `cabi_realloc`; the generated `cabi_post_*` frees; **the author never calls
 `_free` on returns.** Probed against wit-bindgen 0.57.
 
+> The end-to-end plugin pipeline — the five generators, the three
+> naming schemes they must agree on, the CEL↔WIT↔C type table, and
+> what the threadless wasip2 target costs — is written up separately
+> in `design/10-plugin-wit-pipeline.md`.  Read that before touching
+> any of the `celfnc_emit/` emitters.
+
 ### 5.4 Known traps
 
-- **String-return trap.** A string-returning plugin fn traps at call time
-  ("cannot leave component instance", inside libc++ post-RNG-init under
-  wasm32-wasip2) — reasoned skip in `e2e/.../demo_plugin_e2e_test.cc:135-147`.
-  The supported envelope today is **scalar returns**
-  (`examples/09_plugin_functions.cc` is scalar-only on purpose,
-  examples/README.md:24-26).
-- **Map-lower emitter gap.** `EmitCodecH` emits a literal
-  `// TODO(m26): lower($1*, const $0&) not yet emitted`
-  (cpp_codec_emitter.cc:371) — a map-*returning* `@plugin.` decl generates a
-  stub calling a nonexistent `codec::lower`. The fixture declaring exactly such
-  decls (`fixtures/full_matrix.idl`) is referenced by no BUILD target, so no
-  gate catches it.
+- **~~String-return trap~~ — FIXED 2026-07-28.** Every non-scalar carrier
+  (string, bytes, `list<T>`, `map<K,V>`) used to trap at call time with
+  `wasm trap: cannot leave component instance`. Root cause: libc++ seeds its
+  hash machinery lazily, wasi-libc implements that seed via the
+  `wasi:random/random@0.2.0` component **import**, and when the lazy init
+  fired while the guest was inside a canonical-ABI lift/lower — i.e. exactly
+  when an aggregate argument or return is marshalled — wasmtime refused the
+  import call. The guest now defines
+  `__imported_wasi_snapshot_preview1_random_get` itself
+  (`bazel/plugin_rng_stub.c`), so the import is not emitted at all and there
+  is no call left to forbid. The supported envelope is now **scalars,
+  string, bytes, `list<T>`, and `map<K,V>`, in both directions**, pinned by
+  `demo_plugin_e2e_test.cc`'s `KindMatrixEchoRoundTrips`.
+  This also explains the carrier's former *flakiness*: whether the seed had
+  already been initialised depended on what else had allocated first, so the
+  same expression passed on some builds and trapped on others.
+- **~~Map-lower emitter gap~~ — FIXED 2026-07-28.** `EmitCodecH` used to emit a
+  literal `// TODO(m26): lower($1*, const $0&) not yet emitted`, so a
+  map-*returning* `@plugin.` decl generated a stub calling a nonexistent
+  `codec::lower` and failed to compile. `kMapTpl` now carries the lower half
+  (string keys route through the string codec, scalar values assign
+  directly), and every aggregate lower short-circuits an empty container to
+  a NULL pointer rather than calling `cabi_realloc(NULL, 0, align, 0)`.
+- **~~Proto args/returns blocked~~ — FIXED 2026-07-28.** Three separate
+  causes, all now addressed and written up in
+  `design/10-plugin-wit-pipeline.md` §2 and §4: absl does not compile
+  threadless (three `third_party/patches/` entries), absl and protobuf
+  leak `-pthread` into the link (stripped for wasip2 in
+  `wasm_clang.sh`), and the stub emitter named the export symbol from
+  the overload id verbatim while wit-bindgen lowercases it, so every
+  proto-typed decl left its export undefined. `demo_plugin_proto` now
+  builds and `OneNounFlowProtoArg` round-trips an `acme.User` in both
+  directions. (`LITE_RUNTIME` is NOT the fix, and was tried: protobuf_lite
+  deps on absl/time directly, and it makes generated classes derive from
+  MessageLite, which `Value::OwnedMessage` cannot take.)
 - **Example 09's visibility hole — closed by the `Plugin` surface.**
   The example's former `FunctionLibrary` mirror needed the
   `//:internal` `//compiler/celfn:function_library` target; the
@@ -342,10 +371,13 @@ Return ownership: the author/stub populate `*ret` via `customfn_string_dup_n` /
 **Status today: declaration-only.** Grammar (§3.1), Builder gates, checker
 registration, and codegen's `kUserModule` import emission all exist and are
 tested. Nothing produces the wasm module those imports resolve against: a
-compiled `@native` call emits `(import "<module_name>" "<overload_id>")`; the
-only binding mechanism is `Engine::AddModule(alias, bytes)`, and nothing in the
-tree produces those bytes. Expected behavior: an unresolved-import failure at
-Plan (R2/R3).
+compiled `@native` call emits `(import "<module_name>" "<overload_id>")`, and
+nothing binds it: `Engine::AddModule(alias, bytes)` — the registration surface
+reserved for this backend — was deleted 2026-07-27 (never exercised end-to-end;
+the m38 dead-code audit removed it with its Plan-side instantiation). Expected
+behavior: an unresolved-import failure at Plan (R2/R3). Whichever
+implementation below is chosen would reintroduce a binding surface designed
+with it.
 
 Two competing implementations exist, **neither live on this branch**:
 

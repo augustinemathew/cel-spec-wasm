@@ -15,7 +15,7 @@
 // primitive type names.  This file flips one row per kind plus the
 // kind-mismatch / 3VL absorb negatives.  The CEL_MESSAGE arm
 // dispatches to a host trampoline (M9.C) and is covered end-to-end
-// in e2e/m9_test.cc; here the host-side weak stub
+// in e2e/type_value_test.cc; here the host-side weak stub
 // poisons CEL_ERR_TYPE_MISMATCH so we assert that fall-back.
 
 namespace celwasm {

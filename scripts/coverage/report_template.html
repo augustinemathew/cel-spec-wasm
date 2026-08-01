@@ -1,0 +1,478 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>celwasm coverage</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --plane: #f9f9f7;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --seq-250: #86b6ef; --seq-450: #2a78d6; --seq-600: #184f95;
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --good-text: #006300;
+    --hit-bg: rgba(12,163,12,0.08); --miss-bg: rgba(208,59,59,0.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface: #1a1a19; --plane: #0d0d0d;
+      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --baseline: #383835;
+      --border: rgba(255,255,255,0.10);
+      --seq-250: #6da7ec; --seq-450: #3987e5; --seq-600: #86b6ef;
+      --good-text: #0ca30c;
+      --hit-bg: rgba(12,163,12,0.10); --miss-bg: rgba(208,59,59,0.18);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19; --plane: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835;
+    --border: rgba(255,255,255,0.10);
+    --seq-250: #6da7ec; --seq-450: #3987e5; --seq-600: #86b6ef;
+    --good-text: #0ca30c;
+    --hit-bg: rgba(12,163,12,0.10); --miss-bg: rgba(208,59,59,0.18);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--plane); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 20px 80px; }
+  header h1 { font-size: 20px; margin: 0 0 2px; }
+  header .sub { color: var(--ink-2); font-size: 13px; margin-bottom: 20px; }
+  .tiles { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 18px; min-width: 168px; flex: 1;
+  }
+  .tile .label { color: var(--ink-2); font-size: 12px; }
+  .tile .value { font-size: 30px; font-weight: 650; margin-top: 2px; }
+  .tile .detail { color: var(--muted); font-size: 12px; margin-top: 2px;
+                  font-variant-numeric: tabular-nums; }
+  nav.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--grid);
+             margin-bottom: 16px; flex-wrap: wrap; }
+  nav.tabs button {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--ink-2); font: inherit; padding: 8px 12px; cursor: pointer;
+  }
+  nav.tabs button.active { color: var(--ink); border-bottom-color: var(--seq-450);
+                           font-weight: 600; }
+  section.view { display: none; } section.view.active { display: block; }
+  table { border-collapse: collapse; width: 100%; background: var(--surface);
+          border: 1px solid var(--border); border-radius: 10px;
+          overflow: hidden; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-top: 1px solid var(--grid); }
+  thead th { border-top: none; color: var(--ink-2); font-weight: 600;
+             font-size: 12px; background: var(--surface); cursor: pointer;
+             white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.rowlink { cursor: pointer; }
+  tr.rowlink:hover { background: color-mix(in srgb, var(--seq-450) 6%, transparent); }
+  .meter { display: inline-block; width: 120px; height: 8px; vertical-align: 2px;
+           background: var(--grid); border-radius: 4px; margin-right: 8px; }
+  .meter > i { display: block; height: 100%; border-radius: 4px;
+               background: var(--seq-450); min-width: 2px; }
+  .pct { font-variant-numeric: tabular-nums; }
+  .chip { display: inline-block; border: 1px solid var(--border);
+          border-radius: 999px; padding: 0 8px; margin: 1px 2px 1px 0;
+          font-size: 11px; color: var(--ink-2); background: var(--plane);
+          white-space: nowrap; }
+  .status { font-size: 12px; white-space: nowrap; }
+  .status .dot { display: inline-block; width: 8px; height: 8px;
+                 border-radius: 50%; margin-right: 5px; }
+  .zero .dot { background: var(--critical); } .zero { color: var(--ink); }
+  .single .dot { background: var(--warning); }
+  .ok .dot { background: var(--good); }
+  .controls { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap;
+              align-items: center; }
+  .controls input[type=search], .controls select {
+    font: inherit; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--surface); color: var(--ink); }
+  .controls .seg { display: flex; border: 1px solid var(--border);
+                   border-radius: 8px; overflow: hidden; }
+  .controls .seg button { background: var(--surface); border: none; font: inherit;
+                          color: var(--ink-2); padding: 6px 12px; cursor: pointer; }
+  .controls .seg button.active { background: var(--seq-450); color: #fff; }
+  pre.src { background: var(--surface); border: 1px solid var(--border);
+            border-radius: 10px; overflow-x: auto; padding: 0; margin: 0;
+            font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .srcline { display: flex; white-space: pre; }
+  .srcline .no { width: 52px; flex: none; text-align: right; padding-right: 10px;
+                 color: var(--muted); user-select: none;
+                 font-variant-numeric: tabular-nums; }
+  .srcline .ct { width: 64px; flex: none; text-align: right; padding-right: 12px;
+                 color: var(--good-text); font-variant-numeric: tabular-nums; }
+  .srcline.miss { background: var(--miss-bg); }
+  .srcline.miss .ct { color: var(--critical); font-weight: 600; }
+  .srcline.hit { background: var(--hit-bg); }
+  .srcline code { flex: 1; padding-right: 16px; }
+  .fnrow-detail td { background: var(--plane); font-size: 12px; }
+  .note { color: var(--ink-2); font-size: 13px; margin: 10px 0; max-width: 78ch; }
+  a.jump { color: var(--seq-600); text-decoration: none; cursor: pointer; }
+  a.jump:hover { text-decoration: underline; }
+</style>
+<div class="wrap">
+  <header>
+    <h1>celwasm coverage</h1>
+    <div class="sub" id="subtitle"></div>
+  </header>
+  <div class="tiles" id="tiles"></div>
+  <nav class="tabs" id="tabs">
+    <button data-view="overview" class="active">Overview</button>
+    <button data-view="functions">Function audit</button>
+    <button data-view="branches" id="branchtab" hidden>Branch gaps</button>
+    <button data-view="workloads">Workloads</button>
+    <button data-view="source">Source</button>
+  </nav>
+  <section class="view active" id="view-overview">
+    <p class="note">Coverage per translation unit after every collected
+    workload has executed.  <b>e2e-only</b> counts only the e2e suites
+    (conformance/fuzz excluded) — goal: 90%.  <b>tests</b> counts e2e +
+    unit/component tests, still excluding the conformance corpus — goal:
+    100% minus ABSL_CHECK(false)/by-design.  Click a row for annotated
+    source.</p>
+    <table id="filetable"><thead><tr>
+      <th>File</th><th>Line coverage</th><th class="num">e2e-only</th>
+      <th class="num">tests</th>
+      <th class="num">Lines</th><th class="num">Functions hit</th>
+      <th>Uncalled functions</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+  <section class="view" id="view-functions">
+    <p class="note">Every function the instrumented build declares, with the
+    workloads that actually called it.  <b>Zero-hit</b> rows are the gap list;
+    each carries a dead-code verdict: <b>gap</b> (needs a test), <b>dead</b>
+    (no first-party caller — delete), <b>test-only</b> (relocate to test
+    support), <b>by-design</b> (unreachable tripwire — keep; hover the chip
+    for evidence).  <b>Single-workload</b> rows are one deleted test away
+    from becoming gaps.</p>
+    <div class="controls">
+      <div class="seg" id="fnfilter">
+        <button data-f="all" class="active">All</button>
+        <button data-f="zero">Zero-hit</button>
+        <button data-f="single">Single-workload</button>
+        <button data-f="gap">Verdict: gap</button>
+        <button data-f="verdict">Classified</button>
+      </div>
+      <input type="search" id="fnsearch" placeholder="filter by name / file…">
+      <span class="status zero"><span class="dot"></span><span id="zerocount"></span></span>
+      <span class="status single"><span class="dot"></span><span id="singlecount"></span></span>
+    </div>
+    <table id="fntable"><thead><tr>
+      <th>Function</th><th>Defined at</th>
+      <th class="num">Calls</th><th class="num">Workloads</th><th>Hit by</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+  <section class="view" id="view-branches">
+    <p class="note">Every branch site where at least one direction was never
+    taken by any workload — the "every branch hit" audit.  A row reads
+    taken / total directions at that line.  Click through to the annotated
+    source to see the condition.</p>
+    <div class="controls">
+      <input type="search" id="brsearch" placeholder="filter by file…">
+      <span class="status zero"><span class="dot"></span><span id="brcount"></span></span>
+    </div>
+    <table id="brtable"><thead><tr>
+      <th>Site</th><th class="num">Taken</th><th class="num">Total</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+  <section class="view" id="view-workloads">
+    <p class="note">What each workload contributes.  <b>Unique</b> = lines /
+    functions no other collected workload reaches; a workload with no unique
+    coverage is a consolidation candidate (its assertions may still be unique —
+    coverage subsumption is necessary, not sufficient, for deletion).</p>
+    <table id="wltable"><thead><tr>
+      <th>Workload</th><th>Surfaces</th>
+      <th class="num">Lines covered</th><th class="num">Unique lines</th>
+      <th class="num">Unique functions</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+  <section class="view" id="view-source">
+    <div class="controls">
+      <select id="srcpick"></select>
+      <span class="status zero"><span class="dot"></span>uncovered</span>
+      <span class="status ok"><span class="dot"></span>covered (count in gutter)</span>
+    </div>
+    <pre class="src" id="srcpane"></pre>
+  </section>
+</div>
+<script>
+const DATA = /*__DATA__*/null;
+const R = DATA.report, SRC = DATA.sources;
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const fmt = n => n.toLocaleString("en-US");
+
+// ── header + tiles ──────────────────────────────────────────────────
+document.getElementById("subtitle").textContent =
+  `${R.artifact} — ${Object.keys(R.workloads).length} workloads @ ` +
+  `${R.generated_against} (${R.generated_on})`;
+const H = R.headline;
+const zeroN = R.gaps.zero_hit.length, singleN = R.gaps.single_workload.length;
+const BR = R.branches || null;
+const brGaps = (R.gaps.untaken_branches || []);
+const tiles = [
+  { label: "Line coverage", value: `${H.line_pct}%`,
+    detail: `${fmt(H.lines_covered)} / ${fmt(H.lines_total)} instrumented lines` },
+  { label: "Function coverage", value: `${H.function_pct}%`,
+    detail: `${fmt(H.functions_hit)} / ${fmt(H.functions_total)} functions called` },
+];
+if (H.line_pct_e2e_goal !== undefined) {
+  tiles.push(
+    { label: "e2e GOAL metric", value: `${H.line_pct_e2e_goal}%`,
+      detail: `product scope, ${fmt(H.goal_exempt_lines_e2e)} ` +
+              `verdict-exempt lines excluded — goal 90%` },
+    { label: "tests GOAL metric", value: `${H.line_pct_tests_goal}%`,
+      detail: `product scope, ${fmt(H.goal_exempt_lines_tests)} ` +
+              `by-design lines excluded — goal 100%` },
+  );
+} else if (H.line_pct_tests !== undefined) {
+  tiles.push(
+    { label: "e2e-only (product)", value:
+        `${H.line_pct_e2e_product ?? H.line_pct_e2e}%`,
+      detail: "e2e suites, product pipeline scope (harness/CLI/emitters" +
+              " excluded) — goal 90%" },
+    { label: "tests lines", value: `${H.line_pct_tests}%`,
+      detail: "e2e + unit, conformance excluded — goal 100% − by-design" },
+  );
+}
+if (H.branch_pct !== undefined && H.branches_total) {
+  tiles.push({ label: "Branch coverage", value: `${H.branch_pct}%`,
+    detail: `${fmt(H.branches_taken)} / ${fmt(H.branches_total)} directions taken` });
+}
+tiles.push(
+  { label: "Zero-hit functions", value: fmt(zeroN),
+    detail: "never called by any workload" },
+  { label: "Single-workload functions", value: fmt(singleN),
+    detail: "kept alive by exactly one test" },
+);
+for (const name of (R.section_order || [])) {
+  const s = R.sections[name];
+  tiles.push({ label: name,
+    value: `${s.line_pct}%`,
+    detail: `e2e ${s.line_pct_e2e}%` +
+            (s.line_pct_tests !== undefined
+              ? `, tests ${s.line_pct_tests}%` : "") +
+            ` — fn ${s.function_pct}%` +
+            (s.branches_total ? `, br ${s.branch_pct}%` : "") });
+}
+document.getElementById("tiles").innerHTML = tiles
+  .map(t => `<div class="tile"><div class="label">${t.label}</div>` +
+            `<div class="value">${t.value}</div>` +
+            `<div class="detail">${t.detail}</div></div>`).join("");
+
+// ── tabs ────────────────────────────────────────────────────────────
+const tabs = document.getElementById("tabs");
+function show(view) {
+  tabs.querySelectorAll("button").forEach(b =>
+    b.classList.toggle("active", b.dataset.view === view));
+  document.querySelectorAll("section.view").forEach(s =>
+    s.classList.toggle("active", s.id === "view-" + view));
+}
+tabs.addEventListener("click", e => {
+  if (e.target.dataset.view) show(e.target.dataset.view);
+});
+
+// ── overview ────────────────────────────────────────────────────────
+{
+  const tb = document.querySelector("#filetable tbody");
+  const nCols = 7 + (BR ? 1 : 0);
+  const fileRow = ([f, v]) => {
+    const zero = Object.values(R.functions)
+      .filter(e => e.file === f && e.total_workloads === 0).length;
+    const zcell = zero
+      ? `<span class="status zero"><span class="dot"></span>${zero} uncalled</span>`
+      : `<span class="status ok"><span class="dot"></span>all called</span>`;
+    const brcell = v.branch_pct == null ? "" :
+      `<span class="pct">${v.branch_pct}%</span> ` +
+      `<span class="detail" style="color:var(--muted)">` +
+      `${fmt(v.branches_taken)}/${fmt(v.branches_total)}</span>`;
+    const e2e = v.line_pct_e2e === undefined ? "—"
+      : `<span class="pct">${v.line_pct_e2e}%</span>`;
+    const tst = v.line_pct_tests === undefined ? "—"
+      : `<span class="pct">${v.line_pct_tests}%</span>`;
+    return `<tr class="rowlink" data-src="${f}"><td>${f}</td>` +
+      `<td><span class="meter"><i style="width:${v.line_pct}%"></i></span>` +
+      `<span class="pct">${v.line_pct}%</span></td>` +
+      `<td class="num">${e2e}</td>` +
+      `<td class="num">${tst}</td>` +
+      `<td class="num">${fmt(v.lines_covered)} / ${fmt(v.lines_total)}</td>` +
+      `<td class="num">${v.functions_hit} / ${v.functions_total}</td>` +
+      (BR ? `<td class="num">${brcell}</td>` : "") +
+      `<td>${zcell}</td></tr>`;
+  };
+  const entries = Object.entries(R.per_file);
+  if (R.sections) {
+    tb.innerHTML = (R.section_order || Object.keys(R.sections)).map(sec => {
+      const s = R.sections[sec];
+      const rows = entries
+        .filter(([, v]) => v.section === sec)
+        .sort((a, b) => a[1].line_pct - b[1].line_pct);
+      const head =
+        `<tr><td colspan="${nCols}" style="background:var(--plane);` +
+        `font-weight:650;border-top:2px solid var(--baseline)">${sec}` +
+        ` — line ${s.line_pct}% (e2e ${s.line_pct_e2e}%` +
+        (s.line_pct_tests !== undefined
+          ? `, tests ${s.line_pct_tests}%` : "") + `),` +
+        ` fn ${s.function_pct}%` +
+        (s.branches_total ? `, branch ${s.branch_pct}%` : "") +
+        `</td></tr>`;
+      return head + rows.map(fileRow).join("");
+    }).join("");
+  } else {
+    tb.innerHTML = entries
+      .sort((a, b) => a[1].line_pct - b[1].line_pct)
+      .map(fileRow).join("");
+  }
+  if (BR) {
+    document.querySelector("#filetable thead tr").insertBefore(
+      Object.assign(document.createElement("th"),
+                    { textContent: "Branches", className: "num" }),
+      document.querySelector("#filetable thead tr").lastElementChild);
+  }
+  tb.addEventListener("click", e => {
+    const tr = e.target.closest("tr[data-src]");
+    if (tr) openSource(tr.dataset.src);
+  });
+}
+
+// ── function audit ──────────────────────────────────────────────────
+const fnEntries = Object.entries(R.functions).sort((a, b) =>
+  a[1].total_workloads - b[1].total_workloads ||
+  (a[1].file + a[1].line).toString().localeCompare(b[1].file + b[1].line));
+document.getElementById("zerocount").textContent = `${zeroN} zero-hit`;
+document.getElementById("singlecount").textContent = `${singleN} single-workload`;
+let fnMode = "all";
+function renderFns() {
+  const q = document.getElementById("fnsearch").value.toLowerCase();
+  const tb = document.querySelector("#fntable tbody");
+  tb.innerHTML = fnEntries.filter(([k, e]) => {
+    if (fnMode === "zero" && e.total_workloads !== 0) return false;
+    if (fnMode === "single" && e.total_workloads !== 1) return false;
+    if (fnMode === "gap" && e.verdict !== "gap") return false;
+    if (fnMode === "verdict" && (!e.verdict || e.verdict === "gap"))
+      return false;
+    return !q || k.toLowerCase().includes(q);
+  }).slice(0, 1500).map(([k, e]) => {
+    const cls = e.total_workloads === 0 ? "zero" :
+                e.total_workloads === 1 ? "single" : "ok";
+    const hits = Object.entries(e.hits).sort((a, b) => b[1] - a[1]);
+    const extra = (e.more_workloads || 0) + Math.max(0, hits.length - 4);
+    const vchip = !e.verdict ? "" :
+      `<span class="chip" style="border-color:var(--baseline);` +
+      `font-weight:650" title="${esc(e.verdict_evidence || "")}">` +
+      `${e.verdict}</span>`;
+    const chips = vchip + (hits.slice(0, 4).map(([w, n]) =>
+      `<span class="chip">${w.replace(/_dynamic$/, "")} ×${fmt(n)}</span>`).join("") +
+      (extra > 0 ? `<span class="chip">+${extra} more</span>` : "") ||
+      (vchip ? "" :
+       `<span class="status zero"><span class="dot"></span>none</span>`));
+    return `<tr><td><span class="status ${cls}"><span class="dot"></span></span>` +
+      `<code>${esc(e.display || e.function)}</code></td>` +
+      `<td><a class="jump" data-src="${e.file}" data-line="${e.line}">` +
+      `${e.file}:${e.line}</a></td>` +
+      `<td class="num">${fmt(e.total_hits)}</td>` +
+      `<td class="num">${e.total_workloads}</td><td>${chips}</td></tr>`;
+  }).join("");
+}
+document.getElementById("fnfilter").addEventListener("click", e => {
+  if (!e.target.dataset.f) return;
+  fnMode = e.target.dataset.f;
+  document.querySelectorAll("#fnfilter button").forEach(b =>
+    b.classList.toggle("active", b === e.target));
+  renderFns();
+});
+document.getElementById("fnsearch").addEventListener("input", renderFns);
+document.getElementById("fntable").addEventListener("click", e => {
+  const a = e.target.closest("a.jump");
+  if (a) openSource(a.dataset.src, +a.dataset.line);
+});
+renderFns();
+
+// ── branch gaps ─────────────────────────────────────────────────────
+if (brGaps.length) {
+  document.getElementById("branchtab").hidden = false;
+  document.getElementById("brcount").textContent =
+    `${fmt(brGaps.length)} sites with an untaken direction`;
+  const renderBranches = () => {
+    const q = document.getElementById("brsearch").value.toLowerCase();
+    document.querySelector("#brtable tbody").innerHTML = brGaps
+      .filter(b => !q || b.file.toLowerCase().includes(q))
+      .slice(0, 2000)
+      .map(b =>
+        `<tr><td><a class="jump" data-src="${b.file}" data-line="${b.line}">` +
+        `${b.file}:${b.line}</a></td>` +
+        `<td class="num">${b.taken}</td><td class="num">${b.total}</td></tr>`
+      ).join("");
+  };
+  document.getElementById("brsearch").addEventListener("input", renderBranches);
+  document.getElementById("brtable").addEventListener("click", e => {
+    const a = e.target.closest("a.jump");
+    if (a) openSource(a.dataset.src, +a.dataset.line);
+  });
+  renderBranches();
+}
+
+// ── workloads ───────────────────────────────────────────────────────
+{
+  const tb = document.querySelector("#wltable tbody");
+  tb.innerHTML = Object.entries(R.workloads)
+    .sort((a, b) => b[1].lines_unique - a[1].lines_unique)
+    .map(([w, v]) => {
+      const surf = v.surfaces.map(s => `<span class="chip">${s}</span>`).join("") ||
+        `<span class="chip">unclassified</span>`;
+      const uf = v.functions_unique.length;
+      return `<tr><td><code>${w}</code></td><td>${surf}</td>` +
+        `<td class="num">${fmt(v.lines_covered)}</td>` +
+        `<td class="num">${fmt(v.lines_unique)}</td>` +
+        `<td class="num" title="${v.functions_unique.map(esc).join("&#10;")}">${uf}</td></tr>`;
+    }).join("");
+}
+
+// ── source drilldown ────────────────────────────────────────────────
+const pick = document.getElementById("srcpick");
+pick.innerHTML = Object.keys(R.per_file).sort()
+  .map(f => `<option>${f}</option>`).join("");
+pick.addEventListener("change", () => renderSource(pick.value));
+function workloadTitle(m) {
+  return Object.entries(m).sort((a, b) => b[1] - a[1])
+    .map(([w, n]) => `${w} ×${n}`).join("\n");
+}
+function renderSource(f, focus) {
+  const lines = SRC[f] || [];
+  const cov = R.lines[f] || {};
+  document.getElementById("srcpane").innerHTML = lines.map((text, i) => {
+    const ln = i + 1, m = cov[ln];
+    const instrumented = m !== undefined;
+    // Two payload shapes: full {workload: count} maps, or the slimmed
+    // [total_hits, n_workloads] pair the combined report embeds.
+    const slim = Array.isArray(m);
+    const hit = instrumented &&
+      (slim ? m.length > 0 : Object.keys(m).length > 0);
+    const total = !hit ? 0 :
+      slim ? m[0] : Object.values(m).reduce((a, b) => a + b, 0);
+    const cls = !instrumented ? "" : hit ? "hit" : "miss";
+    const ct = !instrumented ? "" : hit ? fmt(total) : "✗ 0";
+    const title = !hit ? "" : slim
+      ? ` title="${m[1]} workload${m[1] === 1 ? "" : "s"}"`
+      : ` title="${esc(workloadTitle(m))}"`;
+    const br = BR && BR[f] && BR[f][ln];
+    const brchip = !br ? "" : br[0] < br[1]
+      ? `<span class="chip" style="color:var(--critical)">` +
+        `branches ${br[0]}/${br[1]}</span>`
+      : `<span class="chip">branches ${br[0]}/${br[1]}</span>`;
+    return `<div class="srcline ${cls}" id="L${ln}"${title}>` +
+      `<span class="no">${ln}</span><span class="ct">${ct}</span>` +
+      `<code>${esc(text)}</code>${brchip}</div>`;
+  }).join("");
+  pick.value = f;
+  if (focus) {
+    const el = document.getElementById("L" + focus);
+    if (el) el.scrollIntoView({ block: "center" });
+  }
+}
+function openSource(f, line) { show("source"); renderSource(f, line); }
+renderSource(pick.value);
+</script>

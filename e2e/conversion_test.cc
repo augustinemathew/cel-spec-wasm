@@ -1,7 +1,7 @@
 // M10 e2e test suite — the spec of "done" for type-conversion
 // overloads (`bool(x)` / `int(x)` / `uint(x)` / `double(x)` /
 // `string(x)` / `bytes(x)` and their inter-conversions).  Mirrors
-// the m9_test shape: every test asserts a capability
+// the type_value_test shape: every test asserts a capability
 // `m10-conversions.md` says M10 must light up; running this
 // binary today (with every conversion id still in
 // `OverloadTable::kExplicitlyUnimplementedIds`) should fail every
@@ -69,8 +69,6 @@ namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
-
-using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -863,6 +861,57 @@ TEST_F(DeferredTimestampE2ETest, DurationFromString) {
       CompilePlan(*compiler, R"(duration("60s") == duration("1m"))");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+// Nanosecond carry normalisation in duration arithmetic.  Two negative
+// sub-second parts summing past -1s take the negative-carry arm, and a
+// negative seconds field paired with a positive nanos field is
+// renormalised back into canonical form.  Neither arm had a non-corpus
+// workload.  Pinned by cel_cpp_oracle_test's DurationNanosCarryAgrees.
+TEST_F(DeferredTimestampE2ETest, DurationNanosCarryNormalisation) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  for (const absl::string_view source :
+       {R"(duration("-0.6s") + duration("-0.6s") == duration("-1.2s"))",
+        R"(duration("-2s") + duration("0.5s") == duration("-1.5s"))",
+        R"(timestamp(0) + duration("-0.5s") ==
+           timestamp("1969-12-31T23:59:59.5Z"))"}) {
+    auto instance = CompilePlan(*compiler, source);
+    Activation a;
+    EXPECT_EQ(*EvalOk(instance, a).AsBool(), true) << source;
+  }
+}
+
+// 4-byte UTF-8 (RFC3629 §4, U+10000..U+10FFFF): the longest encoding
+// arm of the string(bytes) validator — the 1/2/3-byte arms are pinned
+// above, and no other suite (nor the conformance corpus) feeds a
+// 4-byte sequence through the wasm validator.
+TEST_F(BytesFamilyE2ETest, StringOfBytesFourByteUtf8Valid) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // U+1F600 GRINNING FACE — 0xf0 0x9f 0x98 0x80.
+  auto instance =
+      CompilePlan(*compiler, R"(string(b"\xf0\x9f\x98\x80") == "😀")");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+TEST_F(BytesFamilyE2ETest, StringOfBytesFourByteUtf8Invalid) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // A 4-byte lead (0xf0) whose continuation bytes are invalid must
+  // surface a conversion error, not truncate or pass through.
+  ExpectEvalError(*compiler, R"(string(b"\xf0\x28\x8c\x28"))",
+                  "invalid 4-byte UTF-8 sequence");
+}
+
+TEST_F(BytesFamilyE2ETest, StringOfBytesOverlongSurrogateRangeInvalid) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // 0xf4 0x90 0x80 0x80 encodes U+110000 — past the Unicode ceiling;
+  // the 4-byte arm must reject codepoints above U+10FFFF.
+  ExpectEvalError(*compiler, R"(string(b"\xf4\x90\x80\x80"))",
+                  "codepoint above U+10FFFF");
 }
 
 }  // namespace

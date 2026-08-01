@@ -6,7 +6,6 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "absl/log/absl_check.h"
@@ -23,97 +22,21 @@ namespace celwasm {
 // ————————— AttributeQualifier —————————
 
 AttributeQualifier AttributeQualifier::OfString(std::string value) {
-  return AttributeQualifier(
-      Variant{std::in_place_type<std::string>, std::move(value)});
-}
-
-AttributeQualifier::Kind AttributeQualifier::kind() const {
-  switch (value_.index()) {
-    case 0:
-      return Kind::kInt;
-    case 1:
-      return Kind::kUint;
-    case 2:
-      return Kind::kString;
-    case 3:
-      return Kind::kBool;
-  }
-  ABSL_CHECK(false) << "unhandled variant index " << value_.index();
-}
-
-std::optional<int64_t> AttributeQualifier::AsInt() const {
-  if (!std::holds_alternative<int64_t>(value_)) return std::nullopt;
-  return std::get<int64_t>(value_);
-}
-std::optional<uint64_t> AttributeQualifier::AsUint() const {
-  if (!std::holds_alternative<uint64_t>(value_)) return std::nullopt;
-  return std::get<uint64_t>(value_);
-}
-std::optional<absl::string_view> AttributeQualifier::AsString() const {
-  if (!std::holds_alternative<std::string>(value_)) return std::nullopt;
-  return absl::string_view(std::get<std::string>(value_));
-}
-std::optional<bool> AttributeQualifier::AsBool() const {
-  if (!std::holds_alternative<bool>(value_)) return std::nullopt;
-  return std::get<bool>(value_);
-}
-
-bool AttributeQualifier::MatchesStringKey(absl::string_view key) const {
-  auto s = AsString();
-  return s.has_value() && *s == key;
+  return AttributeQualifier(std::move(value));
 }
 
 absl::StatusOr<std::string> AttributeQualifier::AsCanonicalString() const {
-  // Internal accessors: we already know the alternative from kind(),
-  // so go through std::get on the variant rather than the public
-  // AsX() optionals (clang-tidy's unchecked-optional-access check
-  // can't prove the optionals are populated here).
-  switch (kind()) {
-    case Kind::kInt:
-      return absl::StrCat("[", std::get<int64_t>(value_), "]");
-    case Kind::kUint:
-      return absl::StrCat("[", std::get<uint64_t>(value_), "u]");
-    case Kind::kString: {
-      const auto& s = std::get<std::string>(value_);
-      // Reject embedded NUL / non-printables for diagnostics — they
-      // can't be rendered unambiguously without escaping, and the
-      // canonical form is meant to be human-readable.
-      for (char c : s) {
-        if (c < 0x20 || c == '"') {
-          return absl::InvalidArgumentError(
-              "AttributeQualifier::AsCanonicalString: string contains "
-              "unprintable or quote characters");
-        }
-      }
-      return absl::StrCat("[\"", s, "\"]");
+  // Reject embedded NUL / non-printables for diagnostics — they
+  // can't be rendered unambiguously without escaping, and the
+  // canonical form is meant to be human-readable.
+  for (char c : value_) {
+    if (c < 0x20 || c == '"') {
+      return absl::InvalidArgumentError(
+          "AttributeQualifier::AsCanonicalString: string contains "
+          "unprintable or quote characters");
     }
-    case Kind::kBool:
-      return std::get<bool>(value_) ? "[true]" : "[false]";
   }
-  ABSL_CHECK(false) << "unhandled Kind = " << static_cast<int>(kind());
-}
-
-bool AttributeQualifier::operator==(const AttributeQualifier& other) const {
-  return value_ == other.value_;
-}
-
-bool AttributeQualifier::operator<(const AttributeQualifier& other) const {
-  if (kind() != other.kind()) {
-    return static_cast<int>(kind()) < static_cast<int>(other.kind());
-  }
-  switch (kind()) {
-    case Kind::kInt:
-      return std::get<int64_t>(value_) < std::get<int64_t>(other.value_);
-    case Kind::kUint:
-      return std::get<uint64_t>(value_) < std::get<uint64_t>(other.value_);
-    case Kind::kString:
-      return std::get<std::string>(value_) <
-             std::get<std::string>(other.value_);
-    case Kind::kBool:
-      return static_cast<int>(std::get<bool>(value_)) <
-             static_cast<int>(std::get<bool>(other.value_));
-  }
-  ABSL_CHECK(false) << "unhandled Kind = " << static_cast<int>(kind());
+  return absl::StrCat("[\"", value_, "\"]");
 }
 
 // ————————— AttributeQualifierPattern —————————
@@ -190,17 +113,11 @@ absl::StatusOr<std::string> Attribute::AsString() const {
   pieces.reserve(1 + impl_->qualifier_path.size());
   pieces.push_back(impl_->variable_name);
   for (const auto& q : impl_->qualifier_path) {
-    auto s = q.AsCanonicalString();
-    if (!s.ok()) return s.status();
-    // String keys in dotted form (`.foo`) are cleaner than bracketed
-    // (`["foo"]`) for the common field-like case.
-    if (q.kind() == AttributeQualifier::Kind::kString) {
-      auto key = q.AsString();
-      ABSL_CHECK(key.has_value());
-      pieces.push_back(absl::StrCat(".", *key));
-    } else {
-      pieces.push_back(*s);
-    }
+    // Validate renderability (unprintable / quote bytes reject), then
+    // use the dotted form (`.foo`) — cleaner than bracketed
+    // (`["foo"]`) for the field-like keys the resolver interns.
+    if (auto s = q.AsCanonicalString(); !s.ok()) return s.status();
+    pieces.push_back(absl::StrCat(".", q.value()));
   }
   return absl::StrJoin(pieces, "");
 }

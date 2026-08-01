@@ -192,6 +192,13 @@ TEST(EmitCodecH, MapStringIntLiftReturnsStdMap) {
   ASSERT_THAT(t, IsOk());
   EXPECT_THAT(*t, HasSubstr("inline std::map<std::string, int64_t> lift(const "
                             "customfn_list_tuple2_string_s64_t& m)"));
+  // The lower half (map RETURN) — string keys lower via the string
+  // codec, scalar values assign directly.
+  EXPECT_THAT(*t, HasSubstr("inline void lower(customfn_list_tuple2_string_"
+                            "s64_t* ret, const std::map<std::string, "
+                            "int64_t>& m)"));
+  EXPECT_THAT(*t, HasSubstr("lower(&ret->ptr[i].f0, kv.first);"));
+  EXPECT_THAT(*t, HasSubstr("ret->ptr[i].f1 = kv.second;"));
 }
 
 // ── Records (duration / timestamp) ─────────────────────────────────

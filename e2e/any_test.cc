@@ -1,5 +1,5 @@
 // M7-A e2e test suite — the spec of "done" for `google.protobuf.Any`
-// pack / unpack / equality.  Mirrors m7_test.cc's shape: every test
+// pack / unpack / equality.  Mirrors proto_literal_test.cc's shape: every test
 // asserts a capability `m7a-any.md` says M7-A must light up; running
 // this binary today (with `CelSetFieldImpl`'s Any-shaped descriptor
 // mismatch returning `UnimplementedError`) should SKIP everything

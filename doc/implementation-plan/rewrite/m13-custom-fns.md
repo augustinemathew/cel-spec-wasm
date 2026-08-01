@@ -1,9 +1,21 @@
 # M13 — User-defined custom functions
 
-Status: **in flight — drafted 2026-05-21; host backend shipped
-end-to-end 2026-05-24; CEL-defined (single-module) backend shipped
-end-to-end 2026-05-24; foreign deferred.**  Supersedes the stale
-`m-custom-fns.md` (old M6 numbering, pre-rewrite).
+Status: **host backend shipped 2026-05-24; CEL-defined backend
+REMOVED (see delta below); foreign shipped later under the plugin
+workstream.**  Supersedes the stale `m-custom-fns.md` (old M6
+numbering, pre-rewrite).
+
+> **Plan-vs-execution delta (2026-07-27):** the CEL-defined
+> (single-module) backend this doc describes as shipped no longer
+> exists at HEAD — `custom_fn_emit.cc`, `LowerCustomFnBodies`,
+> `CheckCelDefinedBody`, and the `EngineCelDefinedFnE2ETest` suites
+> were all removed in a later consolidation, and the celfn library
+> settled on C-implemented kernels instead of CEL-defined bodies.
+> The last remnant, the orphaned `LowerToCustomFn` lowerer in
+> `expr_lower.cc` (zero callers, zero coverage across 144 measured
+> workloads), was deleted 2026-07-27 by the m38 dead-code audit.
+> The ✅ marks in the CEL-defined rows below describe the 2026-05-24
+> state, not HEAD.
 
 > **§0.5 below is the current, authoritative plan (2026-05-24).** It
 > supersedes the original slice plan in §12 where they disagree (§12

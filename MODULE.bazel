@@ -275,17 +275,6 @@ bazel_dep(
     repo_name = "com_google_absl",
 )
 
-# Phase C: patch abseil-cpp's sysinfo.cc so GetNumCPUs() compiles
-# under wasm32-wasi (the non-threads variant has no <thread>).  The
-# patch returns 1 on `__wasm__` / `__wasi__`.  Source patch lives at
-# `wasm_compilation_experiments/exp1_re2/absl-wasm.patch` and was
-# vendored to `third_party/patches/abseil-cpp-wasm-sysinfo.patch`
-# during Phase C research.
-single_version_override(
-    module_name = "abseil-cpp",
-    patch_strip = 1,
-    patches = ["//third_party/patches:abseil-cpp-wasm-sysinfo.patch"],
-)
 bazel_dep(
     name = "cel-cpp",
     version = "0.0.0",

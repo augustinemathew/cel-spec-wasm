@@ -209,11 +209,11 @@ message FieldEntry {
 // unknown while `m['b']` stays known.  Marking the whole container
 // blanks every keyed read; there is no pattern between "all of it" and
 // a specific field path.  (Verified + pinned by
-// e2e/m2_partial_eval_test.cc.)
+// e2e/partial_eval_test.cc.)
 // `AttributePattern::Parse` REJECTS bracket/key qualifiers (`m["a"]`,
 // `xs[3]`): since we never intern an index/key, we don't accept
 // patterns we can't honor — they'd silently match nothing.  Pinned by
-// e2e/m2_test.cc {MapWholePathUnknownIsCoarseButWorks,
+// e2e/ident_select_test.cc {MapWholePathUnknownIsCoarseButWorks,
 // MapPerKeyUnknownRejectedAtParse}.  (If per-KEY unknowns ever
 // become a real need — e.g. lazily-resolved config keys — interning a
 // string/int AttributeQualifier on `[key]` lowering is the change;

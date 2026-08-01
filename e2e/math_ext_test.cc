@@ -14,7 +14,7 @@
 // the checker rejects every `math.*` reference, so the target is
 // `tags = ["manual"]` in BUILD to keep it out of
 // the project-package test sweep / CI.  When Slice D wires the
-// pipeline, remove the `tags = ["manual"]` line from the `m16_test`
+// pipeline, remove the `tags = ["manual"]` line from the `math_ext_test`
 // target in `e2e/BUILD.bazel` and this suite becomes a
 // live acceptance gate.
 //
@@ -48,21 +48,19 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
-#include "compiler/program.h"
 #include "eval/value.h"
-#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
-
-using ::celwasm::e2e::GlobalEngine;
 
 Compiler MathCompiler() {
   Compiler::Builder b;
@@ -140,6 +138,15 @@ TEST_F(MinMaxE2ETest, GreatestBinaryIntSameType) {
   EXPECT_EQ(EvalInt("math.greatest(1, 1)"), 1);
   EXPECT_EQ(EvalInt("math.greatest(3, -3)"), 3);
   EXPECT_EQ(EvalInt("math.greatest(-7, 5)"), 5);
+}
+
+TEST_F(MinMaxE2ETest, MixedNumericArgsDispatchAtRuntime) {
+  // Cross-type math.@min/@max are checker-typed `dyn`; the static
+  // subset admits the call through its dyn-passthrough gate
+  // (parse_and_check.cc IsDynPassthroughCall) and the runtime kernel
+  // dispatches on operand kind.  int 1 < double 2.0 either way.
+  EXPECT_EQ(EvalInt("math.least(1, 2.0)"), 1);
+  EXPECT_EQ(EvalDouble("math.greatest(1, 2.0)"), 2.0);
 }
 
 TEST_F(MinMaxE2ETest, LeastBinaryIntSameType) {
@@ -541,6 +548,32 @@ class ErrorE2ETest : public ::testing::Test {};
 TEST_F(ErrorE2ETest, AbsInt64MinOverflows) {
   // abs(INT64_MIN) has no representable positive → overflow error.
   ExpectEvalError("math.abs(-9223372036854775808)", "abs(INT64_MIN) overflow");
+}
+
+// Each math kernel guards its operand kind at runtime.  A wrongly
+// typed literal is rejected by the checker, so the guard is reached by
+// wrapping the operand in `dyn()` — which clears the static-subset
+// gate and then trips the guard at eval.  That is the same route the
+// conformance corpus takes, and it was the only workload reaching
+// these arms.  Agreement with cel-cpp on every row is pinned by
+// cel_cpp_oracle_test's MathExt{OperandKind,Bitwise}GuardsAgree.
+TEST_F(ErrorE2ETest, RoundingAndPredicateKindGuards) {
+  for (const absl::string_view source :
+       {"math.ceil(dyn(1))", "math.floor(dyn(1))", "math.round(dyn(1))",
+        "math.trunc(dyn(1))", "math.isInf(dyn(1))", "math.isNaN(dyn(1))",
+        "math.isFinite(dyn(1))"}) {
+    ExpectEvalError(source, "non-double operand");
+  }
+}
+
+// The bitwise kernels take int-int or uint-uint; a mixed pair falls
+// through to the shared poison arm.
+TEST_F(ErrorE2ETest, BitwiseMixedKindGuards) {
+  for (const absl::string_view source :
+       {"math.bitAnd(dyn(1), 2u)", "math.bitOr(dyn(1), 2u)",
+        "math.bitXor(dyn(1), 2u)"}) {
+    ExpectEvalError(source, "mixed int/uint operands");
+  }
 }
 
 TEST_F(ErrorE2ETest, ShiftLeftNegativeOffset) {
