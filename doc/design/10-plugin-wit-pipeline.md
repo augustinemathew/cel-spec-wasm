@@ -145,11 +145,13 @@ build follows from it:
   fields rather than whole messages. The e2e fixture carries a skip
   recording exactly that.
 
-  The one patch still under `third_party/patches/` is
-  `abseil-cpp-wasm-sysinfo.patch` (`GetNumCPUs()` returns 1 under
-  `__wasm__`/`__wasi__`). It predates this work, serves the runtime
-  build rather than the plugin path, and is `__wasm__`-guarded so
-  native builds are untouched.
+  No absl patch remains. The last one,
+  `abseil-cpp-wasm-sysinfo.patch` (`GetNumCPUs()` returning 1 under
+  `__wasm__`/`__wasi__`), was a Phase C leftover from when the wasm
+  build still pulled absl in; it was removed once nothing did.
+  `somepath(//runtime:cel_runtime_wasm, @com_google_absl//absl/base:base)`
+  is empty, so the wasm side never compiles absl, and abseil-cpp now
+  builds stock with no `single_version_override` at all.
 - **`-pthread` must not reach the link.** absl and protobuf carry it in
   their own linkopts via a select whose default arm assumes a threaded
   POSIX host. `-pthread` makes clang pass `--shared-memory` to wasm-ld,
