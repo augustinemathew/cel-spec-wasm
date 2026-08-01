@@ -230,8 +230,8 @@ Remaining-work status (updated 2026-07-27, measurement session):
      TEST_WORKSPACE=_main` when run outside `bazel test`; `llvm-cov
      gcov` must run with the repo's `runtime/` resolvable from the cwd
      (symlink suffices) or it emits header-only .gcov files;
-     `scripts/coverage/gcov_to_lcov.py` folds the output for
-     `lcov_merge.py`/`lcov_report.py`.
+     the wasm side is folded by `wasm_gcov_report.py` (an earlier
+     `gcov_to_lcov.py` did this and was deleted once nothing called it).
   4. Closeout: testing-checklist row ticked; static-link measurement
      deliberately NOT run (imports are registered either way; the
      static merge embeds the same C code, so dynamic-mode numbers are
@@ -265,8 +265,9 @@ once-per-process quirk, noted in the .cc).
 > CLI/examples measured as e2e) → **80.73** (`3dae78d`, iter 7 +
 > full sweep #2); tests goal-metric 89.0.  Conformance 2035/2035
 > both modes at sweep #2.
-> Drive iterations from `scripts/coverage/plan_sim.py` (~21
-> iterations remain, ~45 probes each, full sweep every 3rd); VERIFY
+> (`plan_sim.py`, the iteration planner this line used to name, was
+> deleted 2026-08-01 — nothing invoked it and the per-lever returns
+> recorded above supersede its estimates.)  VERIFY
 > CALLERS before writing probes — three "top gap" targets were dead
 > code (LowerToCustomFn `c019fb1`, Engine::AddModule `c8e759d`;
 > `WasmModule::SetMemory` still suspected).  Goal metrics print as
@@ -539,8 +540,6 @@ tools 75.9% lines. Full tables in the audit report.
   - `scripts/coverage/lcov_merge.py` — merge lcov .dat reports.
   - `scripts/coverage/lcov_report.py` — per-file/per-dir tables +
     uncovered ranges.
-  - `scripts/coverage/wasm_sections.py` — wasm import/export dumper
-    (the §2 probe tool).
 
 The wasm-side gcda→lcov step still needs a converter (llvm-cov gcov's
 per-file output → lcov `DA:` records, or just report percentages
