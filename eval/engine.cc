@@ -1,5 +1,6 @@
 #include "eval/engine.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -205,6 +206,7 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
     return s;
   }
   if (auto s = RegisterWasiStubs(impl->linker); !s.ok()) return s;
+
   return absl::OkStatus();
 }
 
@@ -243,6 +245,7 @@ absl::Status CacheRuntimeMemory(wasmtime_context_t* ctx,
   // shared-memory pointer owned by the store; we clone it so this
   // InstanceImpl owns its own refcounted handle (deleted in the dtor).
   impl->memory = wasmtime_sharedmemory_clone(mem_ext.of.sharedmemory);
+
   return absl::OkStatus();
 }
 
@@ -469,7 +472,7 @@ absl::Status BindHelpersInstance(celwasm::InstanceImpl* impl,
 // call; the strip tool removes those wrappers but explicitly exports
 // `__wasm_call_ctors` so it survives DCE.  Today the tested
 // expression surface is empirically zero-init-safe (see
-// `e2e/cctz_doubles_test.cc`), but a future surface might land a C++
+// `e2e/static_init_test.cc`), but a future surface might land a C++
 // static that requires constructor init.  One-time prophylactic; if
 // the export is absent (older stripped bytes) we skip silently for
 // back-compat.
@@ -608,24 +611,8 @@ absl::Status InstantiateRuntime(celwasm::WasmtimeEngineState* state,
 
 // ── M13 Slice C.1 — custom-fn helpers ────────────────────────────
 
-// Reserved module-alias names — Engine::AddModule rejects these.
-// `cel` / `cel_host` / `cel_env` / `cel_fn` are the engine's own
-// import namespaces (runtime + host trampolines + custom-fn host
-// callbacks).  `host` is reserved per the .celfn IDL convention
-// (`@host.X` is the only legal host syntax; using `host` as a
-// foreign alias would create confusing decls).
-// `wasi_snapshot_preview1` is the WASI preview1 namespace —
-// `RegisterWasiStubs` already populates the linker with this
-// module, and overriding it would silently mask a stub.
-bool IsReservedAlias(absl::string_view alias) {
-  return alias == "cel" || alias == "cel_host" || alias == "cel_env" ||
-         alias == "cel_fn" || alias == "host" ||
-         alias == "wasi_snapshot_preview1";
-}
-
 // Functype for host callbacks: `arity` × i32 params, no results.
-// Both AddModule's per-helper export bindings and AddFunction's
-// host callbacks use this signature.
+// AddFunction's host callbacks use this signature.
 wasm_functype_t* MakeI32sToVoidFuncType(std::uint8_t arity) {
   wasm_valtype_vec_t params;
   wasm_valtype_vec_new_uninitialized(&params, arity);
@@ -735,63 +722,6 @@ wasm_trap_t* HostCallbackTrampoline(void* env_ptr, wasmtime_caller_t* caller,
     return TrapFromStatus(s.message());
   }
   return nullptr;
-}
-
-// Instantiate each registered foreign custom module in the per-Plan
-// store + bind its function exports under its alias on the linker.
-// Runs after `InstantiateRuntime` (so cel.memory + cel.arena_alloc
-// etc. are bound) and before `InstantiateExpr`.  Calls
-// `_initialize` on each module if exported (§4.5.2 point 4).
-absl::Status InstantiateAndBindCustomModules(
-    celwasm::WasmtimeEngineState* state, celwasm::InstanceImpl* impl) {
-  wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
-  for (const auto& [alias, mod] : state->custom_modules) {
-    wasmtime_instance_t inst;
-    wasm_trap_t* trap = nullptr;
-    wasmtime_error_t* err = wasmtime_linker_instantiate(
-        impl->linker, ctx, mod.module, &inst, &trap);
-    if (err != nullptr) {
-      return WasmtimeErrorToStatus(absl::StrCat("instantiate(", alias, ")"),
-                                   err);
-    }
-    if (trap != nullptr) {
-      return WasmTrapToStatus(absl::StrCat("instantiate(", alias, ") trapped"),
-                              trap);
-    }
-
-    wasmtime_extern_t init_ext;
-    if (wasmtime_instance_export_get(ctx, &inst, "_initialize", 11,
-                                     &init_ext) &&
-        init_ext.kind == WASMTIME_EXTERN_FUNC) {
-      wasmtime_func_t init_fn = init_ext.of.func;
-      wasm_trap_t* init_trap = nullptr;
-      err = wasmtime_func_call(ctx, &init_fn, /*args=*/nullptr, /*nargs=*/0,
-                               /*results=*/nullptr, /*nresults=*/0, &init_trap);
-      if (err != nullptr) {
-        return WasmtimeErrorToStatus(absl::StrCat(alias, "._initialize"), err);
-      }
-      if (init_trap != nullptr) {
-        return WasmTrapToStatus(absl::StrCat(alias, "._initialize trapped"),
-                                init_trap);
-      }
-    }
-
-    for (const auto& helper : mod.helper_exports) {
-      wasmtime_extern_t ext;
-      if (!wasmtime_instance_export_get(ctx, &inst, helper.data(),
-                                        helper.size(), &ext)) {
-        continue;
-      }
-      wasmtime_error_t* def_err =
-          wasmtime_linker_define(impl->linker, ctx, alias.data(), alias.size(),
-                                 helper.data(), helper.size(), &ext);
-      if (def_err != nullptr) {
-        return WasmtimeErrorToStatus(
-            absl::StrCat("define(", alias, ".", helper, ")"), def_err);
-      }
-    }
-  }
-  return absl::OkStatus();
 }
 
 // Register each `Engine::AddFunction`-registered callback on the
@@ -972,100 +902,26 @@ wasm_trap_t* PluginCallbackTrampoline(void* env_ptr, wasmtime_caller_t* caller,
   return nullptr;
 }
 
-// Host callback for `wasi:random/random@0.2.0 get-random-bytes(len:
-// u64) -> list<u8>` — fills the result with `len` zero bytes.  This
-// is the m26 #44 mitigation: libc++'s std::string hash-seed init
-// reads from this import as part of static initialisation in the
-// wasi-sdk wasi-preview2 libc++ build, but the wasmtime v43 C API
-// exposes no per-store WasiCtx setter to satisfy the real preview2
-// random impl.  Returning zeros is safe (libc++ doesn't depend on
-// the seed being unpredictable for correctness; the protection it
-// gives is against adversarial hash flooding, which the demo's
-// in-process embedding doesn't face) and keeps the hash machinery
-// functional so std::string operations work.
+// Trap-stub everything the plugin imports but we don't satisfy, via
+// `wasmtime_component_linker_define_unknown_imports_as_traps`, so a
+// runaway libc++ call to e.g. `wasi:clocks/wall-clock.now` surfaces
+// as a wasmtime trap naming the missing interface rather than a
+// generic instantiation failure.
 //
-// The 7-parameter signature is fixed by the wasmtime C API host-fn
-// callback typedef (`wasmtime_component_linker_instance_add_func`);
-// the params-over-threshold flag has nothing to split.
-// NOLINTNEXTLINE(readability-function-size)
-wasmtime_error_t* RandomGetBytesStub(
-    void* /*data*/, wasmtime_context_t* /*ctx*/,
-    const wasmtime_component_func_type_t* /*type*/,
-    wasmtime_component_val_t* args, size_t nargs,
-    wasmtime_component_val_t* results, size_t nresults) {
-  ABSL_CHECK_EQ(nargs, 1u);
-  ABSL_CHECK_EQ(nresults, 1u);
-  const uint64_t len = args[0].of.u64;
-  results[0].kind = WASMTIME_COMPONENT_LIST;
-  wasmtime_component_vallist_new_uninit(&results[0].of.list,
-                                        static_cast<size_t>(len));
-  // Deterministic but non-zero bytes — libc++'s hash machinery
-  // sometimes special-cases all-zero seeds, which prevented Greet
-  // (std::to_string + std::string concat) from progressing past
-  // hash-seed init when we returned zeros.  A simple LCG over the
-  // byte index gives non-zero, non-constant output without pulling
-  // a real RNG.
-  for (size_t i = 0; i < len; ++i) {
-    results[0].of.list.data[i].kind = WASMTIME_COMPONENT_U8;
-    results[0].of.list.data[i].of.u8 =
-        static_cast<uint8_t>(((i * 0xA5u) + 0x5Au) & 0xFFu);
-  }
-  return nullptr;
-}
-
-// Wire two things on the linker:
-//   1. `wasi:random/random@0.2.0::get-random-bytes` → RandomGetBytesStub.
-//   2. Everything else the plugin imports but we don't satisfy →
-//      `wasmtime_component_linker_define_unknown_imports_as_traps` so
-//      a runaway libc++ call to e.g. `wasi:clocks/wall-clock.now`
-//      surfaces with a wasmtime trap naming the missing interface
-//      instead of a generic "cannot leave component instance".
-absl::Status InstallWasiRandomStubAndTrapStubs(
-    wasmtime_component_linker_t* clinker,
-    const wasmtime_component_t* component) {
-  constexpr absl::string_view kRandomIface = "wasi:random/random@0.2.0";
-  constexpr absl::string_view kGetRandomBytes = "get-random-bytes";
-
-  // Allow shadowing so our random impl (defined below) takes
-  // precedence over the trap-stub installed first.
-  wasmtime_component_linker_allow_shadowing(clinker, true);
-
-  // First: trap-stub everything the plugin imports.  Each such
-  // import becomes a `wasm trap: <name> has not been defined` when
-  // actually called.  This includes the wasi:random get-random-bytes
-  // we'll shadow next.
+// There is deliberately no `wasi:random` shim here: plugins define
+// `__imported_wasi_snapshot_preview1_random_get` in the guest
+// (bazel/plugin_rng_stub.c), so the import is never emitted.  A host
+// shim could not have worked in general anyway — libc++ reaches the
+// RNG lazily, sometimes from inside a canonical-ABI lift/lower where
+// wasmtime forbids import calls outright ("cannot leave component
+// instance"), which is what blocked every aggregate carrier.
+absl::Status InstallPluginTrapStubs(wasmtime_component_linker_t* clinker,
+                                    const wasmtime_component_t* component) {
   if (auto* err = wasmtime_component_linker_define_unknown_imports_as_traps(
           clinker, component);
       err != nullptr) {
     return WasmtimeErrorToStatus("linker_define_unknown_imports_as_traps", err);
   }
-
-  // Then: replace the wasi:random/random.get-random-bytes trap-stub
-  // with our zero-bytes impl.
-  wasmtime_component_linker_instance_t* root =
-      wasmtime_component_linker_root(clinker);
-  if (root == nullptr) {
-    return absl::InternalError("wasmtime_component_linker_root returned null");
-  }
-  wasmtime_component_linker_instance_t* random_iface = nullptr;
-  if (auto* err = wasmtime_component_linker_instance_add_instance(
-          root, kRandomIface.data(), kRandomIface.size(), &random_iface);
-      err != nullptr) {
-    wasmtime_component_linker_instance_delete(root);
-    return WasmtimeErrorToStatus(
-        "linker_instance_add_instance(wasi:random/random@0.2.0)", err);
-  }
-  if (auto* err = wasmtime_component_linker_instance_add_func(
-          random_iface, kGetRandomBytes.data(), kGetRandomBytes.size(),
-          &RandomGetBytesStub, /*data=*/nullptr, /*finalizer=*/nullptr);
-      err != nullptr) {
-    wasmtime_component_linker_instance_delete(random_iface);
-    wasmtime_component_linker_instance_delete(root);
-    return WasmtimeErrorToStatus("linker_instance_add_func(get-random-bytes)",
-                                 err);
-  }
-  wasmtime_component_linker_instance_delete(random_iface);
-  wasmtime_component_linker_instance_delete(root);
   return absl::OkStatus();
 }
 
@@ -1105,7 +961,7 @@ absl::Status InstantiateOnePlugin(celwasm::WasmtimeEngineState* state,
   if (clinker == nullptr) {
     return absl::InternalError("wasmtime_component_linker_new returned null");
   }
-  if (auto status = InstallWasiRandomStubAndTrapStubs(clinker, reg.component);
+  if (auto status = InstallPluginTrapStubs(clinker, reg.component);
       !status.ok()) {
     wasmtime_component_linker_delete(clinker);
     return status;
@@ -1236,11 +1092,12 @@ absl::Status BindPluginLibraryDecls(
 bool PluginOwnsRequiredDecl(
     const celwasm::RegisteredPlugin& reg,
     const absl::flat_hash_set<absl::string_view>& required_plugin_ids) {
-  for (const auto& decl : reg.library.decls()) {
-    if (decl.backend != celwasm::CelfnDecl::Backend::kPlugin) continue;
-    if (required_plugin_ids.contains(decl.overload_id)) return true;
-  }
-  return false;
+  return std::any_of(reg.library.decls().begin(), reg.library.decls().end(),
+                     [&](const celwasm::CelfnDecl& decl) {
+                       return decl.backend ==
+                                  celwasm::CelfnDecl::Backend::kPlugin &&
+                              required_plugin_ids.contains(decl.overload_id);
+                     });
 }
 
 absl::Status InstantiateAndBindPlugins(celwasm::WasmtimeEngineState* state,
@@ -1286,7 +1143,7 @@ absl::Status InstantiateAndBindPlugins(celwasm::WasmtimeEngineState* state,
 // module's `(import "rules" "allow_...")` / `(import "cel_fn"
 // "upper_...")` imports get resolved against whatever's on the
 // linker at instantiate time.
-//   1. M13 Slice C.1: foreign custom modules + host callbacks.
+//   1. Host callbacks.
 //   2. m24 §3.5: Component-Model plugins — each instantiated into
 //      the per-Plan store, its declared fns bound as
 //      `cel_fn.<overload_id>` host-callback trampolines.  Runs AFTER
@@ -1295,9 +1152,6 @@ absl::Status InstantiateAndBindPlugins(celwasm::WasmtimeEngineState* state,
 //      registration.
 absl::Status BindRegisteredExtensions(celwasm::WasmtimeEngineState* state,
                                       celwasm::InstanceImpl* impl) {
-  if (auto s = InstantiateAndBindCustomModules(state, impl); !s.ok()) {
-    return s;
-  }
   if (auto s = RegisterHostCallbacks(state, impl); !s.ok()) {
     return s;
   }
@@ -1485,8 +1339,7 @@ absl::Status CheckPluginExportsStatically(const wasmtime_component_t* component,
 
 // Parses plugin bytes into the `wasmtime_component_t*` shared across
 // Plans (each Plan instantiates it into its own per-Plan store,
-// mirroring how RegisteredCustomModule's parsed `wasmtime_module_t*`
-// is reused).  On parse failure returns the raw wasmtime error
+// mirroring how the parsed runtime `wasmtime_module_t*` is reused).  On parse failure returns the raw wasmtime error
 // (FailedPrecondition), `context` naming the caller; each caller owns
 // its status-code policy at the call site (see
 // doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §3.4).
@@ -1545,6 +1398,35 @@ Engine::Builder Engine::NewBuilder() {
 
 // ——— Engine::Plan ———
 
+namespace {
+
+// The link-mode-dependent half of Plan: route on the module's actual
+// import shape, cross-check the cel.abi link_mode label against that
+// shape when the section is present (mislabeled / corrupted artifacts
+// fail here), then instantiate in the order that mode requires.
+absl::Status InstantiateForLinkMode(celwasm::WasmtimeEngineState* state,
+                                    celwasm::InstanceImpl* impl,
+                                    bool abi_present) {
+  const bool is_static = !ModuleImportsCelNamespace(impl->expr_module);
+  if (abi_present) {
+    if (auto s = ValidateLinkModeLabel(impl->abi.link_mode(), is_static);
+        !s.ok()) {
+      return s;
+    }
+  }
+  if (!is_static) {
+    if (auto s = InstantiateRuntime(state, impl); !s.ok()) return s;
+  }
+  if (auto s = BindRegisteredExtensions(state, impl); !s.ok()) return s;
+  if (auto s = InstantiateExpr(impl); !s.ok()) return s;
+  if (is_static) {
+    if (auto s = BindStaticModeHelpers(impl); !s.ok()) return s;
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
 absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   auto impl = std::make_unique<celwasm::InstanceImpl>();
   // Decode the cel.abi section off the raw Program bytes first —
@@ -1566,89 +1448,15 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   if (auto s = InitPlanState(wasmtime_.get(), impl.get(), program); !s.ok()) {
     return s;
   }
-  // Route on the module's actual import shape; when a cel.abi
-  // section is present, cross-check its link_mode label against
-  // that shape (mislabeled / corrupted artifacts fail here).
-  const bool is_static = !ModuleImportsCelNamespace(impl->expr_module);
-  if (*abi_present) {
-    if (auto s = ValidateLinkModeLabel(impl->abi.link_mode(), is_static);
-        !s.ok()) {
-      return s;
-    }
-  }
-  if (!is_static) {
-    if (auto s = InstantiateRuntime(wasmtime_.get(), impl.get()); !s.ok()) {
-      return s;
-    }
-  }
-  if (auto s = BindRegisteredExtensions(wasmtime_.get(), impl.get()); !s.ok()) {
+  if (auto s =
+          InstantiateForLinkMode(wasmtime_.get(), impl.get(), *abi_present);
+      !s.ok()) {
     return s;
-  }
-  if (auto s = InstantiateExpr(impl.get()); !s.ok()) return s;
-  if (is_static) {
-    if (auto s = BindStaticModeHelpers(impl.get()); !s.ok()) return s;
   }
   return Instance(wasmtime_, std::move(impl));
 }
 
-// ——— Engine::AddModule + Engine::AddFunction (M13 Slice C.1) ———
-
-absl::Status Engine::AddModule(absl::string_view alias,
-                               absl::Span<const uint8_t> wasm_bytes) {
-  if (alias.empty()) {
-    return absl::InvalidArgumentError(
-        "Engine::AddModule: alias must be non-empty");
-  }
-  if (IsReservedAlias(alias)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("Engine::AddModule: `", alias, "` is a reserved alias"));
-  }
-  const std::string alias_str(alias);
-  if (wasmtime_->custom_modules.find(alias_str) !=
-      wasmtime_->custom_modules.end()) {
-    return absl::AlreadyExistsError(
-        absl::StrCat("module alias `", alias, "` already registered"));
-  }
-
-  // Parse the wasm bytes at registration time — surfaces syntactic
-  // errors here, not at Plan time.  The parsed wasmtime_module_t*
-  // is reusable across Plan calls (each Plan instantiates it into
-  // its fresh store).
-  celwasm::RegisteredCustomModule entry;
-  wasmtime_error_t* err = wasmtime_module_new(
-      wasmtime_->engine, wasm_bytes.data(), wasm_bytes.size(), &entry.module);
-  if (err != nullptr) {
-    return WasmtimeErrorToStatus(absl::StrCat("Engine::AddModule(", alias, ")"),
-                                 err);
-  }
-
-  // Snapshot the module's function exports — for downstream
-  // cross-module conflict detection + import resolution at Plan
-  // time.  Needs an instance, so spin up a throwaway store +
-  // empty linker and instantiate; modules with imports beyond
-  // `cel.memory` would fail here (Slice C.1 requires foreign
-  // modules to be self-contained or to only import cel.memory,
-  // which we don't have yet at this point).
-  //
-  // For C.1, accept "may fail to introspect imports" and snapshot
-  // exports lazily — i.e., walk the module's export TYPES (no
-  // instance needed) via `wasmtime_module_exports`.  That gives us
-  // the export names without instantiating.
-  wasm_exporttype_vec_t exports;
-  wasmtime_module_exports(entry.module, &exports);
-  for (size_t i = 0; i < exports.size; ++i) {
-    const wasm_name_t* name = wasm_exporttype_name(exports.data[i]);
-    const wasm_externtype_t* xt = wasm_exporttype_type(exports.data[i]);
-    if (wasm_externtype_kind(xt) != WASM_EXTERN_FUNC) continue;
-    const absl::string_view nm(name->data, name->size);
-    if (nm.empty() || nm[0] == '_') continue;
-    entry.helper_exports.emplace_back(nm);
-  }
-  wasm_exporttype_vec_delete(&exports);
-
-  wasmtime_->custom_modules.emplace(alias_str, std::move(entry));
-  return absl::OkStatus();
-}
+// ——— Engine::AddFunction (host callbacks) ———
 
 absl::Status Engine::AddFunction(absl::string_view overload_id,
                                  std::uint8_t num_args, HostCallback impl) {
@@ -1779,6 +1587,9 @@ absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
 absl::StatusOr<Engine> Engine::Builder::Build() const&& {
   auto state_or = InitWasmtime(jit_perf_map_);
   if (!state_or.ok()) return state_or.status();
+  // Resolve the wasm-coverage destination once, at engine
+  // instantiation: an explicit CollectWasmCoverage(dir) wins, else
+  // the CELWASM_WASM_GCOV_DIR env var, else disabled (empty).
   return Engine(std::move(*state_or));
 }
 

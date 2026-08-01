@@ -51,21 +51,16 @@ arena_init
 arena_capacity
 arena_cursor
 
-# Same-kind eq/ne fast paths.  Reached by tail-call from
-# cel_equals_at_vv; native tests call them directly to assert
-# per-kind behaviour without round-tripping through the polymorphic
-# dispatcher.
-cel_int_eq_at_vv
-cel_int_ne_at_vv
-cel_uint_eq_at_vv
-cel_uint_ne_at_vv
-cel_double_eq_at_vv
-cel_double_ne_at_vv
+# Same-kind eq rungs of `equality_kernel` (cel_runtime.c) — exported
+# so wat_runner fixtures and native tests can drive each rung directly
+# without round-tripping through the polymorphic dispatcher.  (The
+# historical per-kind int/uint/double eq+ne and bool_ne/numeric_ne
+# arms were unreachable from compiled CEL — equality lowers only to
+# the polymorphic `cel_equals_at_vv` / `cel_not_equals_at_vv` — and
+# were deleted with their definitions.)
 cel_bool_eq_at_vv
-cel_bool_ne_at_vv
 cel_null_eq_at_vv
 cel_numeric_eq_at_vv
-cel_numeric_ne_at_vv
 cel_string_eq_at_vv
 cel_bytes_eq_at_vv
 

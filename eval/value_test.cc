@@ -115,14 +115,14 @@ TEST(ValueTest, StructurallyEqualsAcrossOwnedAndViewRepresentations) {
   const std::string storage = "abc";
   // Representation (owning string vs non-owning view) is invisible
   // to equality — only kind + bytes matter.
-  EXPECT_TRUE(Value::StringView(storage).StructurallyEquals(
-      Value::String("abc")));
-  EXPECT_TRUE(Value::String("abc").StructurallyEquals(
-      Value::StringView(storage)));
-  EXPECT_TRUE(Value::BytesView(storage).StructurallyEquals(
-      Value::Bytes("abc")));
-  EXPECT_FALSE(Value::StringView(storage).StructurallyEquals(
-      Value::String("abd")));
+  EXPECT_TRUE(
+      Value::StringView(storage).StructurallyEquals(Value::String("abc")));
+  EXPECT_TRUE(
+      Value::String("abc").StructurallyEquals(Value::StringView(storage)));
+  EXPECT_TRUE(
+      Value::BytesView(storage).StructurallyEquals(Value::Bytes("abc")));
+  EXPECT_FALSE(
+      Value::StringView(storage).StructurallyEquals(Value::String("abd")));
   EXPECT_FALSE(Value::StringView(storage).StructurallyEquals(
       Value::Bytes("abc")));  // kind still distinguishes
 }
@@ -285,6 +285,106 @@ TEST(ValueTest, CopyableAndMovable) {
   Value c = std::move(a);                          // move
   EXPECT_THAT(c.AsString(), IsOkAndHolds("abc"));
 }
+
+// ── ValueKindName — every Kind, no gaps ─────────────────────────────
+//
+// The name is user-visible: it appears in binding-mismatch and
+// host-call diagnostics, so a wrong or missing spelling ships as a
+// wrong error message.  The switch is over a closed enum, so the
+// table below is exhaustive by construction — adding a Kind without
+// adding a row here fails to compile the row list.
+
+TEST(ValueKindNameTest, EveryKindHasItsSpelling) {
+  const struct {
+    Value::Kind kind;
+    absl::string_view name;
+  } kRows[] = {
+      {Value::Kind::kNull, "null"},
+      {Value::Kind::kBool, "bool"},
+      {Value::Kind::kInt, "int"},
+      {Value::Kind::kUint, "uint"},
+      {Value::Kind::kDouble, "double"},
+      {Value::Kind::kString, "string"},
+      {Value::Kind::kBytes, "bytes"},
+      {Value::Kind::kList, "list"},
+      {Value::Kind::kMap, "map"},
+      {Value::Kind::kMessage, "message"},
+      {Value::Kind::kDuration, "duration"},
+      {Value::Kind::kTimestamp, "timestamp"},
+      {Value::Kind::kType, "type"},
+      {Value::Kind::kUnknown, "unknown"},
+      {Value::Kind::kError, "error"},
+  };
+  for (const auto& row : kRows) {
+    EXPECT_EQ(ValueKindName(row.kind), row.name)
+        << "kind=" << static_cast<int>(row.kind);
+  }
+}
+
+// ── StructurallyEquals — the by-payload comparison ──────────────────
+//
+// Distinct from CEL's `==`: this is the host-side structural check
+// the Activation and host-call layers use, so it compares payloads
+// without CEL's cross-numeric or 3VL rules.  Different kinds are
+// never equal, even when the payloads would compare.
+
+TEST(StructurallyEqualsTest, SameKindSamePayloadIsEqual) {
+  EXPECT_TRUE(Value::Null().StructurallyEquals(Value::Null()));
+  EXPECT_TRUE(Value::Bool(true).StructurallyEquals(Value::Bool(true)));
+  EXPECT_TRUE(Value::Int(-7).StructurallyEquals(Value::Int(-7)));
+  EXPECT_TRUE(Value::Uint(7).StructurallyEquals(Value::Uint(7)));
+  EXPECT_TRUE(Value::Double(1.5).StructurallyEquals(Value::Double(1.5)));
+  EXPECT_TRUE(Value::String("a").StructurallyEquals(Value::String("a")));
+  EXPECT_TRUE(Value::Bytes("ab").StructurallyEquals(Value::Bytes("ab")));
+  EXPECT_TRUE(Value::Type("int").StructurallyEquals(Value::Type("int")));
+  EXPECT_TRUE(Value::Duration(absl::Seconds(3))
+                  .StructurallyEquals(Value::Duration(absl::Seconds(3))));
+  EXPECT_TRUE(Value::Timestamp(absl::UnixEpoch())
+                  .StructurallyEquals(Value::Timestamp(absl::UnixEpoch())));
+}
+
+TEST(StructurallyEqualsTest, SameKindDifferentPayloadIsUnequal) {
+  EXPECT_FALSE(Value::Bool(true).StructurallyEquals(Value::Bool(false)));
+  EXPECT_FALSE(Value::Int(1).StructurallyEquals(Value::Int(2)));
+  EXPECT_FALSE(Value::Uint(1).StructurallyEquals(Value::Uint(2)));
+  EXPECT_FALSE(Value::Double(1.5).StructurallyEquals(Value::Double(2.5)));
+  EXPECT_FALSE(Value::String("a").StructurallyEquals(Value::String("b")));
+  EXPECT_FALSE(Value::Bytes("ab").StructurallyEquals(Value::Bytes("ba")));
+  EXPECT_FALSE(Value::Type("int").StructurallyEquals(Value::Type("uint")));
+  EXPECT_FALSE(Value::Duration(absl::Seconds(1))
+                   .StructurallyEquals(Value::Duration(absl::Seconds(2))));
+  EXPECT_FALSE(Value::Timestamp(absl::UnixEpoch())
+                   .StructurallyEquals(
+                       Value::Timestamp(absl::UnixEpoch() + absl::Seconds(1))));
+}
+
+TEST(StructurallyEqualsTest, DifferentKindsAreNeverEqual) {
+  // Int / Uint / Double all carry 1 numerically; structural equality
+  // does NOT apply CEL's cross-numeric rule.
+  EXPECT_FALSE(Value::Int(1).StructurallyEquals(Value::Uint(1)));
+  EXPECT_FALSE(Value::Int(1).StructurallyEquals(Value::Double(1.0)));
+  EXPECT_FALSE(Value::Uint(1).StructurallyEquals(Value::Double(1.0)));
+  // String and bytes with identical octets stay distinct kinds.
+  EXPECT_FALSE(Value::String("a").StructurallyEquals(Value::Bytes("a")));
+  EXPECT_FALSE(Value::Null().StructurallyEquals(Value::Bool(false)));
+}
+
+TEST(StructurallyEqualsTest, UnknownComparesByAttributeIdSet) {
+  const Value a = Value::Unknown(AttributeId{1});
+  const Value b = Value::Unknown(AttributeId{1});
+  const Value c = Value::Unknown(AttributeId{2});
+  EXPECT_TRUE(a.StructurallyEquals(b));
+  EXPECT_FALSE(a.StructurallyEquals(c));
+}
+
+TEST(StructurallyEqualsTest, ErrorComparesByPayload) {
+  const Value a = Value::Error(ErrorPayload{.code = ErrorCode::kDivideByZero});
+  const Value b = Value::Error(ErrorPayload{.code = ErrorCode::kDivideByZero});
+  const Value c = Value::Error(ErrorPayload{.code = ErrorCode::kOverflow});
+  EXPECT_TRUE(a.StructurallyEquals(b));
+  EXPECT_FALSE(a.StructurallyEquals(c));
+}
+
 
 }  // namespace
 }  // namespace celwasm

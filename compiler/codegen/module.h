@@ -14,10 +14,9 @@
 // `rewrite/m28-configurable-linking.md`): DYNAMIC imports the runtime's
 // shared memory (`AddMemoryImport`) with rodata installed as active data
 // segments over it; STATIC emits `$eval` into the adopted runtime module
-// (`Adopt`) with rodata appended via `AddActiveDataSegment`.  `SetMemory`
-// (define + export an own memory) serves standalone-module callers and
-// tests.  Rodata lands at offset 16 — past the two reserved low slots
-// (see `rewrite/design.md` §6).
+// (`Adopt`) with rodata appended via `AddActiveDataSegment`.  Rodata
+// lands at offset 16 — past the two reserved low slots (see
+// `rewrite/design.md` §6).
 
 #include <cstdint>
 #include <optional>
@@ -66,7 +65,7 @@ class WasmModule {
     return module_;
   }
 
-  // One active data segment, referenced by `SetMemory`.  `offset` is an
+  // One active data segment, referenced by `AddMemoryImport`.  `offset` is an
   // absolute linear-memory byte offset; `bytes` is the payload the
   // instantiator copies into memory at that offset.  The caller must
   // keep `bytes` live across the `SetMemory` call.
@@ -74,17 +73,6 @@ class WasmModule {
     uint32_t offset = 0;
     absl::Span<const uint8_t> bytes;
   };
-
-  // Defines the module's (only) memory.  `export_name` empty leaves the
-  // memory module-private; otherwise the memory is exported under that
-  // name.  `segments` are installed as active data segments over the
-  // memory and are anonymous (Binaryen auto-names them).  Failure modes:
-  // `FailedPrecondition` (memory already set), `InvalidArgument`
-  // (max < initial).
-  ABSL_MUST_USE_RESULT absl::Status SetMemory(
-      uint32_t initial_pages, std::optional<uint32_t> max_pages,
-      absl::string_view export_name,
-      absl::Span<const DataSegment> segments = {});
 
   // Imports a memory from `(import external_module external_base memory)`.
   // `segments` are installed as active data segments over the imported
@@ -94,8 +82,8 @@ class WasmModule {
   // runtime exports a `wasm32-wasi-threads` shared linear memory (Phase
   // C and later).  Shared memories MUST have `max_pages` set (wasm spec
   // requirement); we return InvalidArgument if `shared` is true with
-  // an empty `max_pages`.  Fails (FailedPrecondition) if `SetMemory` /
-  // `AddMemoryImport` has already been called on this module.
+  // an empty `max_pages`.  Fails (FailedPrecondition) if a memory
+  // has already been installed on this module.
   ABSL_MUST_USE_RESULT absl::Status AddMemoryImport(
       absl::string_view external_module, absl::string_view external_base,
       uint32_t initial_pages, std::optional<uint32_t> max_pages,
@@ -121,8 +109,6 @@ class WasmModule {
   // Exports a previously-declared entity under `external_name`.
   void ExportFunction(absl::string_view internal_name,
                       absl::string_view external_name);
-  void ExportMemory(absl::string_view internal_name,
-                    absl::string_view external_name);
 
   // Adds a raw wasm custom section.  Used for the `cel.abi` header the
   // host loader reads to discover rodata / workspace / arena offsets
@@ -187,9 +173,6 @@ class WasmModule {
 
   // Serialises the module to its canonical `.wasm` byte encoding.
   ABSL_MUST_USE_RESULT absl::StatusOr<std::vector<uint8_t>> Serialize() const;
-
-  // Prints the module in Binaryen's s-expression format to stderr.
-  void PrintToStderr() const;
 
  private:
   BinaryenModuleRef module_;

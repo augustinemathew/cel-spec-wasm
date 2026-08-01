@@ -17,20 +17,27 @@ using ::testing::HasSubstr;
 
 // ————————— AttributeQualifier —————————
 
-// Only string-keyed qualifiers are constructible — int / uint / bool
-// factories were removed because the resolver never interns them
+// Qualifiers are string keys only — the typed int / uint / bool
+// breadth was removed because the resolver never interns them
 // (index / key access breaks the attribute chain).
-TEST(AttributeQualifierTest, KindDispatch) {
-  EXPECT_EQ(AttributeQualifier::OfString("k").kind(),
-            AttributeQualifier::Kind::kString);
+TEST(AttributeQualifierTest, ValueRoundTrips) {
+  EXPECT_EQ(AttributeQualifier::OfString("k").value(), "k");
 }
 
-TEST(AttributeQualifierTest, TypedAccessorsReturnValueOrNullopt) {
-  auto s = AttributeQualifier::OfString("hello");
-  EXPECT_EQ(s.AsString(), "hello");
-  EXPECT_EQ(s.AsInt(), std::nullopt);
-  EXPECT_EQ(s.AsUint(), std::nullopt);
-  EXPECT_EQ(s.AsBool(), std::nullopt);
+// The bare-variable convenience ctor — no qualifier chain.
+TEST(AttributeTest, BareVariableCtor) {
+  Attribute a("account");
+  EXPECT_TRUE(a.has_variable_name());
+  EXPECT_EQ(a.variable_name(), "account");
+  EXPECT_TRUE(a.qualifier_path().empty());
+  EXPECT_EQ(a, Attribute("account", {}));
+}
+
+TEST(AttributeQualifierTest, EmbeddedNulValueRoundTrips) {
+  // `value()` is a plain view of the key bytes — embedded NUL is
+  // preserved (only the canonical rendering rejects it).
+  const std::string key("a\0b", 3);
+  EXPECT_EQ(AttributeQualifier::OfString(key).value(), absl::string_view(key));
 }
 
 TEST(AttributeQualifierTest, MatchesStringKey) {
@@ -103,8 +110,8 @@ TEST(AttributeTest, WithQualifiers) {
                           AttributeQualifier::OfString("claims")});
   EXPECT_EQ(a.variable_name(), "request");
   ASSERT_EQ(a.qualifier_path().size(), 2u);
-  EXPECT_EQ(a.qualifier_path()[0].AsString(), "auth");
-  EXPECT_EQ(a.qualifier_path()[1].AsString(), "claims");
+  EXPECT_EQ(a.qualifier_path()[0].value(), "auth");
+  EXPECT_EQ(a.qualifier_path()[1].value(), "claims");
 }
 
 TEST(AttributeTest, EqualityComparesVariableAndPath) {
@@ -306,7 +313,7 @@ TEST_P(AttributePatternParseRejects, Rejected) {
 // One representative per rejection class (FSM unit coverage).  The
 // exhaustive "almost-correct" matrix is exercised end-to-end through
 // the partial-eval entry point in
-// e2e/m2_partial_eval_test.cc::MalformedPatternBoundaryTest.
+// e2e/partial_eval_test.cc::MalformedPatternBoundaryTest.
 INSTANTIATE_TEST_SUITE_P(
     Malformed, AttributePatternParseRejects,
     ::testing::Values(BadPattern{"", "empty"}, BadPattern{"x.", "trailing dot"},

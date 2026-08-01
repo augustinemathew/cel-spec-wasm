@@ -13,7 +13,7 @@
 // Oracle-only TU — deliberately does NOT link our pipeline (the
 // `cel::Value` symbol-clash note on testdata/BUILD.bazel's
 // cel_cpp_oracle_test target).  Our pipeline's matching assertions
-// live in e2e/m2_partial_eval_test.cc.
+// live in e2e/partial_eval_test.cc.
 
 #include <cstdint>
 #include <optional>

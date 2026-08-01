@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -17,6 +18,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/strings/string_view.h"
 #include "cel/expr/conformance/proto2/test_all_types.pb.h"
 #include "cel/expr/conformance/proto2/test_all_types_extensions.pb.h"
 #include "eval/error.h"
@@ -38,6 +40,7 @@ namespace celwasm {
 namespace {
 
 using ::absl_testing::IsOk;
+using ::absl_testing::StatusIs;
 using ::celwasm::testdata::Address;
 using ::celwasm::testdata::Customer;
 using ::celwasm::testdata::HostMsg2;
@@ -497,7 +500,8 @@ TEST(Layer2AbsorptionTest, InvalidExternrefSlotYieldsHostAdapterError) {
 // Helper: intern `backing`, stage a CEL_MESSAGE at kMsgSlot, run the
 // probe, return the out CelValue.
 CelValue RunMessageIsZero(
-    Layer2Fixture& f, const std::shared_ptr<const HostMessageBacking>& backing) {
+    Layer2Fixture& f,
+    const std::shared_ptr<const HostMessageBacking>& backing) {
   const uint32_t slot = f.refs.Intern(backing);
   CelValue cv{};
   cv.kind = CEL_MESSAGE;
@@ -1045,7 +1049,7 @@ TEST(Layer2CrossBackingTest, JsonLikeBackingDispatches) {
 // because cel-cpp's checker types every selection through an Any-
 // typed field as `dyn` and rejects v2 lowering — the e2e path can't
 // reach the same assertion.  See m7a-any.md §11 / §10.3 + the
-// `m7a_test.cc` AnyPackE2ETest section header.
+// `any_test.cc` AnyPackE2ETest section header.
 
 namespace {
 
@@ -1080,6 +1084,28 @@ class PackHarness {
     cv.kind = CEL_MESSAGE;
     cv.payload.msg_slot = src_slot;
     f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Stage an arbitrary backing (not necessarily proto-carrying) in the
+  // externref table and point a CEL_MESSAGE CelValue at it.  Reaches
+  // the "backing has no proto message" arm, which a real proto backing
+  // cannot.
+  void StageBackingSrc(std::shared_ptr<HostMessageBacking> backing) {
+    const uint32_t src_slot = f_.refs.Intern(std::move(backing));
+    CelValue cv{};
+    cv.kind = CEL_MESSAGE;
+    cv.payload.msg_slot = src_slot;
+    f_.mem.WriteCelValue(kSrcSlot, cv);
+  }
+
+  // Intern `backing` and return a CEL_MESSAGE CelValue pointing at it,
+  // without touching kSrcSlot — for embedding inside a staged arena
+  // list.
+  CelValue InternBackingElement(std::shared_ptr<HostMessageBacking> backing) {
+    CelValue cv{};
+    cv.kind = CEL_MESSAGE;
+    cv.payload.msg_slot = f_.refs.Intern(std::move(backing));
+    return cv;
   }
 
   // Stage a null src at kSrcSlot — exercises the null-clear arm
@@ -1200,6 +1226,15 @@ class PackHarness {
     cv.payload.s.ptr = off;
     cv.payload.s.len = static_cast<uint32_t>(s.size());
     return cv;
+  }
+
+  // Stage an arbitrary CelValue at kSrcSlot verbatim.  Used to drive
+  // the kind-mismatch arms of the scalar / repeated set paths, which a
+  // type-checked expression can never reach (the checker types the
+  // field-init operand) but a misbehaving plugin or a checker
+  // regression would.
+  void StageRaw(const CelValue& cv) {
+    f_.mem.WriteCelValue(kSrcSlot, cv);
   }
 
   // Drive CelSetFieldImpl pointing at `field_name`.  Returns the
@@ -1996,4 +2031,796 @@ TEST(AnyOfWktTimeTest, DurationUnwrapsToDuration) {
 }
 
 }  // namespace
+
+// ═══════════ Set-field kind-mismatch arms ═══════════
+//
+// Every singular-scalar and repeated-element set arm range-checks the
+// incoming wire kind before handing the payload to Reflection.  A
+// type-checked CEL expression cannot reach these — `Foo{i32: 'x'}`
+// fails in the checker — so they are only observable by driving the
+// trampoline directly with a mismatched CelValue, which is what a
+// plugin returning a value inconsistent with its declared return type
+// would produce.
+
+namespace {
+
+CelValue RawScalar(uint8_t kind, int64_t i) {
+  CelValue cv{};
+  cv.kind = kind;
+  cv.payload.i = i;
+  return cv;
+}
+
+CelValue RawDouble(double d) {
+  CelValue cv{};
+  cv.kind = CEL_DOUBLE;
+  cv.payload.d = d;
+  return cv;
+}
+
+struct ScalarMismatchCase {
+  uint32_t field_number;
+  absl::string_view field_name;
+  CelValue wrong;
+  absl::string_view want_type_token;
+};
+
+class ScalarKindMismatchTest
+    : public testing::TestWithParam<ScalarMismatchCase> {};
+
+}  // namespace
+
+TEST_P(ScalarKindMismatchTest, RejectsWrongWireKind) {
+  const ScalarMismatchCase& c = GetParam();
+  PackHarness h;
+  h.StageRaw(c.wrong);
+  const absl::Status s = h.SetField(c.field_number, c.field_name);
+  EXPECT_THAT(s, StatusIs(absl::StatusCode::kInvalidArgument,
+                          testing::AllOf(testing::HasSubstr(c.field_name),
+                                         testing::HasSubstr(c.want_type_token),
+                                         testing::HasSubstr("value kind is"))));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Singular, ScalarKindMismatchTest,
+    testing::Values(
+        ScalarMismatchCase{1, "b", RawScalar(CEL_INT, 1), "BOOL"},
+        ScalarMismatchCase{2, "i32", RawScalar(CEL_UINT, 1), "INT32"},
+        ScalarMismatchCase{3, "i64", RawScalar(CEL_BOOL, 1), "INT64"},
+        ScalarMismatchCase{4, "u32", RawScalar(CEL_INT, 1), "UINT32"},
+        ScalarMismatchCase{5, "u64", RawScalar(CEL_INT, 1), "UINT64"},
+        ScalarMismatchCase{12, "f32", RawScalar(CEL_INT, 1), "FLOAT"},
+        ScalarMismatchCase{13, "f64", RawScalar(CEL_INT, 1), "DOUBLE"},
+        ScalarMismatchCase{16, "kind", RawScalar(CEL_UINT, 7), "ENUM"}));
+
+// STRING / BYTES share CPPTYPE_STRING and are distinguished by
+// `field.type()`, so each rejects the *other* CEL kind as well as the
+// unrelated ones.
+TEST(ScalarKindMismatchStringBytesTest, StringFieldRejectsBytes) {
+  PackHarness h;
+  CelValue by = h.MakeArenaString("ab");
+  by.kind = CEL_BYTES;
+  h.StageRaw(by);
+  EXPECT_THAT(h.SetField(14, "s"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("is STRING but value kind is")));
+}
+
+TEST(ScalarKindMismatchStringBytesTest, BytesFieldRejectsString) {
+  PackHarness h;
+  h.StageRaw(h.MakeArenaString("ab"));
+  EXPECT_THAT(h.SetField(15, "by"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("is BYTES but value kind is")));
+}
+
+// Repeated element append checks the element kind per cpp_type; the
+// arms live in a separate helper from the singular ones, so each needs
+// its own row.
+TEST(RepeatedAppendMismatchTest, RejectsWrongElementKind) {
+  struct Row {
+    uint32_t number;
+    absl::string_view name;
+    CelValue elem;
+    absl::string_view token;
+  };
+  const Row rows[] = {
+      {18, "rep_i32", RawScalar(CEL_UINT, 1), "INT32"},
+      {25, "rep_b", RawScalar(CEL_INT, 1), "BOOL"},
+      {26, "rep_f64", RawScalar(CEL_INT, 1), "DOUBLE"},
+  };
+  for (const Row& r : rows) {
+    PackHarness h;
+    h.StageArenaList({r.elem});
+    EXPECT_THAT(h.SetField(r.number, r.name),
+                StatusIs(absl::StatusCode::kInvalidArgument,
+                         testing::HasSubstr(r.token)))
+        << "field " << r.name;
+  }
+}
+
+TEST(RepeatedAppendMismatchTest, StringElementRejectsNonString) {
+  PackHarness h;
+  h.StageArenaList({RawScalar(CEL_INT, 1)});
+  EXPECT_THAT(h.SetField(24, "rep_s"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("STRING/BYTES")));
+}
+
+TEST(RepeatedAppendMismatchTest, MessageElementRejectsNonMessage) {
+  PackHarness h;
+  h.StageArenaList({RawDouble(1.5)});
+  EXPECT_THAT(h.SetField(27, "rep_msg"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("element kind=")));
+}
+
+// ═══════════ WKT wrapper fields ═══════════
+//
+// CEL models `google.protobuf.*Value` fields as nullable scalars
+// (`doc/langdef.md`, "Wrapper Types").  On the write side a field-init
+// hands the trampoline a bare scalar and `SetWrapperFieldFromScalar`
+// synthesises the wrapper message; on the read side
+// `UnpackWrapperMessage` collapses a set wrapper back to its inner
+// scalar.  One row per wrapper cpp_type covers both directions plus
+// the inner-kind guard.
+
+namespace {
+
+struct WrapperCase {
+  uint32_t field_number;
+  absl::string_view field_name;
+  CelValue good;
+  CelValue bad;
+  absl::string_view want_expected_kind;
+};
+
+class WrapperFieldTest : public testing::TestWithParam<WrapperCase> {};
+
+}  // namespace
+
+TEST_P(WrapperFieldTest, ScalarSetSynthesisesWrapperMessage) {
+  const WrapperCase& c = GetParam();
+  PackHarness h;
+  h.StageRaw(c.good);
+  ASSERT_THAT(h.SetField(c.field_number, c.field_name), IsOk());
+  const google::protobuf::Message& outer = *h.outer();
+  const google::protobuf::FieldDescriptor* fd =
+      outer.GetDescriptor()->FindFieldByNumber(
+          static_cast<int>(c.field_number));
+  ASSERT_NE(fd, nullptr);
+  EXPECT_TRUE(outer.GetReflection()->HasField(outer, fd))
+      << "wrapper field `" << c.field_name << "` not set";
+}
+
+TEST_P(WrapperFieldTest, WrongInnerKindIsRejected) {
+  const WrapperCase& c = GetParam();
+  PackHarness h;
+  h.StageRaw(c.bad);
+  EXPECT_THAT(
+      h.SetField(c.field_number, c.field_name),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               testing::AllOf(testing::HasSubstr("SetWrapperInnerValue"),
+                              testing::HasSubstr(c.want_expected_kind))));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    EveryInnerCppType, WrapperFieldTest,
+    testing::Values(WrapperCase{40, "wrap_b", RawScalar(CEL_BOOL, 1),
+                                RawScalar(CEL_INT, 1), "CEL_BOOL"},
+                    WrapperCase{41, "wrap_i32", RawScalar(CEL_INT, 7),
+                                RawScalar(CEL_UINT, 7), "CEL_INT"},
+                    WrapperCase{42, "wrap_i64", RawScalar(CEL_INT, 7),
+                                RawScalar(CEL_BOOL, 1), "CEL_INT"},
+                    WrapperCase{43, "wrap_u32", RawScalar(CEL_UINT, 7),
+                                RawScalar(CEL_INT, 7), "CEL_UINT"},
+                    WrapperCase{44, "wrap_u64", RawScalar(CEL_UINT, 7),
+                                RawScalar(CEL_INT, 7), "CEL_UINT"},
+                    WrapperCase{45, "wrap_f32", RawDouble(1.5),
+                                RawScalar(CEL_INT, 1), "CEL_DOUBLE"},
+                    WrapperCase{46, "wrap_f64", RawDouble(1.5),
+                                RawScalar(CEL_INT, 1), "CEL_DOUBLE"}));
+
+// STRING / BYTES wrappers need an arena-resident payload, so they get
+// focused cases rather than a table row.
+TEST(WrapperFieldStringBytesTest, StringWrapperRoundTrips) {
+  PackHarness h;
+  h.StageRaw(h.MakeArenaString("hi"));
+  ASSERT_THAT(h.SetField(47, "wrap_s"), IsOk());
+  EXPECT_EQ(h.outer()->wrap_s().value(), "hi");
+}
+
+TEST(WrapperFieldStringBytesTest, BytesWrapperRoundTrips) {
+  PackHarness h;
+  CelValue by = h.MakeArenaString("ab");
+  by.kind = CEL_BYTES;
+  h.StageRaw(by);
+  ASSERT_THAT(h.SetField(48, "wrap_by"), IsOk());
+  EXPECT_EQ(h.outer()->wrap_by().value(), "ab");
+}
+
+TEST(WrapperFieldStringBytesTest, StringWrapperRejectsBytes) {
+  PackHarness h;
+  CelValue by = h.MakeArenaString("ab");
+  by.kind = CEL_BYTES;
+  h.StageRaw(by);
+  EXPECT_THAT(h.SetField(47, "wrap_s"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("CEL_STRING")));
+}
+
+TEST(WrapperFieldStringBytesTest, BytesWrapperRejectsString) {
+  PackHarness h;
+  h.StageRaw(h.MakeArenaString("ab"));
+  EXPECT_THAT(h.SetField(48, "wrap_by"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("CEL_BYTES")));
+}
+
+// Read side: a set wrapper collapses to the inner scalar, an unset one
+// reads as null.
+TEST(WrapperFieldReadTest, SetWrapperReadsAsInnerScalar) {
+  auto msg = std::make_shared<HostMsg3>();
+  msg->mutable_wrap_i32()->set_value(7);
+  msg->mutable_wrap_s()->set_value("hi");
+  msg->mutable_wrap_b()->set_value(true);
+  msg->mutable_wrap_f64()->set_value(1.5);
+  ProtoBacking backing(msg.get());
+  auto i32 = backing.ReadField(41, "wrap_i32", CelType::Int());
+  ASSERT_THAT(i32, IsOk());
+  EXPECT_EQ(i32->kind(), Value::Kind::kInt);
+  auto s = backing.ReadField(47, "wrap_s", CelType::String());
+  ASSERT_THAT(s, IsOk());
+  EXPECT_EQ(s->kind(), Value::Kind::kString);
+  auto b = backing.ReadField(40, "wrap_b", CelType::Bool());
+  ASSERT_THAT(b, IsOk());
+  EXPECT_EQ(b->kind(), Value::Kind::kBool);
+  auto d = backing.ReadField(46, "wrap_f64", CelType::Double());
+  ASSERT_THAT(d, IsOk());
+  EXPECT_EQ(d->kind(), Value::Kind::kDouble);
+}
+
+TEST(WrapperFieldReadTest, UnsetWrapperReadsAsNull) {
+  auto msg = std::make_shared<HostMsg3>();
+  ProtoBacking backing(msg.get());
+  auto v = backing.ReadField(41, "wrap_i32", CelType::Int());
+  ASSERT_THAT(v, IsOk());
+  EXPECT_EQ(v->kind(), Value::Kind::kNull);
+}
+
+// ═══════════ WKT unwrap trampolines ═══════════
+//
+// `CelWktUnwrapWrapperImpl` / `CelWktUnwrapTimeImpl` are the
+// kStructExpr tail-unwrap arms: codegen emits them for a construction
+// whose type is one of the 9 wrapper FQNs or Timestamp/Duration, and
+// they peel the inner scalar out of the message.  Every guard below
+// the happy path is a codegen-regression tripwire — a type-checked
+// expression cannot reach them — so they are only observable by
+// driving the trampoline with a hand-staged CelValue.
+
+namespace {
+
+// Stage `cv` at the fixture's message slot and unwrap it as a wrapper
+// expecting inner kind `wrapper_kind`.
+CelValue UnwrapWrapper(Layer2Fixture& f, const CelValue& cv,
+                       uint32_t wrapper_kind) {
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(
+      CelWktUnwrapWrapperImpl(Layer2Fixture::kOutSlot, Layer2Fixture::kMsgSlot,
+                              wrapper_kind, f.Ctx()),
+      IsOk());
+  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+}
+
+CelValue UnwrapTime(Layer2Fixture& f, const CelValue& cv) {
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(CelWktUnwrapTimeImpl(Layer2Fixture::kOutSlot,
+                                   Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+}
+
+// A CEL_MESSAGE CelValue pointing at a freshly interned backing.
+CelValue InternedMessage(Layer2Fixture& f,
+                         std::shared_ptr<HostMessageBacking> backing) {
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = f.refs.Intern(std::move(backing));
+  return cv;
+}
+
+}  // namespace
+
+TEST(WktUnwrapWrapperTest, HappyPathPeelsInnerScalar) {
+  Layer2Fixture f;
+  auto wrapper = std::make_unique<google::protobuf::Int32Value>();
+  wrapper->set_value(7);
+  const CelValue in = InternedMessage(
+      f, std::make_shared<OwnedProtoBacking>(std::move(wrapper)));
+  const CelValue out = UnwrapWrapper(f, in, CEL_INT);
+  EXPECT_EQ(out.kind, CEL_INT);
+  EXPECT_EQ(out.payload.i, 7);
+}
+
+TEST(WktUnwrapWrapperTest, AbsorbsErrorAndUnknown) {
+  Layer2Fixture f;
+  CelValue err{};
+  err.kind = CEL_ERROR;
+  err.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
+  const CelValue got_err = UnwrapWrapper(f, err, CEL_INT);
+  EXPECT_EQ(got_err.kind, CEL_ERROR);
+  EXPECT_EQ(got_err.payload.err,
+            static_cast<uint32_t>(celwasm::ErrorCode::kOverflow));
+
+  CelValue unk{};
+  unk.kind = CEL_UNKNOWN;
+  unk.payload.unk = 3;
+  const CelValue got_unk = UnwrapWrapper(f, unk, CEL_INT);
+  EXPECT_EQ(got_unk.kind, CEL_UNKNOWN);
+  EXPECT_EQ(got_unk.payload.unk, 3u);
+}
+
+TEST(WktUnwrapWrapperTest, NonMessageInputPoisons) {
+  Layer2Fixture f;
+  CelValue i{};
+  i.kind = CEL_INT;
+  i.payload.i = 1;
+  EXPECT_EQ(UnwrapWrapper(f, i, CEL_INT).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapWrapperTest, UninternedRefIsAnInfrastructureFailure) {
+  Layer2Fixture f;
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = 999;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(
+      CelWktUnwrapWrapperImpl(Layer2Fixture::kOutSlot, Layer2Fixture::kMsgSlot,
+                              CEL_INT, f.Ctx()),
+      StatusIs(absl::StatusCode::kFailedPrecondition,
+               testing::HasSubstr("not found in ExternrefTable")));
+}
+
+TEST(WktUnwrapWrapperTest, BackingWithoutAProtoPoisons) {
+  Layer2Fixture f;
+  const CelValue in = InternedMessage(
+      f, std::make_shared<JsonLikeBacking>(
+             absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  EXPECT_EQ(UnwrapWrapper(f, in, CEL_INT).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapWrapperTest, NonWrapperMessagePoisons) {
+  Layer2Fixture f;
+  const CelValue in = InternedMessage(
+      f, std::make_shared<OwnedProtoBacking>(std::make_unique<HostMsg3>()));
+  EXPECT_EQ(UnwrapWrapper(f, in, CEL_INT).kind, CEL_ERROR);
+}
+
+// The kind cross-check is the codegen tripwire: the wrapper unwraps
+// cleanly, but to a kind the caller did not claim.
+TEST(WktUnwrapWrapperTest, InnerKindDisagreeingWithCallerPoisons) {
+  Layer2Fixture f;
+  auto wrapper = std::make_unique<google::protobuf::Int32Value>();
+  wrapper->set_value(7);
+  const CelValue in = InternedMessage(
+      f, std::make_shared<OwnedProtoBacking>(std::move(wrapper)));
+  EXPECT_EQ(UnwrapWrapper(f, in, CEL_STRING).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapTimeTest, HappyPathPeelsTimestampAndDuration) {
+  {
+    Layer2Fixture f;
+    auto ts = std::make_unique<google::protobuf::Timestamp>();
+    ts->set_seconds(1234567890);
+    const CelValue in =
+        InternedMessage(f, std::make_shared<OwnedProtoBacking>(std::move(ts)));
+    const CelValue out = UnwrapTime(f, in);
+    EXPECT_EQ(out.kind, CEL_TIMESTAMP);
+    EXPECT_EQ(out.payload.ts.seconds, 1234567890);
+  }
+  {
+    Layer2Fixture f;
+    auto d = std::make_unique<google::protobuf::Duration>();
+    d->set_seconds(5);
+    const CelValue in =
+        InternedMessage(f, std::make_shared<OwnedProtoBacking>(std::move(d)));
+    const CelValue out = UnwrapTime(f, in);
+    EXPECT_EQ(out.kind, CEL_DURATION);
+    EXPECT_EQ(out.payload.dur.seconds, 5);
+  }
+}
+
+TEST(WktUnwrapTimeTest, AbsorbsErrorAndUnknown) {
+  Layer2Fixture f;
+  CelValue err{};
+  err.kind = CEL_ERROR;
+  err.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
+  EXPECT_EQ(UnwrapTime(f, err).kind, CEL_ERROR);
+
+  CelValue unk{};
+  unk.kind = CEL_UNKNOWN;
+  unk.payload.unk = 3;
+  const CelValue got = UnwrapTime(f, unk);
+  EXPECT_EQ(got.kind, CEL_UNKNOWN);
+  EXPECT_EQ(got.payload.unk, 3u);
+}
+
+TEST(WktUnwrapTimeTest, NonMessageInputPoisons) {
+  Layer2Fixture f;
+  CelValue i{};
+  i.kind = CEL_INT;
+  EXPECT_EQ(UnwrapTime(f, i).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapTimeTest, UninternedRefIsAnInfrastructureFailure) {
+  Layer2Fixture f;
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = 999;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(CelWktUnwrapTimeImpl(Layer2Fixture::kOutSlot,
+                                   Layer2Fixture::kMsgSlot, f.Ctx()),
+              StatusIs(absl::StatusCode::kFailedPrecondition,
+                       testing::HasSubstr("not found in ExternrefTable")));
+}
+
+TEST(WktUnwrapTimeTest, BackingWithoutAProtoPoisons) {
+  Layer2Fixture f;
+  const CelValue in = InternedMessage(
+      f, std::make_shared<JsonLikeBacking>(
+             absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  EXPECT_EQ(UnwrapTime(f, in).kind, CEL_ERROR);
+}
+
+TEST(WktUnwrapTimeTest, NonTemporalMessagePoisons) {
+  Layer2Fixture f;
+  const CelValue in = InternedMessage(
+      f, std::make_shared<OwnedProtoBacking>(std::make_unique<HostMsg3>()));
+  EXPECT_EQ(UnwrapTime(f, in).kind, CEL_ERROR);
+}
+
+// ═══════════ JSON well-known-type reads ═══════════
+//
+// A `google.protobuf.Struct` / `ListValue` / `Value` field unpacks into
+// the corresponding CEL value on read: Struct to a map, ListValue to a
+// list, and Value to whichever scalar its `kind` oneof holds (an unset
+// Value being null per the JSON rules).
+//
+// These are not reachable end-to-end: a read of such a field types as
+// `dyn`, and the static subset rejects dyn before codegen, so the whole
+// unpack path had no workload at all.  `ProtoBacking::ReadField` is
+// native, so the unpackers are exercised directly here.
+
+TEST(JsonWktReadTest, StructReadsAsMapOfScalars) {
+  auto msg = std::make_shared<HostMsg3>();
+  auto& f = *msg->mutable_single_struct()->mutable_fields();
+  f["s"].set_string_value("x");
+  f["n"].set_number_value(1.5);
+  f["b"].set_bool_value(true);
+  f["z"].set_null_value(google::protobuf::NULL_VALUE);
+  ProtoBacking backing(msg.get());
+  auto v = backing.ReadField(36, "single_struct",
+                             CelType::Map(CelType::String(), CelType::Int()));
+  ASSERT_THAT(v, IsOk());
+  ASSERT_EQ(v->kind(), Value::Kind::kMap);
+  auto m = v->MapBacking();
+  ASSERT_THAT(m, IsOk());
+  EXPECT_EQ((*m)->Size(), 4u);
+}
+
+TEST(JsonWktReadTest, ListValueReadsAsList) {
+  auto msg = std::make_shared<HostMsg3>();
+  auto* lv = msg->mutable_single_list_value();
+  lv->add_values()->set_string_value("x");
+  lv->add_values()->set_number_value(2.0);
+  ProtoBacking backing(msg.get());
+  auto v =
+      backing.ReadField(37, "single_list_value", CelType::List(CelType::Int()));
+  ASSERT_THAT(v, IsOk());
+  ASSERT_EQ(v->kind(), Value::Kind::kList);
+  auto l = v->ListBacking();
+  ASSERT_THAT(l, IsOk());
+  EXPECT_EQ((*l)->Size(), 2u);
+}
+
+// One row per arm of `google.protobuf.Value`'s `kind` oneof, plus the
+// unset case, plus the two that recurse back into Struct / ListValue.
+TEST(JsonWktReadTest, ValueUnwrapsEveryKindArm) {
+  auto read = [](const std::function<void(google::protobuf::Value&)>& fill) {
+    auto msg = std::make_shared<HostMsg3>();
+    fill(*msg->mutable_single_value());
+    ProtoBacking backing(msg.get());
+    return backing.ReadField(35, "single_value", CelType::Int());
+  };
+  auto null_v = read([](google::protobuf::Value& v) {
+    v.set_null_value(google::protobuf::NULL_VALUE);
+  });
+  ASSERT_THAT(null_v, IsOk());
+  EXPECT_EQ(null_v->kind(), Value::Kind::kNull);
+
+  auto num = read([](google::protobuf::Value& v) {
+    v.set_number_value(1.5);
+  });
+  ASSERT_THAT(num, IsOk());
+  EXPECT_EQ(num->kind(), Value::Kind::kDouble);
+
+  auto str = read([](google::protobuf::Value& v) {
+    v.set_string_value("hi");
+  });
+  ASSERT_THAT(str, IsOk());
+  EXPECT_EQ(str->kind(), Value::Kind::kString);
+
+  auto boolean = read([](google::protobuf::Value& v) {
+    v.set_bool_value(true);
+  });
+  ASSERT_THAT(boolean, IsOk());
+  EXPECT_EQ(boolean->kind(), Value::Kind::kBool);
+
+  auto nested_struct = read([](google::protobuf::Value& v) {
+    (*v.mutable_struct_value()->mutable_fields())["k"].set_number_value(1.0);
+  });
+  ASSERT_THAT(nested_struct, IsOk());
+  EXPECT_EQ(nested_struct->kind(), Value::Kind::kMap);
+
+  auto nested_list = read([](google::protobuf::Value& v) {
+    v.mutable_list_value()->add_values()->set_number_value(1.0);
+  });
+  ASSERT_THAT(nested_list, IsOk());
+  EXPECT_EQ(nested_list->kind(), Value::Kind::kList);
+
+  // An unset Value has no oneof arm set and decodes to null.
+  auto unset = read([](google::protobuf::Value&) {});
+  ASSERT_THAT(unset, IsOk());
+  EXPECT_EQ(unset->kind(), Value::Kind::kNull);
+}
+
+// Route 2 into the JSON unpackers: an `Any` whose payload is a JSON
+// well-known type.  `ReadAnyMessageArm` shares `MaybeUnpackWktMessage`
+// with the field-read arm, so unwrapping the Any should chain straight
+// into `UnpackJsonStruct` rather than handing back a message backing.
+TEST(JsonWktReadTest, AnyPayloadOfStructChainsIntoTheJsonUnpacker) {
+  auto msg = std::make_shared<HostMsg3>();
+  google::protobuf::Struct payload;
+  (*payload.mutable_fields())["k"].set_number_value(7.0);
+  ASSERT_TRUE(msg->mutable_single_any()->PackFrom(payload));
+  ProtoBacking backing(msg.get());
+  auto v = backing.ReadField(30, "single_any", IgnoredType());
+  ASSERT_THAT(v, IsOk());
+  EXPECT_EQ(v->kind(), Value::Kind::kMap)
+      << "Any(Struct) should unpack to a CEL map, got kind "
+      << static_cast<int>(v->kind());
+}
+
+TEST(JsonWktReadTest, AnyPayloadOfListValueChainsIntoTheJsonUnpacker) {
+  auto msg = std::make_shared<HostMsg3>();
+  google::protobuf::ListValue payload;
+  payload.add_values()->set_number_value(1.0);
+  ASSERT_TRUE(msg->mutable_single_any()->PackFrom(payload));
+  ProtoBacking backing(msg.get());
+  auto v = backing.ReadField(30, "single_any", IgnoredType());
+  ASSERT_THAT(v, IsOk());
+  EXPECT_EQ(v->kind(), Value::Kind::kList)
+      << "Any(ListValue) should unpack to a CEL list, got kind "
+      << static_cast<int>(v->kind());
+}
+
+// ═══════════ Map-trampoline guards ═══════════
+//
+// `cel_map_size` / `cel_map_in` open with an absorb, then guard the
+// operand kind, the externref lookup, and (for `in`) whether the key
+// decodes to a valid map-key kind.  A type-checked expression cannot
+// deliver a non-map or an undecodable key, so these arms are reached by
+// staging the wire values directly.
+
+namespace {
+
+// Stage `cv` at the fixture's message slot and run cel_map_size.
+CelValue MapSize(Layer2Fixture& f, const CelValue& cv) {
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(
+      CelMapSizeImpl(Layer2Fixture::kOutSlot, Layer2Fixture::kMsgSlot, f.Ctx()),
+      IsOk());
+  return f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+}
+
+}  // namespace
+
+TEST(MapTrampolineGuardTest, SizeOnNonMapPoisons) {
+  Layer2Fixture f;
+  CelValue i{};
+  i.kind = CEL_INT;
+  i.payload.i = 1;
+  EXPECT_EQ(MapSize(f, i).kind, CEL_ERROR);
+}
+
+TEST(MapTrampolineGuardTest, SizeAbsorbsErrorAndUnknown) {
+  Layer2Fixture f;
+  CelValue err{};
+  err.kind = CEL_ERROR;
+  err.payload.err = static_cast<uint32_t>(celwasm::ErrorCode::kOverflow);
+  EXPECT_EQ(MapSize(f, err).kind, CEL_ERROR);
+  CelValue unk{};
+  unk.kind = CEL_UNKNOWN;
+  unk.payload.unk = 5;
+  const CelValue got = MapSize(f, unk);
+  EXPECT_EQ(got.kind, CEL_UNKNOWN);
+  EXPECT_EQ(got.payload.unk, 5u);
+}
+
+TEST(MapTrampolineGuardTest, SizeOnUninternedRefIsAnInfrastructureFailure) {
+  Layer2Fixture f;
+  CelValue cv{};
+  cv.kind = CEL_MAP_HOST;
+  cv.payload.ref_slot = 999;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(
+      CelMapSizeImpl(Layer2Fixture::kOutSlot, Layer2Fixture::kMsgSlot, f.Ctx()),
+      StatusIs(absl::StatusCode::kFailedPrecondition,
+               testing::HasSubstr("not found in ExternrefTable")));
+}
+
+TEST(MapTrampolineGuardTest, InOnNonMapPoisons) {
+  Layer2Fixture f;
+  constexpr uint32_t kKeySlot = 96;
+  CelValue key{};
+  key.kind = CEL_INT;
+  key.payload.i = 1;
+  f.mem.WriteCelValue(kKeySlot, key);
+  CelValue not_a_map{};
+  not_a_map.kind = CEL_INT;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, not_a_map);
+  EXPECT_THAT(CelMapInImpl(Layer2Fixture::kOutSlot, kKeySlot,
+                           Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  EXPECT_EQ(f.mem.ReadCelValue(Layer2Fixture::kOutSlot).kind, CEL_ERROR);
+}
+
+// `cel_map_in` decodes the key to a `celwasm::Value` before asking the
+// backing.  A key kind outside the map-key set (langdef restricts them
+// to bool / int / uint / string) fails to decode and poisons — the
+// checker prevents it, so only a staged wire value reaches the arm.
+TEST(MapTrampolineGuardTest, InWithUndecodableKeyPoisons) {
+  Layer2Fixture f;
+  constexpr uint32_t kKeySlot = 96;
+  // A double is not a valid map-key kind.
+  CelValue key{};
+  key.kind = CEL_DOUBLE;
+  key.payload.d = 1.5;
+  f.mem.WriteCelValue(kKeySlot, key);
+  CelValue map_cv{};
+  map_cv.kind = CEL_MAP_HOST;
+  map_cv.payload.ref_slot = f.refs.InternMap(std::make_shared<HostMap>(
+      std::vector<std::pair<celwasm::Value, celwasm::Value>>{
+          {celwasm::Value::Int(1), celwasm::Value::Int(2)}}));
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, map_cv);
+  EXPECT_THAT(CelMapInImpl(Layer2Fixture::kOutSlot, kKeySlot,
+                           Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  EXPECT_EQ(f.mem.ReadCelValue(Layer2Fixture::kOutSlot).kind, CEL_ERROR);
+}
+
+// The happy path through the same trampoline, so the poison rows above
+// are not the only thing pinning it.
+TEST(MapTrampolineGuardTest, InWithValidKeyReportsMembership) {
+  Layer2Fixture f;
+  constexpr uint32_t kKeySlot = 96;
+  CelValue key{};
+  key.kind = CEL_INT;
+  key.payload.i = 1;
+  f.mem.WriteCelValue(kKeySlot, key);
+  CelValue map_cv{};
+  map_cv.kind = CEL_MAP_HOST;
+  map_cv.payload.ref_slot = f.refs.InternMap(std::make_shared<HostMap>(
+      std::vector<std::pair<celwasm::Value, celwasm::Value>>{
+          {celwasm::Value::Int(1), celwasm::Value::Int(2)}}));
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, map_cv);
+  EXPECT_THAT(CelMapInImpl(Layer2Fixture::kOutSlot, kKeySlot,
+                           Layer2Fixture::kMsgSlot, f.Ctx()),
+              IsOk());
+  const CelValue out = f.mem.ReadCelValue(Layer2Fixture::kOutSlot);
+  EXPECT_EQ(out.kind, CEL_BOOL);
+  EXPECT_NE(out.payload.b, 0);
+}
+
+TEST(MapTrampolineGuardTest, InOnUninternedRefIsAnInfrastructureFailure) {
+  Layer2Fixture f;
+  constexpr uint32_t kKeySlot = 96;
+  CelValue key{};
+  key.kind = CEL_INT;
+  f.mem.WriteCelValue(kKeySlot, key);
+  CelValue cv{};
+  cv.kind = CEL_MAP_HOST;
+  cv.payload.ref_slot = 999;
+  f.mem.WriteCelValue(Layer2Fixture::kMsgSlot, cv);
+  EXPECT_THAT(CelMapInImpl(Layer2Fixture::kOutSlot, kKeySlot,
+                           Layer2Fixture::kMsgSlot, f.Ctx()),
+              StatusIs(absl::StatusCode::kFailedPrecondition,
+                       testing::HasSubstr("not found in ExternrefTable")));
+}
+
+// ═══════════ Nested singular-message set guards ═══════════
+//
+// `SetNestedSingularMessage` validates the incoming wire value before
+// touching Reflection: it must be a CEL_MESSAGE, its externref must
+// resolve, and the backing must carry a real proto.  A type-checked
+// field-init cannot violate any of those, so each is staged directly.
+
+TEST(NestedMessageSetGuardTest, NonMessageValueIsRejected) {
+  PackHarness h;
+  CelValue i{};
+  i.kind = CEL_INT;
+  i.payload.i = 1;
+  h.StageRaw(i);
+  EXPECT_THAT(h.SetField(17, "inner"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("is MESSAGE but value kind is")));
+}
+
+TEST(NestedMessageSetGuardTest, UninternedSourceIsRejected) {
+  PackHarness h;
+  CelValue cv{};
+  cv.kind = CEL_MESSAGE;
+  cv.payload.msg_slot = 999;
+  h.StageRaw(cv);
+  EXPECT_THAT(h.SetField(17, "inner"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("has no externref entry")));
+}
+
+TEST(NestedMessageSetGuardTest, BackingWithoutAProtoIsRejected) {
+  PackHarness h;
+  h.StageBackingSrc(std::make_shared<JsonLikeBacking>(
+      absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  EXPECT_THAT(h.SetField(17, "inner"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("has no proto message")));
+}
+
+// Repeated-message element guards, the arena-list path.  Each element
+// must resolve through the externref table to a backing that carries a
+// real proto; batch-27's rows covered only the element-kind arm.
+TEST(RepeatedMessageElementGuardTest, UninternedElementIsRejected) {
+  PackHarness h;
+  CelValue elem{};
+  elem.kind = CEL_MESSAGE;
+  elem.payload.msg_slot = 999;
+  h.StageArenaList({elem});
+  EXPECT_THAT(h.SetField(27, "rep_msg"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("element has no externref entry")));
+}
+
+TEST(RepeatedMessageElementGuardTest, ElementBackingWithoutAProtoIsRejected) {
+  PackHarness h;
+  CelValue elem = h.InternBackingElement(std::make_shared<JsonLikeBacking>(
+      absl::flat_hash_map<std::string, int64_t>{{"x", 1}}));
+  h.StageArenaList({elem});
+  EXPECT_THAT(
+      h.SetField(27, "rep_msg"),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               testing::HasSubstr("element backing has no proto message")));
+}
+
+// The host-list repeated-message path has its own copies of the
+// element guards (the arena-list path's are covered above): the element
+// must be a kMessage, and its backing must carry a real proto.  A
+// type-checked field-init cannot violate either.
+TEST(HostListRepeatedMessageGuardTest, NonMessageElementIsRejected) {
+  PackHarness h;
+  h.StageHostListSrc({celwasm::Value::Int(1)});
+  EXPECT_THAT(h.SetField(27, "rep_msg"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("element kind != kMessage")));
+}
+
+TEST(HostListRepeatedMessageGuardTest, ElementBackingWithoutAProtoIsRejected) {
+  PackHarness h;
+  h.StageHostListSrc(
+      {celwasm::Value::HostMessage(std::make_shared<JsonLikeBacking>(
+          absl::flat_hash_map<std::string, int64_t>{{"x", 1}}))});
+  EXPECT_THAT(h.SetField(27, "rep_msg"),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       testing::HasSubstr("backing has no proto message")));
+}
+
 }  // namespace celwasm

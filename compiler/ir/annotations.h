@@ -38,6 +38,14 @@ enum class Repr : uint8_t {
   kOptional,
 };
 
+// Last enumerator of each enum, for the name-coverage tests in
+// `annotations_test.cc`: they iterate [0, max] demanding a real name
+// and check that max + 1 has none.  ADDING AN ENUMERATOR WITHOUT
+// BUMPING THE MATCHING CONSTANT FAILS THOSE TESTS — the one-past check
+// starts returning a name where it must not.  Kept out of the enums
+// themselves so the enumerator lists stay consistently uninitialised.
+inline constexpr Repr kReprMax = Repr::kOptional;
+
 absl::string_view ReprName(Repr r);
 
 // Where a node's result CelValue lives at eval time.  Populated by
@@ -49,6 +57,8 @@ enum class StorageKind : uint8_t {
   kWorkspaceSlot,  // CelValue in a pre-assigned 24B workspace cell
   kLocal,          // wasm local (ident_expr only)
 };
+
+inline constexpr StorageKind kStorageKindMax = StorageKind::kLocal;
 
 absl::string_view StorageKindName(StorageKind k);
 
@@ -73,6 +83,8 @@ enum class Origin : uint8_t {
   kArena = 1,    // arena-backed (kCreateMap / kCreateList / …)
   kHost = 2,     // host-backed (proto field read, Activation::Bind)
 };
+
+inline constexpr Origin kOriginMax = Origin::kHost;
 
 absl::string_view OriginName(Origin o);
 
