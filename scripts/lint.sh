@@ -56,17 +56,26 @@ done
 declare -a files=()
 
 # C/C++ sources under the project packages, as git pathspecs (reused below).
+#
+# The `:(glob)` prefix is load-bearing.  Without it git matches these
+# with fnmatch semantics, where `**` is just `*` and the `/` between it
+# and the filename must be matched literally — so `eval/**/*.h` picks up
+# `eval/internal/abi_decode.h` but NOT `eval/value.h`, silently skipping
+# every top-level file in each role dir (21 of the 33 headers under
+# `eval/`, including the whole public API surface).  `:(glob)` switches
+# to wildmatch, where `**` means "zero or more path components" and both
+# depths match.
 _cc_globs=(
-  'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c'
-  'eval/**/*.cc' 'eval/**/*.h' 'eval/**/*.c'
-  'common/**/*.cc' 'common/**/*.h' 'common/**/*.c'
-  'abi/**/*.cc' 'abi/**/*.h' 'abi/**/*.c'
-  'runtime/**/*.cc' 'runtime/**/*.h' 'runtime/**/*.c'
-  'tools/**/*.cc' 'tools/**/*.h' 'tools/**/*.c'
-  'conformance/**/*.cc' 'conformance/**/*.h' 'conformance/**/*.c'
-  'e2e/**/*.cc' 'e2e/**/*.h' 'e2e/**/*.c'
-  'benchmark/**/*.cc' 'benchmark/**/*.h' 'benchmark/**/*.c'
-  'testdata/**/*.cc' 'testdata/**/*.h' 'testdata/**/*.c'
+  ':(glob)compiler/**/*.cc' ':(glob)compiler/**/*.h' ':(glob)compiler/**/*.c'
+  ':(glob)eval/**/*.cc' ':(glob)eval/**/*.h' ':(glob)eval/**/*.c'
+  ':(glob)shared/**/*.cc' ':(glob)shared/**/*.h' ':(glob)shared/**/*.c'
+  ':(glob)abi/**/*.cc' ':(glob)abi/**/*.h' ':(glob)abi/**/*.c'
+  ':(glob)runtime/**/*.cc' ':(glob)runtime/**/*.h' ':(glob)runtime/**/*.c'
+  ':(glob)tools/**/*.cc' ':(glob)tools/**/*.h' ':(glob)tools/**/*.c'
+  ':(glob)conformance/**/*.cc' ':(glob)conformance/**/*.h' ':(glob)conformance/**/*.c'
+  ':(glob)e2e/**/*.cc' ':(glob)e2e/**/*.h' ':(glob)e2e/**/*.c'
+  ':(glob)benchmark/**/*.cc' ':(glob)benchmark/**/*.h' ':(glob)benchmark/**/*.c'
+  ':(glob)testdata/**/*.cc' ':(glob)testdata/**/*.h' ':(glob)testdata/**/*.c'
 )
 
 _dedup_files() {
@@ -78,7 +87,7 @@ _dedup_files() {
 case "${1:-}" in
   --all)
     while IFS= read -r -d '' f; do files+=("$f"); done < <(
-      find compiler eval common abi runtime tools conformance e2e bench testdata \
+      find compiler eval shared abi runtime tools conformance e2e benchmark testdata \
         -type f \( -name '*.cc' -o -name '*.h' -o -name '*.c' \) \
         -print0
     )
