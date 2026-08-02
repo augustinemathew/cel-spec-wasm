@@ -12,7 +12,7 @@
 #include "absl/types/span.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
-#include "runtime/cel_internal.h"  // cel_value_eq
+#include "runtime/cel_internal.h"  // cel_map_key_eq
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_map_hash.h"
@@ -227,7 +227,7 @@ namespace {
 // a key whose CelSpan points at the staged copy.  Non-span keys carry
 // their payload in-struct and pass through verbatim.
 //
-// Byte-identity: `cel_map_key_hash` / `cel_value_eq` over the staged key
+// Byte-identity: `cel_map_key_hash` / `cel_map_key_eq` over the staged key
 // read the same content + length the runtime would, and both are
 // content-based (the offset value never enters the hash), so the computed
 // control byte + slot placement match `cel_map_index_build` bit-for-bit.
@@ -264,7 +264,7 @@ std::optional<CelValue> StagePlacementKey(const CelValue& key,
 
 // Place staged entry `i` into the index, mirroring `index_place_entry` in
 // cel_map_index.c verbatim (same triangular probe, same control-byte /
-// clone / slot writes, same dup-via-cel_value_eq detection).  Returns true
+// clone / slot writes, same dup-via-cel_map_key_eq detection).  Returns true
 // on placement, false on a duplicate key.  `ctrl` / `slots` point at the
 // in-progress baked index; `staged[]` are the placement keys.
 bool PlaceBakedEntry(absl::Span<const CelValue> staged, uint8_t* ctrl,
@@ -281,7 +281,7 @@ bool PlaceBakedEntry(absl::Span<const CelValue> staged, uint8_t* ctrl,
     while (match != 0) {
       const auto lane = static_cast<uint32_t>(__builtin_ctzll(match) >> 3);
       const uint32_t slot = (seq + lane) & mask;
-      if (cel_value_eq(&staged[slots[slot]], &key)) {
+      if (cel_map_key_eq(&staged[slots[slot]], &key)) {
         return false;  // duplicate key.
       }
       match &= match - 1;
@@ -370,11 +370,11 @@ MapIndexDecision StageAndDecideIndex(
     }
     return MapIndexDecision{/*materializable=*/true, std::move(block)};
   }
-  // Below threshold: no index; dup detection is the O(n^2) cel_value_eq
+  // Below threshold: no index; dup detection is the O(n^2) cel_map_key_eq
   // scan cel_map_insert performs.
   for (uint32_t i = 0; i < n; ++i) {
     for (uint32_t j = i + 1; j < n; ++j) {
-      if (cel_value_eq(&staged[i], &staged[j])) {
+      if (cel_map_key_eq(&staged[i], &staged[j])) {
         return MapIndexDecision{/*materializable=*/false, std::nullopt};
       }
     }

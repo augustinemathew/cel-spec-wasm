@@ -158,7 +158,7 @@ Live guards (formerly skipped, now regression pins):
   `PbtSizeOfExistsOneTernaryBytes`), each carrying its originating seed.
 
 Skipped (open, each with the verified reproduction and root-cause file:line in
-its skip message): lossy double map-key equality; the two arena-cliff `size()`
+its skip message): the two arena-cliff `size()`
 cases (skip reason re-verified 2026-06-10 — they now trip the compile-time
 static-region gate *before* the arena; un-skipping needs BOTH a relocatable
 static region AND arena grow/spill); dyn double/uint list-index coercion;

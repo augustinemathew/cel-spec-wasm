@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -936,11 +937,16 @@ TEST_F(MapIndexTest, H2ZeroControlByteKeysResolve) {
       << "256 int keys should include at least one H2==0 control byte";
 }
 
-// The ≥2^53 double-lookup-key linear fallback (§5.1): build an int-keyed
-// indexed map and look up a double key ≥2^53; the indexed result must
-// match the linear scan (parity), because the lookup kernel bypasses the
-// index for such keys.
-TEST_F(MapIndexTest, LargeDoubleKeyFallsBackToLinearParity) {
+// ≥2^53 double lookup keys go through the INDEX like every other key.
+// The hash folds a double onto the integer it exactly represents and
+// `cel_map_key_eq` accepts exactly that conversion, so hash and
+// comparator agree at every magnitude — there is no bypass.  (An
+// earlier `key_forces_linear` predicate routed these keys to a linear
+// scan; it existed only because the comparator was then the lossy `==`
+// rule, under which one double matched a RANGE of ints that no single
+// hash token could reach.)  This asserts indexed == linear parity for
+// exactly those keys.
+TEST_F(MapIndexTest, LargeDoubleKeyResolvesThroughTheIndex) {
   constexpr uint32_t kN = 16;
   // Keys span 2^53 .. 2^53+kN-1.  int64 exactly represents these.
   const int64_t kBase = 9007199254740992LL;  // 2^53
@@ -956,7 +962,7 @@ TEST_F(MapIndexTest, LargeDoubleKeyFallsBackToLinearParity) {
   const auto* hdr = reinterpret_cast<const ArenaMapHeader*>(
       cel_mem_base() + cel_value_at(indexed)->payload.arena_map.header_ptr);
   ASSERT_NE(hdr->index_offset, 0u);
-  // A double exactly equal to 2^53 (representable) — forces linear.
+  // A double exactly equal to 2^53 (representable) — hits entry 0.
   const double d = 9007199254740992.0;  // == 2^53
   uint32_t oi = NewSlot();
   uint32_t ol = NewSlot();
@@ -980,14 +986,16 @@ TEST_F(MapIndexTest, LargeDoubleKeyFallsBackToLinearParity) {
 // Cross-kind dup `{1:1, 1u:2}` built directly (bypassing cel_map_insert's
 // own dup check) is re-validated and poisoned by cel_map_index_build with
 // CEL_ERR_DUPLICATE_KEY.  This asserts the CURRENT runtime behavior
-// (cel_value_eq treats int 1 and uint 1 as equal map keys), not cel-cpp.
+// (cel_map_key_eq treats int 1 and uint 1 as equal map keys); cel-cpp
+// accepts `{1:'a', 1u:'b'}` as two distinct keys — a separate
+// int-vs-uint key-identity gap, not the lossless-conversion rule.
 TEST_F(MapIndexTest, BuildPoisonsCrossKindDuplicate) {
   // Need ≥ threshold entries so the build runs; pad with distinct keys.
   constexpr uint32_t kN = 9;
   uint32_t m = NewSlot();
   cel_map_create(m, kN);
   cel_map_insert(m, cel_make_int(1), cel_make_int(1));
-  // The dup: uint 1 compares equal to int 1 under cel_value_eq, but
+  // The dup: uint 1 compares equal to int 1 under cel_map_key_eq, but
   // cel_map_insert's linear dup check ALSO catches it — so to drive the
   // index-build re-validation we insert distinct keys here and assert the
   // already-poisoned map (the insert path fired first).  This pins that
@@ -1003,7 +1011,7 @@ TEST_F(MapIndexTest, BuildPoisonsCrossKindDuplicate) {
 }
 
 // Direct cross-kind dup that BYPASSES cel_map_insert: write two
-// cel_value_eq-equal keys straight into the entries run (via
+// cel_map_key_eq-equal keys straight into the entries run (via
 // insert_at-style last-write... no — use raw writes), build the index,
 // and assert cel_map_index_build itself poisons.  This is the path the
 // design names (insert paths skip the dup check for dynamic maps).
@@ -1071,6 +1079,269 @@ TEST_F(MapIndexTest, EqArenaOverLargeIndexedMaps) {
   uint32_t out2 = NewSlot();
   cel_map_eq_arena(out2, a, c);
   EXPECT_EQ(cel_value_at(out2)->payload.b, 0);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Lossless map-key lookup (CELW-0004).
+//
+// Map-key matching is EXACT, not the lossy `==` rule: cel-cpp converts
+// the query key to the stored key's type only when the conversion
+// round-trips (`internal/number.h` `LosslessConvertibleToIntVisitor` /
+// `LosslessConvertibleToUintVisitor`, driven from
+// `eval/eval/container_access_step.cc::LookupInMap` and
+// `runtime/standard/container_membership_functions.cc`'s
+// `doubleKeyInSet`).  Above 2^53 one double is the rounded image of a
+// RANGE of int64s, so a rounded double must MISS a neighbouring stored
+// int even though `==` calls them equal.
+//
+// Oracle-pinned in `testdata/cel_cpp_oracle_test.cc`
+// (`MapKeyNumericCrossType`):
+//   `dyn(9007199254740993) == 9007199254740992.0`        -> true
+//   `dyn(9007199254740992.0) in {9007199254740993: 'a'}` -> false
+//
+// Every case runs through BOTH the linear scan and the SwissTable index
+// (the map is padded past `kCelMapIndexThreshold`), because the index
+// and the comparator must agree exactly — a hash that folded a rounded
+// double onto a different token than the comparator accepts is a silent
+// false miss.
+// ══════════════════════════════════════════════════════════════════
+
+constexpr int64_t kTwo53 = 9007199254740992LL;  // 2^53
+constexpr double kTwo53D = 9007199254740992.0;
+constexpr double kTwo53Plus2D = 9007199254740994.0;
+
+struct LosslessKeyCase {
+  const char* name;
+  // Stored key (int or uint), built into a padded map.
+  uint32_t (*store)();
+  // Double lookup key.
+  double query;
+  bool expect_hit;
+};
+
+class MapLosslessKeyTest
+    : public MapTest,
+      public ::testing::WithParamInterface<LosslessKeyCase> {
+ public:
+  // A map holding `key` plus `kPad` filler entries, so `count` clears
+  // `kCelMapIndexThreshold` and `cel_map_index_build` really allocates.
+  // Filler keys are small strings — they can never collide with a
+  // numeric key under any rule.
+  static constexpr uint32_t kPad = 12;
+  uint32_t MakePaddedMap(uint32_t key_slot, bool build_index) {
+    uint32_t m = NewSlot();
+    cel_map_create(m, kPad + 1);
+    cel_map_insert(m, key_slot, cel_make_int(777));
+    for (uint32_t i = 0; i < kPad; ++i) {
+      const std::string f = "pad" + std::to_string(i);
+      cel_map_insert(m,
+                     cel_make_string(f.data(), static_cast<uint32_t>(f.size())),
+                     cel_make_int(static_cast<int64_t>(i)));
+    }
+    if (build_index) cel_map_index_build(m);
+    return m;
+  }
+};
+
+TEST_P(MapLosslessKeyTest, LookupMatchesLosslessRuleOnBothPaths) {
+  const LosslessKeyCase& c = GetParam();
+  for (const bool indexed : {false, true}) {
+    uint32_t m = MakePaddedMap(c.store(), indexed);
+    if (indexed) {
+      const auto* hdr = reinterpret_cast<const ArenaMapHeader*>(
+          cel_mem_base() + cel_value_at(m)->payload.arena_map.header_ptr);
+      ASSERT_NE(hdr->index_offset, 0u)
+          << c.name << ": padded map should carry an index";
+    }
+    uint32_t out = NewSlot();
+    cel_map_lookup_arena(out, m, cel_make_double(c.query));
+    if (c.expect_hit) {
+      ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_INT))
+          << c.name << " indexed=" << indexed;
+      EXPECT_EQ(cel_value_at(out)->payload.i, 777)
+          << c.name << " indexed=" << indexed;
+    } else {
+      ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_ERROR))
+          << c.name << " indexed=" << indexed;
+      EXPECT_EQ(cel_value_at(out)->payload.err,
+                static_cast<uint32_t>(CEL_ERR_NO_SUCH_KEY))
+          << c.name << " indexed=" << indexed;
+    }
+    // `k in m` must agree with `m[k]` on both paths.
+    uint32_t in_out = NewSlot();
+    cel_map_in_arena(in_out, cel_make_double(c.query), m);
+    ASSERT_EQ(cel_value_at(in_out)->kind, static_cast<uint32_t>(CEL_BOOL))
+        << c.name;
+    EXPECT_EQ(cel_value_at(in_out)->payload.b != 0, c.expect_hit)
+        << "in " << c.name << " indexed=" << indexed;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Int53Boundary, MapLosslessKeyTest,
+    ::testing::Values(
+        LosslessKeyCase{"stored_2p53_minus_1_query_exact",
+                        +[]() {
+                          return cel_make_int(kTwo53 - 1);
+                        },
+                        9007199254740991.0, true},
+        LosslessKeyCase{"stored_2p53_query_exact",
+                        +[]() {
+                          return cel_make_int(kTwo53);
+                        },
+                        kTwo53D, true},
+        // CELW-0004: 2^53+1 has no exact double; the rounded 2^53.0 must
+        // NOT find it (though `==` says they are equal).
+        LosslessKeyCase{"stored_2p53_plus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_int(kTwo53 + 1);
+                        },
+                        kTwo53D, false},
+        LosslessKeyCase{"stored_2p53_plus_1_query_upper_neighbour_misses",
+                        +[]() {
+                          return cel_make_int(kTwo53 + 1);
+                        },
+                        kTwo53Plus2D, false},
+        LosslessKeyCase{"stored_2p53_plus_2_query_exact",
+                        +[]() {
+                          return cel_make_int(kTwo53 + 2);
+                        },
+                        kTwo53Plus2D, true},
+        LosslessKeyCase{"stored_2p54_plus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_int(18014398509481985LL);
+                        },
+                        18014398509481984.0, false},
+        // Negative equivalents.
+        LosslessKeyCase{"stored_neg_2p53_query_exact",
+                        +[]() {
+                          return cel_make_int(-kTwo53);
+                        },
+                        -kTwo53D, true},
+        LosslessKeyCase{"stored_neg_2p53_minus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_int(-(kTwo53 + 1));
+                        },
+                        -kTwo53D, false},
+        LosslessKeyCase{"stored_int64_max_query_rounded_misses",
+                        +[]() {
+                          return cel_make_int(INT64_MAX);
+                        },
+                        9223372036854775808.0, false},
+        LosslessKeyCase{"stored_int64_min_query_exact",
+                        +[]() {
+                          return cel_make_int(INT64_MIN);
+                        },
+                        -9223372036854775808.0, true}),
+    [](const ::testing::TestParamInfo<LosslessKeyCase>& i) {
+      return std::string(i.param.name);
+    });
+
+INSTANTIATE_TEST_SUITE_P(
+    UintBoundary, MapLosslessKeyTest,
+    ::testing::Values(
+        LosslessKeyCase{"stored_uint_2p53_query_exact",
+                        +[]() {
+                          return cel_make_uint(9007199254740992ULL);
+                        },
+                        kTwo53D, true},
+        LosslessKeyCase{"stored_uint_2p53_plus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_uint(9007199254740993ULL);
+                        },
+                        kTwo53D, false},
+        LosslessKeyCase{"stored_uint_2p63_query_exact",
+                        +[]() {
+                          return cel_make_uint(9223372036854775808ULL);
+                        },
+                        9223372036854775808.0, true},
+        LosslessKeyCase{"stored_uint_2p63_plus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_uint(9223372036854775809ULL);
+                        },
+                        9223372036854775808.0, false},
+        // UINT64_MAX rounds to 2^64, which is out of uint64 range.
+        LosslessKeyCase{"stored_uint64_max_query_rounded_misses",
+                        +[]() {
+                          return cel_make_uint(UINT64_MAX);
+                        },
+                        18446744073709551616.0, false},
+        LosslessKeyCase{"stored_uint_max_representable_double_hits",
+                        +[]() {
+                          return cel_make_uint(18446744073709549568ULL);
+                        },
+                        18446744073709549568.0, true},
+        LosslessKeyCase{"stored_uint_zero_query_negative_misses",
+                        +[]() {
+                          return cel_make_uint(0);
+                        },
+                        -1.0, false}),
+    [](const ::testing::TestParamInfo<LosslessKeyCase>& i) {
+      return std::string(i.param.name);
+    });
+
+INSTANTIATE_TEST_SUITE_P(
+    NonFiniteQuery, MapLosslessKeyTest,
+    ::testing::Values(
+        LosslessKeyCase{"nan_query_misses",
+                        +[]() {
+                          return cel_make_int(0);
+                        },
+                        std::numeric_limits<double>::quiet_NaN(), false},
+        LosslessKeyCase{"pos_inf_query_misses",
+                        +[]() {
+                          return cel_make_int(INT64_MAX);
+                        },
+                        std::numeric_limits<double>::infinity(), false},
+        LosslessKeyCase{"neg_inf_query_misses",
+                        +[]() {
+                          return cel_make_int(INT64_MIN);
+                        },
+                        -std::numeric_limits<double>::infinity(), false},
+        LosslessKeyCase{"non_integral_query_misses",
+                        +[]() {
+                          return cel_make_int(1);
+                        },
+                        1.5, false},
+        LosslessKeyCase{"integral_query_below_2p53_hits",
+                        +[]() {
+                          return cel_make_int(3);
+                        },
+                        3.0, true}),
+    [](const ::testing::TestParamInfo<LosslessKeyCase>& i) {
+      return std::string(i.param.name);
+    });
+
+// The KEY half of map equality uses the same lossless rule (cel-cpp
+// `equality_functions.cc::CheckAlternativeNumericType`).  Our stored
+// keys are never doubles, so the reachable divergence here is int-vs-
+// uint — which both rules compare exactly.  This pins that map equality
+// keeps matching int and uint keys of the same mathematical value, and
+// stops matching ones that only agree after rounding.
+TEST_F(MapTest, MapEqualityMatchesIntAndUintKeysOfSameValue) {
+  uint32_t a = NewSlot();
+  uint32_t b = NewSlot();
+  cel_map_create(a, 1);
+  cel_map_create(b, 1);
+  cel_map_insert(a, cel_make_int(kTwo53 + 1), cel_make_int(5));
+  cel_map_insert(b, cel_make_uint(9007199254740993ULL), cel_make_int(5));
+  uint32_t out = NewSlot();
+  cel_map_eq_arena(out, a, b);
+  ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(cel_value_at(out)->payload.b, 1);
+}
+
+TEST_F(MapTest, MapEqualityRejectsKeysThatOnlyAgreeAfterRounding) {
+  uint32_t a = NewSlot();
+  uint32_t b = NewSlot();
+  cel_map_create(a, 1);
+  cel_map_create(b, 1);
+  cel_map_insert(a, cel_make_int(kTwo53 + 1), cel_make_int(5));
+  cel_map_insert(b, cel_make_uint(9007199254740992ULL), cel_make_int(5));
+  uint32_t out = NewSlot();
+  cel_map_eq_arena(out, a, b);
+  ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(cel_value_at(out)->payload.b, 0);
 }
 
 }  // namespace
