@@ -20,6 +20,10 @@
 #                                  the unchecked wasmtime call path
 #                                  ($eval entry + all 21 cel_host
 #                                  trampolines)
+#   comprehension_accu_absorption - 3VL absorption in the comprehension
+#                                  accumulator (exists / all / exists_one)
+#   transform_map_entry          - transformMapEntry with a non-literal
+#                                  entry expression
 #
 # Every expected value/error below is confirmed against the REAL
 # cel-cpp pipeline by conformance/celwasm_edges_oracle_test.cc, which
@@ -581,5 +585,139 @@ section {
     name: "int_parse_error"
     expr: "int('forty-two')"
     eval_error: { errors: { message: "cannot convert string to int" } }
+  }
+}
+
+section {
+  name: "comprehension_accu_absorption"
+  description: "3VL absorption in the comprehension accumulator.  `exists` desugars to `@result || pred`, so per langdef an error from one element is ABSORBED once a later element matches; the error surfaces only if NO element ever matches.  `all` is the mirror via `&&`.  `exists_one` folds with `+`, whose strict 3VL has no absorption at all."
+
+  # The loop-cond peephole used to br_if-exit on the accumulator's
+  # bool-payload BITS without checking `accu.kind == CEL_BOOL`.  An
+  # ERROR accumulator is a non-zero error code sitting in that payload
+  # slot, so it read as "true", short-circuited the loop, and became
+  # the result.  Rows 1-2 below are the reproducer and its mirror.
+
+  test {
+    name: "exists_error_then_match"
+    description: "The erroring element comes first, a matching one second -- the error must be absorbed."
+    expr: "[0, 2].exists(x, 2/x == 1)"
+    value: { bool_value: true }
+  }
+  test {
+    name: "exists_match_then_error"
+    description: "Other order: the accumulator is already true when the erroring element is reached."
+    expr: "[2, 0].exists(x, 2/x == 1)"
+    value: { bool_value: true }
+  }
+  test {
+    name: "exists_error_and_no_match"
+    description: "No element ever matches, so the error survives to the result."
+    expr: "[0, 3].exists(x, 2/x == 1)"
+    eval_error: { errors: { message: "divide by zero" } }
+  }
+  test {
+    name: "exists_all_match"
+    expr: "[2, 2].exists(x, 2/x == 1)"
+    value: { bool_value: true }
+  }
+  test {
+    name: "exists_none_match"
+    expr: "[3, 4].exists(x, 2/x == 1)"
+    value: { bool_value: false }
+  }
+  test {
+    name: "exists_empty_range"
+    expr: "[].exists(x, 2/x == 1)"
+    value: { bool_value: false }
+  }
+  test {
+    name: "all_error_then_false"
+    description: "`all` mirrors `exists`: a later FALSE absorbs the error."
+    expr: "[0, 3].all(x, 2/x == 1)"
+    value: { bool_value: false }
+  }
+  test {
+    name: "all_false_then_error"
+    expr: "[3, 0].all(x, 2/x == 1)"
+    value: { bool_value: false }
+  }
+  test {
+    name: "all_error_and_no_false"
+    description: "Every non-erroring element is true, so nothing absorbs."
+    expr: "[0, 2].all(x, 2/x == 1)"
+    eval_error: { errors: { message: "divide by zero" } }
+  }
+  test {
+    name: "all_all_match"
+    expr: "[2, 2].all(x, 2/x == 1)"
+    value: { bool_value: true }
+  }
+  test {
+    name: "all_empty_range"
+    expr: "[].all(x, 2/x == 1)"
+    value: { bool_value: true }
+  }
+  test {
+    name: "exists_one_error_has_no_absorption"
+    description: "exists_one counts with `+`; one erroring element poisons the count."
+    expr: "[0, 2].exists_one(x, 2/x == 1)"
+    eval_error: { errors: { message: "divide by zero" } }
+  }
+
+  # Controls: gating the peephole on the accumulator KIND must not cost
+  # an ordinary bool accumulator its early exit.  If the loop stopped
+  # exiting, the second element would divide by zero and these would
+  # be errors instead of values.
+  test {
+    name: "exists_short_circuits_on_first_true"
+    expr: "[1, 0].exists(e, e == 1 || 1/e > 0)"
+    value: { bool_value: true }
+  }
+  test {
+    name: "all_short_circuits_on_first_false"
+    expr: "[1, 0].all(e, e == 0 && 1/e > 0)"
+    value: { bool_value: false }
+  }
+}
+
+section {
+  name: "transform_map_entry"
+  description: "transformMapEntry with an entry expression that is not a literal map.  The entry arm handled only a literal kMapExpr and ABSL_CHECK(false)'d otherwise, so these shapes ABORTED THE PROCESS rather than evaluating."
+
+  test {
+    name: "computed_entry_three_arg"
+    description: "A ternary entry -- the shape that aborted.  Empty-map arms drop the entry."
+    expr: "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {}) == {1: 2}"
+    value: { bool_value: true }
+  }
+  test {
+    name: "computed_entry_three_arg_size"
+    expr: "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {}).size()"
+    value: { int64_value: 1 }
+  }
+  test {
+    name: "computed_entry_four_arg"
+    description: "Second abort site: a computed entry in the filtered 4-arg form.  No key passes the filter here."
+    expr: "{1: 2, 3: 4}.transformMapEntry(k, v, k > 100, k == 1 ? {k: v} : {}).size()"
+    value: { int64_value: 0 }
+  }
+  test {
+    name: "multi_key_literal_four_arg"
+    description: "Third abort site: a multi-key literal entry in the 4-arg form -- one input entry yields two output entries."
+    expr: "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1, {k: v, k + 1: v}).size()"
+    value: { int64_value: 2 }
+  }
+  test {
+    name: "error_in_computed_entry"
+    description: "An error inside the computed entry propagates rather than being swallowed by the merge."
+    expr: "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: 1/0} : {k: v})"
+    eval_error: { errors: { message: "divide by zero" } }
+  }
+  test {
+    name: "literal_entry_still_works"
+    description: "The literal-entry form that already shipped -- guards against the merge path regressing it."
+    expr: "{1: 2, 3: 4}.transformMapEntry(k, v, v > 1, {k: v}).size()"
+    value: { int64_value: 2 }
   }
 }
