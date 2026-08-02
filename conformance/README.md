@@ -31,7 +31,7 @@ pass counts are identical between fastbuild and -c opt.
 
 <!-- BEGIN AUTOGEN headline -->
 ```
-total=2516  pass=2035 (80.9%)  skip=481 (19.1%)  fail=0 (0.0%)
+total=2536  pass=2055 (81.0%)  skip=481 (19.0%)  fail=0 (0.0%)
 ```
 <!-- END AUTOGEN headline -->
 
@@ -126,7 +126,7 @@ the `.githooks/pre-push` hook — do not hand-edit between the
 | Fixture | Total | Pass | Skip | Fail | Pass% | Skip categories |
 |---|---:|---:|---:|---:|---:|---|
 | `bindings_ext.textproto`     |   8 |   8 |   0 |   0 | 100% | — |
-| `celwasm_edges.textproto`    |  62 |  62 |   0 |   0 | 100% | — |
+| `celwasm_edges.textproto`    |  82 |  82 |   0 |   0 | 100% | — |
 | `encoders_ext.textproto`     |   4 |   4 |   0 |   0 | 100% | — |
 | `network_ext.textproto`      |  69 |  69 |   0 |   0 | 100% | — |
 | `string.textproto`           |  51 |  51 |   0 |   0 | 100% | — |
@@ -182,7 +182,7 @@ Of the 481 SKIPs: ~371 are out-of-scope by design
 (`disable_check` + `static_subset`); the rest (110) are
 scope-not-yet-shipped capabilities a future milestone will
 graduate.  Effective pass rate against the addressable corpus
-(2516 - 371 = 2145) is **95%**.
+(2536 - 371 = 2165) is **95%**.
 <!-- END AUTOGEN addressable-prose -->
 
 ## Top remaining FAIL buckets

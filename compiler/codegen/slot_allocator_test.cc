@@ -129,7 +129,7 @@ TEST(SlotAllocatorTest, EverySlotIsSixteenByteAligned) {
 // Slot pressure for `1 + 2 + ... + N` — the left-associated `+`-chain
 // that exposes the M10-never-shipped slot-reuse gap and (downstream)
 // the wasm-trap regression pinned by
-// `e2e/known_bugs_test::LongArith_2000Terms_UnalignedAtomicTrap`.
+// `e2e/known_bugs_test::LongArith2000TermsNoUnalignedAtomicTrap`.
 //
 // Simulates exactly the traversal pattern `LayoutPass` runs: post-
 // order over the AST, each `+` releases every workspace child

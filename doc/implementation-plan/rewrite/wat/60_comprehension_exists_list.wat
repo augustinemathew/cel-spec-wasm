@@ -38,13 +38,15 @@
 ;;      m5-comprehensions-followon.md §3.4 specifically to enable
 ;;      this.
 ;;
-;;   3. **Loop-cond peephole: read accu's bool payload directly.**
+;;   3. **Loop-cond peephole: read the accu CelValue directly.**
 ;;      cel-cpp's macro lowering wraps `!@result` in
 ;;      `@not_strictly_false`, which compiles into ~6 wasm ops.
-;;      For `exists`, the equivalent test is "accu's bool payload
-;;      != 0" — one `i32.load offset=8`.  Codegen emits the
-;;      peephole; the general path remains correct for forms
-;;      where loop_cond isn't recognisable.
+;;      For `exists`, the equivalent test is "accu is the bool
+;;      true" — two loads (kind, payload) and a compare, no
+;;      runtime helper.  The kind half is not optional: see the
+;;      loop body's Exit #2 comment.  Codegen emits the peephole;
+;;      the general path remains correct for forms where loop_cond
+;;      isn't recognisable.
 ;;
 ;;   4. **Same-slot aliasing into `cel_or`.**  Per cel_3vl.h
 ;;      contract: `cel_or(out, a, b)` never reads `a`/`b` after
@@ -153,10 +155,20 @@
         (br_if $exit
                (i32.ge_u (local.get $iter_off) (local.get $end_off)))
 
-        ;; Exit #2: loop_cond peephole — accu's bool payload != 0
-        ;; means `exists` has already found a true element.  Read
-        ;; payload.b at offset 8 of accu_slot (160).
-        (br_if $exit (i32.load offset=8 (i32.const 160)))
+        ;; Exit #2: loop_cond peephole — accu IS the bool `true`,
+        ;; meaning `exists` has already found a matching element.
+        ;; BOTH words of the accu CelValue are read: the kind word at
+        ;; offset 0 must be CEL_BOOL (1), and only then does
+        ;; payload.b at offset 8 decide.  Testing the payload alone
+        ;; is WRONG — an ERROR parks its error code, and an UNKNOWN
+        ;; its attribute id, in that same word, so a poisoned accu
+        ;; reads as `true` and short-circuits the very absorption
+        ;; `@result || pred` exists to perform.
+        (br_if $exit
+               (i32.and
+                 (i32.eq (i32.load offset=0 (i32.const 160)) (i32.const 1))
+                 (i32.ne (i32.load offset=8 (i32.const 160))
+                         (i32.const 0))))
 
         ;; loop_step: @result || (v > 0)
         ;; (v > 0)  → cel_int_gt_at_vv(step_out=184, v=iter_off, rhs=112)

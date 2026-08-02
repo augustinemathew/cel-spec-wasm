@@ -76,6 +76,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,8 +106,6 @@ using ::absl_testing::IsOk;
 // `Value::List` / `Value::Map` bindings).  Adding a proto link
 // here would create a stale dep edge when the proto fixtures
 // move.
-
-using ::celwasm::e2e::GlobalEngine;
 
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
@@ -281,18 +280,122 @@ TEST_F(ComprehensionExistsListE2ETest, AllPredicateErrorPropagates) {
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsErrorAbsorbedByTrueIs3VL) {
   // design §3.2 3VL invariant: `error || true → true`.  Even though
-  // the first iter errors, a later iter forces `true`, so accumulator
-  // becomes definite.
+  // the first iter errors, a later iter forces `true`, so the
+  // accumulator becomes definite.  Not a spec ambiguity: cel-cpp
+  // returns true (oracle pin
+  // ComprehensionAccuAbsorptionOracle.ExistsErrorThenMatchIsTrue).
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto instance =
       CompilePlan(*compiler, "[0, 1, 2].exists(e, 1 / e > 0 || e == 1)");
   Activation a;
-  // Spec ambiguity tolerated: either ERROR or true is acceptable
-  // pending cel-cpp parity check.  Skip assertion until Slice C
-  // freezes semantics; presence of test as-is locks the input.
-  EXPECT_TRUE(EvalOk(instance, a).IsError() ||
-              EvalOk(instance, a).AsBool().value_or(false));
+  Value v = EvalOk(instance, a);
+  ASSERT_FALSE(v.IsError()) << "the later true must absorb the earlier error";
+  EXPECT_EQ(*v.AsBool(), true);
+}
+
+// ── Accumulator 3VL absorption matrix ─────────────────────────
+//
+// `exists` desugars to `@result || pred` and `all` to `@result &&
+// pred`, so per langdef §"Logical Operators" an error raised by one
+// element is ABSORBED as soon as a later element produces the
+// dominant value (true for `exists`, false for `all`); the error
+// surfaces only when no element ever does.  Every expected value
+// below is oracle-confirmed against cel-cpp in
+// testdata/cel_cpp_oracle_comprehension_test.cc
+// (ComprehensionAccuAbsorptionOracle).
+//
+// Regression cover for CELW-0010: the loop-cond peephole used to
+// br_if-exit on the accumulator's payload word without checking its
+// kind, so an ERROR accumulator (error code in the payload) read as
+// `true` and short-circuited `exists` into returning the error.
+
+struct AccuAbsorptionCase {
+  std::string name;
+  std::string source;
+  // nullopt = the comprehension must evaluate to an ERROR.
+  std::optional<bool> expected;
+};
+
+class ComprehensionAccuAbsorptionE2ETest
+    : public ::testing::TestWithParam<AccuAbsorptionCase> {};
+
+TEST_P(ComprehensionAccuAbsorptionE2ETest, MatchesSpec3VL) {
+  const AccuAbsorptionCase& c = GetParam();
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, c.source);
+  Activation a;
+  Value v = EvalOk(instance, a);
+  if (!c.expected.has_value()) {
+    EXPECT_TRUE(v.IsError())
+        << c.source << ": no element absorbs the error, so it must surface";
+    return;
+  }
+  ASSERT_FALSE(v.IsError()) << c.source << ": the error must be absorbed";
+  ASSERT_TRUE(v.AsBool().ok()) << c.source;
+  EXPECT_EQ(*v.AsBool(), *c.expected) << c.source;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ExistsAndAll, ComprehensionAccuAbsorptionE2ETest,
+    ::testing::Values(
+        // `exists`: the erroring element comes first, a matching one
+        // second — this is the CELW-0010 reproducer verbatim.
+        AccuAbsorptionCase{"ExistsErrorThenMatch", "[0, 2].exists(x, 2/x == 1)",
+                           true},
+        // …and the other order, where the accumulator is already true
+        // when the erroring element is reached.
+        AccuAbsorptionCase{"ExistsMatchThenError", "[2, 0].exists(x, 2/x == 1)",
+                           true},
+        // No element ever matches, so the error survives to the result.
+        AccuAbsorptionCase{"ExistsErrorAndNoMatch",
+                           "[0, 3].exists(x, 2/x == 1)", std::nullopt},
+        AccuAbsorptionCase{"ExistsAllMatch", "[2, 2].exists(x, 2/x == 1)",
+                           true},
+        AccuAbsorptionCase{"ExistsNoneMatch", "[3, 4].exists(x, 2/x == 1)",
+                           false},
+        AccuAbsorptionCase{"ExistsEmptyRange", "[].exists(x, 2/x == 1)", false},
+        // `all` is the mirror image: a later FALSE absorbs the error.
+        AccuAbsorptionCase{"AllErrorThenFalse", "[0, 3].all(x, 2/x == 1)",
+                           false},
+        AccuAbsorptionCase{"AllFalseThenError", "[3, 0].all(x, 2/x == 1)",
+                           false},
+        // Every non-erroring element is true, so nothing absorbs.
+        AccuAbsorptionCase{"AllErrorAndNoFalse", "[0, 2].all(x, 2/x == 1)",
+                           std::nullopt},
+        AccuAbsorptionCase{"AllAllMatch", "[2, 2].all(x, 2/x == 1)", true},
+        AccuAbsorptionCase{"AllEmptyRange", "[].all(x, 2/x == 1)", true},
+        // `exists_one` counts with `+`, whose strict 3VL has no
+        // absorption at all — one erroring element poisons the count.
+        AccuAbsorptionCase{"ExistsOneErrorThenMatch",
+                           "[0, 2].exists_one(x, 2/x == 1)", std::nullopt}),
+    [](const ::testing::TestParamInfo<AccuAbsorptionCase>& info) {
+      return info.param.name;
+    });
+
+// Concrete-value controls: the kind gate must not cost the peephole
+// its early exit for ordinary bool accumulators.
+TEST_F(ComprehensionExistsListE2ETest, ExistsShortCircuitsOnFirstTrue) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  // If the peephole stopped exiting, iter 2 would divide by zero and
+  // the result would be an error instead of true.
+  auto instance = CompilePlan(*compiler, "[1, 0].exists(e, e == 1 || 1/e > 0)");
+  Activation a;
+  Value v = EvalOk(instance, a);
+  ASSERT_FALSE(v.IsError()) << "the true accumulator must exit the loop";
+  EXPECT_EQ(*v.AsBool(), true);
+}
+
+TEST_F(ComprehensionExistsListE2ETest, AllShortCircuitsOnFirstFalse) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "[1, 0].all(e, e == 0 && 1/e > 0)");
+  Activation a;
+  Value v = EvalOk(instance, a);
+  ASSERT_FALSE(v.IsError()) << "the false accumulator must exit the loop";
+  EXPECT_EQ(*v.AsBool(), false);
 }
 
 TEST_F(ComprehensionExistsListE2ETest, ExistsOverBoundList) {
@@ -857,6 +960,85 @@ why-not-a-bug: CEL has no syntactic way to write an EMPTY typed map: the bare
   writable when bound-map iter_range support lands.
 citation: doc/implementation-plan/rewrite/design.md (RejectDyn); doc/implementation-plan/rewrite/m5b-comprehensions-simplification.md §3.1 (empty range -> accu_init); runtime/cel_map_test.cc MapIterTest::Empty
 )CELSKIP";
+}
+
+// ── Computed (non-literal) entry expressions ──────────────────
+//
+// The entry argument is a map-typed EXPRESSION, not necessarily a
+// map literal.  A literal is decomposed at compile time into one
+// `cel_map_insert_at` per key; anything else is evaluated to a temp
+// map and merged by `cel_map_merge_at`, which grows the accumulator
+// because a computed entry has no compile-time key count.
+//
+// Regression cover for CELW-0012: every shape below used to reach an
+// `ABSL_CHECK(false)` in the loop-step emitter and ABORT the
+// compiler.
+
+TEST_F(ComprehensionTransformMapEntryE2ETest, ComputedTernaryEntry) {
+  // The CELW-0012 reproducer verbatim.  `k == 1` selects the entry
+  // map per iteration; the `{}` arm contributes nothing.
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {}) == {1: 2}");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
+}
+
+TEST_F(ComprehensionTransformMapEntryE2ETest, ComputedEntryGrowsAccumulator) {
+  // Both ternary arms carry TWO keys, so each of the two iterations
+  // merges two entries into an accumulator codegen pre-sized for one
+  // per iteration.  Without the runtime growth path this traps.
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v, k + 10: v} "
+      ": {k + 100: v, k + 200: v}).size()");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 4);
+}
+
+TEST_F(ComprehensionTransformMapEntryE2ETest, ComputedEntryErrorPropagates) {
+  // A poisoned entry map aborts the comprehension — the merge's 3VL
+  // arm on the entry VALUE, which the literal path never exercises.
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler,
+                  "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: 1/0} : "
+                  "{k: v}).size()");
+  Activation a;
+  EXPECT_TRUE(EvalOk(instance, a).IsError());
+}
+
+TEST_F(ComprehensionTransformMapEntryE2ETest, ConditionalMultiKeyEntry) {
+  // The 4-arg form with a multi-key entry: one predicate gates all N
+  // inserts, which `cel_map_insert_at_if_bool` cannot express (it
+  // gates a single k/v), so this routes through
+  // `cel_map_merge_at_if_bool`.  Used to be its own ABSL_CHECK abort.
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1, {k: v, k + 1: v}).size()");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 2);
+}
+
+TEST_F(ComprehensionTransformMapEntryE2ETest,
+       ConditionalComputedEntryFalsePredicateSkips) {
+  // Predicate false on every iteration → empty accumulator, even
+  // though the entry expression itself is computed.
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(
+      *compiler,
+      "{1: 2, 3: 4}.transformMapEntry(k, v, k > 100, k == 1 ? {k: v} : "
+      "{k + 1: v}).size()");
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 0);
 }
 
 // ──────────────────────────────────────────────────────────────

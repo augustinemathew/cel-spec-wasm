@@ -87,6 +87,36 @@ def build_entry(action: dict, root: str, sdk: str | None,
   }
 
 
+def is_cross_compiled(entry: dict) -> bool:
+  """True if this entry targets wasm32 rather than the host."""
+  return any(
+      a.startswith("--target=wasm32") or a in ("-msimd128", "-mtail-call")
+      for a in entry["arguments"]
+  )
+
+
+def drop_cross_compiled_duplicates(entries: list) -> list:
+  """Drops wasm32 entries for sources that also compile for the host.
+
+  Runtime sources such as `runtime/cel_runtime.c` are built both
+  natively and for wasm32-wasi.  clang-tidy replays whichever entries
+  match, and the wasm32 ones fail on the host toolchain
+  (`unsupported option '-msimd128' for target 'arm64-apple-darwin'`,
+  plus a wasi-sdk `wasm_simd128.h` vector-conversion error) and poison
+  the PCH, which is built for the host.  Those diagnostics are pure
+  configuration noise: the same source analysed natively is clean.
+
+  Only duplicates are dropped.  A source that is *exclusively*
+  cross-compiled keeps its entry, so it is still visible to tooling
+  rather than silently vanishing from the database.
+  """
+  host_srcs = {e["file"] for e in entries if not is_cross_compiled(e)}
+  return [
+      e for e in entries
+      if not (is_cross_compiled(e) and e["file"] in host_srcs)
+  ]
+
+
 def main() -> int:
   if len(sys.argv) != 2:
     print("usage: _aquery_to_compdb.py <aquery.json>", file=sys.stderr)
@@ -103,6 +133,7 @@ def main() -> int:
     entry = build_entry(action, root, sdk, clang)
     if entry is not None:
       entries.append(entry)
+  entries = drop_cross_compiled_duplicates(entries)
   json.dump(entries, sys.stdout, indent=2)
   sys.stdout.write("\n")
   return 0
