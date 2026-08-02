@@ -205,7 +205,6 @@ void cel_numeric_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   write_bool(out, r == kCmpEqual);
 }
 
-
 void cel_numeric_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* a = cel_value_at(a_slot);

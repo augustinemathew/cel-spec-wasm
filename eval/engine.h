@@ -300,8 +300,6 @@ class Engine::Builder {
     return std::move(*this);
   }
 
-
-
   // Allocate the wasm engine + parse `cel_runtime.wasm` into a
   // module.  Returns Internal on wasmtime allocation failure.
   // Single-use: && enforces consumption at the call site (const so

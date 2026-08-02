@@ -4,11 +4,11 @@
 #include <cstring>
 #include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {

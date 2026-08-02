@@ -7,9 +7,9 @@
 #include <cstdint>
 #include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_string_ext.h"
 #include "runtime/string_ext_test_helpers.h"
-#include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
@@ -434,7 +434,6 @@ TEST_F(StringExtFixture, ReplaceNKindMismatchOnN) {
                                MakeStr("1"));
   ExpectError(out, CEL_ERR_TYPE_MISMATCH);
 }
-
 
 // ── anchor-scan boundary matrix ──────────────────────────────────────
 //

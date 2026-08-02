@@ -23,8 +23,8 @@
 
 #include "absl/strings/string_view.h"
 #include "runtime/cel_data.h"
-#include "runtime/cel_memory.h"
 #include "runtime/cel_internal.h"
+#include "runtime/cel_memory.h"
 #include "runtime/cel_string_ext_internal.h"
 
 namespace {

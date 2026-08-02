@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 // M9.B — type(x) helper coverage.  Spec table cite:
 // `doc/langdef.md §"Type Values"` enumerates the 12 spec-defined

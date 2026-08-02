@@ -118,7 +118,6 @@ TEST(EngineLifetimeTest, MoveConstructionPreservesState) {
   (void)b;
 }
 
-
 TEST(EnginePlanTest, PlanSucceedsOnSyntheticProgram) {
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
