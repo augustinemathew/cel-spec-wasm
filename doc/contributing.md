@@ -114,6 +114,36 @@ dual-emission macro call (`link_mode_e2e_cc_test` /
 [`doc/design/06-testing-strategy.md`](design/06-testing-strategy.md)
 §3.1 for the rationale.
 
+#### Sanitizers
+
+Two extra build configurations run the same tests with instrumentation:
+
+```bash
+bazel test --config=asan //...        # AddressSanitizer
+bazel test --config=tsan //...        # ThreadSanitizer
+scripts/run_full_suite.sh --config=asan   # + manual-tagged targets and conformance
+```
+
+CI runs both on every push and pull request, so you do not have to run
+them per change — reach for them locally when you are touching the C
+runtime kernel, the wasmtime glue in `eval/internal/`, or anything that
+hands raw pointers across the host boundary, and when you are chasing a
+crash that reproduces intermittently.
+
+Each config is a separate build tree: the first run after switching
+recompiles cel-cpp from source (~10 minutes), and switching back does
+the same. Keep the sanitizers out of the inner loop for that reason.
+
+Two things stay uninstrumented, by construction: the prebuilt wasmtime
+archive (we ship it as a binary, not source) and the exec-config build
+tools. The wasm32-wasi cross-compile of `cel_runtime.wasm` is excluded
+outright — wasi-sdk clang rejects `-fsanitize=address` for that target,
+so `wasm_cc_binary`'s transition clears the host compile and link flags
+before the wasm build sees them. The consequence worth knowing: a
+sanitizer run covers the *host* side — the compiler, the evaluator, the
+host ABI trampolines, the native build of the runtime kernel — and
+never the wasm module itself.
+
 ### 4. Update plan + checklist
 
 Every merged feature:

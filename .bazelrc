@@ -44,6 +44,65 @@ build:linux --repo_env=CC=clang --repo_env=CXX=clang++
 # the last `-fuse-ld`).  Requires `lld` on PATH (apt-get install lld).
 build:linux --linkopt=-fuse-ld=lld
 
+# ── Sanitizers: --config=asan / --config=tsan ──────────────────────
+# `bazel test --config=asan //...` (likewise `--config=tsan`) builds
+# every first-party target — plus cel-cpp, abseil, protobuf and
+# Binaryen, which we compile from source — with instrumentation.
+#
+# Two things stay UNINSTRUMENTED, by construction:
+#
+#   - The prebuilt wasmtime archive (`@wasmtime_<host>`).  We ship it
+#     as a binary, so the sanitizer sees its allocations but not its
+#     source.  ASan still catches our own misuse across the boundary.
+#     TSan cannot see wasmtime's internal synchronization, so a race
+#     reported wholly inside wasmtime frames would be a false
+#     positive — but none has appeared: `//eval:engine_test_dynamic`
+#     drives 8 threads planning concurrently through wasmtime and is
+#     clean, so there is deliberately no suppressions file here.  If
+#     one ever becomes necessary, add it scoped to wasmtime frames
+#     (`--test_env=TSAN_OPTIONS=suppressions=...`) rather than
+#     weakening this config.
+#   - Exec-config build tools (protoc, //bazel:gen_runtime_catalogue).
+#     Those follow `--host_copt`, which these configs deliberately
+#     leave alone: instrumenting a code generator buys nothing and
+#     costs build time.
+#
+# The wasm32-wasi cross-compile is EXCLUDED, and must be — wasi-sdk
+# clang rejects the flag outright:
+#
+#   clang: error: unsupported option '-fsanitize=address'
+#          for target 'wasm32-unknown-wasi'
+#
+# `wasm_cc_binary`'s outgoing transition clears the global copt /
+# conlyopt / cxxopt / linkopt lists for the wasm configuration, so
+# `cel_runtime.wasm` is built from toolchain + BUILD-attribute flags
+# alone, whatever the host config is.  See
+# third_party/wasi_sdk/wasm_cc_binary.bzl.
+#
+# Each config is a separate build tree: switching to or from one
+# recompiles cel-cpp (~10 min from cold).  Sanitizer runs belong at
+# the gate and in CI, not in the inner loop — see
+# doc/implementation-plan/dev-loop-performance.md.
+
+# Flags shared by both.  `-gline-tables-only` is exactly what the
+# symbolizer needs for file:line frames, at a fraction of full `-g`'s
+# object size — which matters, because CI caches a whole cel-cpp build
+# per config.  `--strip=never` keeps those tables through the link.
+build:sanitizer --copt=-fno-omit-frame-pointer
+build:sanitizer --copt=-gline-tables-only
+build:sanitizer --strip=never
+# Instrumented binaries run several times slower; the stock
+# 60s/300s/900s test timeouts start tripping on the e2e targets.
+test:sanitizer --test_timeout=180,900,2700,5400
+
+build:asan --config=sanitizer
+build:asan --copt=-fsanitize=address
+build:asan --linkopt=-fsanitize=address
+
+build:tsan --config=sanitizer
+build:tsan --copt=-fsanitize=thread
+build:tsan --linkopt=-fsanitize=thread
+
 # ── Cross-checkout disk cache: OPT-IN, not enabled by default ──────
 # A shared --disk_cache would let a second checkout reuse compiled
 # actions (measured: fresh output base → 34/34 disk-cache hits, 0

@@ -32,6 +32,10 @@
 #   docker run --rm -v "$PWD":/src -w /src celwasmc-linux \
 #     bash -c 'third_party/fetch_cel_cpp.sh && bazel test //...'
 #
+# `llvm` is in the package list for the sanitizer configs
+# (`bazel test --config=asan //...`): it supplies llvm-symbolizer,
+# without which an ASan/TSan report is a list of raw addresses.
+#
 # Builds and runs on both linux/arm64 and linux/amd64.
 FROM ubuntu:24.04
 
@@ -41,6 +45,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git \
       build-essential clang lld \
+      llvm \
       python3 \
       tzdata tzdata-legacy \
       zip unzip \
