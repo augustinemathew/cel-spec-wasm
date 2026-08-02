@@ -19,11 +19,12 @@
 // strong definition present, libc never reaches for the import, so
 // there is no import call left to forbid.
 //
-// DETERMINISM IS NOT A REGRESSION.  The host already answered this
-// import with fixed bytes (`RandomGetBytesStub` in eval/engine.cc) —
-// the wasmtime C API exposes no per-store WASI context to satisfy a
-// real preview2 random impl.  This moves the identical deterministic
-// answer into the guest, where it cannot trap.  The protection real
+// DETERMINISM IS NOT A REGRESSION.  The host used to answer this
+// import with fixed bytes, from a stub in eval/engine.cc that this
+// change removes — the wasmtime C API exposes no per-store WASI
+// context to satisfy a real preview2 random impl, so the answer was
+// never real entropy to begin with.  This moves the identical
+// deterministic answer into the guest, where it cannot trap.  The protection real
 // entropy buys libc++ is against adversarial hash flooding; a plugin
 // is embedder-supplied code running against embedder-supplied input
 // in-process, so that threat model does not apply.  A plugin that
