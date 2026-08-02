@@ -170,11 +170,6 @@ Recorded so they aren't re-proposed without new evidence:
 
 ## 9. Known gaps and future work
 
-**Pinned bugs (open):**
-
-- An ERROR accumulator trips `exists`'s early-exit peephole (it reads the bool payload without a kind check), so `[0,2].exists(x, 2/x == 1)` returns the division error instead of `true` (`KnownBugs.ExistsAbsorbsErrorAccumulator`). Fix: kind check ahead of the payload probe.
-- A `transformMapEntry` whose entry isn't a map *literal* hits `ABSL_CHECK(false)` and aborts the compiler (`KnownBugs.TransformMapEntryComputedEntryCrash`) — should be a status error.
-
 **Planned:**
 
 - Tie the hand-copied CelValue wire constants in codegen to `runtime/cel_data.h` (today a layout change compiles green and fails only at e2e).

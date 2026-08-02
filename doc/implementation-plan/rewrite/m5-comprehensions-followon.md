@@ -697,6 +697,16 @@ merge).  Optimisation: pattern-detect the single-key shape
 `kCreateMap([{k': t}])` and emit a direct
 `cel_map_insert_at(accu_slot, k', t)` without the temp.
 
+> Plan-vs-execution delta (2026-08-01): this landed in the
+> opposite order — the literal decomposition shipped and the
+> general path did not, with an `ABSL_CHECK(false)` standing in
+> for it, so a computed entry aborted the compiler rather than
+> compiling (CELW-0012).  The general path now exists as the
+> `cel_map_merge_at` / `cel_map_merge_at_if_bool` runtime
+> helpers; a map literal still decomposes (it keeps the exact
+> pre-size), everything else merges at runtime and grows the
+> accumulator.
+
 Last-write-wins on key collisions (matches cel-cpp's runtime
 behaviour and our existing `cel_map` semantics).
 

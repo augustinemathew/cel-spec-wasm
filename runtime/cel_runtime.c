@@ -145,23 +145,52 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   hdr->count++;
 }
 
-// Insert for `transformMap` / `transformMapEntry` comprehension
-// accumulators.  Differs from `cel_map_insert` in two ways:
-//   1. Key-collision OVERWRITES the existing entry's value
-//      (last-write-wins, matching cel-cpp's transformMap runtime
-//      behaviour).
-//   2. CEL_ERROR / CEL_UNKNOWN in either key OR value propagates
-//      the error verbatim into the map slot; subsequent inserts
-//      are silent no-ops (error sticks).
-// Like `cel_map_insert`, capacity is a codegen pre-size invariant —
-// there is no growth path; exceeding it traps (PRESIZE_INVARIANT).
-void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
-                       uint32_t value_slot) {
-  CEL_LOG("enter");
-  CelValue* m = cel_value_at(map_slot);
-  if (m->kind != CEL_MAP_ARENA) return;
-  CelValue* key = cel_value_at(key_slot);
-  CelValue* val = cel_value_at(value_slot);
+// Re-allocate an arena map's dense entries run so it can hold one more
+// entry.  Only the merge path grows: literal maps and `transformMap`
+// accumulators have a compile-time-known entry count, but a
+// `transformMapEntry` whose entry expression is COMPUTED does not — its
+// accumulator is pre-sized at one entry per iteration, which is a hint,
+// not an invariant.  The bump arena never frees, so growth allocates a
+// fresh 2x run and copies; the HEADER stays put, which is what keeps
+// every live `CelValue.payload.arena_map` valid across the move.  Any
+// SwissTable index is dropped (`index_offset = 0`); codegen rebuilds it
+// as the terminal construction step after the accumulation loop.
+// Returns 0 when the arena is exhausted (caller poisons).
+static int arena_map_grow_one(ArenaMapHeader* hdr) {
+  const uint64_t want = (uint64_t)hdr->count + 1u;
+  uint64_t new_cap = hdr->capacity != 0 ? (uint64_t)hdr->capacity * 2u : 4u;
+  while (new_cap < want) {
+    new_cap *= 2u;
+  }
+  if (new_cap > (uint64_t)UINT32_MAX) return 0;
+  const uint32_t bytes =
+      entries_bytes_checked((uint32_t)kCelMapEntryStride, (uint32_t)new_cap);
+  if (bytes == 0) return 0;
+  const uint32_t off = arena_alloc(bytes);
+  if (off == 0) return 0;
+  // Copy entry-wise rather than with one bulk memcpy: the two are
+  // equivalent here (the run is a dense array of {key, value} CelValue
+  // pairs), and the typed copy keeps the stride arithmetic explicit.
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    const uint32_t stride = (uint32_t)kCelMapEntryStride * i;
+    const uint32_t cell = (uint32_t)sizeof(CelValue);
+    *cel_value_at(off + stride) = *cel_value_at(hdr->entries_offset + stride);
+    *cel_value_at(off + stride + cell) =
+        *cel_value_at(hdr->entries_offset + stride + cell);
+  }
+  hdr->entries_offset = off;
+  hdr->capacity = (uint32_t)new_cap;
+  hdr->index_offset = 0;
+  return 1;
+}
+
+// Shared last-write-wins insert kernel for comprehension
+// accumulators.  `m` is already known to be a live CEL_MAP_ARENA.
+// `allow_grow` picks the capacity contract: 0 keeps the pre-size
+// invariant (a codegen drift traps); 1 grows, for the merge path where
+// no compile-time entry count exists.
+static void map_insert_at_kernel(CelValue* m, const CelValue* key,
+                                 const CelValue* val, int allow_grow) {
   if (key->kind == CEL_ERROR || key->kind == CEL_UNKNOWN) {
     *m = *key;
     return;
@@ -181,13 +210,137 @@ void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
       return;
     }
   }
-  // PRESIZE_INVARIANT: capacity is sized by codegen — N for
-  // literals, iter_range.count for accus.  Trap rather than
-  // grow / poison so a codegen regression surfaces here.
-  if (hdr->count >= hdr->capacity) __builtin_trap();
+  if (hdr->count >= hdr->capacity) {
+    // PRESIZE_INVARIANT: capacity is sized by codegen — N for
+    // literals, iter_range.count for accus.  Trap rather than
+    // poison so a codegen regression surfaces here.
+    if (!allow_grow) __builtin_trap();
+    if (!arena_map_grow_one(hdr)) {
+      poison(m, CEL_ERR_OVERFLOW);
+      return;
+    }
+  }
   *arena_map_entry_key(hdr, hdr->count) = *key;
   *arena_map_entry_val(hdr, hdr->count) = *val;
   hdr->count++;
+}
+
+// Insert for `transformMap` / `transformMapEntry` comprehension
+// accumulators.  Differs from `cel_map_insert` in two ways:
+//   1. Key-collision OVERWRITES the existing entry's value
+//      (last-write-wins, matching cel-cpp's transformMap runtime
+//      behaviour).
+//   2. CEL_ERROR / CEL_UNKNOWN in either key OR value propagates
+//      the error verbatim into the map slot; subsequent inserts
+//      are silent no-ops (error sticks).
+// Like `cel_map_insert`, capacity is a codegen pre-size invariant —
+// there is no growth path; exceeding it traps (PRESIZE_INVARIANT).
+void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
+                       uint32_t value_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind != CEL_MAP_ARENA) return;
+  map_insert_at_kernel(m, cel_value_at(key_slot), cel_value_at(value_slot),
+                       /*allow_grow=*/0);
+}
+
+// Arena arm of `cel_map_merge_at` — walk the source map's dense
+// entries run directly, no iterator allocation.  Growth of `m`
+// re-allocates ITS run, never the source's, so `src` stays valid
+// across the loop.
+static void map_merge_arena_entries(CelValue* m, const CelValue* entry) {
+  ArenaMapHeader* src = arena_map_header(entry);
+  const uint32_t n = src->count;
+  for (uint32_t i = 0; i < n; ++i) {
+    map_insert_at_kernel(m, arena_map_entry_key(src, i),
+                         arena_map_entry_val(src, i), /*allow_grow=*/1);
+    // An errored / unknown / mis-keyed entry poisons the accumulator;
+    // the poison is the comprehension's result, so stop merging.
+    if (m->kind != CEL_MAP_ARENA) return;
+  }
+}
+
+// Host arm of `cel_map_merge_at` — an Activation-bound or
+// proto-reflected map reached as the entry expression.  Routed through
+// the same iteration helpers the comprehension prologue uses; the two
+// scratch CelValue cells are arena-allocated once per merge (the iter
+// helpers write through slot offsets, and an arena offset IS a slot).
+static void map_merge_host_entries(CelValue* m, uint32_t entry_slot) {
+  const uint32_t handle = cel_map_iter_init(entry_slot);
+  if (handle == 0) return;  // empty map: nothing to merge.
+  const uint32_t scratch = arena_alloc(2u * (uint32_t)sizeof(CelValue));
+  if (scratch == 0) {
+    poison(m, CEL_ERR_OVERFLOW);
+    return;
+  }
+  const uint32_t key_off = scratch;
+  const uint32_t val_off = scratch + (uint32_t)sizeof(CelValue);
+  while (cel_map_iter_next(handle) != 0) {
+    cel_map_iter_key_at(key_off, handle);
+    cel_map_iter_value_at(val_off, handle);
+    map_insert_at_kernel(m, cel_value_at(key_off), cel_value_at(val_off),
+                         /*allow_grow=*/1);
+    if (m->kind != CEL_MAP_ARENA) return;
+  }
+}
+
+// Merge every entry of the map in `entry_slot` into the accumulator in
+// `map_slot` — the general `transformMapEntry` loop step, used when the
+// entry expression is not a map LITERAL codegen can decompose into
+// direct inserts (a ternary, a call, a bound identifier, …).  Literal
+// entries keep the faster N-direct-inserts lowering and never call
+// this.
+//
+// 3VL, matching `cel_map_insert_at`:
+//   - accumulator not CEL_MAP_ARENA (poisoned upstream): silent no-op,
+//     so an earlier error sticks all the way to `result`.
+//   - entry CEL_ERROR / CEL_UNKNOWN: propagate verbatim into the
+//     accumulator, aborting the comprehension.
+//   - entry not a map at all: poison CEL_ERR_TYPE_MISMATCH.
+//   - otherwise: one last-write-wins insert per source entry, in the
+//     source map's own iteration order.
+void cel_map_merge_at(uint32_t map_slot, uint32_t entry_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind != CEL_MAP_ARENA) return;
+  CelValue* entry = cel_value_at(entry_slot);
+  if (entry->kind == CEL_ERROR || entry->kind == CEL_UNKNOWN) {
+    *m = *entry;
+    return;
+  }
+  if (entry->kind == CEL_MAP_ARENA) {
+    map_merge_arena_entries(m, entry);
+    return;
+  }
+  if (entry->kind == CEL_MAP_HOST) {
+    map_merge_host_entries(m, entry_slot);
+    return;
+  }
+  // The checker types `entry` as a map, so anything else is drift.
+  poison(m, CEL_ERR_TYPE_MISMATCH);
+}
+
+// 3VL predicate-gated merge for the conditional `transformMapEntry`
+// form.  Mirrors `cel_map_insert_at_if_bool` exactly: an ERROR /
+// UNKNOWN predicate propagates into the accumulator, a non-bool
+// predicate poisons CEL_ERR_TYPE_MISMATCH, false is a no-op, and true
+// delegates to `cel_map_merge_at`.
+void cel_map_merge_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
+                              uint32_t entry_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind != CEL_MAP_ARENA) return;
+  CelValue* p = cel_value_at(pred_slot);
+  if (p->kind == CEL_ERROR || p->kind == CEL_UNKNOWN) {
+    *m = *p;
+    return;
+  }
+  if (p->kind != CEL_BOOL) {
+    poison(m, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  if (p->payload.b == 0) return;
+  cel_map_merge_at(map_slot, entry_slot);
 }
 
 void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,

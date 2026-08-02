@@ -126,7 +126,10 @@ of `//compiler/codegen` and only fails at e2e.
   validator (lines 215-218, 331-332).
 - Loop-cond peephole admits a CLOSED set of four shapes (kConst true/false,
   `@not_strictly_false(@result)`, `@not_strictly_false(!@result)`); anything
-  else → UnimplementedError (expr_lower_comprehension.cc:111-163, 639-663).
+  else → UnimplementedError.  Both accu shapes gate the `br_if` on
+  `kind == CEL_BOOL` as well as the payload word, so an ERROR / UNKNOWN
+  accumulator keeps iterating and a later element can still absorb it
+  (`BoolAccuExit` / `AccuKindIsBool`).
 - Loop-step classified once into 7 kinds by AST shape (macro names are erased
   by the expander; recovery is structural — lines 494-549, 709-740):
   kListAppend(If) / kMapInsert(If) / kMapMerge(If) / kGeneric.
@@ -141,9 +144,13 @@ of `//compiler/codegen` and only fails at e2e.
   inline 24-byte-stride pointer walk is origin-uniform (lines 578-591); map
   sources rely on `cel_map_iter_init`/`cel_map_count` kind-dispatching
   internally (lines 465-492).
-- Unsupported sub-shapes crash loudly per repo rule: non-literal
-  transformMapEntry entry and N>1 conditional entries are `ABSL_CHECK(false)`
-  (lines 803-856).
+- `transformMapEntry` entry expressions split two ways: a map LITERAL is
+  decomposed at compile time into N direct `cel_map_insert_at` calls (exact
+  pre-size, no temp map); anything else — a computed entry, or a multi-key
+  literal under the 4-arg form — is evaluated to a temp map and folded in by
+  `cel_map_merge_at` / `cel_map_merge_at_if_bool`, the one insert path that
+  GROWS the accumulator (a computed entry has no compile-time key count).
+  All three shapes used to be `ABSL_CHECK(false)` aborts.
 
 ### OverloadTable
 - `kBuiltinSeeds`: 271 rows (overload_table.cc:96-733;
@@ -237,16 +244,15 @@ back to `variables.size()` (expr_lower.cc:1251-1254).
    out_slot.  Reachable difference only for a dyn-typed non-bool cond
    (checker rejects static non-bool conds): shipped code returns the cond
    value itself where cel-cpp presumably errors.  See validation item 1.
-5. **P1 (tracked known bug) — loop-cond peephole vs comprehension 3VL.**
-   `BuildLoopCondExit`/`LoadAccuBoolPayload` read the accu's payload bits at
-   offset 8 without checking `accu.kind` (expr_lower_comprehension.cc:167-172,
-   648-657), so an ERROR accu (non-zero err code in the same slot) trips the
-   `exists` br_if-exit and surfaces the error even when a later element would
-   absorb it (`[0, 2].exists(x, 2/x == 1)` → spec true, we return error).
-   Pinned as `KnownBugs.ExistsAbsorbsErrorAccumulator`
-   (e2e/known_bugs_test.cc:391-405).  Doc m5-comprehensions header text
-   (expr_lower_comprehension.cc:30-37) describes the peephole without noting
-   the gap.
+5. **FIXED — loop-cond peephole vs comprehension 3VL.**  `BuildLoopCondExit`
+   / `LoadAccuBoolPayload` used to read the accu's payload bits at offset 8
+   without checking `accu.kind`, so an ERROR accu (its error code in the same
+   word) tripped the `exists` br_if-exit and surfaced the error even when a
+   later element would have absorbed it (`[0, 2].exists(x, 2/x == 1)` → spec
+   true, we returned the error).  `BoolAccuExit` now ANDs the payload test
+   with `kind == CEL_BOOL` for both `exists` and `all`; the emitted shape is
+   locked by `ExprLowerComprehensionTest.{Exists,All}LoopCondGatesOnAccuKind`
+   and the behaviour by e2e `ComprehensionAccuAbsorptionE2ETest`.
 6. **P2 — module.h:10-16 module narrative stale.**  "imports `cel.arena_reset`
    / `cel.arena_alloc`" (codegen emits no `arena_alloc` call;
    `EmitArenaResetCall` is zero-arg per the WASI migration,

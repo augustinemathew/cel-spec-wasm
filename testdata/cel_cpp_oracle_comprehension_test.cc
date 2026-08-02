@@ -10,10 +10,16 @@
 // directions, plus controls proving a concrete range still iterates
 // and a 3VL BODY over a concrete range keeps its existing behavior.
 //
+// Two further blocks were added later, both about mechanisms that are
+// NOT range absorption and are easy to conflate with it: accumulator
+// 3VL absorption (a poisoned accumulator mid-loop, which a later
+// element can still override) and `transformMapEntry` with a computed
+// entry expression.
+//
 // Oracle-only TU — deliberately does NOT link our pipeline (the
 // `cel::Value` symbol-clash note on testdata/BUILD.bazel's
 // cel_cpp_oracle_test target).  Our pipeline's matching assertions
-// live in e2e/m2_partial_eval_test.cc.
+// live in e2e/m2_partial_eval_test.cc and e2e/m5b_test.cc.
 
 #include <cstdint>
 #include <optional>
@@ -178,6 +184,145 @@ TEST(ComprehensionRangeControlOracle, ConcreteRangeErrorBodyIsError) {
   EXPECT_FALSE(r.is_unknown);
   EXPECT_TRUE(r.is_error) << "error BODY over a concrete range";
 }
+
+// ── Accumulator 3VL absorption (a DIFFERENT mechanism again) ──
+//
+// Range absorption (above) is about the iter_range itself being
+// poison.  This block is about a poisoned ACCUMULATOR mid-loop:
+// `exists` folds `@result || pred` and `all` folds `@result && pred`,
+// so an error raised by one element is absorbed the moment a later
+// element produces the dominant value, and surfaces only when none
+// does.  These cases are the empirical reference for
+// e2e/m5b_test.cc's ComprehensionAccuAbsorptionE2ETest matrix and
+// for the kind-gated loop-cond peephole in
+// compiler/codegen/expr_lower_comprehension.cc (CELW-0010: the
+// peephole used to read the accumulator's payload word without its
+// kind, so an ERROR accumulator short-circuited `exists` and became
+// the result).
+
+struct AccuAbsorptionCase {
+  std::string name;
+  std::string source;
+  // nullopt = cel-cpp yields an ERROR.
+  std::optional<bool> expected;
+};
+
+class ComprehensionAccuAbsorptionOracle
+    : public ::testing::TestWithParam<AccuAbsorptionCase> {};
+
+TEST_P(ComprehensionAccuAbsorptionOracle, MatchesCelCpp) {
+  auto r = OracleOk(GetParam().source);
+  EXPECT_FALSE(r.is_unknown) << GetParam().source;
+  if (!GetParam().expected.has_value()) {
+    EXPECT_TRUE(r.is_error)
+        << GetParam().source << " must error; got " << r.value.DebugString();
+    return;
+  }
+  ASSERT_FALSE(r.is_error) << GetParam().source << " → " << r.error_message;
+  EXPECT_EQ(r.value.bool_value(), *GetParam().expected) << GetParam().source;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ExistsAndAll, ComprehensionAccuAbsorptionOracle,
+    ::testing::Values(
+        AccuAbsorptionCase{"ExistsErrorThenMatchIsTrue",
+                           "[0, 2].exists(x, 2/x == 1)", true},
+        AccuAbsorptionCase{"ExistsMatchThenErrorIsTrue",
+                           "[2, 0].exists(x, 2/x == 1)", true},
+        AccuAbsorptionCase{"ExistsErrorAndNoMatchIsError",
+                           "[0, 3].exists(x, 2/x == 1)", std::nullopt},
+        AccuAbsorptionCase{"ExistsAllMatchIsTrue", "[2, 2].exists(x, 2/x == 1)",
+                           true},
+        AccuAbsorptionCase{"ExistsNoneMatchIsFalse",
+                           "[3, 4].exists(x, 2/x == 1)", false},
+        AccuAbsorptionCase{"ExistsEmptyRangeIsFalse", "[].exists(x, 2/x == 1)",
+                           false},
+        AccuAbsorptionCase{"AllErrorThenFalseIsFalse",
+                           "[0, 3].all(x, 2/x == 1)", false},
+        AccuAbsorptionCase{"AllFalseThenErrorIsFalse",
+                           "[3, 0].all(x, 2/x == 1)", false},
+        AccuAbsorptionCase{"AllErrorAndNoFalseIsError",
+                           "[0, 2].all(x, 2/x == 1)", std::nullopt},
+        AccuAbsorptionCase{"AllAllMatchIsTrue", "[2, 2].all(x, 2/x == 1)",
+                           true},
+        AccuAbsorptionCase{"AllEmptyRangeIsTrue", "[].all(x, 2/x == 1)", true},
+        AccuAbsorptionCase{"ExistsOneErrorThenMatchIsError",
+                           "[0, 2].exists_one(x, 2/x == 1)", std::nullopt},
+        // The e2e control that used to tolerate "either error or true".
+        AccuAbsorptionCase{"ExistsMixedPredicateIsTrue",
+                           "[0, 1, 2].exists(e, 1 / e > 0 || e == 1)", true}),
+    [](const ::testing::TestParamInfo<AccuAbsorptionCase>& info) {
+      return info.param.name;
+    });
+
+// ── comprehensions_v2 `transformMapEntry` with a COMPUTED entry ──
+//
+// The entry argument is any map-typed expression, not just a map
+// literal.  Our codegen decomposes a literal into direct inserts and
+// routes everything else through the `cel_map_merge_at` runtime
+// helper; these pins are the reference for e2e/m5b_test.cc's
+// ComprehensionTransformMapEntryE2ETest computed-entry rows
+// (CELW-0012, which used to ABORT the compiler on exactly these
+// shapes).
+
+struct TransformMapEntryCase {
+  std::string name;
+  std::string source;
+  // nullopt = cel-cpp yields an ERROR; otherwise the int64 result.
+  std::optional<int64_t> expected;
+};
+
+class TransformMapEntryComputedOracle
+    : public ::testing::TestWithParam<TransformMapEntryCase> {};
+
+TEST_P(TransformMapEntryComputedOracle, MatchesCelCpp) {
+  auto r = OracleOk(GetParam().source);
+  EXPECT_FALSE(r.is_unknown) << GetParam().source;
+  if (!GetParam().expected.has_value()) {
+    EXPECT_TRUE(r.is_error) << GetParam().source << " must error";
+    return;
+  }
+  ASSERT_FALSE(r.is_error) << GetParam().source << " → " << r.error_message;
+  EXPECT_EQ(r.value.int64_value(), *GetParam().expected) << GetParam().source;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ComputedEntries, TransformMapEntryComputedOracle,
+    ::testing::Values(
+        // A ternary entry: the `{}` arm contributes nothing.
+        TransformMapEntryCase{
+            "TernaryEntryKeepsOne",
+            "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {}).size()",
+            1},
+        // Two keys per iteration from a computed entry — more than the
+        // one-per-iteration our codegen can pre-size for.
+        TransformMapEntryCase{
+            "TernaryEntryTwoKeysPerIter",
+            "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v, k + 10: v} "
+            ": {k + 100: v, k + 200: v}).size()",
+            4},
+        // 4-arg form, multi-key literal entry: one predicate gates all
+        // N inserts.
+        TransformMapEntryCase{
+            "ConditionalMultiKeyEntry",
+            "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1, {k: v, k + 1: v})"
+            ".size()",
+            2},
+        // 4-arg form whose predicate never holds, with a computed entry.
+        TransformMapEntryCase{
+            "ConditionalComputedEntryAllFiltered",
+            "{1: 2, 3: 4}.transformMapEntry(k, v, k > 100, k == 1 ? {k: v} "
+            ": {k + 1: v}).size()",
+            0},
+        // A poisoned entry map aborts the comprehension.
+        TransformMapEntryCase{
+            "ErrorInsideComputedEntry",
+            "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: 1/0} : {k: v})"
+            ".size()",
+            std::nullopt}),
+    [](const ::testing::TestParamInfo<TransformMapEntryCase>& info) {
+      return info.param.name;
+    });
 
 }  // namespace
 }  // namespace celwasm
