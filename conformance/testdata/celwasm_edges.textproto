@@ -20,6 +20,14 @@
 #                                  the unchecked wasmtime call path
 #                                  ($eval entry + all 21 cel_host
 #                                  trampolines)
+#   map_key_exactness            - LOSSLESS numeric map-key matching
+#                                  (a double key matches a stored
+#                                  int/uint key only when it represents
+#                                  it exactly), the non-map-key call
+#                                  sites that deliberately stay on the
+#                                  rounding compare, and both map
+#                                  probes (linear scan + SwissTable
+#                                  index) at the boundary magnitudes
 #
 # Every expected value/error below is confirmed against the REAL
 # cel-cpp pipeline by conformance/celwasm_edges_oracle_test.cc, which
@@ -581,5 +589,208 @@ section {
     name: "int_parse_error"
     expr: "int('forty-two')"
     eval_error: { errors: { message: "cannot convert string to int" } }
+  }
+}
+
+section {
+  name: "map_key_exactness"
+  description: "Map-key matching must use LOSSLESS numeric convertibility, not a rounding compare: a double query key matches a stored int/uint key only when it represents that integer EXACTLY.  The rule is scoped to map keys -- list membership, scalar ==, and ordering deliberately keep the rounding compare, and rows below pin both sides of that boundary."
+
+  # `dyn(...)` on a SCALAR is admissible in our static subset -- it is
+  # what relaxes the checker's overload match for a cross-type key
+  # query (`double in map(int, V)` has no overload otherwise).  It is
+  # dyn AGGREGATES and heterogeneous-typed expressions that RejectDyn
+  # refuses.  That is why these rows compile and run rather than
+  # landing as static_subset SKIPs.
+  #
+  # 2^53 == 9007199254740992.  9007199254740993 is the first integer a
+  # double cannot represent, so it and 2^53 share one f64 -- which is
+  # exactly what a rounding compare collapses.  Note the literal
+  # `9007199254740993.0` IS 9007199254740992.0 after parsing, so it too
+  # must miss the stored ...993 key.
+
+  # ---- The cross-type rule (a rounding compare answers all of these wrong) ----
+  test {
+    name: "double_key_misses_neighbouring_int_key"
+    description: "2^53 as a double does not match a stored 2^53+1 int key; casting the key to double would fold them together."
+    expr: "dyn(9007199254740992.0) in {9007199254740993: 'a'}"
+    value: { bool_value: false }
+  }
+  test {
+    name: "double_literal_above_2pow53_is_already_rounded"
+    description: "The literal 9007199254740993.0 parses to 9007199254740992.0, so it does not represent the stored key exactly either."
+    expr: "dyn(9007199254740993.0) in {9007199254740993: 'a'}"
+    value: { bool_value: false }
+  }
+  test {
+    name: "double_key_lookup_is_no_such_key"
+    description: "Index access uses the same lossless rule as `in`, so a rounded double key is a miss, not a hit on the neighbour."
+    expr: "{9007199254740993: 'a'}[dyn(9007199254740992.0)]"
+    eval_error: { errors: { message: "no such key" } }
+  }
+  test {
+    name: "double_key_misses_neighbouring_uint_key"
+    expr: "dyn(9007199254740992.0) in {9007199254740993u: 'a'}"
+    value: { bool_value: false }
+  }
+  test {
+    name: "double_key_misses_uint64_max"
+    description: "UINT64_MAX is not exactly representable as a double, so the rounded query key must miss."
+    expr: "dyn(18446744073709551615.0) in {18446744073709551615u: 'a'}"
+    value: { bool_value: false }
+  }
+  test {
+    name: "exact_double_key_still_matches_int"
+    description: "The lossless rule must still ACCEPT a double that represents the key exactly -- the fix must not over-reject."
+    expr: "dyn(1.0) in {1: 'a'}"
+    value: { bool_value: true }
+  }
+  test {
+    name: "non_integral_double_key_misses"
+    expr: "dyn(1.5) in {1: 'a'}"
+    value: { bool_value: false }
+  }
+  test {
+    name: "nan_key_matches_nothing"
+    expr: "dyn(0.0/0.0) in {1: 'a'}"
+    value: { bool_value: false }
+  }
+  test {
+    name: "infinite_key_matches_nothing"
+    expr: "dyn(1.0/0.0) in {1: 'a'}"
+    value: { bool_value: false }
+  }
+
+  # ---- Where the exact rule STOPS.  These rows fail if the lossless
+  #      predicate is over-applied to non-map-key call sites. ----
+  test {
+    name: "list_membership_stays_lossy"
+    description: "List `in` is heterogeneous VALUE equality (the rounding compare), NOT the map-key rule -- same operands as double_key_misses_neighbouring_int_key, opposite answer."
+    expr: "dyn(9007199254740992.0) in [9007199254740993]"
+    value: { bool_value: true }
+  }
+  test {
+    name: "scalar_equality_stays_lossy"
+    description: "The bare == operator keeps the rounding compare."
+    expr: "dyn(9007199254740992.0) == 9007199254740993"
+    value: { bool_value: true }
+  }
+  test {
+    name: "ordering_stays_lossy"
+    description: "Ordering is untouched: under the rounding compare the operands are equal, so `<` is false even though 2^53 < 2^53+1 as integers."
+    expr: "dyn(9007199254740992.0) < 9007199254740993"
+    value: { bool_value: false }
+  }
+
+  # ---- Same-kind keys through both map probes.  Under
+  #      kCelMapIndexThreshold (8) entries a linear scan, at or above it
+  #      the SwissTable index; the comparator was rewritten for both. ----
+  test {
+    name: "linear_hit_above_2pow53"
+    description: "2^53+1 as an int key resolves to itself; a double round-trip would fold it onto 2^53."
+    expr: "9007199254740993 in {9007199254740993: 1}"
+    value: { bool_value: true }
+  }
+  test {
+    name: "linear_miss_neighbour_above_2pow53"
+    description: "2^53 must NOT match a stored 2^53+1 key."
+    expr: "9007199254740992 in {9007199254740993: 1}"
+    value: { bool_value: false }
+  }
+  test {
+    name: "linear_lookup_picks_exact_neighbour"
+    description: "Both 2^53 and 2^53+1 are present; the lookup must return the value of the exact key, not whichever the scan reaches first."
+    expr: "{9007199254740993: 7, 9007199254740992: 8}[9007199254740993]"
+    value: { int64_value: 7 }
+  }
+  test {
+    name: "linear_lookup_other_neighbour"
+    expr: "{9007199254740993: 7, 9007199254740992: 8}[9007199254740992]"
+    value: { int64_value: 8 }
+  }
+  test {
+    name: "linear_no_such_key_neighbour"
+    description: "A neighbouring key is a miss, not a hit on the rounded entry."
+    expr: "{9007199254740993: 7}[9007199254740992]"
+    eval_error: { errors: { message: "no such key" } }
+  }
+
+  # ---- Indexed probe (at or above kCelMapIndexThreshold = 8) ----
+  # The hash canonicalises a key to the integer it exactly represents,
+  # so hash and comparator have to agree at every magnitude; these rows
+  # run eight consecutive keys straddling 2^53 through the index.
+  test {
+    name: "indexed_lookup_above_2pow53"
+    expr: "{9007199254740991: 1, 9007199254740992: 2, 9007199254740993: 3, 9007199254740994: 4, 9007199254740995: 5, 9007199254740996: 6, 9007199254740997: 7, 9007199254740998: 8}[9007199254740993]"
+    value: { int64_value: 3 }
+  }
+  test {
+    name: "indexed_lookup_last_above_2pow53"
+    expr: "{9007199254740991: 1, 9007199254740992: 2, 9007199254740993: 3, 9007199254740994: 4, 9007199254740995: 5, 9007199254740996: 6, 9007199254740997: 7, 9007199254740998: 8}[9007199254740998]"
+    value: { int64_value: 8 }
+  }
+  test {
+    name: "indexed_hit_above_2pow53"
+    expr: "9007199254740993 in {9007199254740991: 1, 9007199254740992: 2, 9007199254740993: 3, 9007199254740994: 4, 9007199254740995: 5, 9007199254740996: 6, 9007199254740997: 7, 9007199254740998: 8}"
+    value: { bool_value: true }
+  }
+  test {
+    name: "indexed_miss_above_2pow53"
+    description: "One past the largest stored key -- an index probe must report a miss, not collide onto a neighbour."
+    expr: "9007199254740999 in {9007199254740991: 1, 9007199254740992: 2, 9007199254740993: 3, 9007199254740994: 4, 9007199254740995: 5, 9007199254740996: 6, 9007199254740997: 7, 9007199254740998: 8}"
+    value: { bool_value: false }
+  }
+
+  # ---- Negative magnitudes ----
+  test {
+    name: "linear_negative_hit_above_2pow53"
+    expr: "-9007199254740993 in {-9007199254740993: 1}"
+    value: { bool_value: true }
+  }
+  test {
+    name: "linear_negative_miss_neighbour"
+    expr: "-9007199254740992 in {-9007199254740993: 1}"
+    value: { bool_value: false }
+  }
+
+  # ---- int64 / uint64 extremes ----
+  test {
+    name: "int64_max_key"
+    expr: "9223372036854775807 in {9223372036854775807: 1}"
+    value: { bool_value: true }
+  }
+  test {
+    name: "int64_min_key_lookup"
+    expr: "{-9223372036854775808: 5}[-9223372036854775808]"
+    value: { int64_value: 5 }
+  }
+  test {
+    name: "uint_key_above_int64_max"
+    description: "A uint key past INT64_MAX must not be read as a negative int."
+    expr: "9223372036854775808u in {9223372036854775808u: 1}"
+    value: { bool_value: true }
+  }
+  test {
+    name: "uint64_max_key"
+    expr: "18446744073709551615u in {18446744073709551615u: 1}"
+    value: { bool_value: true }
+  }
+  test {
+    name: "indexed_uint_lookup_above_2pow63"
+    expr: "{18446744073709551608u: 1, 18446744073709551609u: 2, 18446744073709551610u: 3, 18446744073709551611u: 4, 18446744073709551612u: 5, 18446744073709551613u: 6, 18446744073709551614u: 7, 18446744073709551615u: 8}[18446744073709551615u]"
+    value: { int64_value: 8 }
+  }
+  test {
+    name: "indexed_uint_miss_above_2pow63"
+    expr: "18446744073709551607u in {18446744073709551608u: 1, 18446744073709551609u: 2, 18446744073709551610u: 3, 18446744073709551611u: 4, 18446744073709551612u: 5, 18446744073709551613u: 6, 18446744073709551614u: 7, 18446744073709551615u: 8}"
+    value: { bool_value: false }
+  }
+
+  # ---- Build-time duplicate detection uses the same comparator ----
+  test {
+    name: "duplicate_large_key_rejected"
+    description: "The insert-time duplicate check shares the key comparator, so a repeated >2^53 key is caught."
+    expr: "{9007199254740993: 1, 9007199254740993: 2}"
+    eval_error: { errors: { message: "duplicate key" } }
   }
 }
