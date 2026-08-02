@@ -349,8 +349,9 @@ TEST_F(BytesOpsE2ETest, Concat) {
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, R"(b"\x01" + b"\x02")");
   Activation a;
-  auto got = *EvalOk(instance, a).AsBytes();
-  EXPECT_EQ(got, absl::string_view("\x01\x02", 2));
+  // `AsBytes` borrows from the Value — keep it alive past the view.
+  auto v = EvalOk(instance, a);
+  EXPECT_EQ(*v.AsBytes(), absl::string_view("\x01\x02", 2));
 }
 
 // ──────────────────────────────────────────────────────────────

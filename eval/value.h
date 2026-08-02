@@ -190,6 +190,16 @@ class Value {
   // Typed accessors.  Mismatch (wrong kind) → InvalidArgument.  Bytes
   // and string share the underlying std::string; `AsString` /
   // `AsBytes` check the kind tag.
+  //
+  // The accessors returning `absl::string_view` / `absl::Span`
+  // (`AsString`, `AsBytes`, `AsType`, `UnknownAttributes`) BORROW from
+  // this Value: the result is valid only while this Value is alive.
+  // Calling one on a temporary and keeping the view is a
+  // use-after-scope that reads plausible-looking garbage rather than
+  // failing —
+  //     auto got = *Eval(...).AsBytes();      // WRONG, view dangles
+  //     auto v = Eval(...); auto got = *v.AsBytes();   // right
+  // The scalar accessors return by value and have no such constraint.
   absl::StatusOr<bool> AsBool() const;
   absl::StatusOr<int64_t> AsInt() const;
   absl::StatusOr<uint64_t> AsUint() const;

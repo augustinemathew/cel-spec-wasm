@@ -78,10 +78,6 @@ using ::celwasm::testdata::HostMsg3;
 //  Test harness — builds a single Engine shared across tests.
 // ──────────────────────────────────────────────────────────────
 
-// Shared Engine — wasm_engine_t + parsed runtime module are
-// documented thread-safe; one instance per test binary is plenty.
-using ::celwasm::e2e::GlobalEngine;
-
 // Build a Compiler pre-seeded with a single `c` variable of
 // message type, resolving the descriptor through the process
 // descriptor pool (Customer is cc_proto_library-linked so its
@@ -331,8 +327,11 @@ TEST_F(SelectE2ETest, SelectBytes) {
   msg.set_session_token(std::string("\xde\xad\xbe\xef", 4));
   Activation a;
   a.Bind("c", Value::Message(msg));
-  auto got = *EvalOk(instance, a).AsBytes();
-  EXPECT_EQ(got, absl::string_view("\xde\xad\xbe\xef", 4));
+  // `AsBytes` borrows from the Value, so the Value has to outlive the
+  // view — binding `got` to a temporary's bytes is a use-after-scope
+  // that reads plausible-looking stack garbage.
+  auto v = EvalOk(instance, a);
+  EXPECT_EQ(*v.AsBytes(), absl::string_view("\xde\xad\xbe\xef", 4));
 }
 
 // Two-hop select chain: c.billing_address.city.
