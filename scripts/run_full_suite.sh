@@ -10,6 +10,13 @@
 # Usage:
 #   scripts/run_full_suite.sh             # run everything
 #   scripts/run_full_suite.sh --quick     # skip conformance harness (slow)
+#   scripts/run_full_suite.sh --config=asan   # same suite, AddressSanitizer
+#   scripts/run_full_suite.sh --config=tsan   # same suite, ThreadSanitizer
+#
+# `--config=NAME` is threaded into every bazel invocation the script
+# makes, including the conformance gate.  It is a separate build tree
+# from the dev-loop default, so the first run recompiles cel-cpp; see
+# the sanitizer block in .bazelrc.
 #
 # Exits non-zero on the first failing target.
 
@@ -22,9 +29,15 @@ set -euo pipefail
 PROJ="//compiler/... //eval/... //shared/... //abi/... //runtime/... //tools/... //conformance/... //e2e/... //benchmark/... //testdata/... //spec/..."
 
 QUICK=0
+# Empty by default, so the stock run is exactly what it was before
+# `--config` existed.  Scalar + word splitting (like $PROJ above)
+# rather than an array: macOS still ships bash 3.2, where `${a[@]}` on
+# an empty array trips `set -u`.
+CONFIG_FLAG=""
 for arg in "$@"; do
   case "$arg" in
     --quick) QUICK=1 ;;
+    --config=*) CONFIG_FLAG="$arg" ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -32,7 +45,8 @@ done
 cd "$(dirname "$0")/.."
 
 echo "==> Default test suite"
-bazel test --test_output=errors $PROJ
+# shellcheck disable=SC2086
+bazel test $CONFIG_FLAG --test_output=errors $PROJ
 
 echo "==> Manual-tagged targets"
 # Query-driven: a hardcoded list rotted the first time targets were
@@ -47,11 +61,12 @@ if [[ -z "$MANUAL_TARGETS" ]]; then
 fi
 echo "$MANUAL_TARGETS" | wc -l | xargs echo "    manual targets:"
 # shellcheck disable=SC2086
-bazel test --test_output=errors $MANUAL_TARGETS
+bazel test $CONFIG_FLAG --test_output=errors $MANUAL_TARGETS
 
 if [[ $QUICK -eq 0 ]]; then
   echo "==> Conformance gate (both link modes, monotonic baselines)"
-  scripts/check_conformance_monotonic.sh
+  CELWASM_BAZEL_CONFIG="${CONFIG_FLAG#--config=}" \
+    scripts/check_conformance_monotonic.sh
 fi
 
 echo "==> Full suite green"

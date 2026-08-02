@@ -987,6 +987,16 @@ moves, its case moves in the same commit.
   - Primary build: `bazel build //...` (or `bazel build $PROJ`).
   - Primary tests: `bazel test //...` (or `bazel test $PROJ`).
   - CLI: `bazel-bin/tools/cel/...` (see `tools/cel`).
+  - **Sanitizers:** `bazel test --config=asan //...` and
+    `--config=tsan //...` (defined in `.bazelrc`), or
+    `scripts/run_full_suite.sh --config=asan` for the manual-tagged
+    targets and conformance gate as well.  CI runs both legs on every
+    push and PR.  Each is a separate build tree — same ~10-min cel-cpp
+    recompile as `-c opt`, so they are a gate, not an inner loop.  They
+    instrument the **host** side only: the wasm32-wasi cross-compile is
+    excluded by `wasm_cc_binary`'s transition (wasi-sdk clang rejects
+    `-fsanitize=address` for that target), and the prebuilt wasmtime
+    archive is not ours to instrument.
   - The wasm32-wasi cross-compile is handled by a bazel-registered
     `@wasi_sdk_<host>` toolchain (the host system clang has no wasm32
     target).  The repo builds on both macOS (Apple Silicon) and Linux

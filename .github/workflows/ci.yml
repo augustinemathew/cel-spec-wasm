@@ -11,6 +11,11 @@
 #      `bazel test //...` does NOT pick up; they carry the load-bearing
 #      e2e assertions) plus the dual-mode conformance gate.
 #
+# Sanitizer legs: ubuntu-24.04, matrixed over ASan and TSan
+# (`--config=asan` / `--config=tsan`, defined in .bazelrc).  They run
+# the same target set as the primary leg minus the conformance gate —
+# see the job comment for why.
+#
 # macOS (Apple Silicon) leg: workflow_dispatch only.  The project is
 # developed and pre-push-gated on Apple Silicon locally, so a per-push
 # macOS job is redundant coverage at 10× the runner cost — dispatch it
@@ -94,6 +99,85 @@ jobs:
       # Save even when a test fails: the compiled cel-cpp objects are
       # the expensive part, and actions/cache's combined action skips
       # its save on job failure — which kept every retry cold.
+      - name: Save bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
+
+  # Sanitizer legs — ASan and TSan, one job each.  `fail-fast: false`
+  # so an ASan finding doesn't cancel the TSan run: they surface
+  # different bug classes and we want both reports from one push.
+  #
+  # Each sanitizer is its own bazel build tree (a `--copt` change
+  # re-keys every action), so each gets its own disk cache; sharing one
+  # key would make every run evict the other's objects and stay cold.
+  #
+  # Scope is `//...` plus the manual-tagged targets, NOT the
+  # conformance gate: the corpus runner is by far the longest job in
+  # the suite and instrumentation multiplies that, while the code paths
+  # it exercises are the same compile→eval paths the e2e manual targets
+  # already drive under the sanitizer.  Run it by hand when a
+  # sanitizer-relevant change lands in the runtime:
+  #     scripts/run_full_suite.sh --config=asan
+  test-sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [asan, tsan]
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+
+      # `llvm` on top of the primary leg's deps: it supplies
+      # llvm-symbolizer, without which a sanitizer report is a list of
+      # raw addresses.
+      - name: Install host deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld llvm tzdata tzdata-legacy
+
+      - name: Fetch vendored cel-cpp (pinned SHA)
+        run: third_party/fetch_cel_cpp.sh
+
+      - name: Restore bazel disk cache
+        id: bazel-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: bazel-disk-${{ runner.os }}-${{ matrix.sanitizer }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-${{ matrix.sanitizer }}-
+
+      - name: Point bazel at the disk cache and the symbolizer
+        # .bazelrc try-imports user.bazelrc; `test` inherits `build` flags.
+        # The symbolizer lives at an unversioned path on some images and
+        # only under /usr/lib/llvm-N on others — resolve it here rather
+        # than hardcoding a path in the committed .bazelrc, which also
+        # has to work on macOS.
+        run: |
+          echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
+          sym="$(command -v llvm-symbolizer || true)"
+          if [[ -z "$sym" ]]; then
+            sym="$(ls -1 /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | tail -n1 || true)"
+          fi
+          if [[ -n "$sym" ]]; then
+            echo "using symbolizer: $sym"
+            echo "test --test_env=ASAN_SYMBOLIZER_PATH=$sym" >> user.bazelrc
+            echo "test --test_env=TSAN_OPTIONS=external_symbolizer_path=$sym" >> user.bazelrc
+          else
+            echo "::warning::llvm-symbolizer not found; sanitizer reports will be unsymbolized"
+          fi
+
+      - name: Build
+        run: bazel build --config=${{ matrix.sanitizer }} //...
+
+      - name: Test (unit + manual-tagged)
+        run: scripts/run_full_suite.sh --quick --config=${{ matrix.sanitizer }}
+
       - name: Save bazel disk cache
         if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

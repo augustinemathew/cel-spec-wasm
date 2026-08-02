@@ -71,6 +71,21 @@ with a live daemon:
 That `-opt` checkout is the manual workaround for the config-thrash
 problem above — a symptom, not a solution.
 
+**The sanitizers are two more trees.**  `--config=asan` and
+`--config=tsan` (`.bazelrc`) each add a `--copt`, which re-keys every
+compile action, so each is a full third and fourth build tree with the
+same cel-cpp cost on first use — and then some, because instrumentation
+slows the compile itself.  On this machine (darwin-arm64) the Binaryen
+CMake action alone ran ~20 min under ASan.  Budget 20-30 min to bring
+up a cold sanitizer tree, not the ~10 min a cold `-c opt` tree costs.
+
+The rule from §3.1 applies unchanged: they are a gate, not an inner
+loop.  Run them when the change is in memory-management or threading
+territory, and otherwise let CI's sanitizer legs carry them.  Once the
+tree is warm the per-target cost is ordinary: `//e2e:m2_test_static`
+re-runs in ~60 s under ASan, `//eval:engine_test_dynamic` in ~62 s
+under TSan.
+
 ---
 
 ## 3. The fixes

@@ -33,8 +33,35 @@ Usage:
     )
 """
 
+# Command-line compile/link flag lists that must NOT survive into the
+# wasm configuration.  They are set for the host C++ build (`--copt`,
+# `--linkopt`, and the `--config=asan` / `--config=tsan` blocks in
+# .bazelrc that expand to them), and a wasm32-wasi cross-compile has no
+# use for any of them: the wasm build's flags come from the wasi-sdk
+# cc_toolchain plus the target's own BUILD attributes, neither of which
+# is a command-line option and neither of which this clears.
+#
+# Clearing them is load-bearing, not tidiness.  `--config=asan` adds
+# `--copt=-fsanitize=address`, which wasi-sdk clang refuses:
+#
+#   clang: error: unsupported option '-fsanitize=address'
+#          for target 'wasm32-unknown-wasi'
+#
+# so without the reset, `bazel test --config=asan //...` fails at
+# `cel_runtime.wasm` before a single test runs.  The same reset also
+# keeps the emitted wasm independent of the host config — the runtime's
+# `-O3 -flto` comes from runtime/BUILD.bazel, so a host `--copt=-O1`
+# can no longer quietly de-optimize it, and the wasm actions stay
+# cache-hits across a host-config switch.
+_HOST_FLAG_OPTIONS = [
+    "//command_line_option:copt",
+    "//command_line_option:conlyopt",
+    "//command_line_option:cxxopt",
+    "//command_line_option:linkopt",
+]
+
 def _wasm_transition_impl(_settings, _attr):
-    return {
+    settings = {
         "//command_line_option:platforms": str(
             Label("//third_party/wasi_sdk:wasm32_wasi"),
         ),
@@ -42,11 +69,14 @@ def _wasm_transition_impl(_settings, _attr):
         # (compilers etc.) come from toolchain resolution, not from the
         # target config, so we don't need to thread the host platform.
     }
+    for opt in _HOST_FLAG_OPTIONS:
+        settings[opt] = []
+    return settings
 
 _wasm_transition = transition(
     implementation = _wasm_transition_impl,
     inputs = [],
-    outputs = ["//command_line_option:platforms"],
+    outputs = ["//command_line_option:platforms"] + _HOST_FLAG_OPTIONS,
 )
 
 def _wasm_p2_transition_impl(_settings, _attr):
@@ -56,16 +86,19 @@ def _wasm_p2_transition_impl(_settings, _attr):
     Component-Model preview2 ABI's non-shared-memory requirement is
     satisfied at the wasi-sdk cc_binary step.
     """
-    return {
+    settings = {
         "//command_line_option:platforms": str(
             Label("//third_party/wasi_sdk:wasm32_wasip2"),
         ),
     }
+    for opt in _HOST_FLAG_OPTIONS:
+        settings[opt] = []
+    return settings
 
 _wasm_p2_transition = transition(
     implementation = _wasm_p2_transition_impl,
     inputs = [],
-    outputs = ["//command_line_option:platforms"],
+    outputs = ["//command_line_option:platforms"] + _HOST_FLAG_OPTIONS,
 )
 
 def _wasm_cc_binary_impl(ctx):
