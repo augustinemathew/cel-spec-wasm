@@ -129,7 +129,7 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot);
 //   - the index-block arena allocation fails (degrade, never poison).
 //
 // As it places each entry it re-validates uniqueness: if two stored
-// keys `cel_value_eq`, the map is poisoned with CEL_ERR_DUPLICATE_KEY
+// keys `cel_map_key_eq`, the map is poisoned with CEL_ERR_DUPLICATE_KEY
 // exactly as the per-insert dup path does.  Because `cel_map_insert`
 // already rejects literal duplicates linearly, this only fires for the
 // dynamic / direct-construction paths that bypass that check.
@@ -142,8 +142,11 @@ void cel_map_index_build(uint32_t map_slot);
 // Probe the hash index for `key`, returning the matching entry index in
 // `[0, count)` or UINT32_MAX on miss.  Returns UINT32_MAX immediately
 // when `hdr->index_offset == 0` (no index → caller linear-scans).
-// Equality is confirmed by `cel_value_eq` after every H2 group match,
-// so hash collisions are harmless.  Used by the keyed kernels; declared
+// Equality is confirmed by `cel_map_key_eq` after every H2 group match,
+// so hash collisions are harmless.  The confirmation MUST use the
+// map-key rule rather than `cel_value_eq`: the hash canonicalizes a
+// double to the integer it represents EXACTLY, so a comparator that
+// merely rounds would accept a key the hash never routed there.  Used by the keyed kernels; declared
 // here (rather than file-static) so they can share one implementation
 // across TUs.
 uint32_t cel_map_index_find(const ArenaMapHeader* hdr, const CelValue* key);

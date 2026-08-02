@@ -53,11 +53,47 @@ typedef enum {
 CmpResult numeric_compare_kernel(const CelValue* a, const CelValue* b);
 int is_numeric_kind(uint32_t kind);
 
-// Polymorphic value equality.  Defined in cel_compare.c; referenced
-// by cel_list_eq_arena (cel_list.c) and cel_map_eq_arena (cel_map.c)
-// for element / value comparisons.  Routes numeric pairs through the
-// cross-type numeric ladder per langdef §"Equality".
+// Polymorphic VALUE equality — the `==` operator's rule.  Routes
+// numeric pairs through the cross-type numeric ladder per langdef
+// §"Equality", which places int / uint / double on one continuous
+// number line and tolerates the precision loss of the int→double
+// cast: `9007199254740993 == 9007199254740992.0` is TRUE, matching
+// cel-cpp's `internal::Number::operator==`.  Used for the `==`
+// operator, list membership, and list/map element compares.
+//
+// NOT for map KEYS — see `cel_map_key_eq` below.
 int cel_value_eq(const CelValue* a, const CelValue* b);
+
+// Map-KEY equality — the lookup rule, which is LOSSLESS, not rounding.
+//
+// cel-cpp converts a query key to the stored key's type only when the
+// conversion round-trips exactly, then compares exactly
+// (`internal/number.h` `LosslessConvertibleToIntVisitor` /
+// `LosslessConvertibleToUintVisitor`, driven from
+// `eval/eval/container_access_step.cc::LookupInMap`,
+// `runtime/standard/container_membership_functions.cc`'s
+// `doubleKeyInSet` / `intKeyInSet` / `uintKeyInSet`, and
+// `runtime/standard/equality_functions.cc::CheckAlternativeNumericType`).
+//
+// The two rules diverge above 2^53, where one double is the rounded
+// image of a RANGE of int64s: `9007199254740992.0` and the int
+// `9007199254740993` are `cel_value_eq`-equal but are DISTINCT map
+// keys, so a lookup with the double must miss.  Oracle-pinned by
+// `MapKeyNumericCrossType.DoubleAt2Pow53MissesNeighborIntKey` (miss)
+// against `.IntPlus1EqDoubleAt2Pow53` (`==` says equal) in
+// `testdata/cel_cpp_oracle_test.cc`.
+//
+// Non-numeric pairs fall through to `cel_value_eq` (string / bool /
+// bytes / null / … are exact there already).
+int cel_map_key_eq(const CelValue* a, const CelValue* b);
+
+// The numeric half of `cel_map_key_eq`, exposed for the host-side
+// trampolines (`eval/internal/cel_host.cc`), whose CelValues carry
+// spans into the wasm instance's linear memory rather than this
+// build's — so they may use the numeric predicate but never the
+// span-reading one.  Both operands must be numeric kinds; a
+// non-numeric operand compares unequal.
+int cel_numeric_key_eq(const CelValue* a, const CelValue* b);
 
 // CelValue* at byte-offset `off`.  Caller must have verified
 // `off != 0` for the absent-sentinel contract; for that, use the
@@ -256,8 +292,7 @@ static inline const uint8_t* cel_anchor_memchr_(const uint8_t* p, uint8_t c,
 // advance code-point counts across ASCII spans (1 byte == 1 code
 // point there); block granularity keeps the exact-decode fallback in
 // charge of every non-ASCII byte.
-static inline uint32_t cel_ascii_prefix_blocks_(const uint8_t* p,
-                                                uint32_t n) {
+static inline uint32_t cel_ascii_prefix_blocks_(const uint8_t* p, uint32_t n) {
   uint32_t run = 0;
   while (n - run >= 16) {
     const v128_t w = wasm_v128_load(p + run);
@@ -276,8 +311,7 @@ static inline const uint8_t* cel_anchor_memchr_(const uint8_t* p, uint8_t c,
 
 // 8-byte SWAR variant of the ASCII-run scan: a block is ASCII iff no
 // byte has its high bit set.
-static inline uint32_t cel_ascii_prefix_blocks_(const uint8_t* p,
-                                                uint32_t n) {
+static inline uint32_t cel_ascii_prefix_blocks_(const uint8_t* p, uint32_t n) {
   const uint64_t highs = 0x8080808080808080ull;
   uint32_t run = 0;
   while (n - run >= 8) {

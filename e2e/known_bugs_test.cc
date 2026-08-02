@@ -67,66 +67,48 @@ absl::StatusOr<Value> TryEval(absl::string_view source) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// BUG: lossy double rounding in numeric map-key equality.
+// FIXED (CELW-0004) — regression guard.
 //
-// `map_keys_equal` (runtime/cel_runtime.c:42-43) compares
-// two numeric keys with `numeric_compare_kernel(...) == kCmpEqual`,
-// which for the int-vs-double case casts the int to double
-// (cel_compare.c:139, `cmp_double((double)a, b)`).  For |int| > 2^53
-// that cast is lossy, so a double query key spuriously equals a
-// DISTINCT stored int key.
+// The map-key comparator used to be `cel_value_eq`, i.e. the `==`
+// operator's rule, which routes any numeric pair through
+// `numeric_compare_kernel`; the int-vs-double arm casts the int to
+// double (`cel_compare.c`, `cmp_double((double)a, b)`).  For
+// |int| > 2^53 that cast is lossy, so a double query key spuriously
+// equalled a DISTINCT stored int key.
 //
-// The spec (cel-cpp `equality_functions.cc` `CheckAlternativeNumericType`
-// + `internal/number.h` `LosslessConvertibleToInt`) requires key lookup
-// to use lossless convertibility, NOT a rounding compare.
+// Map-key matching is LOSSLESS, not rounding: cel-cpp converts the
+// query key to the stored key's type only when the conversion
+// round-trips (`internal/number.h` `LosslessConvertibleToInt` /
+// `...ToUint`, driven from `eval/eval/container_access_step.cc`'s
+// `LookupInMap` and `equality_functions.cc`'s
+// `CheckAlternativeNumericType`).  `cel_map_key_eq` now implements
+// that rule and `cel_value_eq` keeps the lossy one for `==`, list
+// membership, and element compares — the two answer DIFFERENTLY for
+// this pair, which is the whole point.
 //
-// `9007199254740992.0` and `9007199254740993` are distinct integers but
-// the same f64, so:
-//   dyn(9007199254740992.0) in {9007199254740993: 'a'}
-//   spec / cel-cpp -> false   (no lossless match for the stored key)
-//   cel2 currently -> true    (lossy (double)9007199254740993 == ...992.0)
+// `9007199254740992.0` and `9007199254740993` are distinct integers
+// but the same f64, so:
+//   dyn(9007199254740992.0) in {9007199254740993: 'a'}   -> false
+//   dyn(9007199254740993) == 9007199254740992.0          -> true
+// Both verdicts are oracle-pinned in `testdata/cel_cpp_oracle_test.cc`
+// (`MapKeyNumericCrossType.DoubleAt2Pow53MissesNeighborIntKey` /
+// `.IntPlus1EqDoubleAt2Pow53`); the kernel-level boundary matrix lives
+// in `runtime/cel_map_test.cc` (`MapLosslessKeyTest`) and
+// `runtime/cel_compare_test.cc` (`MapKeyEqTest`).
 //
 // `dyn(...)` is required only to clear the static-subset checker for a
-// cross-type `in` (cf. m5_test.cc); the bug is in the runtime kernel.
-//
-// Fix: route map_keys_equal / `in` / lookup through a lossless-eq
-// predicate (mirror LosslessConvertibleToInt/Uint), leaving
-// numeric_compare_kernel for ordering only.  Then delete the SKIP.
+// cross-type `in` (cf. m5_test.cc); the defect was in the runtime
+// kernel.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, MapKeyLossyDoubleEquality) {
-  GTEST_SKIP() << R"CELBUG(CELBUG v1
-id: CELW-0004
-severity: P0
-kind: wrong-value
-summary: numeric map-key equality rounds a >2^53 int key to double, so a distinct double query key spuriously matches
-repro: dyn(9007199254740992.0) in {9007199254740993: 'a'}
-bindings: none
-actual: true
-expected: false
-layer: runtime/cel_runtime.c:42-43 (map_keys_equal) via runtime/cel_compare.c:139 (cmp_double)
-blocked-by: none
-found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
-fix-hint: map_keys_equal compares two numeric keys with
-  numeric_compare_kernel(...) == kCmpEqual, which for the int-vs-double case
-  casts the int to double (cel_compare.c:139, cmp_double((double)a, b)); for
-  |int| > 2^53 that cast is lossy, so 9007199254740993 and 9007199254740992.0
-  collapse to the same f64. The spec requires key lookup to use LOSSLESS
-  convertibility, not a rounding compare - see cel-cpp
-  equality_functions.cc CheckAlternativeNumericType and
-  internal/number.h LosslessConvertibleToInt. Route map_keys_equal, `in` and
-  lookup through a lossless-eq predicate and leave numeric_compare_kernel for
-  ordering only. The dyn(...) wrapper in the repro is only there to clear the
-  static-subset checker for a cross-type `in`; the defect is in the runtime
-  kernel. Silently wrong with no error, hence P0.
-issue: none
-)CELBUG";
   auto v = TryEval("dyn(9007199254740992.0) in {9007199254740993: 'a'}");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
   // Spec: the double does NOT match the distinct stored int key.
   EXPECT_FALSE(*v->AsBool())
-      << "map-key equality matched a >2^53 int against a rounded double "
-         "(cel_runtime.c:42-43 via cel_compare.c:139)";
+      << "map-key equality matched a >2^53 int against a rounded double; "
+         "the key path regressed from cel_map_key_eq back onto the lossy "
+         "cel_value_eq rule";
 }
 
 // ══════════════════════════════════════════════════════════════════
