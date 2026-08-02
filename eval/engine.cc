@@ -1661,9 +1661,6 @@ absl::Status Engine::AddPlugin(absl::Span<const uint8_t> plugin_bytes,
 absl::StatusOr<Engine> Engine::Builder::Build() const&& {
   auto state_or = InitWasmtime(jit_perf_map_);
   if (!state_or.ok()) return state_or.status();
-  // Resolve the wasm-coverage destination once, at engine
-  // instantiation: an explicit CollectWasmCoverage(dir) wins, else
-  // the CELWASM_WASM_GCOV_DIR env var, else disabled (empty).
   return Engine(std::move(*state_or));
 }
 

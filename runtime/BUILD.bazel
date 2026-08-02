@@ -1,27 +1,7 @@
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 load("//third_party/wasi_sdk:wasm_cc_binary.bzl", "wasm_cc_binary")
 
 package(default_visibility = ["//visibility:public"])
-
-# --//runtime:instrument_wasm — build `cel_runtime.wasm` with gcov
-# instrumentation (clang -fprofile-arcs -ftest-coverage).  wasi-sdk
-# ships no wasm profile runtime, so the write-out API becomes six
-# `env::llvm_*` imports that the eval host implements
-# (`//eval:wasm_gcov`); `--export-table` lets the host invoke the
-# registered write-out functions.  Collection is opt-in at run time
-# via CELWASM_WASM_GCOV_DIR.  Measurement config only — never ship an
-# instrumented artifact.  See
-# doc/implementation-plan/rewrite/m38-wasm-gcov-coverage.md.
-bool_flag(
-    name = "instrument_wasm",
-    build_setting_default = False,
-)
-
-config_setting(
-    name = "instrument_wasm_enabled",
-    flag_values = {":instrument_wasm": "True"},
-)
 
 # `wasm_exports.txt` is the canonical list of symbols
 # `cel_runtime.wasm` exports.  Two consumers below:
@@ -771,25 +751,8 @@ cc_binary(
     ] + select({
         ":opt_mode": ["-DCEL_LOG_DISABLED"],
         "//conditions:default": [],
-    }) + select({
-        ":instrument_wasm_enabled": [
-            "-fprofile-arcs",
-            "-ftest-coverage",
-        ],
-        "//conditions:default": [],
     }),
-    linkopts = select({
-        ":instrument_wasm_enabled": [
-            # Export the indirect function table so the host can invoke
-            # the gcov write-out functions registered via
-            # `env::llvm_gcov_init` (see //eval:wasm_gcov).
-            "-Wl,--export-table",
-            # The profile write-out symbols have no wasm-side
-            # implementation; let them become `env` imports.
-            "-Wl,--allow-undefined",
-        ],
-        "//conditions:default": [],
-    }) + [
+    linkopts = [
         # No standard startup files; runtime is library code, no main.
         "-nostartfiles",
         "-Wl,--no-entry",

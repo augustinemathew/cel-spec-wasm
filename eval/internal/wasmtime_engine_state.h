@@ -96,10 +96,6 @@ struct WasmtimeEngineState {
   // resolving caller-side wasm imports.
   std::map<std::string, RegisteredHostCallback> host_callbacks;
 
-  // once at `Engine::Builder::Build()` (explicit
-  // `CollectWasmCoverage(dir)` wins; else the CELWASM_WASM_GCOV_DIR
-  // env var; empty ⇒ disabled).  Each Plan hands it to the
-
   // Plugins registered via `Engine::AddPlugin`.
   // Order-preserving vector (vs map) — there is no natural keying
   // name for a plugin;
