@@ -106,8 +106,8 @@ TEST_F(CctzE2ETest, TimestampGetSecondsAccessor) {
   // depend on cctz init having run.
   auto compiler_or = Compiler::NewBuilder().Build();
   ASSERT_THAT(compiler_or, IsOk());
-  auto instance = CompilePlan(*compiler_or,
-                              "timestamp(\"2026-01-01T00:00:00Z\").getSeconds()");
+  auto instance = CompilePlan(
+      *compiler_or, "timestamp(\"2026-01-01T00:00:00Z\").getSeconds()");
   Activation a;
   auto v = EvalOk(instance, a);
   ASSERT_EQ(v.kind(), Value::Kind::kInt);
@@ -150,10 +150,9 @@ TEST_F(DurationE2ETest, TimestampDifference) {
   // `t - t` returns a Duration; cctz subtract-and-normalise path.
   auto compiler_or = Compiler::NewBuilder().Build();
   ASSERT_THAT(compiler_or, IsOk());
-  auto instance =
-      CompilePlan(*compiler_or,
-                  "timestamp(\"1970-01-01T01:00:00Z\") - "
-                  "timestamp(\"1970-01-01T00:00:00Z\")");
+  auto instance = CompilePlan(*compiler_or,
+                              "timestamp(\"1970-01-01T01:00:00Z\") - "
+                              "timestamp(\"1970-01-01T00:00:00Z\")");
   Activation a;
   auto v = EvalOk(instance, a);
   ASSERT_EQ(v.kind(), Value::Kind::kDuration);

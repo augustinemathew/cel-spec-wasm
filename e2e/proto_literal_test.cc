@@ -67,19 +67,19 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
+#include "common/type.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"  // HostListBacking definition
-#include "compiler/program.h"
-#include "common/type.h"
 #include "eval/value.h"
+#include "google/protobuf/message.h"
+#include "gtest/gtest.h"
 #include "testdata/e2e_fixture.pb.h"
 #include "testdata/host_fixture_proto2.pb.h"
 #include "testdata/host_fixture_proto3.pb.h"
-#include "google/protobuf/message.h"
-#include "gtest/gtest.h"
 
 namespace celwasm::api {
 namespace {
@@ -206,10 +206,9 @@ TEST_F(ProtoLiteralEmptyE2ETest,
   // default-instance.)
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  "celwasm.testdata.HostMsg3{}.inner == "
-                  "celwasm.testdata.HostMsg3{}");
+  auto instance = CompilePlan(*compiler,
+                              "celwasm.testdata.HostMsg3{}.inner == "
+                              "celwasm.testdata.HostMsg3{}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -871,10 +870,9 @@ TEST_F(ProtoLiteralDefaultsE2ETest, Proto3UnsetMessageReadsAsDefaultInstance) {
   // for the longer rationale).
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  "celwasm.testdata.HostMsg3{}.inner == "
-                  "celwasm.testdata.HostMsg3{}");
+  auto instance = CompilePlan(*compiler,
+                              "celwasm.testdata.HostMsg3{}.inner == "
+                              "celwasm.testdata.HostMsg3{}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }

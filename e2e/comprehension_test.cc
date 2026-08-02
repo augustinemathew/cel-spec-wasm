@@ -1288,8 +1288,7 @@ TEST(PoisonedRangeE2ETest, ListRangeErrorPropagatesThroughAll) {
   ASSERT_THAT(compiler, IsOk());
   // [[1]][5] is a checker-valid list<int> expression that errors at
   // eval (index out of bounds); .all over it must yield that error.
-  auto instance =
-      CompilePlan(*compiler, "([[1]][5]).all(x, x > 0)");
+  auto instance = CompilePlan(*compiler, "([[1]][5]).all(x, x > 0)");
   Activation a;
   auto v_or = instance.Eval(a);
   ASSERT_TRUE(v_or.ok()) << v_or.status();
@@ -1299,8 +1298,7 @@ TEST(PoisonedRangeE2ETest, ListRangeErrorPropagatesThroughAll) {
 TEST(PoisonedRangeE2ETest, ListRangeErrorPropagatesThroughMap) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler, "([[1]][5]).map(x, x + 1)");
+  auto instance = CompilePlan(*compiler, "([[1]][5]).map(x, x + 1)");
   Activation a;
   auto v_or = instance.Eval(a);
   ASSERT_TRUE(v_or.ok()) << v_or.status();
@@ -1313,8 +1311,8 @@ TEST(PoisonedRangeE2ETest, MapRangeErrorPropagatesThroughAll) {
   // {'a': {'b': 1}}['zzz'] is a checker-valid map<string,int>
   // expression that errors at eval (no such key); iterating its keys
   // must carry the error out through the poisoned map iterator.
-  auto instance = CompilePlan(
-      *compiler, "({'a': {'b': 1}}['zzz']).all(k, k != '')");
+  auto instance =
+      CompilePlan(*compiler, "({'a': {'b': 1}}['zzz']).all(k, k != '')");
   Activation a;
   auto v_or = instance.Eval(a);
   ASSERT_TRUE(v_or.ok()) << v_or.status();

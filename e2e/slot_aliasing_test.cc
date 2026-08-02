@@ -38,8 +38,8 @@
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/value.h"
-#include "shared/type.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
 
 namespace celwasm {
 namespace {
@@ -136,11 +136,10 @@ citation: doc/implementation-plan/rewrite/design.md (RejectDyn / the static subs
   ASSERT_THAT(instance, IsOk()) << GetParam().label;
   Activation a = MakeActivation();
   auto v = instance->Eval(a);
-  ASSERT_THAT(v, IsOk())
-      << GetParam().label << " (" << GetParam().source << "): " << v.status();
+  ASSERT_THAT(v, IsOk()) << GetParam().label << " (" << GetParam().source
+                         << "): " << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool)
-      << GetParam().label << " produced kind="
-      << static_cast<int>(v->kind());
+      << GetParam().label << " produced kind=" << static_cast<int>(v->kind());
   EXPECT_EQ(*v->AsBool(), true)
       << GetParam().label << " (" << GetParam().source << ") returned false";
 }
@@ -154,44 +153,44 @@ citation: doc/implementation-plan/rewrite/design.md (RejectDyn / the static subs
 // ──────────────────────────────────────────────────────────────
 
 const SlotCase kArithCases[] = {
-    {"flat_left_assoc_4",                    //
-     "a + b + c + d == 17"},                 // 2+3+5+7
-    {"flat_left_assoc_8",                    //
+    {"flat_left_assoc_4",     //
+     "a + b + c + d == 17"},  // 2+3+5+7
+    {"flat_left_assoc_8",     //
      "a + b + c + d + e + f + g + h == 77"},
-    {"flat_subtract_left_assoc",             //
-     "a - b - c - d == -13"},                // 2-3-5-7
-    {"mixed_add_sub_left_assoc",             //
-     "a + b - c + d - e == -4"},             // 2+3-5+7-11
+    {"flat_subtract_left_assoc",  //
+     "a - b - c - d == -13"},     // 2-3-5-7
+    {"mixed_add_sub_left_assoc",  //
+     "a + b - c + d - e == -4"},  // 2+3-5+7-11
     {"product_chain_4", "a * b * c * d == 210"},
-    {"sum_of_products",                      //
-     "a*b + c*d + e*f == 184"},              // 6+35+143
-    {"deeply_paren_right_assoc",             //
+    {"sum_of_products",           //
+     "a*b + c*d + e*f == 184"},   // 6+35+143
+    {"deeply_paren_right_assoc",  //
      "a + (b + (c + (d + e))) == 28"},
-    {"deeply_paren_left_assoc",              //
+    {"deeply_paren_left_assoc",  //
      "(((a + b) + c) + d) + e == 28"},
-    {"asymmetric_left_heavy",                //
-     "(a + b + c) + d == 17"},               // 10+7
-    {"asymmetric_right_heavy",               //
-     "a + (b + c + d) == 17"},               // 2+15
-    {"balanced_pair_of_pairs",               //
+    {"asymmetric_left_heavy",   //
+     "(a + b + c) + d == 17"},  // 10+7
+    {"asymmetric_right_heavy",  //
+     "a + (b + c + d) == 17"},  // 2+15
+    {"balanced_pair_of_pairs",  //
      "(a + b) + (c + d) == 17"},
-    {"balanced_triple_of_pairs",             //
+    {"balanced_triple_of_pairs",  //
      "(a + b) + (c + d) + (e + f) == 41"},
-    {"nested_mul_in_add",                    //
-     "a + b*c + d*e == 94"},                 // 2+15+77
-    {"nested_add_in_mul",                    //
-     "(a + b) * (c + d) == 60"},             // 5*12
-    {"comparison_chain_via_and",             //
-     "a < b && b < c && c < d"},             // true
-    {"comparison_chain_via_or",              //
-     "a > b || b > c || c < d"},             // c<d true
+    {"nested_mul_in_add",         //
+     "a + b*c + d*e == 94"},      // 2+15+77
+    {"nested_add_in_mul",         //
+     "(a + b) * (c + d) == 60"},  // 5*12
+    {"comparison_chain_via_and",  //
+     "a < b && b < c && c < d"},  // true
+    {"comparison_chain_via_or",   //
+     "a > b || b > c || c < d"},  // c<d true
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Arithmetic, SlotAliasingE2ETest, ::testing::ValuesIn(kArithCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(Arithmetic, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kArithCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 // ──────────────────────────────────────────────────────────────
 // 2. List literals — every nesting depth and width that the
@@ -213,18 +212,20 @@ const SlotCase kListCases[] = {
     {"nested_2deep_index_inner", "[[a, b], [c, d]][1][1] == 7"},
     {"nested_3deep_index_chain", "[[[a, b]], [[c, d]]][1][0][1] == 7"},
     {"nested_size_then_index", "size([[a, b], [c, d, e]][1]) == 3"},
-    {"list_of_arith", "[a + b, c + d, e + f][0] == 5"},          // 2+3
-    {"list_of_arith_last", "[a + b, c + d, e + f][2] == 24"},    // 11+13
+    {"list_of_arith", "[a + b, c + d, e + f][0] == 5"},        // 2+3
+    {"list_of_arith_last", "[a + b, c + d, e + f][2] == 24"},  // 11+13
     {"list_of_products", "[a*b, c*d, e*f][1] == 35"},
-    {"list_with_paren_arith", "[(a + b) * c, (d + e) * f][0] == 25"},  // (2+3)*5
-    {"list_with_paren_arith_2", "[(a + b) * c, (d + e) * f][1] == 234"},  // (7+11)*13
+    {"list_with_paren_arith",
+     "[(a + b) * c, (d + e) * f][0] == 25"},  // (2+3)*5
+    {"list_with_paren_arith_2",
+     "[(a + b) * c, (d + e) * f][1] == 234"},  // (7+11)*13
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Lists, SlotAliasingE2ETest, ::testing::ValuesIn(kListCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(Lists, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kListCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 // ──────────────────────────────────────────────────────────────
 // 3. Map literals — same structural matrix as Lists, plus map-
@@ -241,17 +242,15 @@ const SlotCase kMapCases[] = {
     {"map_value_arith_prod", R"({"sum": a + b, "prod": a * b}["prod"] == 6)"},
     {"nested_map_of_map",
      R"({"outer": {"inner": a + b}}["outer"]["inner"] == 5)"},
-    {"map_of_lists",
-     R"({"xs": [a, b, c], "ys": [d, e, f]}["xs"][2] == 5)"},
-    {"list_of_maps",
-     R"([{"k": a}, {"k": b}, {"k": c}][1]["k"] == 3)"},
+    {"map_of_lists", R"({"xs": [a, b, c], "ys": [d, e, f]}["xs"][2] == 5)"},
+    {"list_of_maps", R"([{"k": a}, {"k": b}, {"k": c}][1]["k"] == 3)"},
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Maps, SlotAliasingE2ETest, ::testing::ValuesIn(kMapCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(Maps, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kMapCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 // ──────────────────────────────────────────────────────────────
 // 4. Mixed kCall + aggregate + select / index chains.  These
@@ -262,28 +261,21 @@ INSTANTIATE_TEST_SUITE_P(
 // ──────────────────────────────────────────────────────────────
 
 const SlotCase kMixedCases[] = {
-    {"index_then_arith",
-     "[a, b, c, d][1] + [a, b, c, d][2] == 8"},  // 3+5
-    {"arith_into_size",
-     "size([a, b, c]) + size([d, e]) == 5"},
-    {"size_diff",
-     "size([a, b, c, d]) - size([a, b]) == 2"},
+    {"index_then_arith", "[a, b, c, d][1] + [a, b, c, d][2] == 8"},  // 3+5
+    {"arith_into_size", "size([a, b, c]) + size([d, e]) == 5"},
+    {"size_diff", "size([a, b, c, d]) - size([a, b]) == 2"},
     {"map_lookup_in_arith",
      R"({"x": a + b, "y": c + d}["x"] + {"x": a + b, "y": c + d}["y"] == 17)"},
-    {"map_value_used_twice",
-     R"({"k": a*b}["k"] + {"k": a*b}["k"] == 12)"},
+    {"map_value_used_twice", R"({"k": a*b}["k"] + {"k": a*b}["k"] == 12)"},
     {"nested_list_indexed_into_arith",
      "[[a, b], [c, d]][0][1] * [[a, b], [c, d]][1][0] == 15"},  // 3*5
-    {"list_of_arith_summed_via_in",
-     "(a + b) in [a + b, c + d, e + f]"},
+    {"list_of_arith_summed_via_in", "(a + b) in [a + b, c + d, e + f]"},
     {"ternary_over_aggregates",
      R"((size([a, b, c]) > 0 ? [a, b, c] : [d, e, f])[1] == 3)"},
-    {"and_with_size",
-     "size([a, b]) > 0 && size([c, d]) > 0"},
+    {"and_with_size", "size([a, b]) > 0 && size([c, d]) > 0"},
     {"or_with_in_present",
-     "(a in [c, d]) || (a in [a, b])"},                 // 2 in [a,b] true
-    {"chained_indexing_through_lookup",
-     R"({"xs": [a, b, c]}["xs"][1] == 3)"},
+     "(a in [c, d]) || (a in [a, b])"},  // 2 in [a,b] true
+    {"chained_indexing_through_lookup", R"({"xs": [a, b, c]}["xs"][1] == 3)"},
     {"deeply_nested_lookup",
      R"({"l1": {"l2": {"l3": a + b}}}["l1"]["l2"]["l3"] == 5)"},
     {"map_inside_list_inside_map",
@@ -292,11 +284,11 @@ const SlotCase kMixedCases[] = {
      R"([{"xs": [a, b]}, {"xs": [c, d]}][1]["xs"][0] == 5)"},
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Mixed, SlotAliasingE2ETest, ::testing::ValuesIn(kMixedCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(Mixed, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kMixedCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 // ──────────────────────────────────────────────────────────────
 // 5. Comprehensions over aggregates.  Each comp introduces an
@@ -308,24 +300,22 @@ const SlotCase kCompCases[] = {
     {"flat_exists_on_literal", "[a, b, c].exists(v, v == 3)"},
     {"flat_all_on_literal", "[a, b, c].all(v, v > 0)"},
     {"flat_filter_then_size",
-     "size([a, b, c, d].filter(v, v > 3)) == 2"},          // 5, 7
-    {"flat_map_then_sum",
-     "[a, b, c].map(v, v * v)[1] == 9"},                   // 3*3
+     "size([a, b, c, d].filter(v, v > 3)) == 2"},              // 5, 7
+    {"flat_map_then_sum", "[a, b, c].map(v, v * v)[1] == 9"},  // 3*3
     {"nested_exists_in_list_of_lists",
      "[[a, b], [c, d]].exists(xs, xs.exists(v, v == 5))"},
     {"nested_all_in_list_of_lists",
      "[[a, b], [c, d]].all(xs, xs.all(v, v > 0))"},
     {"comprehension_with_arith_body",
-     "[a, b, c, d].exists(v, v + 1 == 4)"},                 // 3+1
-    {"comprehension_inside_arith",
-     "size([a, b, c].filter(v, v > 1)) + 1 == 4"},
+     "[a, b, c, d].exists(v, v + 1 == 4)"},  // 3+1
+    {"comprehension_inside_arith", "size([a, b, c].filter(v, v > 1)) + 1 == 4"},
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Comprehensions, SlotAliasingE2ETest, ::testing::ValuesIn(kCompCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(Comprehensions, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kCompCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 // ──────────────────────────────────────────────────────────────
 // 6. Parenthesisation re-grouping.  Same arithmetic expression
@@ -347,11 +337,11 @@ const SlotCase kParenCases[] = {
     {"mixed_precedence_override", "(a + b) * c == 25"},
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Parenthesisation, SlotAliasingE2ETest, ::testing::ValuesIn(kParenCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(Parenthesisation, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kParenCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 // ──────────────────────────────────────────────────────────────
 // 7. AST-kind coverage matrix — one parametric row per CEL AST
@@ -384,20 +374,19 @@ const SlotCase kConstantKindCases[] = {
     {"const_bytes_escapes", R"(b"\x68\x69" == b"hi")"},
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    ConstantKinds, SlotAliasingE2ETest,
-    ::testing::ValuesIn(kConstantKindCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(ConstantKinds, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kConstantKindCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 const SlotCase kCallExprCases[] = {
     // Arithmetic — every operator
     {"call_add", "a + b == 5"},
     {"call_sub", "b - a == 1"},
     {"call_mul", "a * b == 6"},
-    {"call_div", "d / a == 3"},        // 7/2 = 3 (integer div)
-    {"call_mod", "d % a == 1"},        // 7%2 = 1
+    {"call_div", "d / a == 3"},  // 7/2 = 3 (integer div)
+    {"call_mod", "d % a == 1"},  // 7%2 = 1
     {"call_neg_unary", "-a == -2"},
     // Comparison — every operator
     {"call_eq", "a == 2"},
@@ -433,14 +422,10 @@ const SlotCase kCallExprCases[] = {
     {"call_receiver_size_on_list", "size([a, b, c]) == 3"},
     {"call_receiver_size_on_map", R"(size({"x": a}) == 1)"},
     {"call_receiver_size_on_string", R"("abc".size() == 3)"},
-    {"call_receiver_starts_with",
-     R"(s.startsWith("he"))"},
-    {"call_receiver_ends_with",
-     R"(s.endsWith("llo"))"},
-    {"call_receiver_contains",
-     R"(s.contains("ell"))"},
-    {"call_receiver_matches",
-     R"("hello".matches("^h.*o$"))"},
+    {"call_receiver_starts_with", R"(s.startsWith("he"))"},
+    {"call_receiver_ends_with", R"(s.endsWith("llo"))"},
+    {"call_receiver_contains", R"(s.contains("ell"))"},
+    {"call_receiver_matches", R"("hello".matches("^h.*o$"))"},
     // dyn() passthrough — identity is fine; arithmetic over `dyn`s
     // is rejected by the static subset because it forces runtime
     // kind dispatch we don't emit.
@@ -452,16 +437,14 @@ const SlotCase kCallExprCases[] = {
     // Ternary `?:`
     {"call_ternary_true", "(a < b ? a : b) == 2"},
     {"call_ternary_false", "(a > b ? a : b) == 3"},
-    {"call_ternary_nested",
-     "(a < b ? (c < d ? c : d) : (e < f ? e : f)) == 5"},
+    {"call_ternary_nested", "(a < b ? (c < d ? c : d) : (e < f ? e : f)) == 5"},
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    CallExprKinds, SlotAliasingE2ETest,
-    ::testing::ValuesIn(kCallExprCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(CallExprKinds, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kCallExprCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 // SelectExpr coverage.  Our static subset dispatches Select on a
 // checker-known operand type: a bound message (`c.field`,
@@ -495,12 +478,11 @@ const SlotCase kSelectExprCases[] = {
      R"({"a": {"b": {"c": {"d": a + b}}}}.a.b.c.d == 5)",
      "same as select_dot_map_first"},
 };
-INSTANTIATE_TEST_SUITE_P(
-    SelectExprKinds, SlotAliasingE2ETest,
-    ::testing::ValuesIn(kSelectExprCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(SelectExprKinds, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kSelectExprCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 const SlotCase kAggregateEdgeCases[] = {
     // Empty literals (Shape S11)
@@ -533,47 +515,37 @@ const SlotCase kAggregateEdgeCases[] = {
     // Aggregate as operand to a kCall (Shape S18)
     {"list_as_arg_to_size", "size([a, b, c]) > 0"},
     {"map_as_arg_to_size", R"(size({"k": a}) > 0)"},
-    {"two_aggregates_in_call",
-     "size([a, b]) + size([c, d, e]) == 5"},                  // S19
+    {"two_aggregates_in_call", "size([a, b]) + size([c, d, e]) == 5"},  // S19
     // Indexing chained through aggregates of different kinds
-    {"map_in_list_indexed",
-     R"([{"k": a}, {"k": b}][1]["k"] == 3)"},
-    {"list_in_map_indexed",
-     R"({"xs": [a, b, c]}["xs"][1] == 3)"},
+    {"map_in_list_indexed", R"([{"k": a}, {"k": b}][1]["k"] == 3)"},
+    {"list_in_map_indexed", R"({"xs": [a, b, c]}["xs"][1] == 3)"},
     {"deeply_mixed_4_levels",
      R"({"l1": [{"l2": [a + b]}]}["l1"][0]["l2"][0] == 5)"},  // S20
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    AggregateEdges, SlotAliasingE2ETest,
-    ::testing::ValuesIn(kAggregateEdgeCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(AggregateEdges, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kAggregateEdgeCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 const SlotCase kComprehensionKindCases[] = {
     // exists / exists_one / all / map / filter — every macro
     {"comp_exists_present", "[a, b, c].exists(v, v == 3)"},
     {"comp_exists_absent", "![a, b, c].exists(v, v == 100)"},
-    {"comp_exists_one_unique",
-     "[a, b, c].exists_one(v, v == 3)"},
-    {"comp_exists_one_multiple_false",
-     "![a, b, a, b].exists_one(v, v == 2)"},
+    {"comp_exists_one_unique", "[a, b, c].exists_one(v, v == 3)"},
+    {"comp_exists_one_multiple_false", "![a, b, a, b].exists_one(v, v == 2)"},
     {"comp_all_true", "[a, b, c].all(v, v > 0)"},
     {"comp_all_false", "![a, b, c].all(v, v > 10)"},
-    {"comp_map_pure",
-     "[a, b, c].map(v, v + 1)[1] == 4"},                 // b+1=4
+    {"comp_map_pure", "[a, b, c].map(v, v + 1)[1] == 4"},  // b+1=4
     {"comp_map_with_filter",
-     "[a, b, c, d].map(v, v > 3, v * 2)[0] == 10"},      // 5*2
-    {"comp_filter_then_size",
-     "size([a, b, c, d].filter(v, v > 3)) == 2"},
-    {"comp_filter_then_index",
-     "[a, b, c, d].filter(v, v > 3)[0] == 5"},
+     "[a, b, c, d].map(v, v > 3, v * 2)[0] == 10"},  // 5*2
+    {"comp_filter_then_size", "size([a, b, c, d].filter(v, v > 3)) == 2"},
+    {"comp_filter_then_index", "[a, b, c, d].filter(v, v > 3)[0] == 5"},
     // Nested comprehensions — accu slot for each level
     {"comp_nested_exists_in_exists",
      "[[a, b], [c, d]].exists(xs, xs.exists(v, v == 5))"},
-    {"comp_nested_all_in_all",
-     "[[a, b], [c, d]].all(xs, xs.all(v, v > 0))"},
+    {"comp_nested_all_in_all", "[[a, b], [c, d]].all(xs, xs.all(v, v > 0))"},
     {"comp_nested_filter_in_map",
      "[[a, b, c, d], [a, b]].map(xs, size(xs.filter(v, v > 2)))[0] == 2",
      "static subset rejects nested comprehension where the inner "
@@ -581,23 +553,21 @@ const SlotCase kComprehensionKindCases[] = {
      "crosses the outer iter); equivalent simpler compositions are "
      "exercised by `comp_map_with_filter` and `comp_filter_then_size`"},
     // Comprehension over MAP — iter_var is the key
-    {"comp_exists_over_map_keys",
-     R"({"x": a, "y": b}.exists(k, k == "y"))"},
+    {"comp_exists_over_map_keys", R"({"x": a, "y": b}.exists(k, k == "y"))"},
     {"comp_all_over_map_keys_nonempty",
      R"({"x": a, "y": b}.all(k, k.size() > 0))"},
     // Comprehension feeding into arithmetic (Shape S19 + comp)
     {"comp_size_in_arith",
-     "size([a, b, c, d].filter(v, v > 1)) + 1 == 5"},     // 4 filtered + 1
+     "size([a, b, c, d].filter(v, v > 1)) + 1 == 5"},  // 4 filtered + 1
     {"comp_map_summed_via_index",
-     "[a, b, c].map(v, v * 2)[2] == 10"},                 // c*2 = 10
+     "[a, b, c].map(v, v * 2)[2] == 10"},  // c*2 = 10
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    ComprehensionKinds, SlotAliasingE2ETest,
-    ::testing::ValuesIn(kComprehensionKindCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(ComprehensionKinds, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kComprehensionKindCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 // ──────────────────────────────────────────────────────────────
 // 8. Slot-aliasing risk shapes — one parametric row per shape
@@ -608,59 +578,48 @@ INSTANTIATE_TEST_SUITE_P(
 
 const SlotCase kAliasingShapeCases[] = {
     // S1 read-before-write parent↔operand
-    {"S1_read_before_write_alias",
-     "(a + b) + (c + d) == 17"},
+    {"S1_read_before_write_alias", "(a + b) + (c + d) == 17"},
     // S2 chained arithmetic (LIFO reuse over depth)
-    {"S2_chained_arith_5_deep",
-     "((((a + b) + c) + d) + e) == 28"},
+    {"S2_chained_arith_5_deep", "((((a + b) + c) + d) + e) == 28"},
     {"S2_chained_arith_8_deep",
      "((((((a + b) + c) + d) + e) + f) + g) + h == 77"},
     // S3 aggregate previsit-acquire, sibling release
     {"S3_aggregate_sibling_release", "size([a + b, c + d]) == 2"},
     // S4 nested aggregates (outer never aliases inner)
     {"S4_nested_lists_size", "size([[a, b], [c, d], [e, f]]) == 3"},
-    {"S4_nested_lists_indexed",
-     "[[a, b], [c, d], [e, f]][1][0] == 5"},
+    {"S4_nested_lists_indexed", "[[a, b], [c, d], [e, f]][1][0] == 5"},
     // S5 chained select — LIFO reuse caps at 1 slot.  The dot-form
     // is rejected on map literals (static subset), so the matching
     // codegen shape is exercised via the index-form pair below.
-    {"S5_select_chain_3_deep",
-     R"({"a": {"b": {"c": a}}}.a.b.c == 2)",
+    {"S5_select_chain_3_deep", R"({"a": {"b": {"c": a}}}.a.b.c == 2)",
      "static subset rejects dot-form on map literal; equivalent "
      "codegen shape exercised by S5_index_chain_3_deep"},
-    {"S5_select_chain_4_deep",
-     R"({"a": {"b": {"c": {"d": a}}}}.a.b.c.d == 2)",
+    {"S5_select_chain_4_deep", R"({"a": {"b": {"c": {"d": a}}}}.a.b.c.d == 2)",
      "static subset rejects dot-form on map literal; equivalent "
      "codegen shape exercised by S5_index_chain_4_deep"},
-    {"S5_index_chain_3_deep",
-     R"({"a": {"b": {"c": a}}}["a"]["b"]["c"] == 2)"},
+    {"S5_index_chain_3_deep", R"({"a": {"b": {"c": a}}}["a"]["b"]["c"] == 2)"},
     {"S5_index_chain_4_deep",
      R"({"a": {"b": {"c": {"d": a}}}}["a"]["b"]["c"]["d"] == 2)"},
     // S7 receiver-form chain
-    {"S7_receiver_chain",
-     R"(s.size() + s.size() == 10)"},                         // 5+5
+    {"S7_receiver_chain", R"(s.size() + s.size() == 10)"},  // 5+5
     // S8 dyn() passthrough — identity form works; arithmetic
     // over dyn is rejected as in `call_dyn_in_arith` above.
     {"S8_dyn_passthrough_identity", "dyn(a) == 2"},
-    {"S8_dyn_passthrough_no_extra_slot",
-     "dyn(a + b) + dyn(c + d) == 17",
+    {"S8_dyn_passthrough_no_extra_slot", "dyn(a + b) + dyn(c + d) == 17",
      "static subset rejects arithmetic over dyn-typed values; "
      "the no-extra-slot invariant for dyn(scalar) is checked by "
      "the dyn-passthrough arm in PostVisitCall and exercised by "
      "S8_dyn_passthrough_identity above"},
     // S10 message-like via map: aggregate parent with sub-aggregate field
-    {"S10_map_with_list_field",
-     R"({"xs": [a, b, c]}["xs"][1] == 3)"},
-    {"S10_map_with_map_field",
-     R"({"m": {"k": a}}["m"]["k"] == 2)"},
+    {"S10_map_with_list_field", R"({"xs": [a, b, c]}["xs"][1] == 3)"},
+    {"S10_map_with_map_field", R"({"m": {"k": a}}["m"]["k"] == 2)"},
     // S13 large multi-element literal (LIFO reuse during appends)
     {"S13_15_element_list_first",
      "[a, b, c, d, e, f, g, h, a, b, c, d, e, f, g][0] == 2"},
     {"S13_15_element_list_last",
      "[a, b, c, d, e, f, g, h, a, b, c, d, e, f, g][14] == 17"},
     // S14 chained indexing
-    {"S14_index_chain_3_deep",
-     R"({"a": {"b": {"c": a}}}["a"]["b"]["c"] == 2)"},
+    {"S14_index_chain_3_deep", R"({"a": {"b": {"c": a}}}["a"]["b"]["c"] == 2)"},
     {"S14_index_chain_list_of_list_of_list",
      "[[[a, b], [c, d]], [[e, f], [g, h]]][1][0][1] == 13"},  // f
     // S17 ternary with aggregate arms
@@ -669,8 +628,7 @@ const SlotCase kAliasingShapeCases[] = {
     // S19 multiple aggregates same parent (kCall over list+list, or map+map)
     {"S19_size_of_list_plus_size_of_list",
      "size([a, b, c]) + size([d, e]) == 5"},
-    {"S19_two_maps_summed",
-     R"(size({"x": a}) + size({"y": b, "z": c}) == 3)"},
+    {"S19_two_maps_summed", R"(size({"x": a}) + size({"y": b, "z": c}) == 3)"},
     // S20 deep mixed nesting stress
     {"S20_stress_4_kind_4_deep",
      R"({"a": [{"b": [a + b, c + d]}, {"b": [e + f, g + h]}]}["a"][1]["b"][0] == 24)"},
@@ -678,12 +636,11 @@ const SlotCase kAliasingShapeCases[] = {
      R"(size({"k": [{"x": [a, b]}, {"x": [c, d]}]}["k"]) == 2)"},
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    AliasingShapes, SlotAliasingE2ETest,
-    ::testing::ValuesIn(kAliasingShapeCases),
-    [](const ::testing::TestParamInfo<SlotCase>& info) {
-      return std::string(info.param.label);
-    });
+INSTANTIATE_TEST_SUITE_P(AliasingShapes, SlotAliasingE2ETest,
+                         ::testing::ValuesIn(kAliasingShapeCases),
+                         [](const ::testing::TestParamInfo<SlotCase>& info) {
+                           return std::string(info.param.label);
+                         });
 
 }  // namespace
 }  // namespace celwasm

@@ -349,11 +349,9 @@ TEST_F(IndexedMapEvalTest, UintHighKeyLargeMapInPresentAndAbsent) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
   auto present = CompilePlan(
-      *compiler,
-      absl::StrCat("18446744073709551615u in ", kUintHighKeyMap));
+      *compiler, absl::StrCat("18446744073709551615u in ", kUintHighKeyMap));
   auto absent = CompilePlan(
-      *compiler,
-      absl::StrCat("9223372036854775809u in ", kUintHighKeyMap));
+      *compiler, absl::StrCat("9223372036854775809u in ", kUintHighKeyMap));
   Activation a;
   EXPECT_EQ(*EvalOk(present, a).AsBool(), true);
   EXPECT_EQ(*EvalOk(absent, a).AsBool(), false);

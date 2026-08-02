@@ -94,8 +94,7 @@ TEST(M28StaticLinkE2E, IntAdd) {
 }
 
 TEST(M28StaticLinkE2E, StringConcat) {
-  auto sv = EvalUnder("\"foo\" + \"bar\"",
-                      CompilerOptions::LinkMode::kStatic);
+  auto sv = EvalUnder("\"foo\" + \"bar\"", CompilerOptions::LinkMode::kStatic);
   ASSERT_TRUE(sv.ok()) << sv.status();
   EXPECT_EQ(sv->kind(), Value::Kind::kString);
   auto v = sv->AsString();
