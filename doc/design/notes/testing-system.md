@@ -56,9 +56,12 @@ class:
    live (un-skipped) guards: `MapKeyLossyDoubleEquality` (lossless
   map-key equality, CELW-0004), `IntFromDoubleOutOfRange` (:260-268),
    `IntFromStringLeadingPlus`/`Uint…` (:303-318),
-   `LongArith_1000Terms_Works` (:754-761).  One test
-   (`TransformMapEntryComputedEntryCrash` :424-439) stays skipped
-   because running it ABSL_CHECK-aborts the whole binary.
+   `LongArith_1000Terms_Works` (:754-761),
+   `ExistsAbsorbsErrorAccumulator` and
+   `TransformMapEntryComputedEntryCrash` (the latter had to stay
+   skipped while it was open, because running it ABSL_CHECK-aborted
+   the whole binary — the reason a crash-class pin is worth fixing
+   rather than carrying).
 5. **Conformance harness** (`conformance/`) — runs the vendored
    upstream corpus (`spec/tests/simple/testdata/*.textproto`, 30 files
    listed in `run_conformance.cc::DefaultCorpus` :63-97) through the

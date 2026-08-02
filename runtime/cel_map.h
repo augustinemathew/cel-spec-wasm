@@ -45,13 +45,42 @@ void cel_map_create(uint32_t out_slot, uint32_t capacity);
 void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot);
 
 // Dynamic-map insert for `transformMap` / `transformMapEntry`
-// comprehension accumulators.  Unlike `cel_map_insert`:
-// geometric 2× growth on full; collisions overwrite (last-write-
-// wins); CEL_ERROR / CEL_UNKNOWN in key OR value propagates
-// verbatim into the map slot.
+// comprehension accumulators.  Unlike `cel_map_insert`: collisions
+// overwrite (last-write-wins); CEL_ERROR / CEL_UNKNOWN in key OR value
+// propagates verbatim into the map slot.  Capacity is a codegen
+// pre-size invariant here — inserting past it traps rather than
+// growing, so a codegen drift surfaces at the write instead of
+// silently producing a short map.
 // cel:codegen-export
 void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
                        uint32_t value_slot);
+
+// Merge every entry of the map at `entry_slot` into the accumulator at
+// `map_slot` — the general `transformMapEntry` loop step, emitted when
+// the entry expression is not a map LITERAL codegen can decompose into
+// direct `cel_map_insert_at` calls (a ternary, a call, a bound
+// identifier, …).  Per-entry semantics are `cel_map_insert_at`'s
+// (last-write-wins, 3VL on key and value); on the entry VALUE:
+// CEL_ERROR / CEL_UNKNOWN propagates verbatim into the map slot, and a
+// non-map entry poisons CEL_ERR_TYPE_MISMATCH.  Both arena- and
+// host-represented entry maps are accepted.
+//
+// This is the one insert path that GROWS the accumulator: a computed
+// entry expression has no compile-time entry count, so codegen's
+// pre-size (one entry per iteration) is a hint rather than an
+// invariant.  Growth re-allocates the dense entries run in the bump
+// arena and drops any hash index; the header stays put.
+// cel:codegen-export
+void cel_map_merge_at(uint32_t map_slot, uint32_t entry_slot);
+
+// 3VL predicate-gated merge for the conditional `transformMapEntry`
+// form.  Mirror of `cel_map_insert_at_if_bool`: pred ERROR/UNKNOWN →
+// propagate into the map slot (aborts the comprehension); pred
+// non-bool → poison TYPE_MISMATCH; pred false → no-op; pred true →
+// `cel_map_merge_at` delegate.
+// cel:codegen-export
+void cel_map_merge_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
+                              uint32_t entry_slot);
 
 // 3VL predicate-gated map insert for conditional transformMap /
 // transformMapEntry steps.  Mirror of

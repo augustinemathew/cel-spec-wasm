@@ -42,7 +42,7 @@ The payoff of the origin tags from [01 §5](01-compiler.md#5-resolvepass-names-s
 
 ### 1.5 Comprehensions
 
-`expr_lower_comprehension.cc`. `LowerComprehension` emits a prologue, a `(block (loop …))`, and a result expression. **The loop step is classified once, by AST structure, into a closed set** — list-append, map-insert, map-merge (each with an optional filter), or a generic fold — because the macro names are gone by the time we see the tree. Collection accumulators are pre-sized (capacity = range count × per-iteration count); the runtime traps on overflow, so a sizing bug is a loud trap, not silent corruption. The loop-condition is matched against a closed set of four peephole shapes; anything else fails compile loudly.
+`expr_lower_comprehension.cc`. `LowerComprehension` emits a prologue, a `(block (loop …))`, and a result expression. **The loop step is classified once, by AST structure, into a closed set** — list-append, map-insert, map-merge (each with an optional filter), or a generic fold — because the macro names are gone by the time we see the tree. Collection accumulators are pre-sized (capacity = range count × per-iteration count); the runtime traps on overflow, so a sizing bug is a loud trap, not silent corruption. The one exception is a `transformMapEntry` whose entry expression is computed rather than a literal: its key count is unknown until eval, so the runtime merge helper grows the accumulator instead. The loop-condition is matched against a closed set of four peephole shapes; anything else fails compile loudly. The two accumulator shapes test the accumulator's *kind* as well as its payload, so an error or unknown mid-fold keeps iterating and a later element can still absorb it.
 
 ### 1.6 The OverloadTable
 

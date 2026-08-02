@@ -12,11 +12,14 @@ shaped*, the plan doc owns the *what to ship*.
 >     The `__result__` name in cel-cpp's spec doc is the conceptual
 >     placeholder; the actual emitted AST uses `@result`.  This
 >     doc has been globally renamed.
->   - Loop-cond peephole (§9.4) reads the accu's bool payload
->     directly for the canonical `exists` / `all` shapes; the
->     `cel_not_strictly_false` runtime helper named in the
->     original §9.4 is **deferred** — never reached by
->     cel-cpp-emitted comprehensions.
+>   - Loop-cond peephole (§9.4) reads the accu CelValue directly
+>     for the canonical `exists` / `all` shapes — kind word AND
+>     payload word, so a poisoned accumulator is never mistaken
+>     for a bool; the `cel_not_strictly_false` runtime helper
+>     named in the original §9.4 is **deferred** — never reached
+>     by cel-cpp-emitted comprehensions.  (The kind half was
+>     missing until 2026-08-01; see CELW-0010 in the git history —
+>     an ERROR accumulator short-circuited `exists`.)
 >   - `cel.bind`'s `iter_var` is the literal `"#unused"` — useful
 >     auxiliary signal for the §5 Shape-C detector.
 >   - `map`'s loop_step overload-resolves to `add_list`
@@ -520,6 +523,17 @@ Two codegen options:
 it matters.  Conformance fixtures use the single-entry shape but
 nothing in the spec rules out richer entry expressions.
 
+> Plan-vs-execution delta (2026-08-01): the slice shipped (b) ONLY,
+> and `ABSL_CHECK(false)`'d on every other entry shape — so a
+> computed entry (a ternary, a call, a bound ident) aborted the
+> compiler rather than compiling.  (a) landed later as the
+> `cel_map_merge_at` / `cel_map_merge_at_if_bool` runtime helpers:
+> a map literal still decomposes into N direct inserts, and every
+> other shape evaluates the entry to a temp map and merges it.
+> The merge is also the one insert path that grows the accumulator,
+> since a computed entry has no compile-time key count for codegen
+> to pre-size against.
+
 ### 7.4 Map iteration helpers
 
 Required by: macros 1-3 (over map source), 9-11 (two-var over
@@ -795,7 +809,11 @@ Parser rejects.  Codegen never sees this case.
   - **R3. transformMapEntry with non-literal entry expression.**
     `entry` can in principle be any map-typed expression, not
     just a literal.  The general path (evaluate-temp-then-merge)
-    handles this; verify with a targeted e2e.
+    handles this; verify with a targeted e2e.  *Materialised:* the
+    slice shipped without the general path and aborted on every
+    non-literal entry; `cel_map_merge_at` closed it (see the §7.3
+    delta), with e2e rows in `e2e/m5b_test.cc` and cel-cpp pins in
+    `testdata/cel_cpp_oracle_comprehension_test.cc`.
   - **R4. Map iteration order determinism.**  Spec doesn't
     mandate order; tests are written order-independently.  Our
     M3.H map layout is deterministic given the same insertion

@@ -19,7 +19,7 @@
 // offset whose `% 16 == 8`, and the first time a
 // `memory.atomic.*` hits one of those addresses the engine traps
 // with `wasm trap: unaligned atomic` — the symptom pinned by
-// `e2e/known_bugs_test::LongArith_2000Terms_NoUnalignedAtomicTrap`.
+// `e2e/known_bugs_test::LongArith2000TermsNoUnalignedAtomicTrap`.
 // CelValue itself stays 24 bytes; the trailing 8 bytes of each
 // 32-byte cell are pad that no codepath reads or writes.
 //

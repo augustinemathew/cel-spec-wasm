@@ -127,10 +127,14 @@ consumed by the compiler at static-mode `Compile()`.
   empty result), overridable by strong test symbols
   (`cel_runtime.c:215-229` and 7 siblings at 813-868).
 - Map literals: fixed capacity, duplicate key → `CEL_ERR_DUPLICATE_KEY`
-  poison (`cel_runtime.c:90-123`); comprehension accumulators use
-  `cel_map_insert_at` (overwrite-on-collision, error-sticks;
-  `cel_runtime.c:138-171`) and `cel_list_append_at`
-  (`cel_runtime.c:368-390`).
+  poison; comprehension accumulators use `cel_map_insert_at`
+  (overwrite-on-collision, error-sticks) and `cel_list_append_at`.
+  `cel_map_merge_at` / `cel_map_merge_at_if_bool` fold a whole entry
+  MAP into an accumulator — the general `transformMapEntry` step for
+  entry expressions codegen cannot decompose, and the only insert path
+  that GROWS the accumulator (`arena_map_grow_one` re-allocates the
+  dense run and drops the hash index; the header stays put), because a
+  computed entry has no compile-time key count to pre-size against.
 - Map iteration: 16-byte `MapIterState {kind, cursor, payload, count}`
   in the arena (`cel_runtime.c:1059-1067`); ARENA walks the live
   header, HOST walks a 48-byte/entry snapshot the trampoline wrote
@@ -207,9 +211,11 @@ shared-memory interaction) — see Validation item V1.
 
 - `cel_arena.c:45` — `arena_init` re-init with different capacity.
 - `cel_arena.c:84` — `arena_alloc` before `arena_init`.
-- `cel_runtime.c:167, 387` — PRESIZE_INVARIANT: `cel_map_insert_at` /
+- `cel_runtime.c` — PRESIZE_INVARIANT: `cel_map_insert_at` /
   `cel_list_append_at` past capacity (codegen sized the capacity; a
-  violation is a codegen regression, trapped not grown).
+  violation is a codegen regression, trapped not grown).  The shared
+  insert kernel takes an `allow_grow` flag; only `cel_map_merge_at`
+  passes 1, and it never reaches the trap.
 - `cel_optional.c:124, 319` — host-backed zero-predicate /
   select-field paths stubbed until a host trampoline exists.
 
@@ -229,13 +235,14 @@ snapshot allocation, not this kernel.
 
 ## 2. Doc-vs-code discrepancies
 
-1. **P1 — `cel_map.h:47-51` + `cel_runtime.c:128-131` claim
-   `cel_map_insert_at` does "geometric growth (2× capacity, min 4)
-   when full"; the code traps instead** (`cel_runtime.c:164-167`,
-   `PRESIZE_INVARIANT … __builtin_trap()`).  The growth path was
-   replaced by codegen pre-sizing; both comments survived the change.
-   A reader implementing a codegen consumer against the header would
-   expect growth and get a host-visible trap.
+1. **FIXED — `cel_map.h` claimed `cel_map_insert_at` does "geometric
+   growth (2× capacity, min 4) when full"; the code traps instead.**
+   The growth path had been replaced by codegen pre-sizing and the
+   comment survived the change, so a reader implementing a codegen
+   consumer against the header would expect growth and get a
+   host-visible trap.  The header now states the pre-size invariant.
+   (Geometric growth does exist again, but only on the
+   `cel_map_merge_at` path and only there — see §1.7.)
 
 2. **P1 — stale fixed-offset arena description in two headers.**
    `cel_memory.h:6-13` and `cel_runtime.h:17-30` still document

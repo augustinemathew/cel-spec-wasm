@@ -456,6 +456,9 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `kComprehensionExpr` (transformMapEntry 3-arg, single-key entry) | [x] | [x] | [x] | [x] | [x] | [x] |
 | `kComprehensionExpr` (transformMapEntry 3-arg, multi-key entry)  | [x] | [x] | [x] | [x] | [x] | [x] |
 | `kComprehensionExpr` (transformMapEntry 4-arg, single-key entry) | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 3-arg, computed entry)   | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 4-arg, computed entry)   | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 4-arg, multi-key entry)  | [x] | [x] | [x] | [x] | [x] | [x] |
 | `kComprehensionExpr` (cel.bind via Shape-C)  | [x] | [x] | [x] | [x] | [x] | [x] |
 | nested comprehensions with shadowing | [x] | [x] | [x] | [x]  | [x]     | [x] |
 
@@ -656,6 +659,44 @@ variant to the right `Repr`. `RejectDyn` tests live in
       SKIPs at `RejectDyn`-on-empty-literal cases documented
       with cel_map_test.cc runtime equivalents).  Doc:
       `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`.
+
+- [x] **Comprehension 3VL + computed `transformMapEntry` entries**
+      (two P0 fixes, 2026-08-01).
+
+      - Loop-cond peephole gates on `accu.kind == CEL_BOOL`, not the
+        payload word alone, so an ERROR / UNKNOWN accumulator is
+        absorbed by a later element instead of short-circuiting the
+        loop and becoming the result (`[0, 2].exists(x, 2/x == 1)`
+        → `true`).  Emitted shape:
+        `compiler/codegen/expr_lower_test.cc`
+        (`{Exists,All,MapSourceExists}LoopCondGatesOnAccuKind`,
+        `ExistsOneHasNoAccuPeephole`).  Behaviour: the
+        error-then-match / match-then-error / error-and-no-match /
+        all-match / none-match / empty-range matrix for `exists`,
+        `all` and `exists_one` in `e2e/m5b_test.cc`
+        (`ComprehensionAccuAbsorptionE2ETest`), every row
+        oracle-confirmed against cel-cpp in
+        `testdata/cel_cpp_oracle_comprehension_test.cc`
+        (`ComprehensionAccuAbsorptionOracle`).  WAT traces 60 / 61
+        re-authored to the kind-gated shape.
+      - `transformMapEntry` with a COMPUTED entry expression (and
+        the multi-key 4-arg form) compiles instead of aborting:
+        new `cel_map_merge_at` / `cel_map_merge_at_if_bool` runtime
+        helpers, the only insert path that grows the accumulator.
+        Runtime: `runtime/cel_map_test.cc` (`MapMergeTest` — 20
+        cases: empty / single / multi / collision / growth from
+        pre-size and from zero capacity / growth-after-index-build /
+        error / unknown / non-map / poisoned-accu / invalid-key-kind
+        / host-represented entry map / the five predicate arms).
+        Codegen: `expr_lower_test.cc`
+        (`TransformMapEntryComputedEntryEmitsMerge`,
+        `ConditionalMultiKeyMerges`, plus the literal path asserting
+        the merge is NOT emitted).  e2e + oracle: `m5b_test.cc`
+        `ComprehensionTransformMapEntryE2ETest` computed-entry rows
+        against `TransformMapEntryComputedOracle`.
+      - Oracle extended with the comprehensions_v2 compiler library +
+        functions so `transformMap*` questions can be asked at all
+        (`testdata/cel_cpp_oracle.cc`).
 
 ## Front-end semantic coverage (beyond the grids)
 

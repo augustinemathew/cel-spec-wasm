@@ -37,6 +37,40 @@ void cel_host_cel_map_lookup(uint32_t out_slot, uint32_t /*map_slot*/,
   out->kind = CEL_INT;
   out->payload.i = 0x4242;  // sentinel — distinguishes from arena hits.
 }
+
+// Strong override of the `cel_host.cel_map_iter_open` weak stub, so the
+// HOST arm of the map iterator (and of `cel_map_merge_at`) can be
+// exercised without the wasmtime trampoline.  Writes the same
+// `MapIterState` shape the real trampoline does — `{kind=HOST(1),
+// cursor=0, payload=snapshot_offset, count}` at `state_offset`, with a
+// snapshot of `count` 48-byte {key, value} CelValue pairs (see
+// eval/internal/cel_host.cc `WriteEmptyMapIterState`).  `count == 0`
+// (the default) reproduces the weak stub exactly, which is what
+// `HostMapInitReturnsZeroHandle` depends on.
+static uint32_t g_host_iter_entry_count = 0;
+static int64_t g_host_iter_first_key = 0;
+void cel_host_cel_map_iter_open(uint32_t state_offset, uint32_t /*map_slot*/) {
+  auto* state = reinterpret_cast<uint32_t*>(cel_mem_base() + state_offset);
+  state[0] = 1;  // MAP_ITER_KIND_HOST
+  state[1] = 0;  // cursor
+  state[2] = 0;  // payload (snapshot offset)
+  state[3] = g_host_iter_entry_count;
+  if (g_host_iter_entry_count == 0) return;
+  const uint32_t snapshot = arena_alloc(
+      g_host_iter_entry_count * 2u * static_cast<uint32_t>(sizeof(CelValue)));
+  state[2] = snapshot;
+  for (uint32_t i = 0; i < g_host_iter_entry_count; ++i) {
+    const int64_t k = g_host_iter_first_key + i;
+    CelValue* key = cel_value_at(
+        snapshot + (i * 2u * static_cast<uint32_t>(sizeof(CelValue))));
+    CelValue* val = cel_value_at(
+        snapshot + (((i * 2u) + 1u) * static_cast<uint32_t>(sizeof(CelValue))));
+    key->kind = CEL_INT;
+    key->payload.i = k;
+    val->kind = CEL_INT;
+    val->payload.i = k * 10;
+  }
+}
 }
 
 namespace celwasm {
@@ -48,6 +82,8 @@ class MapTest : public ::testing::Test {
     arena_init(CELWASM_ARENA_CAPACITY_BYTES);
     arena_reset();
     g_host_lookup_calls = 0;
+    g_host_iter_entry_count = 0;
+    g_host_iter_first_key = 0;
   }
 
  public:
@@ -1342,6 +1378,282 @@ TEST_F(MapTest, MapEqualityRejectsKeysThatOnlyAgreeAfterRounding) {
   cel_map_eq_arena(out, a, b);
   ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_BOOL));
   EXPECT_EQ(cel_value_at(out)->payload.b, 0);
+// ════════ cel_map_merge_at / cel_map_merge_at_if_bool ════════
+//
+// The general `transformMapEntry` loop step: merge every entry of a
+// computed entry map into the accumulator.  Distinguishing properties
+// against `cel_map_insert_at` (which these delegate to per entry):
+//   - the entry VALUE gets its own 3VL arm (error / unknown / non-map);
+//   - the accumulator GROWS instead of trapping, because a computed
+//     entry expression has no compile-time key count for codegen to
+//     pre-size against.
+// Regression cover for CELW-0012 (`{1: 2, 3: 4}.transformMapEntry(k,
+// v, k == 1 ? {k: v} : {})` used to ABORT the compiler).
+
+class MapMergeTest : public MapTest {
+ public:
+  // A fresh CEL_MAP_ARENA accumulator with `capacity` slots.
+  uint32_t Accu(uint32_t capacity) {
+    uint32_t m = NewSlot();
+    cel_map_create(m, capacity);
+    return m;
+  }
+  // A source map of `n` int→int entries starting at `first`.
+  uint32_t IntMap(int64_t first, uint32_t n) {
+    uint32_t m = NewSlot();
+    cel_map_create(m, n);
+    for (uint32_t i = 0; i < n; ++i) {
+      cel_map_insert(m, cel_make_int(first + i),
+                     cel_make_int((first + i) * 10));
+    }
+    return m;
+  }
+  int64_t LookupInt(uint32_t map_slot, int64_t key) {
+    uint32_t out = NewSlot();
+    cel_map_lookup_arena(out, map_slot, cel_make_int(key));
+    EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_INT))
+        << "key " << key << " missing";
+    return cel_value_at(out)->payload.i;
+  }
+  static uint32_t MapCount(uint32_t map_slot) {
+    auto* hdr = reinterpret_cast<ArenaMapHeader*>(
+        cel_mem_base() + cel_value_at(map_slot)->payload.arena_map.header_ptr);
+    return hdr->count;
+  }
+};
+
+TEST_F(MapMergeTest, EmptyEntryMapLeavesAccumulatorUntouched) {
+  uint32_t accu = Accu(4);
+  cel_map_insert_at(accu, cel_make_int(1), cel_make_int(10));
+  uint32_t entry = Accu(0);
+  cel_map_merge_at(accu, entry);
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 1u);
+  EXPECT_EQ(LookupInt(accu, 1), 10);
+}
+
+TEST_F(MapMergeTest, SingleEntryMerges) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at(accu, IntMap(/*first=*/7, /*n=*/1));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 1u);
+  EXPECT_EQ(LookupInt(accu, 7), 70);
+}
+
+TEST_F(MapMergeTest, MultiEntryMergesEveryPair) {
+  uint32_t accu = Accu(8);
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/3));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 3u);
+  EXPECT_EQ(LookupInt(accu, 1), 10);
+  EXPECT_EQ(LookupInt(accu, 2), 20);
+  EXPECT_EQ(LookupInt(accu, 3), 30);
+}
+
+// Last-write-wins on collision — same rule as cel_map_insert_at, NOT
+// cel_map_insert's duplicate-key poison (CELW-0011 tracks the
+// divergence from cel-cpp for the accumulator path as a whole).
+TEST_F(MapMergeTest, CollidingKeyOverwritesValue) {
+  uint32_t accu = Accu(4);
+  cel_map_insert_at(accu, cel_make_int(1), cel_make_int(999));
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/1));
+  EXPECT_EQ(MapCount(accu), 1u);
+  EXPECT_EQ(LookupInt(accu, 1), 10);
+}
+
+// The load-bearing difference from cel_map_insert_at: codegen
+// pre-sizes a computed-entry accumulator at ONE entry per iteration,
+// so a two-key entry map overruns it.  Growing is correct here;
+// trapping (the pre-size invariant) would be a crash on ordinary
+// input.
+TEST_F(MapMergeTest, GrowsPastPresizedCapacity) {
+  uint32_t accu = Accu(1);
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/5));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 5u);
+  for (int64_t k = 1; k <= 5; ++k) {
+    EXPECT_EQ(LookupInt(accu, k), k * 10);
+  }
+}
+
+// Growth out of a ZERO-capacity accumulator (the pre-size a comprehension
+// over an empty range produces) must allocate a run rather than write
+// through the null entries_offset.
+TEST_F(MapMergeTest, GrowsFromZeroCapacity) {
+  uint32_t accu = Accu(0);
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/2));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 2u);
+  EXPECT_EQ(LookupInt(accu, 1), 10);
+  EXPECT_EQ(LookupInt(accu, 2), 20);
+}
+
+// Growth drops any hash index (entries moved), so a lookup after a
+// growing merge must still find every key — through the linear scan
+// until codegen's terminal cel_map_index_build re-indexes.
+TEST_F(MapMergeTest, LookupsSurviveGrowthAfterIndexBuild) {
+  uint32_t accu = Accu(2);
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/2));
+  cel_map_index_build(accu);
+  cel_map_merge_at(accu, IntMap(/*first=*/3, /*n=*/40));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 42u);
+  cel_map_index_build(accu);
+  for (int64_t k = 1; k <= 42; ++k) {
+    EXPECT_EQ(LookupInt(accu, k), k * 10);
+  }
+}
+
+// ── 3VL on the entry value ──
+
+TEST_F(MapMergeTest, ErrorEntryPropagatesVerbatim) {
+  uint32_t accu = Accu(4);
+  uint32_t entry = NewSlot();
+  cel_value_at(entry)->kind = CEL_ERROR;
+  cel_value_at(entry)->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  cel_map_merge_at(accu, entry);
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+TEST_F(MapMergeTest, UnknownEntryPropagatesVerbatim) {
+  uint32_t accu = Accu(4);
+  uint32_t entry = NewSlot();
+  cel_value_at(entry)->kind = CEL_UNKNOWN;
+  cel_value_at(entry)->payload.unk = 0x1234;
+  cel_map_merge_at(accu, entry);
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(cel_value_at(accu)->payload.unk, 0x1234u);
+}
+
+TEST_F(MapMergeTest, NonMapEntryPoisonsTypeMismatch) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at(accu, cel_make_int(5));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+}
+
+// A poisoned accumulator stays poisoned — an earlier iteration's error
+// must reach `result` rather than being overwritten by a later merge.
+TEST_F(MapMergeTest, PoisonedAccumulatorIsStickyNoOp) {
+  uint32_t accu = NewSlot();
+  cel_value_at(accu)->kind = CEL_ERROR;
+  cel_value_at(accu)->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+// An invalid key kind inside the entry map poisons the accumulator and
+// stops the merge — entries after the bad one must not land.
+TEST_F(MapMergeTest, InvalidKeyKindInEntryPoisonsAndStops) {
+  uint32_t accu = Accu(8);
+  uint32_t entry = Accu(4);
+  cel_map_insert_at(entry, cel_make_int(1), cel_make_int(10));
+  // Write a double key straight into the entry run — cel_map_insert
+  // would have rejected it, but a host-built map can carry one.
+  auto* hdr = reinterpret_cast<ArenaMapHeader*>(
+      cel_mem_base() + cel_value_at(entry)->payload.arena_map.header_ptr);
+  const size_t off = static_cast<size_t>(hdr->entries_offset) +
+                     (static_cast<size_t>(kCelMapEntryStride) * hdr->count);
+  auto* bad_key = reinterpret_cast<CelValue*>(cel_mem_base() + off);
+  auto* bad_val =
+      reinterpret_cast<CelValue*>(cel_mem_base() + off + sizeof(CelValue));
+  bad_key->kind = CEL_DOUBLE;
+  bad_key->payload.d = 1.5;
+  bad_val->kind = CEL_INT;
+  bad_val->payload.i = 20;
+  hdr->count = 2;
+  cel_map_merge_at(accu, entry);
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+}
+
+// A HOST-represented entry map (an Activation-bound map reached as the
+// entry expression) merges through the iterator arm rather than the
+// direct entries walk.
+TEST_F(MapMergeTest, HostEntryMapMergesThroughIterator) {
+  g_host_iter_entry_count = 3;
+  g_host_iter_first_key = 4;
+  uint32_t accu = Accu(1);  // pre-sized for one; the merge grows it.
+  uint32_t entry = NewSlot();
+  cel_value_at(entry)->kind = CEL_MAP_HOST;
+  cel_value_at(entry)->payload.ref_slot = 7;
+  cel_map_merge_at(accu, entry);
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 3u);
+  EXPECT_EQ(LookupInt(accu, 4), 40);
+  EXPECT_EQ(LookupInt(accu, 5), 50);
+  EXPECT_EQ(LookupInt(accu, 6), 60);
+}
+
+TEST_F(MapMergeTest, EmptyHostEntryMapIsNoOp) {
+  uint32_t accu = Accu(2);
+  cel_map_insert_at(accu, cel_make_int(1), cel_make_int(10));
+  uint32_t entry = NewSlot();
+  cel_value_at(entry)->kind = CEL_MAP_HOST;
+  cel_value_at(entry)->payload.ref_slot = 7;
+  cel_map_merge_at(accu, entry);
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 1u);
+}
+
+// ── predicate-gated merge ──
+
+TEST_F(MapMergeTest, IfBoolTrueMerges) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at_if_bool(accu, cel_make_bool(1), IntMap(1, 2));
+  EXPECT_EQ(MapCount(accu), 2u);
+}
+
+TEST_F(MapMergeTest, IfBoolFalseIsNoOp) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at_if_bool(accu, cel_make_bool(0), IntMap(1, 2));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 0u);
+}
+
+TEST_F(MapMergeTest, IfBoolErrorPredicatePropagates) {
+  uint32_t accu = Accu(4);
+  uint32_t pred = NewSlot();
+  cel_value_at(pred)->kind = CEL_ERROR;
+  cel_value_at(pred)->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  cel_map_merge_at_if_bool(accu, pred, IntMap(1, 2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+TEST_F(MapMergeTest, IfBoolUnknownPredicatePropagates) {
+  uint32_t accu = Accu(4);
+  uint32_t pred = NewSlot();
+  cel_value_at(pred)->kind = CEL_UNKNOWN;
+  cel_value_at(pred)->payload.unk = 0x99;
+  cel_map_merge_at_if_bool(accu, pred, IntMap(1, 2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(cel_value_at(accu)->payload.unk, 0x99u);
+}
+
+TEST_F(MapMergeTest, IfBoolNonBoolPredicatePoisonsTypeMismatch) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at_if_bool(accu, cel_make_int(1), IntMap(1, 2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+}
+
+TEST_F(MapMergeTest, IfBoolPoisonedAccumulatorIsStickyNoOp) {
+  uint32_t accu = NewSlot();
+  cel_value_at(accu)->kind = CEL_ERROR;
+  cel_value_at(accu)->payload.err = CEL_ERR_NO_SUCH_KEY;
+  cel_map_merge_at_if_bool(accu, cel_make_bool(1), IntMap(1, 2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_NO_SUCH_KEY));
 }
 
 }  // namespace

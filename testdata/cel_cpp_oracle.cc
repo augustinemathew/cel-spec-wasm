@@ -24,6 +24,8 @@
 #include "compiler/compiler_factory.h"
 #include "compiler/optional.h"
 #include "compiler/standard_library.h"
+#include "extensions/comprehensions_v2.h"
+#include "extensions/comprehensions_v2_functions.h"
 #include "extensions/encoders.h"
 #include "extensions/math_ext.h"
 #include "extensions/math_ext_decls.h"
@@ -99,8 +101,17 @@ absl::Status RegisterRuntimeExtensions(cel::RuntimeBuilder& builder,
       !s.ok()) {
     return s;
   }
-  return cel::extensions::RegisterEncodersFunctions(builder.function_registry(),
-                                                    opts);
+  if (auto s = cel::extensions::RegisterEncodersFunctions(
+          builder.function_registry(), opts);
+      !s.ok()) {
+    return s;
+  }
+  // comprehensions_v2 (`transformList` / `transformMap` /
+  // `transformMapEntry`) — the macros desugar to `cel.@mapInsert`
+  // calls the standard runtime does not implement, so without this
+  // the oracle can't answer any transformMap* question.
+  return cel::extensions::RegisterComprehensionsV2Functions(
+      builder.function_registry(), opts);
 }
 
 absl::StatusOr<std::unique_ptr<const cel::Runtime>> BuildRuntime(
@@ -180,7 +191,13 @@ absl::Status AddCompilerLibraries(cel::CompilerBuilder& builder) {
       !s.ok()) {
     return s;
   }
-  return builder.AddLibrary(cel::extensions::EncodersCompilerLibrary());
+  if (auto s = builder.AddLibrary(cel::extensions::EncodersCompilerLibrary());
+      !s.ok()) {
+    return s;
+  }
+  // Pairs with RegisterComprehensionsV2Functions above: the macros
+  // plus the `cel.@mapInsert` overload decls their expansions need.
+  return builder.AddLibrary(cel::extensions::ComprehensionsV2CompilerLibrary());
 }
 
 // name as an unbound activation variable).
