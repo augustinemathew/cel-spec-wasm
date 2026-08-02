@@ -31,8 +31,9 @@ value with no error, which is the most dangerous class because
 nothing downstream can detect it.
 
 > Status since this review: #1 (`TransformMapEntryComputedEntryCrash`,
-> CELW-0012) and #3 (`ExistsAbsorbsErrorAccumulator`, CELW-0010) are
-> FIXED — the table below is preserved as the dated snapshot it was.
+> CELW-0012), #2 (`MapKeyLossyDoubleEquality`, CELW-0004) and #3
+> (`ExistsAbsorbsErrorAccumulator`, CELW-0010) are FIXED — the table
+> below is preserved as the dated snapshot it was.
 
 | # | test / id | sev | silent? | one line |
 | --- | --- | --- | --- | --- |

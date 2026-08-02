@@ -1378,6 +1378,8 @@ TEST_F(MapTest, MapEqualityRejectsKeysThatOnlyAgreeAfterRounding) {
   cel_map_eq_arena(out, a, b);
   ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_BOOL));
   EXPECT_EQ(cel_value_at(out)->payload.b, 0);
+}
+
 // ════════ cel_map_merge_at / cel_map_merge_at_if_bool ════════
 //
 // The general `transformMapEntry` loop step: merge every entry of a

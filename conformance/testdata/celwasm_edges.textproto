@@ -797,6 +797,9 @@ section {
     expr: "{9007199254740993: 1, 9007199254740993: 2}"
     eval_error: { errors: { message: "duplicate key" } }
   }
+}
+
+section {
   name: "comprehension_accu_absorption"
   description: "3VL absorption in the comprehension accumulator.  `exists` desugars to `@result || pred`, so per langdef an error from one element is ABSORBED once a later element matches; the error surfaces only if NO element ever matches.  `all` is the mirror via `&&`.  `exists_one` folds with `+`, whose strict 3VL has no absorption at all."
 
