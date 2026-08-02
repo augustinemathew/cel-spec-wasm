@@ -1187,14 +1187,16 @@ TEST(EngineUseTest, CollisionAcrossUseAndLegacyAddPluginAlreadyExists) {
 }
 
 TEST(EngineUseTest, HashRetainedOnRegistryEntry) {
-  GTEST_SKIP()
-      << "RegisteredPlugin::hash is populated by Engine::Use (all-zero on "
-         "the legacy AddPlugin path) but has no observation seam: the "
-         "registry lives on the private WasmtimeEngineState and the "
-         "Plan-time diagnostics that would surface the hash are future "
-         "work (m35-plugin-ergonomics.md §9/§11 — hash enforcement is an "
-         "embedder conversation).  Un-skip by asserting on the Plan-time "
-         "hash diagnostic once that surface lands.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: deferred-feature
+why-not-a-bug: RegisteredPlugin::hash IS populated by Engine::Use (it is
+  all-zero only on the legacy AddPlugin path); what is missing is an
+  observation seam.  The registry lives on the private WasmtimeEngineState,
+  and the Plan-time diagnostic that would surface the hash has not shipped
+  -- hash enforcement is an open embedder conversation, not a bug.  Un-skip
+  by asserting on that diagnostic once it lands.
+citation: doc/implementation-plan/rewrite/m35-component-ergonomics.md sections 9 and 11
+)CELSKIP";
   // Intended assertion: after engine.Use(plugin), the registry entry
   // for `plugin` carries plugin.hash() (non-zero); after the legacy
   // engine.AddPlugin(bytes, lib), the entry's hash is all-zero.

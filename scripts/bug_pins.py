@@ -166,11 +166,24 @@ def cmd_issue(pins, pid):
     print(f'\n_Filed from `{p["_file"]}`; delete the `GTEST_SKIP` there to close._')
 
 
+def in_line_comment(text, pos):
+    """True if `pos` sits after a `//` on its own line.
+
+    Docs and file headers discuss `GTEST_SKIP()` by name; those mentions
+    are prose, not pin sites, and reporting them as unmigrated makes the
+    count untrustworthy (it over-reported by 3 before this check).
+    """
+    line_start = text.rfind("\n", 0, pos) + 1
+    return text[line_start:pos].lstrip().startswith("//")
+
+
 def cmd_unmigrated():
     rows = []
     for path in source_files():
         text = path.read_text(errors="replace")
         for m in SKIP_RE.finditer(text):
+            if in_line_comment(text, m.start()):
+                continue
             tail = text[m.start(): m.start() + 400]
             if "CELBUG v1" not in tail and "CELSKIP v1" not in tail:
                 rows.append((str(path.relative_to(REPO)),

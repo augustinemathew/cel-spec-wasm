@@ -19,13 +19,12 @@
 // component: inline component WAT assembled at test runtime via
 // `wasmtime_wat2wasm` (no wit-bindgen, no out-of-band build).
 //
-// Remaining skips, each with a freshly-verified citation at the skip
-// site:
+// Remaining skips, each carrying a CELSKIP block with a verified
+// citation at the skip site:
 //
-//   - optional<T> embedder bindings (kBlockerB2): `shared/type.h` has
-//     neither `CelType::Optional(T)` nor `Value::Optional(T)`
-//     (verified 2026-06-10), AND m24 §14 permanently rejects
-//     `optional<T>` as a plugin declarable shape
+//   - optional<T> cells: no embedder binding exists (`shared/type.h`
+//     has no Optional factory, verified 2026-06-10), AND m24 §14
+//     permanently rejects `optional<T>` as a plugin declarable shape
 //     (`function_library.cc:291` CheckPluginDeclShape) —
 //     pinned positive by OptionalArgRejectedAtLibraryBuild below.
 //   - `type` / `option(...)` celfn keywords: the grammar's `type` rule
@@ -116,25 +115,6 @@ using ::testing::HasSubstr;
 // SKIP blocker citations — only the genuinely-still-blocked cells
 // reference these; everything else runs against a real component.
 // ─────────────────────────────────────────────────────────────────────
-
-constexpr absl::string_view kBlockerB2 =
-    "blocked on shared/eval support for optional<T> — verified 2026-06-10 "
-    "that neither CelType::Optional(T) nor Value::Optional(T) exists "
-    "(shared/type.h has no Optional factory), so the embedder cannot bind "
-    "an optional<T> arg through Activation. Additionally m24 §14 "
-    "PERMANENTLY rejects optional<T> as a plugin declarable "
-    "shape (function_library.cc:291 CheckPluginDeclShape — "
-    "pinned by OptionalArgRejectedAtLibraryBuild), so even with embedder "
-    "Optional support these cells would need a scope reversal first.";
-
-constexpr absl::string_view kNoErrorResultVariant =
-    "the m24 wire has no eval-error result variant — "
-    "CallPluginAndLowerResult (eval/engine.cc:835) lowers exactly one "
-    "plain value per the decl's return CelType; a component has no "
-    "channel to surface a CEL error Value (verified 2026-06-10 against "
-    "eval/internal/cel_plugin.cc LowerComponentToCel, which has no "
-    "result/error arm). Un-skip if a result<T, cel-error> wire variant "
-    "ever ships.";
 
 // ─────────────────────────────────────────────────────────────────────
 // Component assembly — inline component-model WAT → bytes, via
@@ -880,28 +860,71 @@ TEST(PluginTypeMatrix, OptionalArgRejectedAtLibraryBuild) {
 }
 
 TEST(PluginTypeMatrix, OptionalIntArgPresent) {
-  GTEST_SKIP() << kBlockerB2;
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: optional<T> is PERMANENTLY rejected as a plugin declarable
+  shape, so this cell can never run without a scope reversal.  The embedder
+  could not reach it either: neither CelType::Optional(T) nor
+  Value::Optional(T) exists (shared/type.h has no Optional factory), so an
+  optional<T> arg cannot be bound through Activation.  The rejection itself
+  is pinned by OptionalArgRejectedAtLibraryBuild in this file.
+citation: compiler/celfn/function_library.cc:291 (CheckPluginDeclShape);
+  doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md section 14
+)CELSKIP";
 }
 
 TEST(PluginTypeMatrix, OptionalIntArgAbsent) {
-  GTEST_SKIP() << kBlockerB2;
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: optional<T> is PERMANENTLY rejected as a plugin declarable
+  shape, so this cell can never run without a scope reversal.  The embedder
+  could not reach it either: neither CelType::Optional(T) nor
+  Value::Optional(T) exists (shared/type.h has no Optional factory), so an
+  optional<T> arg cannot be bound through Activation.  The rejection itself
+  is pinned by OptionalArgRejectedAtLibraryBuild in this file.
+citation: compiler/celfn/function_library.cc:291 (CheckPluginDeclShape);
+  doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md section 14
+)CELSKIP";
 }
 
 TEST(PluginTypeMatrix, OptionalStringReturn) {
-  GTEST_SKIP() << kBlockerB2;
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: optional<T> is PERMANENTLY rejected as a plugin declarable
+  shape, so this cell can never run without a scope reversal.  The embedder
+  could not reach it either: neither CelType::Optional(T) nor
+  Value::Optional(T) exists (shared/type.h has no Optional factory), so an
+  optional<T> arg cannot be bound through Activation.  The rejection itself
+  is pinned by OptionalArgRejectedAtLibraryBuild in this file.
+citation: compiler/celfn/function_library.cc:291 (CheckPluginDeclShape);
+  doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md section 14
+)CELSKIP";
 }
 
 TEST(PluginTypeMatrix, OptionalListIntNested) {
-  GTEST_SKIP() << kBlockerB2;
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: optional<T> is PERMANENTLY rejected as a plugin declarable
+  shape, so this cell can never run without a scope reversal.  The embedder
+  could not reach it either: neither CelType::Optional(T) nor
+  Value::Optional(T) exists (shared/type.h has no Optional factory), so an
+  optional<T> arg cannot be bound through Activation.  The rejection itself
+  is pinned by OptionalArgRejectedAtLibraryBuild in this file.
+citation: compiler/celfn/function_library.cc:291 (CheckPluginDeclShape);
+  doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md section 14
+)CELSKIP";
 }
 
 TEST(PluginTypeMatrix, OptionalDeclarableViaCelfnSource) {
-  GTEST_SKIP() << "the celfn grammar (compiler/celfn/Celfn.g4 `type` rule) "
-                  "has no `option(...)` alternative — verified 2026-06-10 — "
-                  "and m24 §14 PERMANENTLY rejects optional<T> as a "
-                  "plugin shape (pinned by "
-                  "OptionalArgRejectedAtLibraryBuild), so the grammar "
-                  "keyword will not land for this backend.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: the celfn grammar has no `option(...)` alternative, and m24
+  section 14 permanently rejects optional<T> as a plugin shape, so the
+  keyword will never land for this backend.  The rejection is pinned
+  positive by OptionalArgRejectedAtLibraryBuild.
+citation: compiler/celfn/Celfn.g4 (`type` rule), verified 2026-06-10;
+  doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md section 14
+)CELSKIP";
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -1284,9 +1307,17 @@ TEST(PluginTypeMatrix, MapReturnPluginEmitsStringInt) {
 }
 
 TEST(PluginTypeMatrix, MapMissingKeyAtPluginSurfacesNoSuchKey) {
-  GTEST_SKIP() << "this cell needs the component to surface a CEL no-such-key "
-                  "error through its return channel, but "
-               << kNoErrorResultVariant;
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: deferred-feature
+why-not-a-bug: the plugin wire has no eval-error result variant.
+  CallPluginAndLowerResult lowers exactly one plain value per the decl's
+  return CelType, and LowerComponentToCel has no result/error arm, so a
+  component has no channel to surface a CEL error Value at all.  This is a
+  missing wire shape, not a defect in the code that exists.  Un-skip if a
+  result<T, cel-error> variant ever ships.
+citation: eval/engine.cc:835 (CallPluginAndLowerResult);
+  eval/internal/cel_plugin.cc (LowerComponentToCel), verified 2026-06-10
+)CELSKIP";
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -1535,7 +1566,17 @@ TEST(PluginTypeMatrix, NegativeMalformedPluginBytesAtAddPlugin) {
 }
 
 TEST(PluginTypeMatrix, NegativeFnReturnsEvalErrorBecomesCelError) {
-  GTEST_SKIP() << kNoErrorResultVariant;
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: deferred-feature
+why-not-a-bug: the plugin wire has no eval-error result variant.
+  CallPluginAndLowerResult lowers exactly one plain value per the decl's
+  return CelType, and LowerComponentToCel has no result/error arm, so a
+  component has no channel to surface a CEL error Value at all.  This is a
+  missing wire shape, not a defect in the code that exists.  Un-skip if a
+  result<T, cel-error> variant ever ships.
+citation: eval/engine.cc:835 (CallPluginAndLowerResult);
+  eval/internal/cel_plugin.cc (LowerComponentToCel), verified 2026-06-10
+)CELSKIP";
 }
 
 constexpr absl::string_view kTrappingComponentWat = R"WAT(
@@ -1615,12 +1656,17 @@ TEST(PluginTypeMatrix, NegativeThreeValuedLogicUnknownArgShortCircuits) {
 // ═════════════════════════════════════════════════════════════════════
 
 TEST(PluginTypeMatrix, TinyGoBackedPluginProducesSameResult) {
-  GTEST_SKIP() << "Engine::AddPlugin itself shipped with m24 "
-                  "(eval/engine.cc:1519; dispatch proven in "
-                  "plugin_dispatch_test.cc) — this row is blocked "
-                  "solely on the TinyGo build fixture: no target exists under "
-                  "e2e/plugin_fixtures/tinygo/ (verified "
-                  "2026-06-10).";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: the product surface this row would exercise already ships --
+  Engine::AddPlugin works and its dispatch is proven by
+  plugin_dispatch_test.cc.  The row is blocked solely on a missing BUILD
+  fixture: no TinyGo target exists under e2e/plugin_fixtures/tinygo/, so
+  there is no second-language component to point it at.  Un-skip by adding
+  that fixture; no product change is required.
+citation: eval/engine.cc:1519 (Engine::AddPlugin);
+  doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md section 11
+)CELSKIP";
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -1642,22 +1688,27 @@ TEST(PluginTypeMatrix, CelfnSourceAdmitsPluginDecl) {
 }
 
 TEST(PluginTypeMatrix, CelfnSourceAdmitsTypeKeyword) {
-  GTEST_SKIP() << "the celfn grammar (compiler/celfn/Celfn.g4 `type` rule) "
-                  "has no `type` keyword alternative — verified 2026-06-10 — "
-                  "and m24 §14 PERMANENTLY rejects `type` as a "
-                  "plugin shape (pinned by "
-                  "TypeArgRejectedAtLibraryBuild / "
-                  "TypeReturnRejectedAtLibraryBuild), so the keyword will "
-                  "not land for this backend.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: the celfn grammar has no `type` keyword alternative, and m24
+  section 14 permanently rejects `type` as a plugin shape, so the keyword
+  will never land for this backend.  The rejection is pinned positive by
+  TypeArgRejectedAtLibraryBuild / TypeReturnRejectedAtLibraryBuild.
+citation: compiler/celfn/Celfn.g4 (`type` rule), verified 2026-06-10;
+  doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md section 14
+)CELSKIP";
 }
 
 TEST(PluginTypeMatrix, CelfnSourceAdmitsOptionalKeyword) {
-  GTEST_SKIP() << "the celfn grammar (compiler/celfn/Celfn.g4 `type` rule) "
-                  "has no `option(...)` alternative — verified 2026-06-10 — "
-                  "and m24 §14 PERMANENTLY rejects optional<T> as a "
-                  "plugin shape (pinned by "
-                  "OptionalArgRejectedAtLibraryBuild), so the keyword will "
-                  "not land for this backend.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: by-design
+why-not-a-bug: the celfn grammar has no `option(...)` alternative, and m24
+  section 14 permanently rejects optional<T> as a plugin shape, so the
+  keyword will never land for this backend.  The rejection is pinned
+  positive by OptionalArgRejectedAtLibraryBuild.
+citation: compiler/celfn/Celfn.g4 (`type` rule), verified 2026-06-10;
+  doc/implementation-plan/rewrite/m24-foreign-fn-component-backend.md section 14
+)CELSKIP";
 }
 
 }  // namespace

@@ -696,12 +696,16 @@ TEST(RequiredFnPlanCheck, SignatureMismatchFailsAtPlanWithFrozenMessage) {
 }
 
 TEST(RequiredFnPlanCheck, ProtoFqnMismatchEndToEnd) {
-  GTEST_SKIP()
-      << "blocked on the demo_plugin_proto fixture's known pre-existing "
-         "wasip2/absl-sync build break (the proto demo cross-compiles "
-         "libprotobuf under the WASI sysroot and fails there) — do not "
-         "depend on it; the proto-FQN axis is pinned at unit level by "
-         "required_fn_check_test.ProtoFqnMismatchExactFrozenMessage.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: blocked on the demo_plugin_proto FIXTURE, not on the product
+  path under test.  That fixture cross-compiles libprotobuf under the WASI
+  sysroot, where absl synchronization does not build, so nothing may depend
+  on its bytes.  The proto-FQN axis itself is covered at unit level by
+  required_fn_check_test.ProtoFqnMismatchExactFrozenMessage; this row would
+  only add the end-to-end wiring.  Un-skip when the wasip2 build is fixed.
+citation: e2e/plugin_fixtures/cel_wasm_plugin_demo (demo_plugin_proto target)
+)CELSKIP";
   // Intended assertion: compile against `bool is_adult(proto(acme.User))`,
   // register a rebuilt plugin declaring `bool is_adult(proto(acme.Person))`
   // (same overload-id via re-embedded idl), and expect the §2 mismatch
