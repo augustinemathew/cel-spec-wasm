@@ -187,8 +187,9 @@ TEST_F(ListLiteralE2ETest, BytesListIndexed) {
   ASSERT_THAT(compiler, IsOk());
   auto instance = CompilePlan(*compiler, R"([b"\x01", b"\x02", b"\x03"][2])");
   Activation a;
-  auto got = *EvalOk(instance, a).AsBytes();
-  EXPECT_EQ(got, absl::string_view("\x03", 1));
+  // `AsBytes` borrows from the Value — keep it alive past the view.
+  auto v = EvalOk(instance, a);
+  EXPECT_EQ(*v.AsBytes(), absl::string_view("\x03", 1));
 }
 
 // `null` is its own type at the langdef level, so a `[null,

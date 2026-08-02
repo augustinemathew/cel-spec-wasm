@@ -274,7 +274,7 @@ celwasm::Value::Message(my_proto);       celwasm::Value::List({Value::Int(1), Va
 celwasm::Value::Map({{Value::String("k"), Value::Int(1)}});
 
 auto i = v.AsInt();        // StatusOr<int64_t>   (InvalidArgument on kind mismatch)
-auto s = v.AsString();     // StatusOr<string_view>
+auto s = v.AsString();     // StatusOr<string_view>  — borrows from `v`
 bool null   = v.IsNull();
 bool unk    = v.IsUnknown();
 bool err    = v.IsError();
@@ -289,6 +289,21 @@ bool err    = v.IsError();
 | `Engine` | one per process | `Plan` concurrent-safe; `Use`/`BindFunction`/`AddFunction`/`AddPlugin` single-thread setup |
 | `Instance` | one per worker thread | thread-owned; outlives the Engine handle (shared_ptr) |
 | `Activation` | per-eval, reusable | not shared across threads |
+
+`AsString`, `AsBytes`, `AsType` and `UnknownAttributes` **borrow** from
+the `Value` you call them on — the returned `string_view` / `Span` is
+valid only while that `Value` is alive. Calling one on a temporary and
+keeping the result reads freed memory, and because the bytes often
+survive unclobbered it tends to produce a plausible wrong answer rather
+than a crash:
+
+```cpp
+auto got = *Eval(...).AsBytes();               // WRONG — view dangles
+auto v = Eval(...); auto got = *v.AsBytes();   // right — `v` outlives the view
+```
+
+The scalar accessors (`AsInt`, `AsBool`, `AsDouble`, …) return by value
+and carry no such constraint.
 
 ---
 
