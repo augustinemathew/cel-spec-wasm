@@ -703,6 +703,54 @@ void cel_map_insert_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
   cel_map_insert_at(map_slot, key_slot, value_slot);
 }
 
+// Coerces a list-index value to an int64, writing it to *i.
+//
+// Per langdef §"Indexing": list index type is int.  When the operand
+// is dyn-typed (e.g. `[1,2,3][dyn(0.0)]`), cel-cpp's runtime admits a
+// CEL_UINT or an integral CEL_DOUBLE as an index — the value must
+// round-trip to an int64.  Non-integral doubles error.  Pinned by
+// oracle tests `ListIndexDoubleAgrees`, `ListIndexUintAgrees`,
+// `ListIndexNonIntegerDoubleAgrees` (testdata/cel_cpp_oracle_test.cc)
+// and conformance rows `lists/index/zero_based_double`,
+// `zero_based_uint`, `zero_based_double_error`.
+//
+// Returns 0 having poisoned *out when the index is unusable.
+static int decode_list_index(CelValue* out, const CelValue* index, int64_t* i) {
+  if (index->kind == CEL_INT) {
+    *i = index->payload.i;
+    return 1;
+  }
+  if (index->kind == CEL_UINT) {
+    if (index->payload.u > (uint64_t)INT64_MAX) {
+      poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
+      return 0;
+    }
+    *i = (int64_t)index->payload.u;
+    return 1;
+  }
+  if (index->kind != CEL_DOUBLE) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return 0;
+  }
+  const double d = index->payload.d;
+  // Integral check: must be finite, within int64 range, and bit-equal
+  // to its int64 truncation.  cel-cpp's ConvertDoubleToInt does the
+  // same range/integrality check.
+  if (d != d || d > 9.2233720368547758e18 ||
+      d < -9.2233720368547758e18) {  // NaN / inf / OOR
+    poison(out, CEL_ERR_INVALID_ARGUMENT);
+    return 0;
+  }
+  const int64_t trunc = (int64_t)d;
+  if ((double)trunc != d) {
+    // non-integral
+    poison(out, CEL_ERR_INVALID_ARGUMENT);
+    return 0;
+  }
+  *i = trunc;
+  return 1;
+}
+
 void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
                        uint32_t index_slot) {
   CEL_LOG("enter");
@@ -717,43 +765,8 @@ void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
     *out = *l;
     return;
   }
-  // Per langdef §"Indexing": list index type is int.  When the
-  // operand is dyn-typed (e.g. `[1,2,3][dyn(0.0)]`), cel-cpp's
-  // runtime admits a CEL_UINT or an integral CEL_DOUBLE as an
-  // index — the value must round-trip to an int64.  Non-integral
-  // doubles error.  Pinned by oracle tests `ListIndexDoubleAgrees`,
-  // `ListIndexUintAgrees`, `ListIndexNonIntegerDoubleAgrees`
-  // (testdata/cel_cpp_oracle_test.cc) and conformance rows
-  // `lists/index/zero_based_double`, `zero_based_uint`,
-  // `zero_based_double_error`.
   int64_t i = 0;
-  if (index->kind == CEL_INT) {
-    i = index->payload.i;
-  } else if (index->kind == CEL_UINT) {
-    if (index->payload.u > (uint64_t)INT64_MAX) {
-      poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
-      return;
-    }
-    i = (int64_t)index->payload.u;
-  } else if (index->kind == CEL_DOUBLE) {
-    const double d = index->payload.d;
-    // Integral check: must be finite, within int64 range, and
-    // bit-equal to its int64 truncation.  cel-cpp's
-    // ConvertDoubleToInt does the same range/integrality check.
-    if (d != d || d > 9.2233720368547758e18 ||
-        d < -9.2233720368547758e18) {  // NaN / inf / OOR
-      poison(out, CEL_ERR_INVALID_ARGUMENT);
-      return;
-    }
-    const int64_t trunc = (int64_t)d;
-    if ((double)trunc != d) {
-      // non-integral
-      poison(out, CEL_ERR_INVALID_ARGUMENT);
-      return;
-    }
-    i = trunc;
-  } else {
-    poison(out, CEL_ERR_TYPE_MISMATCH);
+  if (!decode_list_index(out, index, &i)) {
     return;
   }
   ArenaListHeader* hdr = arena_list_header(l);
@@ -772,9 +785,9 @@ extern void cel_host_cel_list_at(uint32_t out_slot, uint32_t list_slot,
                                  uint32_t index_slot)
     __attribute__((import_module("cel_host"), import_name("cel_list_at")));
 #else
-__attribute__((
-    weak)) void cel_host_cel_list_at(  // NOLINT(misc-use-internal-linkage)
-    uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
+__attribute__((weak)) void cel_host_cel_list_at(uint32_t out_slot,
+                                                uint32_t list_slot,
+                                                uint32_t index_slot) {
   (void)list_slot;
   (void)index_slot;
   poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
@@ -1741,7 +1754,7 @@ static void copy_iter_entry(uint32_t out_slot, uint32_t iter_handle,
     return;
   }
   // HOST: snapshot entries are 48 bytes each — key at +0, value at +24.
-  const uint32_t entry_off = state->payload + i * MAP_ITER_HOST_ENTRY_BYTES;
+  const uint32_t entry_off = state->payload + (i * MAP_ITER_HOST_ENTRY_BYTES);
   const uint32_t cell_off = want_value ? entry_off + 24u : entry_off;
   *out = *(CelValue*)(cel_memory_base_() + cell_off);
 }

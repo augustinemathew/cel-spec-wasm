@@ -107,8 +107,6 @@ using ::absl_testing::IsOk;
 // here would create a stale dep edge when the proto fixtures
 // move.
 
-using ::celwasm::e2e::GlobalEngine;
-
 using ConfigureFn = std::function<void(Compiler::Builder&)>;
 absl::StatusOr<Compiler> BuildCompiler(const ConfigureFn& configure) {
   Compiler::Builder b;

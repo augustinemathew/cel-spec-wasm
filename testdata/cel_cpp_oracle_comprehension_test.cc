@@ -212,14 +212,15 @@ class ComprehensionAccuAbsorptionOracle
 
 TEST_P(ComprehensionAccuAbsorptionOracle, MatchesCelCpp) {
   auto r = OracleOk(GetParam().source);
+  const auto& expected = GetParam().expected;
   EXPECT_FALSE(r.is_unknown) << GetParam().source;
-  if (!GetParam().expected.has_value()) {
+  if (!expected.has_value()) {
     EXPECT_TRUE(r.is_error)
         << GetParam().source << " must error; got " << r.value.DebugString();
     return;
   }
   ASSERT_FALSE(r.is_error) << GetParam().source << " → " << r.error_message;
-  EXPECT_EQ(r.value.bool_value(), *GetParam().expected) << GetParam().source;
+  EXPECT_EQ(r.value.bool_value(), *expected) << GetParam().source;
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -277,13 +278,14 @@ class TransformMapEntryComputedOracle
 
 TEST_P(TransformMapEntryComputedOracle, MatchesCelCpp) {
   auto r = OracleOk(GetParam().source);
+  const auto& expected = GetParam().expected;
   EXPECT_FALSE(r.is_unknown) << GetParam().source;
-  if (!GetParam().expected.has_value()) {
+  if (!expected.has_value()) {
     EXPECT_TRUE(r.is_error) << GetParam().source << " must error";
     return;
   }
   ASSERT_FALSE(r.is_error) << GetParam().source << " → " << r.error_message;
-  EXPECT_EQ(r.value.int64_value(), *GetParam().expected) << GetParam().source;
+  EXPECT_EQ(r.value.int64_value(), *expected) << GetParam().source;
 }
 
 INSTANTIATE_TEST_SUITE_P(

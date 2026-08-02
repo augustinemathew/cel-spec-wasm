@@ -63,7 +63,7 @@ void cel_host_cel_map_iter_open(uint32_t state_offset, uint32_t /*map_slot*/) {
     CelValue* key = cel_value_at(
         snapshot + (i * 2u * static_cast<uint32_t>(sizeof(CelValue))));
     CelValue* val = cel_value_at(
-        snapshot + ((i * 2u + 1u) * static_cast<uint32_t>(sizeof(CelValue))));
+        snapshot + (((i * 2u) + 1u) * static_cast<uint32_t>(sizeof(CelValue))));
     key->kind = CEL_INT;
     key->payload.i = k;
     val->kind = CEL_INT;
@@ -1202,8 +1202,9 @@ TEST_F(MapMergeTest, GrowsPastPresizedCapacity) {
   cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/5));
   ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
   EXPECT_EQ(MapCount(accu), 5u);
-  for (int64_t k = 1; k <= 5; ++k)
+  for (int64_t k = 1; k <= 5; ++k) {
     EXPECT_EQ(LookupInt(accu, k), k * 10);
+  }
 }
 
 // Growth out of a ZERO-capacity accumulator (the pre-size a comprehension
@@ -1229,8 +1230,9 @@ TEST_F(MapMergeTest, LookupsSurviveGrowthAfterIndexBuild) {
   ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
   EXPECT_EQ(MapCount(accu), 42u);
   cel_map_index_build(accu);
-  for (int64_t k = 1; k <= 42; ++k)
+  for (int64_t k = 1; k <= 42; ++k) {
     EXPECT_EQ(LookupInt(accu, k), k * 10);
+  }
 }
 
 // ── 3VL on the entry value ──

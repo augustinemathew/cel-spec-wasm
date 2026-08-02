@@ -1056,7 +1056,7 @@ TEST(KnownBugs, LongArith165TermsWorks) {
 //   wasmtime).  Keep the e2e — it pins the cross-page-boundary case
 //   the unit test can't reach.
 // ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, LongArith_2000Terms_NoUnalignedAtomicTrap) {
+TEST(KnownBugs, LongArith2000TermsNoUnalignedAtomicTrap) {
   constexpr int kN = 2000;
   const std::string source = MakeLongArithSource(kN);
   auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
@@ -1185,9 +1185,9 @@ void BindFullPbtVars(Activation& a) {
 // `expr_lower_internal.h`'s helper doc.  The assertion below is
 // now a live regression guard.
 TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
-  constexpr absl::string_view source =
+  constexpr absl::string_view kSource =
       R"(((size("") < (i_a - (b_a ? 0 : i_b))) == ("" == "x")))";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareScalarPbtVars,
+  auto v = TryEvalActivated(kSource, pbt_repro::DeclareScalarPbtVars,
                             pbt_repro::BindScalarPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -1212,9 +1212,9 @@ TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
 //   false ? y_a : b"x"  → b"x"
 //   b"x" + b"x"         → b"xx"
 TEST(KnownBugs, PbtExistsOneInTernaryCondBytes) {
-  constexpr absl::string_view source =
+  constexpr absl::string_view kSource =
       R"((({b_a: (-1)}).exists_one(k, (d_a < 1.0)) ? y_a : b"x") + b"x")";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+  auto v = TryEvalActivated(kSource, pbt_repro::DeclareFullPbtVars,
                             pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
@@ -1225,9 +1225,9 @@ TEST(KnownBugs, PbtExistsOneInTernaryCondBytes) {
 // pick the then-arm, returning a bytes-typed value.  Catches a
 // regression in the opposite direction.
 TEST(KnownBugs, PbtExistsOneInTernaryCondTakesThen) {
-  constexpr absl::string_view source =
+  constexpr absl::string_view kSource =
       R"((({"k": 1}).exists_one(k, true) ? y_a : b"x") + b"x")";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+  auto v = TryEvalActivated(kSource, pbt_repro::DeclareFullPbtVars,
                             pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
@@ -1241,9 +1241,9 @@ TEST(KnownBugs, PbtExistsOneInTernaryCondTakesThen) {
 // exists_one is true (one key, predicate true), inner ternary's
 // then-arm is `(y_a + y_a)` = b"hihi" (size 4).
 TEST(KnownBugs, PbtSizeOfExistsOneTernaryBytes) {
-  constexpr absl::string_view source =
+  constexpr absl::string_view kSource =
       R"(size((({"k": 1}).exists_one(k, true) ? (y_a + y_a) : (y_a + b"x"))))";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+  auto v = TryEvalActivated(kSource, pbt_repro::DeclareFullPbtVars,
                             pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());

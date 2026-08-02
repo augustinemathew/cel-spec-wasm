@@ -151,7 +151,7 @@ Live guards (formerly skipped, now regression pins):
   `ResourceExhausted` at Compile in BOTH link modes
   (`ValidateExprStaticRegion`, `compiler/internal/compile.cc`); boundary pins
   N=327 / N=328 bracket the exact window edge.
-- `LongArith_2000Terms_NoUnalignedAtomicTrap` — fixed by LIFO free-list slot
+- `LongArith2000TermsNoUnalignedAtomicTrap` — fixed by LIFO free-list slot
   reuse (`compiler/codegen/slot_allocator.{h,cc}`), validated bottom-up by
   `slot_allocator_test` and top-down by this e2e.
 - The four PBT-discovered pins (`PbtTernaryInsideIntSubtract`, `PbtExistsOne*`,
