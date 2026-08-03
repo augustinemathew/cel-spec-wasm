@@ -49,6 +49,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same ~16 GB cold-build footprint as the ci workflow; see the
+      # script header for the measured breakdown.
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
       - name: Install host deps (mirrors docker/Dockerfile)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
 
@@ -78,6 +83,16 @@ jobs:
         # step.  Defaults for the nightly schedule; overridable via
         # workflow_dispatch inputs.
         run: scripts/fuzz.sh sweep "${{ github.event.inputs.seeds || '300' }}" "${{ github.event.inputs.depth || '6' }}"
+
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
 
       - name: Save bazel disk cache
         if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
