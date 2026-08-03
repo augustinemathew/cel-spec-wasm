@@ -63,6 +63,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A cold build needs ~16 GB and the runner starts with ~21 GB
+      # free, which is not enough once the ~3 GB cache tarball is
+      # downloaded and extracted alongside it.  Deleting preinstalled
+      # SDKs we never use buys ~20 GB.  See the script header.
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
       - name: Install host deps (mirrors docker/Dockerfile)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
 
@@ -82,14 +89,31 @@ jobs:
         # .bazelrc try-imports user.bazelrc; `test` inherits `build` flags.
         run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
 
-      - name: Build
-        run: bazel build //...
-
+      # `bazel test //...` builds everything the build step would, so the
+      # separate build was pure duplicate wall-clock.  Dropping it also
+      # removes one full analysis pass from the critical path.
       - name: Test
         run: bazel test --test_output=errors //...
 
       - name: Manual-tagged targets + dual-mode conformance gate
         run: scripts/run_full_suite.sh
+
+      # Disk report on failure: when this job dies mid-build, "was it
+      # space?" is the first question, and the answer is otherwise
+      # unrecoverable from the log.
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      # Bazel 7.3.2 has no disk-cache GC, so the cache only grows and
+      # `restore-keys` ratchets it forward run over run.  Cap it before
+      # saving; entries are content-addressed, so eviction is just a
+      # future cache miss.
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
 
       # Save even when a test fails: the compiled cel-cpp objects are
       # the expensive part, and actions/cache's combined action skips
@@ -124,14 +148,24 @@ jobs:
         # .bazelrc try-imports user.bazelrc; `test` inherits `build` flags.
         run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
 
-      - name: Build
-        run: bazel build //...
-
+      # `bazel test //...` builds everything the build step would.
       - name: Test
         run: bazel test --test_output=errors //...
 
       - name: Manual-tagged targets + dual-mode conformance gate
         run: scripts/run_full_suite.sh
+
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      # Same unbounded-growth problem as the Linux leg; macOS runners
+      # have less free space to start with, not more.
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
 
       - name: Save bazel disk cache
         if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
