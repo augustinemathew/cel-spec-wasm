@@ -4,11 +4,11 @@
 #include <cstring>
 #include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
@@ -88,28 +88,6 @@ TEST_F(MakeTest, MakeBytesCopiesBytes) {
   EXPECT_EQ(data[0], 0x00);
   EXPECT_EQ(data[1], 0xff);
   EXPECT_EQ(data[2], 0x42);
-}
-
-TEST_F(MakeTest, MakeStringViewReusesMemory) {
-  const char kSrc[] = "prev";
-  uint32_t ptr = arena_alloc(sizeof(kSrc) - 1);
-  std::memcpy(cel_mem_base() + ptr, kSrc, sizeof(kSrc) - 1);
-  uint32_t off = cel_make_string_view(ptr, sizeof(kSrc) - 1);
-  const CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_STRING));
-  EXPECT_EQ(v->payload.s.ptr, ptr);
-  EXPECT_EQ(v->payload.s.len, 4u);
-}
-
-TEST_F(MakeTest, MakeBytesViewReusesMemory) {
-  const uint8_t kSrc[] = {0xde, 0xad, 0xbe, 0xef};
-  uint32_t ptr = arena_alloc(sizeof(kSrc));
-  std::memcpy(cel_mem_base() + ptr, kSrc, sizeof(kSrc));
-  uint32_t off = cel_make_bytes_view(ptr, sizeof(kSrc));
-  const CelValue* v = cel_value_at(off);
-  EXPECT_EQ(v->kind, static_cast<uint32_t>(CEL_BYTES));
-  EXPECT_EQ(v->payload.s.ptr, ptr);
-  EXPECT_EQ(v->payload.s.len, 4u);
 }
 
 TEST_F(MakeTest, MakeEmptyStringHasZeroPtr) {

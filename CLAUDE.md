@@ -293,6 +293,20 @@ unusable, **and the warning set itself changes**:
     is restored.  The canary is the PCH error in the lint output:
     `'-pch=...' file not found` means PCH isn't loading; absence of
     that error means it is.
+  - **A COLD TREE ALSO INVENTS WARNINGS, and they look real.**  Bazel
+    only materialises `execroot/_main/external/` during an actual
+    build, so on a tree where the relevant targets haven't been built
+    the compile DB's include paths point at nothing.  clang-tidy then
+    analyses a *recovery AST* and emits a flood of plausible-looking
+    findings — `readability-non-const-parameter` on ~20 pointer
+    params, `bugprone-branch-clone`, `misc-use-internal-linkage` on
+    real exports — none of which reproduce once the tree is warm.
+    The canary is a `'...' file not found` line (`gtest/gtest.h`,
+    `binaryen-c.h`) anywhere in the output: if you see one, **stop and
+    warm the tree** (`bazel build //...`, then
+    `scripts/refresh_compile_db.sh`) before touching a single
+    finding.  Do not "fix" warnings from a cold tree — the fixes are
+    changes to correct code.
 
 The two-argument form `--extra-arg-before=-include-pch` +
 `--extra-arg-before=<path>` (as two separate flags) is the correct
@@ -1072,7 +1086,7 @@ ships.  The three layers and their flags:
     `third_party/wasi_sdk/cc_toolchain_config.bzl:199`) and explicit
     `-flto` in `runtime/BUILD.bazel`'s wasm `cc_binary` (both copts
     and linkopts).  LTO is load-bearing — it lets the linker inline
-    helpers like `cel_int_eq_at_vv` into `cel_list_in`'s scan loop
+    helpers like `cel_numeric_eq_at_vv` into `cel_list_in`'s scan loop
     across TU boundaries; without it, the hot loop pays a non-inlined
     call per element.  The native `cc_library` for `cel_runtime` has
     had `-O3 -flto` since 2026-05-15; **the wasm side gained `-flto`

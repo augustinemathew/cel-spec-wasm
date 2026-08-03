@@ -30,6 +30,12 @@ runtime does zero index work.  Drafted 2026-06-14; reviewed + reconciled
 > `cel_map_lookup_arena` / `cel_map_in_arena` / `cel_map_eq_arena` use the
 > index when `index_offset != 0` and the key does not force linear (the
 > ≥2^53 double-key fallback, §5.1), else the existing linear scan verbatim.
+>
+> **Superseded 2026-08-01 — the ≥2^53 fallback is GONE.**  §5.1's
+> `key_forces_linear` predicate, and the §15 "future work" item it
+> pointed at, both landed as the CELW-0004 fix: map-key equality is now
+> the lossless `cel_map_key_eq` (`runtime/cel_compare.c`) rather than the
+> `==` operator's `cel_value_eq`.  See §5.1's 2026-08-01 callout.
 > Below `kCelMapIndexThreshold = 8` no index is built.  Pure accelerator:
 > OOM / tiny / dup-on-build all degrade to (or poison exactly as) the
 > linear path.  Coverage: index-vs-linear parity over the key×size matrix,
@@ -268,8 +274,36 @@ magnitude `≥ 2^53`, the lookup kernel **falls back to linear scan for
 that single call** (one compare; common path stays O(1); pathological
 path stays bit-identical to today).
 
-> **Oracle verdict (2026-06-27) — keep the fallback; it matches our
-> runtime.**  Confirmed against real cel-cpp (`cel_cpp_oracle_test.cc`,
+> **SUPERSEDED 2026-08-01 — the fallback is removed and the underlying
+> equality is fixed.**  The 2026-06-27 verdict below is preserved for
+> its reasoning, but its premise ("our runtime's map-key equality is the
+> lossy `==`") is no longer true.  That lossiness was filed as
+> **CELW-0004 (P0, silently wrong)** and fixed: `cel_map_key_eq`
+> (`runtime/cel_compare.c`) implements cel-cpp's LOSSLESS conversion
+> rule (`internal/number.h` `LosslessConvertibleToInt` / `...ToUint`) and
+> is now the comparator for map lookup, map `in`, insert-time duplicate
+> detection, the index probe / build, the codegen-baked index
+> (`static_memory_builder.cc`), and the key half of map equality on both
+> the arena and host paths.  `cel_value_eq` keeps the rounding rule for
+> `==`, list membership, and element compares — oracle-pinned as
+> genuinely different answers
+> (`MapKeyNumericCrossType.ListMembershipStaysLossyAt2Pow53` /
+> `.ListEqualityStaysLossyAt2Pow53` vs `.DoubleAt2Pow53MissesNeighborIntKey`).
+>
+> With that pairing the §5.1 hazard evaporates: this kernel already
+> canonicalizes a double to the integer it EXACTLY represents, which is
+> precisely the conversion the comparator accepts, so equal keys always
+> hash equal and `key_forces_linear` was deleted — every key kind,
+> doubles included, resolves through the index.  Conformance held at
+> 2035 PASS / 0 FAIL in both link modes.
+>
+> **Still open** (a different rule, not this one): cel-cpp treats int and
+> uint as DISTINCT map-literal keys (`{1:'a', 1u:'b'}` is accepted), while
+> we fold them to one key and raise `duplicate_key`.  Pinned by
+> `MapKeyNumericCrossType.DupKeyIntAndUintAccepted`.
+>
+> **Oracle verdict (2026-06-27, historical) — keep the fallback; it
+> matches our runtime.**  Confirmed against real cel-cpp (`cel_cpp_oracle_test.cc`,
 > `MapKeyNumericCrossType`, 21 cases).  Two facts:
 > - **Our runtime's map-key equality is the lossy `==` (`cel_value_eq`,
 >   used at `cel_runtime.c:113/163/196`):** `(int64)v` is cast to double
@@ -386,7 +420,7 @@ CelValue* key)` → entry index `[0,count)` on hit, `UINT32_MAX` on miss.
 | `cel_map_create` | optionally pre-allocate the index block sized from capacity (or defer to `cel_map_index_build`). Sets `index_offset` (0 until built). |
 | `cel_map_insert` | per-insert dup check stays linear (index not built yet); `cel_map_index_build` re-validates uniqueness as it places, poisoning duplicates before the map is consumed. |
 | `cel_map_insert_at` | linear collision-overwrite during the comprehension (index built at end). `num_slots` sized from final `count`, not capacity. |
-| `cel_map_lookup_arena` | after 3VL/kind guards: `index_offset ? map_index_find : linear`. Double-key `≥ 2^53` → linear (§5.1). |
+| `cel_map_lookup_arena` | after 3VL/kind guards: `index_offset ? map_index_find : linear`. (The `≥ 2^53` double-key linear fallback was removed 2026-08-01 with the CELW-0004 fix — see §5.1.) |
 | `cel_map_in_arena` | same probe; `write_bool(out, hit)`. |
 | `cel_map_eq_arena` | outer walk over `a` unchanged (dense run); inner match against `b` uses `map_index_find(hb, ka)` when `hb` indexed → O(n²)→O(n). |
 | `cel_map_size_arena`, `cel_map_count`, `cel_map_iter_*` | **unchanged** (read `count`/`entries_offset`; walk dense run). |
@@ -501,7 +535,13 @@ the decision + rationale; revisit only with a reason.
    lower one) so string-keyed maps benefit earliest.  Cite the bench in
    the constant's comment.
 
-4. **The `≥ 2^53` boundary — RESOLVED by the oracle (2026-06-27): keep
+4. **The `≥ 2^53` boundary — CLOSED 2026-08-01: the fallback is gone.**
+   Map-key equality became lossless (`cel_map_key_eq`, CELW-0004), which
+   makes the hash and the comparator agree at every magnitude, so
+   `key_forces_linear` was deleted.  The 2026-06-27 resolution below is
+   historical.
+
+   *(historical)* **RESOLVED by the oracle (2026-06-27): keep
    the fallback.**  Confirmed against real cel-cpp
    (`cel_cpp_oracle_test.cc::MapKeyNumericCrossType`, 21 cases; see §5.1's
    callout).  Our runtime's map-key equality is the lossy `cel_value_eq`,
@@ -528,14 +568,20 @@ the decision + rationale; revisit only with a reason.
   scan changes).
 - u16 slot array for `capacity < 64k` to shave index memory.
 - Selective index suppression (open question #1).
-- **Exact map-key equality** distinct from the lossy `==` operator
-  (oracle-confirmed: cel-cpp matches map keys exactly and treats int/uint
-  as distinct insert keys — `cel_cpp_oracle_test.cc::MapKeyNumericCrossType`).
-  Replacing `cel_value_eq` on the map-key path with an exact comparator
-  (used by both scan and index) closes the latent `≥ 2^53` / int-vs-uint
-  conformance gap and lets the index drop the `≥ 2^53` linear fallback.
-  Currently `dyn`-only, so unreachable through the static subset — a
-  conformance-fix, not an m32 accelerator concern.
+- ~~**Exact map-key equality** distinct from the lossy `==` operator~~
+  **DONE 2026-08-01** as the CELW-0004 fix.  `cel_map_key_eq`
+  (`runtime/cel_compare.c`) implements cel-cpp's lossless conversion rule
+  and is used by both the linear scan and the index, on the arena, host,
+  and codegen-baked paths; the `≥ 2^53` linear fallback was dropped.
+  Coverage: `runtime/cel_compare_test.cc` (`MapKeyEqTest`),
+  `runtime/cel_map_test.cc` (`MapLosslessKeyTest`),
+  `eval/internal/cel_map_eq_impl_test.cc`
+  (`LargeNumericKeysCompareExactlyNotViaDouble`), and
+  `e2e/known_bugs_test.cc` (`MapKeyLossyDoubleEquality`, un-skipped).
+- **int-vs-uint map-key identity** remains open: cel-cpp treats `1` and
+  `1u` as distinct map-literal keys, we fold them and raise
+  `duplicate_key`.  Separate from the lossless-conversion rule; pinned by
+  `MapKeyNumericCrossType.DupKeyIntAndUintAccepted`.
 
 > **Supersedes m31 §8 (m31.B).** m31's follow-up proposed a sorted-run
 > binary-search lookup (`cel_map_lookup_arena` gains a sorted-flag arm)

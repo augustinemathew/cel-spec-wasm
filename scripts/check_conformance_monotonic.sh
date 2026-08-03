@@ -53,11 +53,19 @@ MAX_FAIL_FILE_static="conformance/.max_fail_static"
 
 mode="check"
 explicit_baseline=""
+link_modes="both"
 
 for arg in "$@"; do
   case "$arg" in
     --update) mode="update" ;;
     --baseline) shift; explicit_baseline="${1:-}" ;;
+    # Which link modes to gate.  Default "both" keeps the historical
+    # behaviour for the pre-push hook and local runs.  CI splits the
+    # two: the static leg dominates wall time (Binaryen merges the
+    # runtime per expression), so running it in its own parallel job
+    # is what keeps the gate inside the workflow timeout.
+    --mode) shift; link_modes="${1:-both}" ;;
+    --mode=*) link_modes="${arg#--mode=}" ;;
     --help|-h)
       sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -185,13 +193,23 @@ status=0
 # Dynamic first — the original gate, identical behaviour to the
 # single-mode script (same baseline file, `--baseline N` still
 # applies to this mode only).
+case "$link_modes" in
+  both|dynamic|static) ;;
+  *) echo "unknown --mode '$link_modes' (want: both|dynamic|static)" >&2
+     exit 2 ;;
+esac
+
+if [[ "$link_modes" == "both" || "$link_modes" == "dynamic" ]]; then
 check_mode dynamic "$BASELINE_FILE_dynamic" "$MAX_FAIL_FILE_dynamic" "$explicit_baseline" || status=1
+fi
 
 # Static second — m28 configurable linking.  Static-mode Compile is
 # slower (Binaryen runtime merge per expression), so this leg
 # dominates the gate's wall time.  Its baseline is the measured m28
 # initial static count (conformance/.baseline_static = 1899 as of
 # 2026-06-09, equal to dynamic).
+if [[ "$link_modes" == "both" || "$link_modes" == "static" ]]; then
 check_mode static "$BASELINE_FILE_static" "$MAX_FAIL_FILE_static" "" || status=1
+fi
 
 exit "$status"

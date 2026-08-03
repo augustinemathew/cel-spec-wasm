@@ -122,6 +122,249 @@ void ExpectAgree(absl::string_view source, absl::string_view container) {
 TEST(CelCppOracle, IntArithmeticAgrees) {
   ExpectAgree("1 + 1", kP3);
 }
+// Empty-needle `replace` / empty-separator `split` take dedicated
+// interleave/explode code paths (runtime/cel_string_ext_search.cc /
+// cel_string_ext_list.cc) whose semantics were transcribed from
+// cel-cpp — these differentials keep the transcription honest.
+// Relational operators on string / bytes / bool, the uint arithmetic
+// arms, and the `%e` / `%o` format verbs each have a dedicated runtime
+// kernel that no e2e row exercised; these differentials fix the
+// expected values against cel-cpp before the e2e rows assert them.
+TEST(CelCppOracle, StringRelationalAgrees) {
+  for (const char* src : {R"("b" > "a")", R"("a" > "b")", R"("b" >= "b")",
+                          R"("a" >= "b")", R"("a" <= "a")", R"("b" <= "a")"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, BytesRelationalAgrees) {
+  for (const char* src : {R"(b"b" > b"a")", R"(b"a" < b"b")", R"(b"b" >= b"b")",
+                          R"(b"a" <= b"b")"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, BoolRelationalAgrees) {
+  for (const char* src :
+       {"true > false", "true >= true", "false <= true", "false >= true"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, UintArithmeticAgrees) {
+  for (const char* src : {"3u - 1u", "6u / 2u", "7u % 3u"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, DoubleNegAndSubAgree) {
+  for (const char* src : {"-1.5", "1.5 - 0.5"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, ScientificAndOctalFormatAgree) {
+  ExpectAgree(R"("%e".format([1.5]))", kP3);
+  ExpectAgree(R"("%o".format([8]))", kP3);
+}
+TEST(CelCppOracle, LastIndexOfAgrees) {
+  ExpectAgree(R"("abcb".lastIndexOf("b"))", kP3);
+  ExpectAgree(R"("abcb".lastIndexOf("b", 1))", kP3);
+}
+// The empty-needle branch of indexOf / lastIndexOf walks code points
+// to honour `pos`, and its multi-byte path plus the past-the-end
+// return had no non-corpus workload.  Substring at exactly the
+// code-point count is the empty tail; one past it is an error.
+TEST(CelCppOracle, EmptyNeedleAndSubstringEdgesAgree) {
+  for (const char* src :
+       {R"("héllo".indexOf("", 2))", R"("héllo".lastIndexOf("", 2))",
+        R"("abc".substring(3))", R"("héllo".substring(5))",
+        R"("héllo".substring(6))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+// Nanosecond carry normalisation in duration arithmetic: two negative
+// sub-second parts summing past -1s take the negative-carry arm, and a
+// negative seconds field with a positive nanos field is renormalised.
+// Neither had a non-corpus workload.
+TEST(CelCppOracle, DurationNanosCarryAgrees) {
+  for (const char* src : {R"(duration("-0.6s") + duration("-0.6s"))",
+                          R"(duration("-2s") + duration("0.5s"))",
+                          R"(timestamp(0) + duration("-0.5s"))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+// Two's-complement edges of the int kernels: a multiply whose negative
+// result is exactly INT64_MIN is representable, while INT64_MIN / -1
+// and INT64_MIN * -1 overflow.  Also the prefix/suffix-longer-than-
+// subject arms, and the contains scan continuing past a first-byte
+// false positive.
+TEST(CelCppOracle, IntTwosComplementEdgesAgree) {
+  for (const char* src : {"(0 - 4611686018427387904) * 2",
+                          "(0 - 9223372036854775807 - 1) / (0 - 1)",
+                          "(0 - 9223372036854775807 - 1) * (0 - 1)"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, PrefixSuffixAndScanEdgesAgree) {
+  for (const char* src :
+       {R"("ab".startsWith("abc"))", R"("ab".endsWith("abc"))",
+        R"("aXaY".contains("aY"))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+// A positioned search that finds nothing returns -1 (the walk's
+// fall-through), and a substring whose end exceeds the string is an
+// error — neither had a non-corpus workload.
+TEST(CelCppOracle, PositionedMissAndSubstringEndAgree) {
+  ExpectAgree(R"("tacocat".indexOf("z", 2))", kP3);
+  ExpectAgree(R"("abc".substring(1, 9))", kP3);
+}
+
+// Index-by-non-int, duplicate map keys, cross-kind element equality,
+// and the multi-byte / negative-position search paths — each has its
+// own runtime arm and only the conformance corpus was reaching them.
+TEST(CelCppOracle, DynIndexKindsAgree) {
+  for (const char* src : {"[1,2][dyn(1u)]", "[1,2][dyn(1.0)]",
+                          "[1,2][dyn(1.5)]", "[1,2][dyn(\"x\")]"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, DuplicateMapKeyAgrees) {
+  ExpectAgree(R"({1: "a", 1: "b"})", kP3);
+}
+TEST(CelCppOracle, ElementEqualityAcrossKindsAgrees) {
+  for (const char* src :
+       {R"([b"a"] == [b"a"])", "[null] == [null]",
+        R"([duration("1s")] == [duration("1s")])",
+        "[timestamp(0)] == [timestamp(0)]", R"([b"a"] == [b"b"])"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, SearchPositionEdgesAgree) {
+  for (const char* src :
+       {R"("héllo".indexOf("l", 1))", R"("héllo".lastIndexOf("l", 3))",
+        R"("abc".indexOf("a", -1))", R"("abc".lastIndexOf("a", -1))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+// The math extension's kernels guard their operand kind at runtime.
+// A `dyn()`-wrapped operand of the wrong kind clears the static-subset
+// gate at compile time and then trips the guard — the same route the
+// conformance corpus takes to reach these arms.
+TEST(CelCppOracle, MathExtOperandKindGuardsAgree) {
+  for (const char* src :
+       {"math.ceil(dyn(1))", "math.floor(dyn(1))", "math.round(dyn(1))",
+        "math.trunc(dyn(1))", "math.isInf(dyn(1))", "math.isNaN(dyn(1))",
+        "math.isFinite(dyn(1))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, MathExtBitwiseKindGuardsAgree) {
+  for (const char* src : {"math.bitAnd(dyn(1), 2u)", "math.bitOr(dyn(1), 2u)",
+                          "math.bitXor(dyn(1), 2u)"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+// Every format verb dispatches per operand kind, and the suite only
+// drove the int / double / string arms; uint, bool and bytes operands
+// take separate branches, as do the NaN / +-Infinity special cases.
+TEST(CelCppOracle, FormatVerbOperandKindsAgree) {
+  for (const char* src : {R"("%s".format([true]))", R"("%s".format([1u]))",
+                          R"("%s".format([b"ab"]))", R"("%d".format([1u]))",
+                          R"("%d".format([1.7]))", R"("%b".format([5u]))",
+                          R"("%b".format([true]))", R"("%o".format([8u]))",
+                          R"("%x".format([255u]))", R"("%x".format([b"ab"]))",
+                          R"("%X".format([255u]))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, FormatNonFiniteDoublesAgree) {
+  for (const char* src :
+       {R"("%f".format([double("inf")]))", R"("%f".format([double("nan")]))",
+        R"("%e".format([double("-inf")]))",
+        R"("%s".format([double("inf")]))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+// Arithmetic overflow / divide / modulus errors: each kernel has its
+// own poison arm, and only `1 / 0` had any e2e row.
+TEST(CelCppOracle, IntArithmeticErrorsAgree) {
+  for (const char* src : {"9223372036854775807 + 1", "9223372036854775807 * 2",
+                          "-9223372036854775807 - 2", "1 % 0"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+TEST(CelCppOracle, UintArithmeticErrorsAgree) {
+  for (const char* src : {"18446744073709551615u + 1u", "0u - 1u",
+                          "18446744073709551615u * 2u", "1u / 0u", "1u % 0u"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+// `strings.quote` escapes seven C-style control characters plus the
+// double quote; each is a separate arm of the escape switch.
+TEST(CelCppOracle, StringsQuoteEscapesAgree) {
+  for (const char* src :
+       {R"(strings.quote("a\tb"))", R"(strings.quote("a\nb"))",
+        R"(strings.quote("a\rb"))", R"(strings.quote("a\bb"))",
+        R"(strings.quote("a\fb"))", R"(strings.quote("a\vb"))",
+        R"(strings.quote("a\ab"))", R"(strings.quote("q\"z"))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+TEST(CelCppOracle, TimestampAndTypeFormatAgree) {
+  ExpectAgree(R"("%s".format([timestamp(0)]))", kP3);
+  ExpectAgree(R"("%s".format([type(1)]))", kP3);
+}
+TEST(CelCppOracle, StringExtRangeErrorsAgree) {
+  for (const char* src : {R"("abc".charAt(9))", R"("abc".substring(9))",
+                          R"("abc".substring(2, 1))"}) {
+    ExpectAgree(src, kP3);
+  }
+}
+
+TEST(CelCppOracle, MultiByteUtf8Agrees) {
+  ExpectAgree(R"(size("héllo"))", kP3);
+  ExpectAgree(R"("héllo".charAt(1))", kP3);
+}
+
+// Duration `%s` rendering has three fractional-digit widths (3 / 6 / 9)
+// plus a zero and a negative form, and the widths are cel-cpp's, not a
+// generic float format — these differentials pin every branch of
+// `AppendDurationCanonical` against the reference implementation.
+TEST(CelCppOracle, DurationFormatZeroAgrees) {
+  ExpectAgree(R"("%s".format([duration("0s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatNegativeAgrees) {
+  ExpectAgree(R"("%s".format([duration("-1.5s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatMillisAgrees) {
+  ExpectAgree(R"("%s".format([duration("1.5s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatMicrosAgrees) {
+  ExpectAgree(R"("%s".format([duration("1.000001s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatNanosAgrees) {
+  ExpectAgree(R"("%s".format([duration("1.000000001s")]))", kP3);
+}
+TEST(CelCppOracle, DurationFormatNegativeSubSecondAgrees) {
+  ExpectAgree(R"("%s".format([duration("-0.25s")]))", kP3);
+}
+
+TEST(CelCppOracle, StringReplaceEmptyNeedleAgrees) {
+  ExpectAgree(R"("abc".replace("", "-"))", kP3);
+}
+TEST(CelCppOracle, StringReplaceEmptyNeedleLimitAgrees) {
+  ExpectAgree(R"("abc".replace("", "-", 2))", kP3);
+}
+TEST(CelCppOracle, StringSplitEmptySepAgrees) {
+  ExpectAgree(R"("abc".split("") == ["a", "b", "c"])", kP3);
+}
+TEST(CelCppOracle, StringSplitEmptySepLimitAgrees) {
+  ExpectAgree(R"("abc".split("", 2))", kP3);
+}
 TEST(CelCppOracle, StringConcatAgrees) {
   ExpectAgree("'foo' + 'bar'", kP3);
 }
@@ -309,7 +552,7 @@ TEST(OptionalOfNonZeroValueMessage, NonZeroMessageAgrees) {
 }
 
 // ── Partial-eval oracle: pins cel-cpp's unknown-attribute semantics,
-//    the empirical reference that e2e/m2_partial_eval_test.cc asserts
+//    the empirical reference that e2e/partial_eval_test.cc asserts
 //    OUR pipeline against.  (Reading cel-cpp source is not enough —
 //    these RUN cel-cpp with unknown processing on.) ──
 
@@ -593,6 +836,70 @@ TEST(MapKeyNumericCrossType, DupKeyIntAndDoubleIsError) {
   // error.
   auto r = OracleEval("{1: 'a', 1.0: 'b'}");
   EXPECT_TRUE(r.is_error) << "expected a duplicate-key CEL error; got value";
+}
+
+// ---- Where the EXACT map-key rule STOPS.  The exact rule is scoped to
+//      map-key matching (`k in m`, `m[k]`, and the key half of map
+//      equality).  Membership in a LIST and the bare `==` operator keep
+//      the LOSSY rounding compare, so the two answer DIFFERENTLY for the
+//      same operand pair.  These cases are the empirical boundary for
+//      which of our runtime call sites may use the lossless predicate. ----
+
+TEST(MapKeyNumericCrossType, ListMembershipStaysLossyAt2Pow53) {
+  // Same operands as DoubleAt2Pow53MissesNeighborIntKey, but the haystack
+  // is a LIST.  OBSERVED: TRUE — list `in` is heterogeneous VALUE equality
+  // (`runtime/standard/container_membership_functions.cc:118`
+  // `HeterogeneousEqualityIn` → `ListValue::Contains` → `Value::Equal` →
+  // `internal::Number::operator==`, the rounding compare), NOT the exact
+  // map-key rule.  So the lossless predicate must NOT be routed into the
+  // list-membership scan.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740992.0) in [9007199254740993]"));
+}
+
+TEST(MapKeyNumericCrossType, ListEqualityStaysLossyAt2Pow53) {
+  // Element equality inside a list compare is the same lossy `==`
+  // (`equality_functions.cc` `ListEqual` → the heterogeneous equal
+  // provider), so a >2^53 int element equals its rounded double.
+  EXPECT_TRUE(OracleBool("dyn([9007199254740993]) == [9007199254740992.0]"));
+}
+
+TEST(MapKeyNumericCrossType, MapIndexAccessUsesExactKeyRule) {
+  // `m[k]` goes through the same lossless conversion as `k in m`
+  // (`eval/eval/container_access_step.cc:114/128` `LookupInMap` →
+  // `LosslessConvertibleToInt` / `...ToUint`), so a rounded double key is
+  // a NO-SUCH-KEY error, not a hit.
+  auto r = OracleEval("{9007199254740993: 'a'}[dyn(9007199254740992.0)]");
+  EXPECT_TRUE(r.is_error) << "expected no-such-key; got a value";
+}
+
+TEST(MapKeyNumericCrossType, DoubleMapLiteralKeyRejectedAtRuntime) {
+  // A double cannot BE a map key: `{9007199254740992.0: 'a'}` evaluates
+  // to the error "Invalid map key type: 'double'" (OBSERVED — this
+  // probe was written expecting a value and the oracle rejected it).
+  //
+  // That bounds where the lossless rule is reachable.  A double only
+  // ever appears as a QUERY key (`m[k]`, `k in m`); the KEY half of map
+  // equality (`equality_functions.cc:187` `CheckAlternativeNumericType`)
+  // can therefore only ever see int↔uint, which both the lossless and
+  // the rounding rule compare exactly.
+  auto r =
+      OracleEval("dyn({9007199254740993: 'a'}) == {9007199254740992.0: 'a'}");
+  EXPECT_TRUE(r.is_error) << "expected an invalid-map-key-type error";
+}
+
+TEST(MapKeyNumericCrossType, MapEqualityMatchesIntAndUintKeysOfSameValue) {
+  // The int↔uint key match survives above 2^53 because it is EXACT on
+  // both sides (`CheckAlternativeNumericType` → `LosslessConvertibleToUint`
+  // → `MapValue::Find(UintValue(...))`), never a widening to double.
+  EXPECT_TRUE(
+      OracleBool("dyn({9007199254740993: 'a'}) == {9007199254740993u: 'a'}"));
+}
+
+TEST(MapKeyNumericCrossType, MapEqualityRejectsNeighbouringIntUintKeys) {
+  // Widening both keys to double would fold 2^53+1 onto 2^53 and report
+  // these maps equal.  They are not.
+  EXPECT_FALSE(
+      OracleBool("dyn({9007199254740993: 'a'}) == {9007199254740992u: 'a'}"));
 }
 
 }  // namespace

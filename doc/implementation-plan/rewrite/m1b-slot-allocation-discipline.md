@@ -13,7 +13,7 @@ production at 2026-06-04:
    odd-indexed slots at `offset % 16 == 8`. The wasm32-wasi-threads
    runtime helpers eventually emit a `memory.atomic.*` op that fails
    on a misaligned cell. Pinned by
-   `e2e/known_bugs_test::LongArith_2000Terms_NoUnalignedAtomicTrap`.
+   `e2e/known_bugs_test::LongArith2000TermsNoUnalignedAtomicTrap`.
 2. **Nested-aggregate slot aliasing.** The free list let an outer
    aggregate's parent slot pull a just-released inner aggregate's
    slot. Codegen emits the outer's `cel_make_message(parent)` /

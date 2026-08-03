@@ -36,9 +36,11 @@
 //   2. (block exit (loop continue ...)) — runs per iter
 //      - Loop-cond peephole: one of {const true → omit; const
 //        false → immediate exit; @not_strictly_false(@result) →
-//        br_if exit when accu's bool payload is 0;
-//        @not_strictly_false(!@result) → br_if exit when bool
-//        payload is non-0}.  No runtime helper call.
+//        br_if exit when accu is the bool false;
+//        @not_strictly_false(!@result) → br_if exit when accu is
+//        the bool true}.  Both accu tests gate on the kind word
+//        as well as the payload — see the peephole block below.
+//        No runtime helper call.
 //      - Iter-step:
 //          List: br_if exit when iter == end; advance pointer.
 //          Map: br_if exit when cel_map_iter_next == 0; key_at +
@@ -48,7 +50,8 @@
 //          filter(v, p)           → cel_list_append_at_if_bool
 //          transformMap(k,v, t)   → cel_map_insert_at
 //          transformMap(k,v, p,t) → cel_map_insert_at_if_bool
-//          transformMapEntry      → N inserts per entry literal
+//          transformMapEntry      → N inserts per entry literal,
+//                                   else cel_map_merge_at
 //          exists / all / etc.    → eval loop_step, copy to accu
 //
 //   3. Result expression — evaluated as the block's i32 value
@@ -86,6 +89,11 @@
 // entry.size() for transformMapEntry literal entries.  See
 // `IsPresizableCollectionAccu` + `PerIterEntryCount` below.
 //
+// The one exception is a transformMapEntry whose entry expression is
+// COMPUTED: its key count isn't known until eval, so the pre-size is
+// one entry per iteration and `cel_map_merge_at` grows the accu
+// instead of trapping.
+//
 // ── Shared primitives ────────────────────────────────────────
 //
 // `EmitCtx`, `Emit` dispatcher, `I32Const`, `EmitCelCopySlot`,
@@ -118,18 +126,32 @@ namespace {
 // ── Loop-cond peephole ──────────────────────────────────────
 //
 // cel-cpp's macro expansions only ever emit one of these four
-// loop_cond shapes; the peephole reads `i32.load offset=8` of
-// accu_slot directly, avoiding a `cel_not_strictly_false`
-// runtime helper.  Anything else returns UnimplementedError.
+// loop_cond shapes; the peephole reads the accu CelValue's kind
+// and payload words out of accu_slot directly, avoiding a
+// `cel_not_strictly_false` runtime helper.  Anything else returns
+// UnimplementedError.
 //
 //   kConst(true)                              → no cond check
 //   kConst(false)                             → immediate exit
-//   @not_strictly_false(@result)              → exit when accu's
-//                                               bool payload is 0
+//   @not_strictly_false(@result)              → exit when accu is
+//                                               the bool false
 //                                               (`all`)
-//   @not_strictly_false(!@result)             → exit when accu's
-//                                               bool payload is
-//                                               non-0 (`exists`)
+//   @not_strictly_false(!@result)             → exit when accu is
+//                                               the bool true
+//                                               (`exists`)
+//
+// Both accu tests are gated on `kind == CEL_BOOL`, not on the
+// payload word alone.  `@not_strictly_false(x)` is false only for
+// a definitively-false `x`: an ERROR or UNKNOWN accumulator keeps
+// the loop running so a later element can absorb it (langdef
+// §"Logical Operators" — `@result || pred` yields true if any
+// element is true even when an earlier one errored, and
+// `@result && pred` yields false if any element is false).  An
+// ERROR parks its error code, and an UNKNOWN its attribute id, in
+// the same word the bool payload occupies, so a payload-only test
+// reads a poison as `true` (non-zero code) or as `false` (zero
+// code) and short-circuits — which is how `[0, 2].exists(x, 2/x
+// == 1)` used to yield divide_by_zero instead of true.
 
 bool TryMatchBoolConst(const cel::Expr& expr, bool* out) {
   if (expr.kind_case() != cel::ExprKindCase::kConstant) return false;
@@ -176,6 +198,16 @@ BinaryenExpressionRef LoadAccuBoolPayload(EmitCtx& ctx, uint32_t accu_slot) {
   return CodegenLoad(mod, /*bytes=*/4, /*signed_=*/false, /*offset=*/8,
                      /*align=*/4, BinaryenTypeInt32(),
                      I32Const(ctx.mod, accu_slot));
+}
+
+// `(i32.load offset=0 (i32.const accu_slot)) == CEL_BOOL` — the accu
+// CelValue's kind word.  Guards every read of the bool payload so a
+// poisoned accumulator is never mistaken for a bool (see the peephole
+// block comment above).  CEL_BOOL = 1, pinned append-only by
+// runtime/cel_data.h.
+BinaryenExpressionRef AccuKindIsBool(EmitCtx& ctx, uint32_t accu_slot) {
+  return LoadSlotI32Eq(ctx, Storage{StorageKind::kWorkspaceSlot, accu_slot},
+                       /*offset=*/0, /*expected=*/1);
 }
 
 // Per-comprehension binding context.  Slots and locals come from
@@ -712,6 +744,26 @@ void EmitWriteIntCelValueToSlot(EmitCtx& ctx, uint32_t slot,
       BinaryenTypeInt64()));
 }
 
+// `br_if exit` taken only when the accumulator IS the bool `want`.
+// A non-bool accu (an ERROR or UNKNOWN part-way through absorption)
+// never exits early: the remaining elements get their chance to
+// absorb it, and if none does, the poison reaches the result
+// expression through the loop's normal exit anyway.
+BinaryenExpressionRef BoolAccuExit(EmitCtx& ctx, const CompContext& c,
+                                   bool want) {
+  auto* mod = ctx.mod.raw();
+  BinaryenExpressionRef payload = LoadAccuBoolPayload(ctx, c.accu_slot());
+  BinaryenExpressionRef payload_is_want =
+      want ? BinaryenBinary(mod, BinaryenNeInt32(), payload,
+                            I32Const(ctx.mod, 0))
+           : BinaryenUnary(mod, BinaryenEqZInt32(), payload);
+  return BinaryenBreak(
+      mod, c.exit_label.c_str(),
+      BinaryenBinary(mod, BinaryenAndInt32(),
+                     AccuKindIsBool(ctx, c.accu_slot()), payload_is_want),
+      nullptr);
+}
+
 // Returns the br_if-exit expression for the recognised loop_cond
 // shapes (see file header).  nullptr means "no check" (kConst true).
 // Unrecognised shapes return UnimplementedError — cel-cpp's macros
@@ -727,14 +779,10 @@ absl::StatusOr<BinaryenExpressionRef> BuildLoopCondExit(
     return BinaryenBreak(mod, c.exit_label.c_str(), nullptr, nullptr);
   }
   if (IsNotStrictlyFalseOfNotIdent(loop_cond, accu_name)) {
-    return BinaryenBreak(mod, c.exit_label.c_str(),
-                         LoadAccuBoolPayload(ctx, c.accu_slot()), nullptr);
+    return BoolAccuExit(ctx, c, /*want=*/true);  // `exists`
   }
   if (IsNotStrictlyFalseOfIdent(loop_cond, accu_name)) {
-    return BinaryenBreak(mod, c.exit_label.c_str(),
-                         BinaryenUnary(mod, BinaryenEqZInt32(),
-                                       LoadAccuBoolPayload(ctx, c.accu_slot())),
-                         nullptr);
+    return BoolAccuExit(ctx, c, /*want=*/false);  // `all`
   }
   return absl::UnimplementedError(absl::StrCat(
       "expr_lower: comprehension loop_cond shape not recognised (expr_id=",
@@ -877,19 +925,33 @@ absl::Status EmitMapInsertIf(EmitCtx& ctx, const CompContext& c,
   return absl::OkStatus();
 }
 
-// transformMapEntry step.  Entry must be a kMapExpr literal —
-// computed entries need a runtime map-merge helper, not yet shipped.
-// Emits one cel_map_insert_at per entry (size 0 = no-op iter per
-// langdef §"Comprehension Macros"; size N = N sequential inserts).
+// Evaluate `entry` to a temp map and merge it into the accu at
+// runtime — the general transformMapEntry step, for entry expressions
+// codegen cannot decompose at compile time.  The runtime helper grows
+// the accu as needed, since a computed entry's key count is unknown
+// until eval and `PerIterEntryCount` could only pre-size for one.
+absl::Status EmitMapMergeGeneral(EmitCtx& ctx, const CompContext& c,
+                                 const cel::Expr& entry,
+                                 std::vector<BinaryenExpressionRef>* body) {
+  auto entry_or = Emit(ctx, entry);
+  if (!entry_or.ok()) return entry_or.status();
+  BinaryenExpressionRef args[2] = {I32Const(ctx.mod, c.accu_slot()), *entry_or};
+  body->push_back(BinaryenCall(ctx.mod.raw(), "cel_map_merge_at", args, 2,
+                               BinaryenTypeNone()));
+  return absl::OkStatus();
+}
+
+// transformMapEntry step.  A map LITERAL entry is decomposed at
+// compile time into one cel_map_insert_at per key (size 0 = no-op
+// iter per langdef §"Comprehension Macros"; size N = N sequential
+// inserts) — no temp map, and the accu's pre-size multiplier is
+// exact.  Every other entry shape (a ternary, a call, a bound ident)
+// goes through the runtime merge.
 absl::Status EmitMapMerge(EmitCtx& ctx, const CompContext& c,
                           const cel::Expr& entry,
                           std::vector<BinaryenExpressionRef>* body) {
   if (entry.kind_case() != cel::ExprKindCase::kMapExpr) {
-    ABSL_CHECK(false)
-        << "transformMapEntry: non-literal entry expression unsupported "
-           "(needs runtime map-merge helper); entry kind="
-        << static_cast<int>(entry.kind_case());
-    return absl::OkStatus();
+    return EmitMapMergeGeneral(ctx, c, entry, body);
   }
   const auto& entries = entry.map_expr().entries();
   if (entries.empty()) {
@@ -903,36 +965,36 @@ absl::Status EmitMapMerge(EmitCtx& ctx, const CompContext& c,
   return absl::OkStatus();
 }
 
-// Conditional transformMapEntry.  Size 0: eval pred for side-effects
-// + drop.  Size 1: route through cel_map_insert_at_if_bool (3VL).
-// Size N>1: would need a 3VL ladder gating N inserts atomically;
-// cel_map_insert_at_if_bool only handles one (k,v).  Deferred.
+// Conditional transformMapEntry.  A single-key literal entry keeps
+// the direct cel_map_insert_at_if_bool lowering, and an empty literal
+// degenerates to "eval the pred for its side effects, then drop it".
+// Every other shape — a multi-key literal, or any computed entry —
+// materialises the entry map and hands the whole gated merge to the
+// runtime, which applies the predicate's 3VL once for all N inserts
+// (cel_map_insert_at_if_bool can only gate a single (k, v) pair).
 absl::Status EmitMapMergeIf(EmitCtx& ctx, const CompContext& c,
                             const cel::Expr& pred, const cel::Expr& entry,
                             std::vector<BinaryenExpressionRef>* body) {
-  if (entry.kind_case() != cel::ExprKindCase::kMapExpr) {
-    ABSL_CHECK(false)
-        << "conditional transformMapEntry: non-literal entry unsupported; "
-           "entry kind="
-        << static_cast<int>(entry.kind_case());
-    return absl::OkStatus();
-  }
-  const auto& entries = entry.map_expr().entries();
-  if (entries.empty()) {
+  const bool literal = entry.kind_case() == cel::ExprKindCase::kMapExpr;
+  if (literal && entry.map_expr().entries().empty()) {
     auto pred_or = Emit(ctx, pred);
     if (!pred_or.ok()) return pred_or.status();
     body->push_back(BinaryenDrop(ctx.mod.raw(), *pred_or));
     return absl::OkStatus();
   }
-  if (entries.size() == 1) {
+  if (literal && entry.map_expr().entries().size() == 1) {
+    const auto& entries = entry.map_expr().entries();
     return EmitMapInsertIf(ctx, c, pred, entries[0].key(), entries[0].value(),
                            body);
   }
-  ABSL_CHECK(false)
-      << "conditional transformMapEntry: multi-key entry (N>1) needs a "
-         "3VL ladder gating N inserts atomically; not yet shipped.  "
-         "entries.size()="
-      << entries.size();
+  auto pred_or = Emit(ctx, pred);
+  if (!pred_or.ok()) return pred_or.status();
+  auto entry_or = Emit(ctx, entry);
+  if (!entry_or.ok()) return entry_or.status();
+  BinaryenExpressionRef args[3] = {I32Const(ctx.mod, c.accu_slot()), *pred_or,
+                                   *entry_or};
+  body->push_back(BinaryenCall(ctx.mod.raw(), "cel_map_merge_at_if_bool", args,
+                               3, BinaryenTypeNone()));
   return absl::OkStatus();
 }
 

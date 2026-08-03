@@ -24,8 +24,8 @@
 ;;   exists                            all
 ;;   accu_init = false                 accu_init = true
 ;;   loop_cond peephole:               loop_cond peephole:
-;;     accu.b != 0   → exit              accu.b == 0   → exit
-;;     (br_if $exit  on != 0)            (br_if $exit  on == 0)
+;;     accu is bool true  → exit         accu is bool false → exit
+;;     (kind==BOOL && b!=0)              (kind==BOOL && b==0)
 ;;   loop_step uses cel_or             loop_step uses cel_and
 ;;
 ;; The peephole inversion is load-bearing: per langdef
@@ -44,15 +44,15 @@
 ;;     so we can exit early.  ERROR/UNKNOWN means same — keep
 ;;     iterating.
 ;;
-;; The simple `i32.load offset=8` peephole reads any-payload-as-i32,
-;; so for non-BOOL kinds (ERROR/UNKNOWN have payload.err / payload.unk
-;; at the same offset 8) the predicate doesn't trip cleanly.  The
-;; general-path codegen evaluates the full `@not_strictly_false`
-;; expression; the peephole is correct only when type analysis
-;; proves accu can only hold a BOOL (which it does here, since
-;; `loop_step = bool && bool` is statically bool).  Cite
-;; m5-comprehensions-design.md §9.4 for the error-short-circuit
-;; rule.
+;; This is why the peephole MUST read the kind word, not just the
+;; payload: ERROR and UNKNOWN park `payload.err` / `payload.unk` at
+;; the same offset 8, so a payload-only test mistakes a poisoned accu
+;; for a bool and exits early.  A static bool TYPE does not rule the
+;; poison out — `loop_step = bool && bool` type-checks as bool and
+;; still evaluates to an error at runtime, which is exactly how
+;; `[0, 2].exists(x, 2/x == 1)` returned divide_by_zero instead of
+;; true.  Cite m5-comprehensions-design.md §9.4 for the
+;; error-short-circuit rule.
 ;;
 ;; ── Key design claims (inherited from 60, restated for clarity) ──
 ;;
@@ -137,10 +137,13 @@
         (br_if $exit
                (i32.ge_u (local.get $iter_off) (local.get $end_off)))
 
-        ;; Exit when accu.b == 0 — strictly false ⇒ `all` short-circuit.
-        ;; `i32.eqz` of the payload byte; differs from 60 only by the
-        ;; eqz wrapper.
-        (br_if $exit (i32.eqz (i32.load offset=8 (i32.const 160))))
+        ;; Exit when accu IS the bool false — strictly false ⇒ `all`
+        ;; short-circuit.  Kind-gated exactly like 60; differs only in
+        ;; testing the payload for zero instead of non-zero.
+        (br_if $exit
+               (i32.and
+                 (i32.eq (i32.load offset=0 (i32.const 160)) (i32.const 1))
+                 (i32.eqz (i32.load offset=8 (i32.const 160)))))
 
         ;; loop_step: @result && (v > 0)
         (call $cel_int_gt_at_vv

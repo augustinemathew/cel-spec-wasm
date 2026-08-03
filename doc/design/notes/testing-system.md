@@ -48,17 +48,20 @@ class:
 4. **Known-bugs registry** (`e2e/known_bugs_test.cc`) — each test is a
    CONFIRMED defect as a runnable regression: the body asserts the
    spec-correct behavior, a leading `GTEST_SKIP` keeps CI green; fixing
-   = delete the SKIP line (file header :1-17).  Classes: lossy
-   double map-key equality (:94-107), 64 KiB arena cliffs (:109-185,
-   :617-692), conformance-mined divergences (:187-338), string-ext
+   = delete the SKIP line (file header :1-17).  Classes: 64 KiB
+   arena cliffs, conformance-mined divergences, string-ext
    kernels (:340-384), comprehension semantics (:386-439), timestamp /
    double formatting (:441-522), parser codepoint cap (:579-598),
    long-arith unaligned-atomic trap (:783-799).  Fixed bugs stay as
-   live (un-skipped) guards: `IntFromDoubleOutOfRange` (:260-268),
+   live (un-skipped) guards: `MapKeyLossyDoubleEquality` (lossless
+  map-key equality, CELW-0004), `IntFromDoubleOutOfRange` (:260-268),
    `IntFromStringLeadingPlus`/`Uint…` (:303-318),
-   `LongArith_1000Terms_Works` (:754-761).  One test
-   (`TransformMapEntryComputedEntryCrash` :424-439) stays skipped
-   because running it ABSL_CHECK-aborts the whole binary.
+   `LongArith_1000Terms_Works` (:754-761),
+   `ExistsAbsorbsErrorAccumulator` and
+   `TransformMapEntryComputedEntryCrash` (the latter had to stay
+   skipped while it was open, because running it ABSL_CHECK-aborted
+   the whole binary — the reason a crash-class pin is worth fixing
+   rather than carrying).
 5. **Conformance harness** (`conformance/`) — runs the vendored
    upstream corpus (`spec/tests/simple/testdata/*.textproto`, 30 files
    listed in `run_conformance.cc::DefaultCorpus` :63-97) through the

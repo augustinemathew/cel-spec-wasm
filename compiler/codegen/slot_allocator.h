@@ -19,7 +19,7 @@
 // offset whose `% 16 == 8`, and the first time a
 // `memory.atomic.*` hits one of those addresses the engine traps
 // with `wasm trap: unaligned atomic` — the symptom pinned by
-// `e2e/known_bugs_test::LongArith_2000Terms_NoUnalignedAtomicTrap`.
+// `e2e/known_bugs_test::LongArith2000TermsNoUnalignedAtomicTrap`.
 // CelValue itself stays 24 bytes; the trailing 8 bytes of each
 // 32-byte cell are pad that no codepath reads or writes.
 //
@@ -50,8 +50,8 @@
 // guaranteeing no later Acquire can hand them back.  The static
 // cost is a few never-reused cells per nested literal, which is
 // negligible against the slot-exhaustion cap.  Surfaced by
-// `e2e/m4_test::NestedListOuterRoundTrip` and
-// `e2e/m7_test::MapStringToMessageFromLiteral`; pinned by the
+// `e2e/list_test::NestedListOuterRoundTrip` and
+// `e2e/proto_literal_test::MapStringToMessageFromLiteral`; pinned by the
 // e2e assertion battery in `e2e/slot_aliasing_test.cc`.
 //
 // When to release.  LayoutPass is a post-order recursive visitor.

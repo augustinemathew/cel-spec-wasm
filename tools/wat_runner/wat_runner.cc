@@ -31,7 +31,7 @@ namespace {
 // (api/engine.cc::Engine::Plan does the same).  Append-only as
 // the runtime grows; dropping a name silently breaks WATs that
 // rely on it, which is the point.
-constexpr std::array<absl::string_view, 117> kRuntimeExports = {
+constexpr std::array<absl::string_view, 111> kRuntimeExports = {
     // M1 baseline.
     "arena_reset",
     "arena_alloc",
@@ -40,6 +40,8 @@ constexpr std::array<absl::string_view, 117> kRuntimeExports = {
     "cel_map_insert",
     "cel_map_insert_at",
     "cel_map_insert_at_if_bool",
+    "cel_map_merge_at",
+    "cel_map_merge_at_if_bool",
     "cel_map_lookup_arena",
     "cel_map_lookup",
     // m32: SwissTable index terminal-build step.
@@ -68,26 +70,19 @@ constexpr std::array<absl::string_view, 117> kRuntimeExports = {
     "cel_double_div_at_vv",
     "cel_double_neg_at_v",
     // comparison helpers.
-    "cel_int_eq_at_vv",
-    "cel_int_ne_at_vv",
     "cel_int_lt_at_vv",
     "cel_int_le_at_vv",
     "cel_int_gt_at_vv",
     "cel_int_ge_at_vv",
-    "cel_uint_eq_at_vv",
-    "cel_uint_ne_at_vv",
     "cel_uint_lt_at_vv",
     "cel_uint_le_at_vv",
     "cel_uint_gt_at_vv",
     "cel_uint_ge_at_vv",
-    "cel_double_eq_at_vv",
-    "cel_double_ne_at_vv",
     "cel_double_lt_at_vv",
     "cel_double_le_at_vv",
     "cel_double_gt_at_vv",
     "cel_double_ge_at_vv",
     "cel_bool_eq_at_vv",
-    "cel_bool_ne_at_vv",
     "cel_bool_lt_at_vv",
     "cel_bool_le_at_vv",
     "cel_bool_gt_at_vv",
@@ -95,7 +90,6 @@ constexpr std::array<absl::string_view, 117> kRuntimeExports = {
     "cel_null_eq_at_vv",
     // cross-type numeric ladder.
     "cel_numeric_eq_at_vv",
-    "cel_numeric_ne_at_vv",
     "cel_numeric_lt_at_vv",
     "cel_numeric_le_at_vv",
     "cel_numeric_gt_at_vv",

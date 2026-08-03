@@ -155,9 +155,10 @@ and treat a missing ref_slot as FailedPrecondition (trap):
   (`SnapshotMapEntries`: arena entries read from linear memory via
   `ArenaMapHeader`, host entries via ForEach + `EncodeBackingScalar`)
   then size check + set-equality walk (`NormalizedMapEq`) with
-  `HostScalarValueEq` on keys (cross-numeric ladder, matching the
-  arena kernel's `map_keys_equal`) and values (scalar-only; aggregate
-  values never match).
+  `HostMapKeyEq` on keys (the LOSSLESS numeric rule, matching the
+  arena kernel's `cel_map_key_eq`) and `HostScalarValueEq` on values
+  (the rounding `==` rule; scalar-only, aggregate values never
+  match).
 - `CelMessageEqImpl` (standalone, for the polymorphic equals ladder):
   both CEL_MESSAGE; non-proto backing (message()==nullptr) →
   TYPE_MISMATCH; peels google.protobuf.Any operands

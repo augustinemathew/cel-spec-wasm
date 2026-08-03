@@ -3,19 +3,19 @@
 #include <cstdint>
 #include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 // M9.B — type(x) helper coverage.  Spec table cite:
 // `doc/langdef.md §"Type Values"` enumerates the 12 spec-defined
 // primitive type names.  This file flips one row per kind plus the
 // kind-mismatch / 3VL absorb negatives.  The CEL_MESSAGE arm
 // dispatches to a host trampoline (M9.C) and is covered end-to-end
-// in e2e/m9_test.cc; here the host-side weak stub
+// in e2e/type_value_test.cc; here the host-side weak stub
 // poisons CEL_ERR_TYPE_MISMATCH so we assert that fall-back.
 
 namespace celwasm {
