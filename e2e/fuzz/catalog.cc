@@ -57,9 +57,11 @@ GenCtx NewGenCtx(int depth, std::mt19937_64& rng) {
   GenCtx ctx;
   ctx.depth_budget = depth;
   ctx.rng = &rng;
-  for (const ActivationBinding& v : ActivationSchema()) {
-    ctx.in_scope.emplace_back(v.name, v.type);
-  }
+  // `in_scope` deliberately starts EMPTY: it is exclusively for
+  // comprehension iter_vars, which the generator now draws from.
+  // Activation variables reach the grammar as static ident leaves
+  // (`RegisterIdentLeaves` above), so seeding them here too would
+  // emit them through both paths and double their sampling weight.
   return ctx;
 }
 

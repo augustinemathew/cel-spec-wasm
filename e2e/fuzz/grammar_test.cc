@@ -536,5 +536,91 @@ TEST(GrammarCatalogTest, EveryListAndMapHasALeaf) {
   }
 }
 
+// ── Scoped iter-var references ───────────────────────────────────
+//
+// A comprehension body must be able to reference the element it is
+// iterating over.  Before this, `GenCtx::in_scope` was populated but
+// never read, so every generated `filter`/`map` body was constant
+// with respect to its loop variable and the per-element data path
+// went unfuzzed.
+
+// Non-overlapping occurrences of `needle` in `haystack`.
+int CountOccurrences(absl::string_view haystack, absl::string_view needle) {
+  int n = 0;
+  std::size_t pos = 0;
+  while ((pos = haystack.find(needle, pos)) != absl::string_view::npos) {
+    ++n;
+    pos += needle.size();
+  }
+  return n;
+}
+
+TEST(ScopedIterVarTest, ComprehensionBodiesReferenceTheIterVar) {
+  // `iter_x` collides with nothing else in this grammar, so counting
+  // is unambiguous: each comprehension contributes exactly one
+  // `.exists(iter_x,` BINDING occurrence, and anything beyond that is
+  // a body REFERENCE.
+  GrammarBuilder b;
+  b.Leaf(CelType::List(CelType::Int()), "list_leaf", "[1, 2, 3]");
+  b.Leaf(CelType::Int(), "int_zero", "0");
+  b.Leaf(CelType::Bool(), "bool_true", "true");
+  b.Binary(CelType::Bool(), "int_lt", "(%0 < %1)", CelType::Int(),
+           CelType::Int());
+  b.Comprehension(CelType::Bool(), "comp_exists", "(%0).exists(iter_x, %1)",
+                  CelType::List(CelType::Int()),
+                  /*iter=*/{"iter_x", CelType::Int()},
+                  /*body_type=*/CelType::Bool());
+  Grammar g = std::move(b).Build();
+  ASSERT_THAT(g.Validate(), IsOk());
+
+  int sources_with_ref = 0;
+  for (uint64_t seed = 0; seed < 200; ++seed) {
+    std::mt19937_64 rng(seed);
+    GenCtx ctx = NewGenCtx(/*depth=*/4, rng);
+    const std::string source = GenerateExpr(g, CelType::Bool(), ctx);
+    // A reference emitted outside its binding body would not
+    // type-check, so this also pins scope correctness.
+    ASSERT_THAT(ParseAndCheck(source, CheckOptions{}), IsOk())
+        << "seed=" << seed << " source=`" << source << "`";
+    if (CountOccurrences(source, "iter_x") >
+        CountOccurrences(source, ".exists(iter_x,")) {
+      ++sources_with_ref;
+    }
+  }
+  EXPECT_GT(sources_with_ref, 0)
+      << "no comprehension body referenced its iter_var across 200 seeds — "
+         "GenCtx::in_scope is not being consumed";
+}
+
+TEST(ScopedIterVarTest, SameNameIterVarsShadowByInnermostType) {
+  // The outer comprehension binds `sh: list<int>`; the inner rebinds
+  // `sh: int`.  CEL resolves to the INNERMOST binding, so inside the
+  // inner body `sh` may only be used where an int is wanted —
+  // emitting it at the outer type there would fail the checker.
+  GrammarBuilder b;
+  const CelType li = CelType::List(CelType::Int());
+  b.Leaf(CelType::List(li), "ll_leaf", "[[1], [2]]");
+  b.Leaf(li, "l_leaf", "[1, 2, 3]");
+  b.Leaf(CelType::Int(), "int_zero", "0");
+  b.Leaf(CelType::Bool(), "bool_true", "true");
+  b.Binary(CelType::Bool(), "int_lt", "(%0 < %1)", CelType::Int(),
+           CelType::Int());
+  b.Unary(CelType::Int(), "size_list", "size(%0)", li);
+  b.Comprehension(CelType::Bool(), "comp_outer", "(%0).exists(sh, %1)",
+                  CelType::List(li), /*iter=*/{"sh", li}, CelType::Bool());
+  b.Comprehension(CelType::Bool(), "comp_inner", "(%0).all(sh, %1)", li,
+                  /*iter=*/{"sh", CelType::Int()}, CelType::Bool());
+  Grammar g = std::move(b).Build();
+  ASSERT_THAT(g.Validate(), IsOk());
+
+  for (uint64_t seed = 0; seed < 300; ++seed) {
+    std::mt19937_64 rng(seed);
+    GenCtx ctx = NewGenCtx(/*depth=*/6, rng);
+    const std::string source = GenerateExpr(g, CelType::Bool(), ctx);
+    ASSERT_THAT(ParseAndCheck(source, CheckOptions{}), IsOk())
+        << "seed=" << seed << " source=`" << source << "`";
+  }
+}
+
 }  // namespace
 }  // namespace celwasm::fuzz
