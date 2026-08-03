@@ -330,7 +330,6 @@ cc_test(
     name = "module_imports_test",
     size = "small",
     srcs = ["internal/module_imports_test.cc"],
-    tags = ["manual"],
     deps = [
         ":module_imports",
         "@com_google_absl//absl/log:absl_check",
@@ -483,7 +482,6 @@ cc_test(
     size = "small",
     srcs = ["internal/host_trampoline_bounds_test.cc"],
     data = ["//doc/implementation-plan/rewrite/wat:wat_traces"],
-    tags = ["manual"],
     deps = [
         ":engine",
         ":host_call_context",
@@ -762,7 +760,6 @@ cc_test(
     name = "required_fn_check_test",
     size = "small",
     srcs = ["internal/required_fn_check_test.cc"],
-    tags = ["manual"],
     deps = [
         ":required_fn_check",
         ":wasmtime_engine_state",
@@ -821,7 +818,6 @@ link_mode_cc_test(
     name = "memory_grow_stability_test",
     size = "large",
     srcs = ["internal/memory_grow_stability_test.cc"],
-    tags = ["manual"],
     deps = [
         ":activation",
         ":engine",

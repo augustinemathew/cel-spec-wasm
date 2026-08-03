@@ -859,7 +859,6 @@ link_mode_e2e_cc_test(
     size = "large",
     srcs = ["plugin_dispatch_test.cc"],
     data = ["//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin"],
-    tags = ["manual"],
     deps = [
         ":link_mode_e2e_helpers",
         "//abi:cel_abi_cc_proto",

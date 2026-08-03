@@ -906,7 +906,6 @@ cc_test(
     name = "cel_runtime_stripped_wasm_bytes_test",
     size = "small",
     srcs = ["cel_runtime_stripped_wasm_bytes_test.cc"],
-    tags = ["manual"],
     deps = [
         ":cel_runtime_stripped_wasm_bytes",
         ":cel_runtime_wasm_bytes",
