@@ -67,66 +67,48 @@ absl::StatusOr<Value> TryEval(absl::string_view source) {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// BUG: lossy double rounding in numeric map-key equality.
+// FIXED (CELW-0004) — regression guard.
 //
-// `map_keys_equal` (runtime/cel_runtime.c:42-43) compares
-// two numeric keys with `numeric_compare_kernel(...) == kCmpEqual`,
-// which for the int-vs-double case casts the int to double
-// (cel_compare.c:139, `cmp_double((double)a, b)`).  For |int| > 2^53
-// that cast is lossy, so a double query key spuriously equals a
-// DISTINCT stored int key.
+// The map-key comparator used to be `cel_value_eq`, i.e. the `==`
+// operator's rule, which routes any numeric pair through
+// `numeric_compare_kernel`; the int-vs-double arm casts the int to
+// double (`cel_compare.c`, `cmp_double((double)a, b)`).  For
+// |int| > 2^53 that cast is lossy, so a double query key spuriously
+// equalled a DISTINCT stored int key.
 //
-// The spec (cel-cpp `equality_functions.cc` `CheckAlternativeNumericType`
-// + `internal/number.h` `LosslessConvertibleToInt`) requires key lookup
-// to use lossless convertibility, NOT a rounding compare.
+// Map-key matching is LOSSLESS, not rounding: cel-cpp converts the
+// query key to the stored key's type only when the conversion
+// round-trips (`internal/number.h` `LosslessConvertibleToInt` /
+// `...ToUint`, driven from `eval/eval/container_access_step.cc`'s
+// `LookupInMap` and `equality_functions.cc`'s
+// `CheckAlternativeNumericType`).  `cel_map_key_eq` now implements
+// that rule and `cel_value_eq` keeps the lossy one for `==`, list
+// membership, and element compares — the two answer DIFFERENTLY for
+// this pair, which is the whole point.
 //
-// `9007199254740992.0` and `9007199254740993` are distinct integers but
-// the same f64, so:
-//   dyn(9007199254740992.0) in {9007199254740993: 'a'}
-//   spec / cel-cpp -> false   (no lossless match for the stored key)
-//   cel2 currently -> true    (lossy (double)9007199254740993 == ...992.0)
+// `9007199254740992.0` and `9007199254740993` are distinct integers
+// but the same f64, so:
+//   dyn(9007199254740992.0) in {9007199254740993: 'a'}   -> false
+//   dyn(9007199254740993) == 9007199254740992.0          -> true
+// Both verdicts are oracle-pinned in `testdata/cel_cpp_oracle_test.cc`
+// (`MapKeyNumericCrossType.DoubleAt2Pow53MissesNeighborIntKey` /
+// `.IntPlus1EqDoubleAt2Pow53`); the kernel-level boundary matrix lives
+// in `runtime/cel_map_test.cc` (`MapLosslessKeyTest`) and
+// `runtime/cel_compare_test.cc` (`MapKeyEqTest`).
 //
 // `dyn(...)` is required only to clear the static-subset checker for a
-// cross-type `in` (cf. m5_test.cc); the bug is in the runtime kernel.
-//
-// Fix: route map_keys_equal / `in` / lookup through a lossless-eq
-// predicate (mirror LosslessConvertibleToInt/Uint), leaving
-// numeric_compare_kernel for ordering only.  Then delete the SKIP.
+// cross-type `in` (cf. m5_test.cc); the defect was in the runtime
+// kernel.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, MapKeyLossyDoubleEquality) {
-  GTEST_SKIP() << R"CELBUG(CELBUG v1
-id: CELW-0004
-severity: P0
-kind: wrong-value
-summary: numeric map-key equality rounds a >2^53 int key to double, so a distinct double query key spuriously matches
-repro: dyn(9007199254740992.0) in {9007199254740993: 'a'}
-bindings: none
-actual: true
-expected: false
-layer: runtime/cel_runtime.c:42-43 (map_keys_equal) via runtime/cel_compare.c:139 (cmp_double)
-blocked-by: none
-found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
-fix-hint: map_keys_equal compares two numeric keys with
-  numeric_compare_kernel(...) == kCmpEqual, which for the int-vs-double case
-  casts the int to double (cel_compare.c:139, cmp_double((double)a, b)); for
-  |int| > 2^53 that cast is lossy, so 9007199254740993 and 9007199254740992.0
-  collapse to the same f64. The spec requires key lookup to use LOSSLESS
-  convertibility, not a rounding compare - see cel-cpp
-  equality_functions.cc CheckAlternativeNumericType and
-  internal/number.h LosslessConvertibleToInt. Route map_keys_equal, `in` and
-  lookup through a lossless-eq predicate and leave numeric_compare_kernel for
-  ordering only. The dyn(...) wrapper in the repro is only there to clear the
-  static-subset checker for a cross-type `in`; the defect is in the runtime
-  kernel. Silently wrong with no error, hence P0.
-issue: none
-)CELBUG";
   auto v = TryEval("dyn(9007199254740992.0) in {9007199254740993: 'a'}");
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
   // Spec: the double does NOT match the distinct stored int key.
   EXPECT_FALSE(*v->AsBool())
-      << "map-key equality matched a >2^53 int against a rounded double "
-         "(cel_runtime.c:42-43 via cel_compare.c:139)";
+      << "map-key equality matched a >2^53 int against a rounded double; "
+         "the key path regressed from cel_map_key_eq back onto the lossy "
+         "cel_value_eq rule";
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -516,35 +498,21 @@ issue: none
 // CLASS: comprehension / macro semantics (wave 3).
 // ══════════════════════════════════════════════════════════════════
 
+// FIXED (was CELW-0010, P0 wrong-value).  `exists` is `@result ||
+// pred`: an error from one element is absorbed once a LATER element
+// matches, and surfaces only if NO element ever matches.  The
+// loop-cond peephole in expr_lower_comprehension.cc br_if-exited on
+// the accumulator's bool-PAYLOAD bits without checking
+// `accu.kind == CEL_BOOL`, so an ERROR accumulator (its error code
+// sitting in that same payload word — codes start at 10, so always
+// non-zero) read as `true`, short-circuited the loop, and became the
+// result.  `[0, 2].exists(x, 2/x == 1)` returned divide_by_zero.
+// Fixed by gating the br_if on the kind word as well as the payload;
+// `all` got the mirror gate in the same change.  The full absorption
+// matrix lives in e2e/m5b_test.cc
+// (ComprehensionAccuAbsorptionE2ETest), oracle-confirmed in
+// testdata/cel_cpp_oracle_comprehension_test.cc.
 TEST(KnownBugs, ExistsAbsorbsErrorAccumulator) {
-  GTEST_SKIP() << R"CELBUG(CELBUG v1
-id: CELW-0010
-severity: P0
-kind: wrong-value
-summary: exists short-circuits on an ERROR/UNKNOWN accumulator instead of absorbing it when a later element matches
-repro: [0, 2].exists(x, 2/x == 1)
-bindings: none
-actual: an evaluation error (cel eval prints `error: divide_by_zero`)
-expected: true
-layer: compiler/codegen/expr_lower_comprehension.cc:642-645 (the loop-cond peephole)
-blocked-by: none
-found-by: manual known-bugs sweep; re-confirmed 2026-07-25 through tools/cel eval
-fix-hint: `exists` desugars to `@result || pred`, so per langdef 3VL an error
-  from one element is ABSORBED once a later element matches; the error only
-  surfaces if NO element ever matches. Our loop-cond peephole br_if-exits on
-  the accu's bool-payload BITS without checking accu.kind == CEL_BOOL, so an
-  ERROR accu (a non-zero error code sitting in the bool payload slot) reads as
-  "true", short-circuits the loop, and becomes the result. Gate the br_if on
-  the kind, not the payload bits. P0: reachable from ordinary input, and the
-  wrong answer is an error where a value was due.
-issue: none
-)CELBUG";
-  // `exists` is `@result || pred`: an error from one element is absorbed
-  // once a LATER element matches; the error only surfaces if NO element
-  // ever matches. cel2's loop-cond peephole (expr_lower_comprehension.cc:
-  // 642-645) br_if-exits on the accu's bool-payload bits without checking
-  // accu.kind==CEL_BOOL, so an ERROR accu (non-zero err code in the bool
-  // slot) short-circuits and becomes the result.
   // [0, 2].exists(x, 2/x == 1): x=0 errors, x=2 matches -> spec: true.
   auto v = TryEval("[0, 2].exists(x, 2/x == 1)");
   ASSERT_TRUE(v.ok()) << v.status();
@@ -586,38 +554,26 @@ issue: none
       << static_cast<int>(v->kind());
 }
 
+// FIXED (was CELW-0012, P0 crash).  A `transformMapEntry` whose entry
+// expression is not a map LITERAL — here a ternary — used to reach an
+// `ABSL_CHECK(false)` in the loop-step emitter and ABORT the compiler
+// rather than return a status.  (Two sibling ABSL_CHECKs went the same
+// way: a computed entry under the 4-arg form, and a multi-key literal
+// under the 4-arg form.)  Fixed by emitting the runtime map-merge
+// helper the check message named: the entry expression is evaluated to
+// a temp map and `cel_map_merge_at` folds its entries into the
+// accumulator, growing it because a computed entry has no
+// compile-time key count.  Semantics oracle-confirmed against cel-cpp
+// in testdata/cel_cpp_oracle_comprehension_test.cc
+// (TransformMapEntryComputedOracle); e2e rows live in
+// e2e/m5b_test.cc.
 TEST(KnownBugs, TransformMapEntryComputedEntryCrash) {
-  // CRASH (verified via the cel CLI): a transformMapEntry whose entry expr
-  // is not a literal kMapExpr (here a ternary) hits ABSL_CHECK(false) at
-  // expr_lower_comprehension.cc:800-805 / :826-831 and ABORTS the compiler
-  // instead of returning a status. Kept SKIPPED because running it would
-  // abort this whole test binary; delete the skip only alongside the fix.
-  GTEST_SKIP() << R"CELBUG(CELBUG v1
-id: CELW-0012
-severity: P0
-kind: crash
-summary: transformMapEntry with a computed (non-literal) entry expression ABORTS the compiler
-repro: {1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {})
-bindings: none
-actual: process abort. Re-confirmed 2026-07-25 through tools/cel eval: "F expr_lower_comprehension.cc:888] Check failed: false transformMapEntry: non-literal entry expression unsupported (needs runtime map-merge helper); entry kind=4" followed by a Check-failure stack trace.
-expected: a value, or an absl::Status rejection - never an abort
-layer: compiler/codegen/expr_lower_comprehension.cc:888 (originally cited as :800-805; the ABSL_CHECK has moved)
-blocked-by: none
-found-by: manual, via the cel CLI; re-confirmed 2026-07-25
-fix-hint: the entry arm only handles a literal kMapExpr and ABSL_CHECK(false)s
-  on anything else, so a ternary (or any computed entry) takes the whole
-  process down. Two acceptable fixes: emit the runtime map-merge helper the
-  check message names, or - as a strictly smaller first step - reject the
-  shape at the frontend with an InvalidArgument status so a bad expression
-  can never reach codegen. DO NOT delete the GTEST_SKIP before the fix lands:
-  running this case unskipped aborts the whole test binary, taking every
-  other case in it with it.
-issue: none
-)CELBUG";
   auto v =
       TryEval("{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {})");
-  EXPECT_TRUE(v.ok()) << "should return a value/status, not crash: "
+  ASSERT_TRUE(v.ok()) << "should return a value/status, not crash: "
                       << v.status();
+  // `k == 1` keeps only the first entry; the `{}` arm contributes none.
+  EXPECT_EQ(v->kind(), Value::Kind::kMap) << static_cast<int>(v->kind());
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1082,7 +1038,7 @@ TEST(KnownBugs, LongArith165TermsWorks) {
 //   wasmtime).  Keep the e2e — it pins the cross-page-boundary case
 //   the unit test can't reach.
 // ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, LongArith_2000Terms_NoUnalignedAtomicTrap) {
+TEST(KnownBugs, LongArith2000TermsNoUnalignedAtomicTrap) {
   constexpr int kN = 2000;
   const std::string source = MakeLongArithSource(kN);
   auto v = TryEvalActivated(source, DeclareLongArithVars, BindLongArithVars);
@@ -1211,9 +1167,9 @@ void BindFullPbtVars(Activation& a) {
 // `expr_lower_internal.h`'s helper doc.  The assertion below is
 // now a live regression guard.
 TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
-  constexpr absl::string_view source =
+  constexpr absl::string_view kSource =
       R"(((size("") < (i_a - (b_a ? 0 : i_b))) == ("" == "x")))";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareScalarPbtVars,
+  auto v = TryEvalActivated(kSource, pbt_repro::DeclareScalarPbtVars,
                             pbt_repro::BindScalarPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBool) << static_cast<int>(v->kind());
@@ -1238,9 +1194,9 @@ TEST(KnownBugs, PbtTernaryInsideIntSubtract) {
 //   false ? y_a : b"x"  → b"x"
 //   b"x" + b"x"         → b"xx"
 TEST(KnownBugs, PbtExistsOneInTernaryCondBytes) {
-  constexpr absl::string_view source =
+  constexpr absl::string_view kSource =
       R"((({b_a: (-1)}).exists_one(k, (d_a < 1.0)) ? y_a : b"x") + b"x")";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+  auto v = TryEvalActivated(kSource, pbt_repro::DeclareFullPbtVars,
                             pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
@@ -1251,9 +1207,9 @@ TEST(KnownBugs, PbtExistsOneInTernaryCondBytes) {
 // pick the then-arm, returning a bytes-typed value.  Catches a
 // regression in the opposite direction.
 TEST(KnownBugs, PbtExistsOneInTernaryCondTakesThen) {
-  constexpr absl::string_view source =
+  constexpr absl::string_view kSource =
       R"((({"k": 1}).exists_one(k, true) ? y_a : b"x") + b"x")";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+  auto v = TryEvalActivated(kSource, pbt_repro::DeclareFullPbtVars,
                             pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kBytes) << static_cast<int>(v->kind());
@@ -1267,9 +1223,9 @@ TEST(KnownBugs, PbtExistsOneInTernaryCondTakesThen) {
 // exists_one is true (one key, predicate true), inner ternary's
 // then-arm is `(y_a + y_a)` = b"hihi" (size 4).
 TEST(KnownBugs, PbtSizeOfExistsOneTernaryBytes) {
-  constexpr absl::string_view source =
+  constexpr absl::string_view kSource =
       R"(size((({"k": 1}).exists_one(k, true) ? (y_a + y_a) : (y_a + b"x"))))";
-  auto v = TryEvalActivated(source, pbt_repro::DeclareFullPbtVars,
+  auto v = TryEvalActivated(kSource, pbt_repro::DeclareFullPbtVars,
                             pbt_repro::BindFullPbtVars);
   ASSERT_TRUE(v.ok()) << v.status();
   ASSERT_EQ(v->kind(), Value::Kind::kInt) << static_cast<int>(v->kind());

@@ -339,13 +339,38 @@ TEST(CelMapEqImplTest, StringValuesCrossOrigin) {
 TEST(CelMapEqImplTest, NumericCrossTypeKeyMatches) {
   // langdef §"Equality": numeric keys compare by mathematical value
   // across int/uint — `{42u: 1}` equals `{42: 1}`.  Mirrors the
-  // arena kernel's polymorphic `map_keys_equal`.
+  // arena kernel's polymorphic `cel_map_key_eq`.
   Fixture f;
   CelValue host =
       MakeHostMap(f, {{celwasm::Value::Uint(42), celwasm::Value::Int(1)}});
   CelValue arena = MakeArenaMap(f, {{MakeInt(42), MakeInt(1)}});
   ExpectBoolResult(RunEq(f, host, arena), true);
   ExpectBoolResult(RunEq(f, arena, host), true);
+}
+
+// The int↔uint key match must be EXACT, never "equal after widening
+// both to double".  Above 2^53 a double cannot separate neighbouring
+// integers, so a widening compare folds `9007199254740993` and
+// `9007199254740992u` onto the same key and reports two different maps
+// equal.  This is the cross-origin face of CELW-0004: the arena kernel
+// compares these exactly (`cel_map_key_eq`), so the host walk must too
+// — observable CEL semantics may not depend on operand origin.
+TEST(CelMapEqImplTest, LargeNumericKeysCompareExactlyNotViaDouble) {
+  Fixture f;
+  constexpr int64_t kTwo53Plus1 = 9007199254740993LL;
+  constexpr uint64_t kTwo53 = 9007199254740992ULL;
+  CelValue host =
+      MakeHostMap(f, {{celwasm::Value::Uint(kTwo53), celwasm::Value::Int(1)}});
+  CelValue arena = MakeArenaMap(f, {{MakeInt(kTwo53Plus1), MakeInt(1)}});
+  ExpectBoolResult(RunEq(f, host, arena), false);
+  ExpectBoolResult(RunEq(f, arena, host), false);
+
+  // The same magnitudes, matching exactly, still compare equal.
+  CelValue host_exact =
+      MakeHostMap(f, {{celwasm::Value::Uint(static_cast<uint64_t>(kTwo53Plus1)),
+                       celwasm::Value::Int(1)}});
+  ExpectBoolResult(RunEq(f, host_exact, arena), true);
+  ExpectBoolResult(RunEq(f, arena, host_exact), true);
 }
 
 TEST(CelMapEqImplTest, HostHostStillCompares) {

@@ -199,6 +199,16 @@ void InstallMapImports(WasmModule& mod) {
   mod.AddFunctionImport("cel_map_insert_at_if_bool", "cel",
                         "cel_map_insert_at_if_bool", map4_params,
                         BinaryenTypeNone());
+  // General `transformMapEntry` merge for computed entry expressions
+  // (and the multi-key conditional form).  `(map_slot, entry_slot)`
+  // and its predicate-gated `(map_slot, pred_slot, entry_slot)`
+  // sibling.
+  const BinaryenType map2_params[2] = {i32, i32};
+  mod.AddFunctionImport("cel_map_merge_at", "cel", "cel_map_merge_at",
+                        map2_params, BinaryenTypeNone());
+  mod.AddFunctionImport("cel_map_merge_at_if_bool", "cel",
+                        "cel_map_merge_at_if_bool", map3_params,
+                        BinaryenTypeNone());
   // Optional-payload predicate-gated insert for `{?key: opt_v}` map
   // entries.  `(map_slot, key_slot, opt_value_slot) -> void`.
   mod.AddFunctionImport(std::string(kCelMapInsertAtIfPresentInternalName),

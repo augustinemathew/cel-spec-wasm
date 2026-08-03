@@ -1,9 +1,7 @@
 // Scalar CelValue constructors.  Each allocates a fresh 24-byte
 // CelValue in the arena (via `arena_alloc`) and returns its byte offset,
 // or 0 on OOM.  String / bytes variants copy `len` source bytes into
-// the arena; `_view` variants wrap an already-arena-resident span
-// without copying — used when the host has already streamed bytes in
-// via a prior `arena_alloc`.
+// the arena.
 
 #ifndef CELWASM_RUNTIME_CEL_MAKE_H_
 #define CELWASM_RUNTIME_CEL_MAKE_H_
@@ -24,8 +22,6 @@ uint32_t cel_make_double(double d);
 
 uint32_t cel_make_string(const char* src, uint32_t len);
 uint32_t cel_make_bytes(const void* src, uint32_t len);
-uint32_t cel_make_string_view(uint32_t ptr, uint32_t len);
-uint32_t cel_make_bytes_view(uint32_t ptr, uint32_t len);
 
 #ifdef __cplusplus
 }

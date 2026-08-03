@@ -642,8 +642,38 @@ bool IsDynPassthroughCall(const cel::Expr& node,
   return ArgIsAdmissibleScalar(arg, types);
 }
 
+// A type-conversion call whose argument is `dyn` cannot be lowered
+// correctly.  `dyn(x)` is the identity at codegen and forwards its
+// argument's annotation, so the checker resolves e.g. `int(dyn(1u))`
+// to the identity `int -> int` overload, no conversion or kind check
+// is emitted, and the uint reaches the result slot untouched.  That
+// is a silently wrong value, not an error, so the static-subset gate
+// rejects the shape rather than letting it compile (cel-cpp dispatches
+// these on the runtime kind; we have no dynamic conversion kernel).
+bool IsConversionOverDyn(const cel::Expr& node,
+                         const cel::Ast::TypeMap& types) {
+  if (!node.has_call_expr()) return false;
+  const auto& call = node.call_expr();
+  if (call.has_target() || call.args().size() != 1) return false;
+  static constexpr absl::string_view kConversions[] = {
+      "int",   "uint", "double",   "string",
+      "bytes", "bool", "duration", "timestamp"};
+  if (std::find(std::begin(kConversions), std::end(kConversions),
+                call.function()) == std::end(kConversions)) {
+    return false;
+  }
+  auto it = types.find(call.args()[0].id());
+  return it != types.end() && it->second.has_dyn();
+}
+
 void CheckSubsetNode(const cel::Expr& node, const cel::Ast::TypeMap& types,
                      std::vector<Violation>& out) {
+  if (IsConversionOverDyn(node, types)) {
+    out.push_back({node.id(), "dyn",
+                   absl::StrCat("`", node.call_expr().function(),
+                                "(<dyn>)` cannot be resolved statically")});
+    return;
+  }
   if (IsDynPassthroughCall(node, types)) {
     CheckSubsetNode(node.call_expr().args()[0], types, out);
     return;

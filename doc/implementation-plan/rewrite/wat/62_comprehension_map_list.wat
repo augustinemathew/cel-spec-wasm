@@ -82,9 +82,6 @@
   (import "cel" "cel_list_append_at" (func $cel_list_append_at (param i32 i32)))
   (import "cel" "cel_int_mul_at_vv"
           (func $cel_int_mul_at_vv (param i32 i32 i32)))
-  ;; DEPENDS ON Slice D — symbol not yet exported by cel_runtime.wasm.
-  (import "cel" "cel_list_append_at"
-          (func $cel_list_append_at (param i32 i32)))
 
   (data (i32.const 16)
         "\02\00\00\00" "\00\00\00\00"

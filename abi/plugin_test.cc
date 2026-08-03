@@ -45,11 +45,20 @@ using ::testing::AllOf;
 using ::testing::HasSubstr;
 
 // `\0asm` + version/layer word 0x0001000d — a minimal CM component.
-const std::vector<uint8_t> kComponentPreamble = {0x00, 0x61, 0x73, 0x6d,
-                                                 0x0d, 0x00, 0x01, 0x00};
+constexpr uint8_t kComponentPreambleBytes[] = {0x00, 0x61, 0x73, 0x6d,
+                                               0x0d, 0x00, 0x01, 0x00};
 // `\0asm` + version 0x00000001 — a minimal (empty) core module.
-const std::vector<uint8_t> kCorePreamble = {0x00, 0x61, 0x73, 0x6d,
-                                            0x01, 0x00, 0x00, 0x00};
+constexpr uint8_t kCorePreambleBytes[] = {0x00, 0x61, 0x73, 0x6d,
+                                          0x01, 0x00, 0x00, 0x00};
+
+// Fresh vectors per call — the tests mutate / append to them.
+std::vector<uint8_t> kComponentPreamble() {
+  return {std::begin(kComponentPreambleBytes),
+          std::end(kComponentPreambleBytes)};
+}
+std::vector<uint8_t> kCorePreamble() {
+  return {std::begin(kCorePreambleBytes), std::end(kCorePreambleBytes)};
+}
 
 constexpr absl::string_view kScorerIdl =
     "Module scorer;\n"
@@ -64,7 +73,7 @@ absl::Span<const uint8_t> AsBytes(absl::string_view s) {
 // Hand-framed component: preamble + a `cel.fns` section carrying
 // `idl` verbatim.
 std::vector<uint8_t> MakePluginBytes(absl::string_view idl) {
-  std::vector<uint8_t> bytes = kComponentPreamble;
+  std::vector<uint8_t> bytes = kComponentPreamble();
   const std::vector<uint8_t> section =
       BuildCustomSection("cel.fns", AsBytes(idl));
   bytes.insert(bytes.end(), section.begin(), section.end());
@@ -113,7 +122,11 @@ TEST(PluginLoadTest, RealMacroBuiltComponentLoads) {
   auto plugin = Plugin::Load(LoadDemoPluginBytes());
   ASSERT_TRUE(plugin.ok()) << plugin.status();
   EXPECT_EQ(plugin->wit_interface(), "cel:customfn/fns@0.1.0");
-  ASSERT_EQ(plugin->decls().size(), 3);
+  // The fixture's IDL also carries the carrier-matrix fns the demo
+  // e2e exercises (echo_double .. iota); assert the first three
+  // positionally and the count loosely so adding a carrier row to
+  // the fixture doesn't break this load-level test.
+  ASSERT_GE(plugin->decls().size(), 3u);
   EXPECT_EQ(plugin->decls()[0].overload_id, "greet_string_int");
   EXPECT_EQ(plugin->decls()[1].overload_id, "add_int_int");
   EXPECT_EQ(plugin->decls()[2].overload_id, "len_string");
@@ -133,8 +146,7 @@ TEST(PluginAccessorTest, AccessorsRoundTrip) {
 
   // bytes() is an owned copy of the input, section included.
   ASSERT_EQ(plugin->bytes().size(), bytes.size());
-  EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(),
-                         plugin->bytes().begin()));
+  EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(), plugin->bytes().begin()));
 
   // decls() == library().decls().
   ASSERT_EQ(plugin->decls().size(), plugin->library().decls().size());
@@ -148,29 +160,27 @@ TEST(PluginAccessorTest, AccessorsRoundTrip) {
 
 TEST(PluginLoadTest, EmptyBytesRejected) {
   EXPECT_THAT(Plugin::Load({}),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("empty")));
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("empty")));
 }
 
 TEST(PluginLoadTest, CoreModuleRejectedWithCoreModuleMessage) {
-  EXPECT_THAT(Plugin::Load(kCorePreamble),
+  EXPECT_THAT(Plugin::Load(kCorePreamble()),
               StatusIs(absl::StatusCode::kInvalidArgument,
-                       AllOf(HasSubstr("core"),
-                             HasSubstr("component"))));
+                       AllOf(HasSubstr("core"), HasSubstr("component"))));
 }
 
 TEST(PluginLoadTest, NonWasmBytesRejected) {
   const std::vector<uint8_t> garbage = {0xde, 0xad, 0xbe, 0xef,
                                         0x00, 0x00, 0x00, 0x00};
-  EXPECT_THAT(Plugin::Load(garbage),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("not a wasm")));
+  EXPECT_THAT(
+      Plugin::Load(garbage),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("not a wasm")));
 }
 
 // --- Rejections: cel.fns section -----------------------------------
 
 TEST(PluginLoadTest, MissingSectionPointsAtEmbedTooling) {
-  EXPECT_THAT(Plugin::Load(kComponentPreamble),
+  EXPECT_THAT(Plugin::Load(kComponentPreamble()),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        AllOf(HasSubstr("no cel.fns section"),
                              HasSubstr("cel_wasm_plugin"),
@@ -182,14 +192,13 @@ TEST(PluginLoadTest, DuplicateSectionRejected) {
   const std::vector<uint8_t> again =
       BuildCustomSection("cel.fns", AsBytes(kScorerIdl));
   bytes.insert(bytes.end(), again.begin(), again.end());
-  EXPECT_THAT(Plugin::Load(bytes),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("duplicate")));
+  EXPECT_THAT(Plugin::Load(bytes), StatusIs(absl::StatusCode::kInvalidArgument,
+                                            HasSubstr("duplicate")));
 }
 
 TEST(PluginLoadTest, TruncatedFramingRejected) {
   // Section id 0x00 + declared size 0x7f, then EOF.
-  std::vector<uint8_t> bytes = kComponentPreamble;
+  std::vector<uint8_t> bytes = kComponentPreamble();
   bytes.push_back(0x00);
   bytes.push_back(0x7f);
   EXPECT_THAT(Plugin::Load(bytes),
@@ -200,30 +209,28 @@ TEST(PluginLoadTest, TruncatedFramingRejected) {
 
 TEST(PluginLoadTest, InvalidUtf8LeadByteRejected) {
   const std::vector<uint8_t> payload = {'M', 0xff, ';'};
-  std::vector<uint8_t> bytes = kComponentPreamble;
+  std::vector<uint8_t> bytes = kComponentPreamble();
   const std::vector<uint8_t> section = BuildCustomSection("cel.fns", payload);
   bytes.insert(bytes.end(), section.begin(), section.end());
   EXPECT_THAT(Plugin::Load(bytes),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("UTF-8")));
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("UTF-8")));
 }
 
 TEST(PluginLoadTest, OverlongUtf8Rejected) {
   // 0xC0 0xAF is the classic overlong encoding of '/'.
   const std::vector<uint8_t> payload = {0xc0, 0xaf};
-  std::vector<uint8_t> bytes = kComponentPreamble;
+  std::vector<uint8_t> bytes = kComponentPreamble();
   const std::vector<uint8_t> section = BuildCustomSection("cel.fns", payload);
   bytes.insert(bytes.end(), section.begin(), section.end());
   EXPECT_THAT(Plugin::Load(bytes),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("UTF-8")));
+              StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("UTF-8")));
 }
 
 TEST(PluginLoadTest, ParseErrorSurfacesLineAndColumn) {
   // Truncated decl — the ANTLR error listener reports `line N:C`.
-  EXPECT_THAT(Plugin::Load(MakePluginBytes("int @plugin.broken(")),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("line 1:")));
+  EXPECT_THAT(
+      Plugin::Load(MakePluginBytes("int @plugin.broken(")),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("line 1:")));
 }
 
 // --- Rejections: decl backends -------------------------------------
@@ -247,9 +254,9 @@ TEST(PluginLoadTest, NativeBackendDeclRejectedNamingDecl) {
 }
 
 TEST(PluginLoadTest, ZeroDeclsRejected) {
-  EXPECT_THAT(Plugin::Load(MakePluginBytes("Module m;\n")),
-              StatusIs(absl::StatusCode::kInvalidArgument,
-                       HasSubstr("no functions")));
+  EXPECT_THAT(
+      Plugin::Load(MakePluginBytes("Module m;\n")),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("no functions")));
 }
 
 // --- wit_interface derivation --------------------------------------
@@ -280,8 +287,8 @@ TEST(PluginHashTest, StableAcrossLoadsOfSameInput) {
 TEST(PluginHashTest, DivergesWhenBytesChange) {
   // Same declaration text, different component bytes (an unrelated
   // extra custom section before cel.fns).
-  auto with_extra = AppendCustomSection(kComponentPreamble, "other",
-                                        AsBytes("x"));
+  auto with_extra =
+      AppendCustomSection(kComponentPreamble(), "other", AsBytes("x"));
   ASSERT_TRUE(with_extra.ok());
   auto bytes_b =
       AppendCustomSection(*with_extra, "cel.fns", AsBytes(kScorerIdl));

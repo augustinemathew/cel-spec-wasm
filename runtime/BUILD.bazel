@@ -743,7 +743,7 @@ cc_binary(
         "-Wextra",
         "-Wno-unused-parameter",
         # LTO so the linker can inline kind-check helpers (e.g.
-        # `cel_int_eq_at_vv`) into hot loops like `cel_list_in`'s
+        # `cel_string_eq_at_vv`) into hot loops like `cel_list_in`'s
         # scan — the asymmetry to the native `cc_library` above
         # (which already sets -O3 -flto) was a measured perf
         # ceiling for the `in`-list bench.  Matches the native side.

@@ -386,75 +386,7 @@ TEST(EngineBuilderJitPerfMapTest, DisabledExplicitlyMatchesDefault) {
   ASSERT_TRUE(engine_or.ok()) << engine_or.status();
 }
 
-// ─── M13 Slice C.1 — Engine::AddModule + Engine::AddFunction ───
-//
-// Mirrors Probe 4 + Probe 5's coverage, but against the production
-// `celwasm::Engine` API rather than the probe-stage `ProbeEngine` /
-// inline wasmtime harness.
-
-// A minimal self-contained custom-module wasm: defines + exports
-// memory, exports one function.  Bytes precomputed via
-// `wasmtime_wat2wasm` to keep the test self-contained (no probe
-// data files).
-std::vector<uint8_t> MakeMinimalCustomModuleBytes() {
-  constexpr absl::string_view kWat = R"(
-    (module
-      (memory (export "memory") 2)
-      (func (export "allow_string_string") (param i32 i32 i32))))";
-  wasm_byte_vec_t out;
-  wasmtime_error_t* err = wasmtime_wat2wasm(kWat.data(), kWat.size(), &out);
-  ABSL_CHECK_EQ(err, nullptr);
-  std::vector<uint8_t> bytes(
-      reinterpret_cast<const uint8_t*>(out.data),
-      reinterpret_cast<const uint8_t*>(out.data) + out.size);
-  wasm_byte_vec_delete(&out);
-  return bytes;
-}
-
-TEST(EngineAddModuleTest, AddModuleAcceptsValidAlias) {
-  auto engine_or = Engine::NewBuilder().Build();
-  ASSERT_TRUE(engine_or.ok());
-  const auto bytes = MakeMinimalCustomModuleBytes();
-  EXPECT_TRUE(engine_or->AddModule("rules", bytes).ok());
-}
-
-TEST(EngineAddModuleTest, AddModuleRejectsEmptyAlias) {
-  auto engine_or = Engine::NewBuilder().Build();
-  ASSERT_TRUE(engine_or.ok());
-  const auto bytes = MakeMinimalCustomModuleBytes();
-  auto s = engine_or->AddModule("", bytes);
-  EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument);
-}
-
-TEST(EngineAddModuleTest, AddModuleRejectsReservedAliases) {
-  auto engine_or = Engine::NewBuilder().Build();
-  ASSERT_TRUE(engine_or.ok());
-  const auto bytes = MakeMinimalCustomModuleBytes();
-  for (absl::string_view reserved :
-       {"cel", "cel_host", "cel_env", "cel_fn", "host"}) {
-    auto s = engine_or->AddModule(reserved, bytes);
-    EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument)
-        << "alias `" << reserved << "` should be rejected";
-  }
-}
-
-TEST(EngineAddModuleTest, AddModuleRejectsDuplicateAlias) {
-  auto engine_or = Engine::NewBuilder().Build();
-  ASSERT_TRUE(engine_or.ok());
-  const auto bytes = MakeMinimalCustomModuleBytes();
-  ASSERT_TRUE(engine_or->AddModule("rules", bytes).ok());
-  auto s = engine_or->AddModule("rules", bytes);
-  EXPECT_EQ(s.code(), absl::StatusCode::kAlreadyExists);
-}
-
-TEST(EngineAddModuleTest, AddModuleRejectsMalformedBytes) {
-  auto engine_or = Engine::NewBuilder().Build();
-  ASSERT_TRUE(engine_or.ok());
-  // Not a valid wasm module.
-  const std::vector<uint8_t> bad_bytes{0x00, 0x01, 0x02, 0x03, 0x04};
-  auto s = engine_or->AddModule("bad", bad_bytes);
-  EXPECT_FALSE(s.ok()) << "malformed wasm bytes should fail to parse";
-}
+// ─── Engine::AddFunction (host callbacks) ───
 
 TEST(EngineAddFunctionTest, AddFunctionAcceptsValidImpl) {
   auto engine_or = Engine::NewBuilder().Build();
@@ -870,15 +802,11 @@ TEST(EngineBindFunctionTest, NullDeclRejectsBoolParam) {
       "`null`");
 }
 
-TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredModuleAndCallback) {
-  // Smoke test: register a module + a host callback, then Plan the
-  // standard "42" program (which uses neither).  Plan should
-  // succeed; the registered module instantiates cleanly but its
-  // exports are never imported by this program — that's fine.
+TEST(EnginePlanWithCustomsTest, PlanStillWorksWithRegisteredCallback) {
+  // Smoke test: register a host callback, then Plan the standard
+  // "42" program (which does not call it).  Plan should succeed.
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_TRUE(engine_or.ok());
-  ASSERT_TRUE(
-      engine_or->AddModule("rules", MakeMinimalCustomModuleBytes()).ok());
   HostCallback impl = [](HostCallContext& /*ctx*/) {
     return absl::OkStatus();
   };
@@ -1277,6 +1205,21 @@ TEST(EnginePlanLinkModeTripwireTest, CorrectlyLabeledProgramsPlanInBothModes) {
     ASSERT_TRUE(v_or.ok()) << v_or.status();
     EXPECT_EQ(*v_or->AsInt(), 42);
   }
+}
+
+TEST(EngineLifetimeTest, MoveAssignmentPreservesState) {
+  auto a_or = Engine::NewBuilder().Build();
+  auto b_or = Engine::NewBuilder().Build();
+  ASSERT_TRUE(a_or.ok() && b_or.ok());
+  Engine a = *std::move(a_or);
+  Engine b = *std::move(b_or);
+  b = std::move(a);  // b's original state torn down; a's moves in.
+  Program program(CompileToBytes(CompilerOptions::LinkMode::kDynamic));
+  auto inst_or = b.Plan(program);
+  ASSERT_TRUE(inst_or.ok()) << inst_or.status();
+  auto v_or = inst_or->Eval();
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_EQ(*v_or->AsInt(), 42);
 }
 
 TEST(EnginePlanLinkModeTripwireTest, MislabeledStaticProgramRejectedAtPlan) {

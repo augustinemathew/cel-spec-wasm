@@ -45,13 +45,42 @@ void cel_map_create(uint32_t out_slot, uint32_t capacity);
 void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot);
 
 // Dynamic-map insert for `transformMap` / `transformMapEntry`
-// comprehension accumulators.  Unlike `cel_map_insert`:
-// geometric 2× growth on full; collisions overwrite (last-write-
-// wins); CEL_ERROR / CEL_UNKNOWN in key OR value propagates
-// verbatim into the map slot.
+// comprehension accumulators.  Unlike `cel_map_insert`: collisions
+// overwrite (last-write-wins); CEL_ERROR / CEL_UNKNOWN in key OR value
+// propagates verbatim into the map slot.  Capacity is a codegen
+// pre-size invariant here — inserting past it traps rather than
+// growing, so a codegen drift surfaces at the write instead of
+// silently producing a short map.
 // cel:codegen-export
 void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
                        uint32_t value_slot);
+
+// Merge every entry of the map at `entry_slot` into the accumulator at
+// `map_slot` — the general `transformMapEntry` loop step, emitted when
+// the entry expression is not a map LITERAL codegen can decompose into
+// direct `cel_map_insert_at` calls (a ternary, a call, a bound
+// identifier, …).  Per-entry semantics are `cel_map_insert_at`'s
+// (last-write-wins, 3VL on key and value); on the entry VALUE:
+// CEL_ERROR / CEL_UNKNOWN propagates verbatim into the map slot, and a
+// non-map entry poisons CEL_ERR_TYPE_MISMATCH.  Both arena- and
+// host-represented entry maps are accepted.
+//
+// This is the one insert path that GROWS the accumulator: a computed
+// entry expression has no compile-time entry count, so codegen's
+// pre-size (one entry per iteration) is a hint rather than an
+// invariant.  Growth re-allocates the dense entries run in the bump
+// arena and drops any hash index; the header stays put.
+// cel:codegen-export
+void cel_map_merge_at(uint32_t map_slot, uint32_t entry_slot);
+
+// 3VL predicate-gated merge for the conditional `transformMapEntry`
+// form.  Mirror of `cel_map_insert_at_if_bool`: pred ERROR/UNKNOWN →
+// propagate into the map slot (aborts the comprehension); pred
+// non-bool → poison TYPE_MISMATCH; pred false → no-op; pred true →
+// `cel_map_merge_at` delegate.
+// cel:codegen-export
+void cel_map_merge_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
+                              uint32_t entry_slot);
 
 // 3VL predicate-gated map insert for conditional transformMap /
 // transformMapEntry steps.  Mirror of
@@ -100,7 +129,7 @@ void cel_map_lookup(uint32_t out_slot, uint32_t map_slot, uint32_t key_slot);
 //   - the index-block arena allocation fails (degrade, never poison).
 //
 // As it places each entry it re-validates uniqueness: if two stored
-// keys `cel_value_eq`, the map is poisoned with CEL_ERR_DUPLICATE_KEY
+// keys `cel_map_key_eq`, the map is poisoned with CEL_ERR_DUPLICATE_KEY
 // exactly as the per-insert dup path does.  Because `cel_map_insert`
 // already rejects literal duplicates linearly, this only fires for the
 // dynamic / direct-construction paths that bypass that check.
@@ -113,8 +142,11 @@ void cel_map_index_build(uint32_t map_slot);
 // Probe the hash index for `key`, returning the matching entry index in
 // `[0, count)` or UINT32_MAX on miss.  Returns UINT32_MAX immediately
 // when `hdr->index_offset == 0` (no index → caller linear-scans).
-// Equality is confirmed by `cel_value_eq` after every H2 group match,
-// so hash collisions are harmless.  Used by the keyed kernels; declared
+// Equality is confirmed by `cel_map_key_eq` after every H2 group match,
+// so hash collisions are harmless.  The confirmation MUST use the
+// map-key rule rather than `cel_value_eq`: the hash canonicalizes a
+// double to the integer it represents EXACTLY, so a comparator that
+// merely rounds would accept a key the hash never routed there.  Used by the keyed kernels; declared
 // here (rather than file-static) so they can share one implementation
 // across TUs.
 uint32_t cel_map_index_find(const ArenaMapHeader* hdr, const CelValue* key);

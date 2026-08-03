@@ -609,17 +609,34 @@ this section rides on that revamp.
 Non-code findings the m35 `--branch` gate surfaced; each makes the
 gate exit non-zero without a first-party code defect:
 
-  - **wasm32-target TUs poison the PCH**: files compiled for
-    `wasm32-unknown-wasip2` (plugin-fixture `user_fns*.cc`) hit
-    "PCH compiled for arm64-apple-macosx" + exception-handling
-    mismatch.  lint.sh should skip cross-compiled TUs (or build a
-    per-target PCH).
+  - **wasm32-target TUs poison the PCH** — *mostly fixed 2026-08-02.*
+    Sources built for BOTH host and wasm32 (every `runtime/*.c`) used
+    to contribute their cross-compiled entries to the compile DB, and
+    clang-tidy replayed them on the host toolchain: `unsupported
+    option '-msimd128' for target 'arm64-apple-darwin'` plus a
+    wasi-sdk `wasm_simd128.h` vector-conversion error, on top of the
+    "PCH compiled for arm64-apple-macosx" mismatch.  This made the
+    `--branch` gate unconditionally non-zero for any change touching
+    the runtime.  `_aquery_to_compdb.py` now drops a wasm32 entry when
+    a host entry exists for the same source (304 entries, down from
+    359).  RESIDUAL: three sources are compiled *only* for wasm32
+    (`e2e/plugin_fixtures/.../user_fns.cc` and two generated files).
+    Their entries are deliberately kept so they stay visible to
+    tooling, so linting one of those files directly still poisons the
+    PCH.  A per-target PCH is the remaining fix.
   - **aquery-fallback compile DB lacks gmock include paths** for
     some test TUs (`gmock/gmock.h file not found` inside absl
     status_matchers) — analysis of those TUs is partial.
   - **vendored cel-cpp header skew**: `extensions/strings.h` trips
     `CompilerLibrary` unknown-type under the lint clang — upstream
-    header vs pinned toolchain, not ours.
+    header vs pinned toolchain, not ours.  The same skew reaches
+    `compiler/compiler_factory.h`, where `CompilerBuilder` is
+    undeclared at its own declaration site (`:51`); that degrades the
+    AST of any first-party TU including it.  Today that is exactly one
+    file, `testdata/cel_cpp_oracle.cc` (15 clang-diagnostic-errors),
+    now on lint.sh's skip list — so the oracle TU has NO lint coverage
+    until the skew is resolved.  `bazel build //testdata:cel_cpp_oracle`
+    is green, i.e. this is a lint-toolchain gap, not a code defect.
 
 ## benchmark/eval/celcpp_bench.cc — clang-tidy blocked by stale compile-DB execroot (2026-06-11)
 
@@ -635,3 +652,4 @@ Fix: make `scripts/refresh_compile_db.sh` stamp the *live*
 output-base churn); then delete the two degraded-AST NOLINTs in this
 file (misc-unused-parameters on PrepareCellRuntime,
 bugprone-branch-clone in ValueFromLiteral).
+

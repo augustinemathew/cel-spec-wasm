@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 
+#include <fstream>
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
@@ -13,6 +14,7 @@
 #include "common/expr.h"
 #include "compiler/ir/annotations.h"
 #include "compiler/ir/typed_ast.h"
+
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
@@ -110,6 +112,48 @@ TEST(ParseAndCheckTest, PrimitiveVariableSpecs) {
     ASSERT_THAT(r, IsOk()) << "spec=" << row.spec;
     EXPECT_EQ(RootRepr(*r), row.expected) << "spec=" << row.spec;
   }
+}
+
+// ---- Schema loading error paths --------------------------------------------
+//
+// `CheckOptions::schema` accepts a `SchemaDescriptorSet` (a path to a
+// binary FileDescriptorSet).  Its failure arms had no workload: the CLI
+// validates `--descriptor_set` in its own loader (tools/cel/cel.cc:198)
+// and never delegates, so `cel_smoke_test`'s "not an FDS" row exercises
+// the CLI's check rather than this one, despite near-identical error
+// text.  These reach the library path directly.
+
+TEST(ParseAndCheckTest, SchemaDescriptorSetMissingFileIsNotFound) {
+  CheckOptions opts;
+  opts.schema = SchemaDescriptorSet{"/nonexistent/schema.fds"};
+  auto r = ParseAndCheck("1", opts);
+  EXPECT_THAT(r, StatusIs(absl::StatusCode::kNotFound,
+                          testing::HasSubstr("cannot open schema file")));
+}
+
+TEST(ParseAndCheckTest, SchemaDescriptorSetWithGarbageBytesIsRejected) {
+  // Written here rather than pointed at a checked-in file so the case
+  // does not depend on the runfiles layout: a path that happens not to
+  // exist takes the NotFound arm above instead of the parse arm.
+  const std::string path =
+      absl::StrCat(::testing::TempDir(), "/celwasm_bad_schema.fds");
+  {
+    std::ofstream out(path, std::ios::binary);
+    ASSERT_TRUE(out) << path;
+    out << "this is not a serialized FileDescriptorSet";
+  }
+  CheckOptions opts;
+  opts.schema = SchemaDescriptorSet{path};
+  auto r = ParseAndCheck("1", opts);
+  EXPECT_THAT(r, StatusIs(absl::StatusCode::kInvalidArgument,
+                          testing::HasSubstr("not a valid FileDescriptorSet")));
+}
+
+TEST(ParseAndCheckTest, SchemaProtoSourceMissingFileIsAnError) {
+  CheckOptions opts;
+  opts.schema = SchemaProtoSource{"/nonexistent/schema.proto"};
+  auto r = ParseAndCheck("1", opts);
+  EXPECT_FALSE(r.ok());
 }
 
 // ---- Well-known types ------------------------------------------------------
