@@ -5,6 +5,18 @@ have a test that exercises every code path it ships, and every
 feature must close out by running the full suite — including the
 `manual`-tagged e2e targets.  This doc defines the gate.
 
+> `manual` is a RUNTIME-COST exemption, nothing else.  The set was
+> cut from 22 targets to 11 on 2026-08-03: every target that ran in
+> ~14 s or less moved into the default `bazel test //...` sweep,
+> which it joins at no wall-clock cost because the sweep's critical
+> path is longer than any of them.  What remains is genuinely
+> expensive (33 s to 170 s each).  Measure with
+> `bazel test --nocache_test_results` before tagging anything
+> `manual` — cached "PASSED in Ns" lines report the last recorded
+> run under whatever load the machine had, and were overstating
+> several of these by 3-4x (`plugin_dispatch_test_dynamic` read as
+> 18.3 s, actually 5.3 s).
+
 It complements:
 
   - `rewrite/feature-pipeline-checklist.md` — which **files** to
@@ -56,6 +68,9 @@ A feature is **not done** until **all** of the following are true:
      at the fixture or test level.
   3. **All** `manual`-tagged test targets affected by the slice
      run green explicitly — see §2 below for the catalog.
+     `scripts/run_full_suite.sh` does this for you; it enumerates
+     the set by query rather than from a hardcoded list, so it
+     stays correct as targets move in and out of `manual`.
   4. The corresponding rows in `testing-checklist.md` are ticked
      and reference the test that proves them.
   5. `bazel run //conformance:run_conformance` is

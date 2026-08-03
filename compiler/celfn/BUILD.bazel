@@ -41,7 +41,6 @@ cc_test(
     name = "celfn_parser_probe_test",
     size = "small",
     srcs = ["celfn_parser_probe_test.cc"],
-    tags = ["manual"],
     deps = [
         ":celfn_grammar_cc_parser",
         "@antlr4-cpp-runtime//:antlr4-cpp-runtime",
@@ -53,7 +52,6 @@ cc_test(
     name = "function_library_test",
     size = "small",
     srcs = ["function_library_test.cc"],
-    tags = ["manual"],
     deps = [
         ":function_library",
         "@com_google_absl//absl/status",
