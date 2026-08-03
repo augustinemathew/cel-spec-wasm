@@ -5,9 +5,12 @@ gates.  Delete sections that don't apply (a one-line fix doesn't need the
 full grid).  For milestone closeouts, every box should be ticked or
 explicitly N/A'd before merge.
 
-`$PROJ` below means the project-package set — Bazel `//...` is unusable in
-this repo (vendored cel-cpp's tools/testdata loads an undeclared
-`@com_github_google_flatbuffers`, so `//...` fails to *load*).  Use:
+`bazel test //...` is fine — the package-loading failure that once made
+it unusable (vendored cel-cpp's tools/testdata loading an undeclared
+`@com_github_google_flatbuffers`) was fixed by `.bazelignore`, and
+CLAUDE.md's "Build & run" now names `//...` the preferred whole-project
+pattern.  `$PROJ` still names the role-package set when you want ONLY
+those, excluding the doc probes `//...` also builds:
 
   //compiler/... //eval/... //shared/... //abi/... //runtime/... \
   //tools/... //conformance/... //e2e/... //benchmark/... //testdata/... //spec/...
@@ -23,11 +26,12 @@ issue that motivated this. -->
 <!-- Bulleted checklist of what was verified.  Include test
 file paths so a reviewer can run them. -->
 
-- [ ] `bazel test $PROJ` green (the project-package set above — never `//...`).
-- [ ] Manual-tagged tests run — `scripts/run_full_suite.sh` (the canonical
-      runner: `bazel test $PROJ` + every `manual` target + conformance).
-      `bazel test` alone SKIPS the manual targets, which carry the
-      load-bearing e2e/wasmtime assertions.  List which ran: …
+- [ ] `bazel test //...` green (or `$PROJ` for the role packages alone).
+- [ ] Manual-tagged tests run.  `bazel test //...` SKIPS them, and they
+      carry load-bearing e2e/wasmtime assertions.  CI covers this by
+      passing EXPLICIT labels from `bazel query` in its lanes; locally,
+      `scripts/run_full_suite.sh` still does it in one command.  List
+      which ran: …
 - [ ] `scripts/lint.sh --branch` clean (full branch diff; bare `lint.sh`
       only checks working-tree edits).  Pre-existing-only is OK — list any
       remaining warnings + which `lint-backlog.md` entry tracks them.
@@ -37,7 +41,10 @@ file paths so a reviewer can run them. -->
 <!-- Mandatory when touching codegen, runtime, or cel_host. -->
 
 - [ ] `scripts/check_conformance_monotonic.sh` passes (PASS count ≥
-      `conformance/.baseline`, currently 1898).
+      `conformance/.baseline` — read the FILE, do not trust a number
+      quoted here; it moved 1898 -> 2085 while this line still said
+      1898).  `--mode dynamic|static` runs one link mode; the default
+      `both` is what the gate and the pre-push hook use.
 - [ ] If this PR ships a new feature: PASS count delta is
       _____ → _____ (+/− _____); update `conformance/.baseline` if monotonic.
 
