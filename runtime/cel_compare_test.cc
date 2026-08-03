@@ -13,6 +13,16 @@
 #include "runtime/cel_make.h"
 #include "runtime/cel_memory.h"
 
+namespace celwasm {
+// The production equality dispatchers (cel_runtime.c; wasm-exported,
+// no C header) — the focused semantics tests below drive equality
+// through them, exactly as codegen-lowered `==` / `!=` do.
+extern "C" {
+void cel_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+void cel_not_equals_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot);
+}
+}  // namespace celwasm
+
 // M5.B comparison helper coverage.  The bulk of the matrix
 // (per-kind eq/ne/lt/le/gt/ge happy/false pairs) consolidates
 // into a single TEST_P table; spec-citation cases (IEEE NaN /
@@ -70,39 +80,7 @@ TEST_P(SameKindCmpTest, ProducesExpectedBool) {
 
 INSTANTIATE_TEST_SUITE_P(
     Int, SameKindCmpTest,
-    ::testing::Values(CmpCase{"int_eq_true", cel_int_eq_at_vv,
-                              +[]() {
-                                return cel_make_int(3);
-                              },
-                              +[]() {
-                                return cel_make_int(3);
-                              },
-                              true},
-                      CmpCase{"int_eq_false", cel_int_eq_at_vv,
-                              +[]() {
-                                return cel_make_int(3);
-                              },
-                              +[]() {
-                                return cel_make_int(4);
-                              },
-                              false},
-                      CmpCase{"int_ne_true", cel_int_ne_at_vv,
-                              +[]() {
-                                return cel_make_int(3);
-                              },
-                              +[]() {
-                                return cel_make_int(4);
-                              },
-                              true},
-                      CmpCase{"int_ne_false", cel_int_ne_at_vv,
-                              +[]() {
-                                return cel_make_int(3);
-                              },
-                              +[]() {
-                                return cel_make_int(3);
-                              },
-                              false},
-                      CmpCase{"int_lt_true", cel_int_lt_at_vv,
+    ::testing::Values(CmpCase{"int_lt_true", cel_int_lt_at_vv,
                               +[]() {
                                 return cel_make_int(1);
                               },
@@ -171,37 +149,7 @@ INSTANTIATE_TEST_SUITE_P(
                               +[]() {
                                 return cel_make_uint(0);
                               },
-                              true},
-                      CmpCase{"uint_eq_max", cel_uint_eq_at_vv,
-                              +[]() {
-                                return cel_make_uint(UINT64_MAX);
-                              },
-                              +[]() {
-                                return cel_make_uint(UINT64_MAX);
-                              },
                               true}),
-    [](const auto& info) {
-      return info.param.name;
-    });
-
-INSTANTIATE_TEST_SUITE_P(
-    Double, SameKindCmpTest,
-    ::testing::Values(CmpCase{"double_eq_true", cel_double_eq_at_vv,
-                              +[]() {
-                                return cel_make_double(1.5);
-                              },
-                              +[]() {
-                                return cel_make_double(1.5);
-                              },
-                              true},
-                      CmpCase{"double_eq_false", cel_double_eq_at_vv,
-                              +[]() {
-                                return cel_make_double(1.5);
-                              },
-                              +[]() {
-                                return cel_make_double(2.5);
-                              },
-                              false}),
     [](const auto& info) {
       return info.param.name;
     });
@@ -224,14 +172,6 @@ INSTANTIATE_TEST_SUITE_P(
                                 return cel_make_bool(0);
                               },
                               false},
-                      CmpCase{"bool_ne", cel_bool_ne_at_vv,
-                              +[]() {
-                                return cel_make_bool(0);
-                              },
-                              +[]() {
-                                return cel_make_bool(1);
-                              },
-                              true},
                       // langdef §"Booleans": false < true.  Spot-check each
                       // ordering op at both directions.
                       CmpCase{"bool_lt_false_true", cel_bool_lt_at_vv,
@@ -607,22 +547,6 @@ INSTANTIATE_TEST_SUITE_P(
                               +[]() {
                                 return cel_make_double(3.0);
                               },
-                              true},
-                      CmpCase{"ne_int_eq_uint_false", cel_numeric_ne_at_vv,
-                              +[]() {
-                                return cel_make_int(5);
-                              },
-                              +[]() {
-                                return cel_make_uint(5);
-                              },
-                              false},
-                      CmpCase{"ne_int_uneq_double_true", cel_numeric_ne_at_vv,
-                              +[]() {
-                                return cel_make_int(3);
-                              },
-                              +[]() {
-                                return cel_make_double(2.5);
-                              },
                               true}),
     [](const auto& info) {
       return info.param.name;
@@ -635,9 +559,9 @@ TEST_F(CompareTest, IntBoundaryValues) {
   // strictly ordered against each other — locks the i64 ladder
   // bounds the helpers run on.
   uint32_t out = MakeOut();
-  cel_int_eq_at_vv(out, cel_make_int(INT64_MIN), cel_make_int(INT64_MIN));
+  cel_equals_at_vv(out, cel_make_int(INT64_MIN), cel_make_int(INT64_MIN));
   EXPECT_TRUE(ReadBool(out));
-  cel_int_eq_at_vv(out, cel_make_int(INT64_MAX), cel_make_int(INT64_MAX));
+  cel_equals_at_vv(out, cel_make_int(INT64_MAX), cel_make_int(INT64_MAX));
   EXPECT_TRUE(ReadBool(out));
   cel_int_lt_at_vv(out, cel_make_int(INT64_MIN), cel_make_int(INT64_MAX));
   EXPECT_TRUE(ReadBool(out));
@@ -649,13 +573,13 @@ TEST_F(CompareTest, DoubleNanComparesUnequal) {
   // inherits this directly from the C operators.
   const double nan = std::numeric_limits<double>::quiet_NaN();
   uint32_t out = MakeOut();
-  cel_double_eq_at_vv(out, cel_make_double(nan), cel_make_double(nan));
+  cel_equals_at_vv(out, cel_make_double(nan), cel_make_double(nan));
   EXPECT_FALSE(ReadBool(out));
   cel_double_lt_at_vv(out, cel_make_double(nan), cel_make_double(0.0));
   EXPECT_FALSE(ReadBool(out));
   cel_double_gt_at_vv(out, cel_make_double(nan), cel_make_double(0.0));
   EXPECT_FALSE(ReadBool(out));
-  cel_double_ne_at_vv(out, cel_make_double(nan), cel_make_double(nan));
+  cel_not_equals_at_vv(out, cel_make_double(nan), cel_make_double(nan));
   EXPECT_TRUE(ReadBool(out));
 }
 
@@ -666,7 +590,7 @@ TEST_F(CompareTest, DoubleInfOrdering) {
   EXPECT_TRUE(ReadBool(out));
   cel_double_gt_at_vv(out, cel_make_double(inf), cel_make_double(1e300));
   EXPECT_TRUE(ReadBool(out));
-  cel_double_eq_at_vv(out, cel_make_double(inf), cel_make_double(inf));
+  cel_equals_at_vv(out, cel_make_double(inf), cel_make_double(inf));
   EXPECT_TRUE(ReadBool(out));
 }
 
@@ -685,16 +609,6 @@ TEST_F(CompareTest, NullEqWithNonNullPoisons) {
   EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
 }
 
-TEST_F(CompareTest, IntEqTypeMismatchPoisons) {
-  // Cross-kind operands (int vs uint) must reject — the cross-
-  // type numeric ladder lives in a separate `cel_numeric_*` set
-  // (M5.B step 2), not in the same-kind helpers.
-  uint32_t out = MakeOut();
-  cel_int_eq_at_vv(out, cel_make_int(1), cel_make_uint(1));
-  EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
-  EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
-}
-
 // 3VL absorption — the shared `absorb_3vl_binary` is used by every
 // cmp helper; spot-check on one int_eq path with each operand
 // position.
@@ -705,7 +619,7 @@ TEST_F(CompareTest, ErrorOperandPropagates) {
   err->kind = CEL_ERROR;
   err->payload.err = CEL_ERR_OVERFLOW;
   uint32_t out = MakeOut();
-  cel_int_eq_at_vv(out, err_off, cel_make_int(0));
+  cel_equals_at_vv(out, err_off, cel_make_int(0));
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_ERROR));
   EXPECT_EQ(At(out)->payload.err, static_cast<uint32_t>(CEL_ERR_OVERFLOW));
 }
@@ -751,30 +665,30 @@ TEST_F(CompareTest, NumericNanEqualityFollowsIeee) {
 
   // `!=` is the complement: every NaN-touching pair returns TRUE,
   // matching IEEE 754 and cel-cpp's
-  // `Inequal<double>(double, double)` (the C `!=` operator).
-  cel_numeric_ne_at_vv(out, cel_make_double(nan), cel_make_double(nan));
+  // `Inequal<double>(double, double)` (the C `!=` operator).  In
+  // production `!=` is `cel_not_equals_at_vv` — equality_kernel plus
+  // a bool flip — so NaN-eq false flips to true.
+  cel_not_equals_at_vv(out, cel_make_double(nan), cel_make_double(nan));
   EXPECT_TRUE(ReadBool(out));
-  cel_numeric_ne_at_vv(out, cel_make_double(nan), cel_make_int(0));
+  cel_not_equals_at_vv(out, cel_make_double(nan), cel_make_int(0));
   EXPECT_TRUE(ReadBool(out));
-  cel_numeric_ne_at_vv(out, cel_make_int(0), cel_make_double(nan));
+  cel_not_equals_at_vv(out, cel_make_int(0), cel_make_double(nan));
   EXPECT_TRUE(ReadBool(out));
-  cel_numeric_ne_at_vv(out, cel_make_uint(0), cel_make_double(nan));
+  cel_not_equals_at_vv(out, cel_make_uint(0), cel_make_double(nan));
   EXPECT_TRUE(ReadBool(out));
 }
 
-// Regression guard for non-NaN inequalities — the kernel's tri-state
-// dispatch must keep cross-numeric `!=` working when neither operand
-// is NaN.  `Slice 1.55` flipped to `r != kCmpEqual` which absorbs
-// `kCmpNanInequal` AND `kCmpLess` AND `kCmpGreater`; all three must
-// still produce true.
+// Cross-numeric `!=` through the production flip path: unequal pairs
+// (less AND greater) produce true; a true cross-numeric equality
+// still produces false.
 TEST_F(CompareTest, NumericNeCrossNumericNonNanIsTrue) {
   uint32_t out = MakeOut();
-  cel_numeric_ne_at_vv(out, cel_make_int(1), cel_make_uint(2));
+  cel_not_equals_at_vv(out, cel_make_int(1), cel_make_uint(2));
   EXPECT_TRUE(ReadBool(out));
-  cel_numeric_ne_at_vv(out, cel_make_int(2), cel_make_double(1.5));
+  cel_not_equals_at_vv(out, cel_make_int(2), cel_make_double(1.5));
   EXPECT_TRUE(ReadBool(out));
   // And a true-equality must STILL return false.
-  cel_numeric_ne_at_vv(out, cel_make_int(1), cel_make_double(1.0));
+  cel_not_equals_at_vv(out, cel_make_int(1), cel_make_double(1.0));
   EXPECT_FALSE(ReadBool(out));
 }
 
@@ -791,7 +705,7 @@ TEST_F(CompareTest, NumericIntDoubleBoundary) {
   // (double)INT64_MAX is exactly representable; INT64_MAX's int
   // value vs the same number as a double compares equal.
   cel_numeric_eq_at_vv(out, cel_make_int(INT64_MAX),
-                       cel_make_double((double)INT64_MAX));
+                       cel_make_double(static_cast<double>(INT64_MAX)));
   EXPECT_TRUE(ReadBool(out));
   // double strictly > kInt64Max: every int64 is less.
   cel_numeric_lt_at_vv(out, cel_make_int(INT64_MAX), cel_make_double(1e30));
@@ -858,7 +772,7 @@ TEST_F(CompareTest, UnknownOperandPropagates) {
   unk->kind = CEL_UNKNOWN;
   unk->payload.unk = 99;
   uint32_t out = MakeOut();
-  cel_int_eq_at_vv(out, cel_make_int(0), unk_off);
+  cel_equals_at_vv(out, cel_make_int(0), unk_off);
   EXPECT_EQ(At(out)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
   EXPECT_EQ(At(out)->payload.unk, 99u);
 }

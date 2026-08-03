@@ -93,23 +93,3 @@ uint32_t cel_make_bytes(const void* src, uint32_t len) {
   CEL_LOG("enter");
   return make_span_copy(CEL_BYTES, src, len);
 }
-
-static uint32_t make_span_view(CelKind kind, uint32_t ptr, uint32_t len) {
-  uint32_t off = alloc_cv();
-  if (off == 0) return 0;
-  CelValue* v = cv_at(off);
-  v->kind = kind;
-  v->payload.s.ptr = ptr;
-  v->payload.s.len = len;
-  return off;
-}
-
-uint32_t cel_make_string_view(uint32_t ptr, uint32_t len) {
-  CEL_LOG("enter");
-  return make_span_view(CEL_STRING, ptr, len);
-}
-
-uint32_t cel_make_bytes_view(uint32_t ptr, uint32_t len) {
-  CEL_LOG("enter");
-  return make_span_view(CEL_BYTES, ptr, len);
-}

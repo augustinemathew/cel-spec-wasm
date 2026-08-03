@@ -14,10 +14,20 @@
 #include "compiler/program.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "testdata/host_fixture_proto3.pb.h"
 #include "tools/cel/program_report.h"
 
 namespace celwasm::abi {
 namespace {
+
+// Force generated-pool registration so a message-typed var declaration
+// resolves.
+[[maybe_unused]] const int
+    kDescriptorsLinked =  // NOLINT(bugprone-throwing-static-initialization)
+    [] {
+      google::protobuf::LinkMessageReflection<celwasm::testdata::HostMsg3>();
+      return 0;
+    }();
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
@@ -30,8 +40,9 @@ std::vector<uint8_t> CompileBytes(
     absl::string_view source,
     CompilerOptions::LinkMode mode = CompilerOptions::LinkMode::kStatic) {
   auto b = Compiler::NewBuilder();
-  for (const auto& [name, type] : vars)
+  for (const auto& [name, type] : vars) {
     b.DeclareVariable(name, type);
+  }
   auto compiler = std::move(b).Build();
   ABSL_CHECK_OK(compiler);
   CompilerOptions opts;
@@ -39,7 +50,7 @@ std::vector<uint8_t> CompileBytes(
   auto program = compiler->Compile(source, opts);
   ABSL_CHECK_OK(program) << source;
   const auto bytes = program->wasm_bytes();
-  return std::vector<uint8_t>(bytes.begin(), bytes.end());
+  return {bytes.begin(), bytes.end()};
 }
 
 TEST(DescribeProgramTest, ReportsDeclaredScalarVars) {
@@ -119,6 +130,38 @@ TEST(DescribeProgramTest, TypeSpecUsesTheVarGrammarNotCelfn) {
   ASSERT_EQ(facts->vars.size(), 1u);
   EXPECT_EQ(facts->vars[0].type_spec, "list<duration>")
       << "the .celfn grammar would spell this list<Duration>";
+}
+
+// Every declarable var type renders in the `--var` grammar.  One row
+// per `abi::Type` kind the renderer switches on, so a new kind that
+// falls through to the `<kind N>` fallback shows up here rather than
+// in a pasted-back binding that fails to parse.
+TEST(DescribeProgramTest, RendersEveryDeclarableVarTypeSpec) {
+  struct Row {
+    CelType type;
+    absl::string_view source;
+    absl::string_view want;
+  };
+  const Row rows[] = {
+      {CelType::Bool(), "v", "bool"},
+      {CelType::Uint(), "v > 0u", "uint"},
+      {CelType::Double(), "v > 0.0", "double"},
+      {CelType::Bytes(), "size(v) > 0", "bytes"},
+      {CelType::Duration(), "v > duration('0s')", "duration"},
+      {CelType::Timestamp(), "v > timestamp(0)", "timestamp"},
+      {CelType::Message("celwasm.testdata.HostMsg3"), "v.i32 > 0",
+       "celwasm.testdata.HostMsg3"},
+      {CelType::Map(CelType::String(), CelType::Int()), "size(v) > 0",
+       "map<string,int>"},
+      {CelType::List(CelType::List(CelType::Bool())), "size(v) > 0",
+       "list<list<bool>>"},
+  };
+  for (const Row& r : rows) {
+    auto facts = DescribeProgram(CompileBytes({{"v", r.type}}, r.source));
+    ASSERT_THAT(facts, IsOk()) << r.want;
+    ASSERT_EQ(facts->vars.size(), 1u) << r.want;
+    EXPECT_EQ(facts->vars[0].type_spec, r.want);
+  }
 }
 
 // Back-compat: an entry with no `type` on the wire keeps the bare

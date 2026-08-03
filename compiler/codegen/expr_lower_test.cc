@@ -212,9 +212,12 @@ void InstallListImports(WasmModule& m) {
 void PrepareHostModule(WasmModule& m, const StaticLayout& layout) {
   std::vector<uint8_t> rodata_copy(layout.rodata);
   WasmModule::DataSegment seg{layout.rodata_base, rodata_copy};
-  ASSERT_THAT(
-      m.SetMemory(1, std::nullopt, "memory", absl::MakeConstSpan(&seg, 1)),
-      IsOk());
+  // Import cel.memory with rodata as an active segment — the same
+  // shape production compiles emit (compile.cc), so the lowering
+  // validates against the real memory topology.
+  ASSERT_THAT(m.AddMemoryImport("cel", "memory", 1, std::nullopt,
+                                absl::MakeConstSpan(&seg, 1)),
+              IsOk());
   const BinaryenType i32 = BinaryenTypeInt32();
   m.AddFunctionImport(kArenaResetInternalName, "cel", "arena_reset",
                       absl::Span<const BinaryenType>{}, BinaryenTypeNone());
@@ -1396,7 +1399,7 @@ TEST(ExprLowerComprehensionTest, ExistsOneHasNoAccuPeephole) {
 // iter_range CelValue is CEL_UNKNOWN / CEL_ERROR — list AND map
 // sources.  Shape locked by
 // `rewrite/wat/70_comprehension_unknown_range.wat`; behavior pinned
-// e2e in m2_partial_eval_test.cc's range-absorption matrices.
+// e2e in partial_eval_test.cc's range-absorption matrices.
 TEST(ExprLowerComprehensionTest, ListSourceEmitsRangeAbsorptionBlock) {
   Pipeline p = RunPipeline("[1, 2, 3].exists(v, v > 1)");
   WasmModule m;
@@ -1822,7 +1825,7 @@ TEST(ExprLowerOptionalLiteralTest, NonOptionalListLiteralEmitsOnlyPlainAppend) {
 
 // `Foo{?field: opt_value}` proto-literal optional entries route
 // through the new `cel_set_field_at_if_present` kernel.  Per-shape
-// codegen verification lives at the e2e level (`m14_test.cc`)
+// codegen verification lives at the e2e level (`optional_test.cc`)
 // because the codegen-test `RunPipeline` doesn't register the
 // conformance proto descriptors needed for `cel.expr.conformance.*`
 // names to type-check.  The wat_runner test

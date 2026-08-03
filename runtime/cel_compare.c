@@ -34,15 +34,11 @@
     write_bool(out, a->payload.field op b->payload.field);         \
   }
 
-DEFINE_CMP_VV(cel_int_eq_at_vv, CEL_INT, i, ==)
-DEFINE_CMP_VV(cel_int_ne_at_vv, CEL_INT, i, !=)
 DEFINE_CMP_VV(cel_int_lt_at_vv, CEL_INT, i, <)
 DEFINE_CMP_VV(cel_int_le_at_vv, CEL_INT, i, <=)
 DEFINE_CMP_VV(cel_int_gt_at_vv, CEL_INT, i, >)
 DEFINE_CMP_VV(cel_int_ge_at_vv, CEL_INT, i, >=)
 
-DEFINE_CMP_VV(cel_uint_eq_at_vv, CEL_UINT, u, ==)
-DEFINE_CMP_VV(cel_uint_ne_at_vv, CEL_UINT, u, !=)
 DEFINE_CMP_VV(cel_uint_lt_at_vv, CEL_UINT, u, <)
 DEFINE_CMP_VV(cel_uint_le_at_vv, CEL_UINT, u, <=)
 DEFINE_CMP_VV(cel_uint_gt_at_vv, CEL_UINT, u, >)
@@ -52,15 +48,12 @@ DEFINE_CMP_VV(cel_uint_ge_at_vv, CEL_UINT, u, >=)
 // false).  C's `==` and `!=` operators implement this directly.
 // Ordering operators (<, <=, >, >=) likewise return false for any
 // NaN-bearing comparison per IEEE.
-DEFINE_CMP_VV(cel_double_eq_at_vv, CEL_DOUBLE, d, ==)
-DEFINE_CMP_VV(cel_double_ne_at_vv, CEL_DOUBLE, d, !=)
 DEFINE_CMP_VV(cel_double_lt_at_vv, CEL_DOUBLE, d, <)
 DEFINE_CMP_VV(cel_double_le_at_vv, CEL_DOUBLE, d, <=)
 DEFINE_CMP_VV(cel_double_gt_at_vv, CEL_DOUBLE, d, >)
 DEFINE_CMP_VV(cel_double_ge_at_vv, CEL_DOUBLE, d, >=)
 
 DEFINE_CMP_VV(cel_bool_eq_at_vv, CEL_BOOL, b, ==)
-DEFINE_CMP_VV(cel_bool_ne_at_vv, CEL_BOOL, b, !=)
 // Bool ordering — `false < true` per langdef §"Booleans".  Since
 // `payload.b` is normalised to 0/1 by `write_bool` and
 // `cel_make_bool`, the integer relational operators give the
@@ -210,19 +203,6 @@ void cel_numeric_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   if (numeric_prelude(out, a, b)) return;
   CmpResult r = numeric_compare_kernel(a, b);
   write_bool(out, r == kCmpEqual);
-}
-
-void cel_numeric_ne_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
-  CelValue* out = cel_value_at(out_slot);
-  const CelValue* a = cel_value_at(a_slot);
-  const CelValue* b = cel_value_at(b_slot);
-  if (numeric_prelude(out, a, b)) return;
-  CmpResult r = numeric_compare_kernel(a, b);
-  // NaN-touching inequality returns TRUE — matches cel-cpp's
-  // `Inequal<double>` default
-  // (`runtime/standard/equality_functions.cc:78`), which is the
-  // IEEE `lhs != rhs` semantic where `NaN != NaN` is true.
-  write_bool(out, r != kCmpEqual);
 }
 
 void cel_numeric_lt_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
