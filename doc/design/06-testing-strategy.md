@@ -151,21 +151,19 @@ Live guards (formerly skipped, now regression pins):
   `ResourceExhausted` at Compile in BOTH link modes
   (`ValidateExprStaticRegion`, `compiler/internal/compile.cc`); boundary pins
   N=327 / N=328 bracket the exact window edge.
-- `LongArith_2000Terms_NoUnalignedAtomicTrap` — fixed by LIFO free-list slot
+- `LongArith2000TermsNoUnalignedAtomicTrap` — fixed by LIFO free-list slot
   reuse (`compiler/codegen/slot_allocator.{h,cc}`), validated bottom-up by
   `slot_allocator_test` and top-down by this e2e.
 - The four PBT-discovered pins (`PbtTernaryInsideIntSubtract`, `PbtExistsOne*`,
   `PbtSizeOfExistsOneTernaryBytes`), each carrying its originating seed.
 
 Skipped (open, each with the verified reproduction and root-cause file:line in
-its skip message): lossy double map-key equality; the two arena-cliff `size()`
+its skip message): the two arena-cliff `size()`
 cases (skip reason re-verified 2026-06-10 — they now trip the compile-time
 static-region gate *before* the arena; un-skipping needs BOTH a relocatable
 static region AND arena grow/spill); dyn double/uint list-index coercion;
-`indexOf` pos byte-vs-codepoint bound; two `%f` format divergences; `exists`
-error-accumulator absorption; `transformMapEntry` duplicate-key overwrite;
-`transformMapEntry` computed-entry ABSL_CHECK abort (kept skipped because
-running it aborts the binary); max-range timestamp nanos; `.?field`
+`indexOf` pos byte-vs-codepoint bound; two `%f` format divergences;
+`transformMapEntry` duplicate-key overwrite; max-range timestamp nanos; `.?field`
 static-subset rejection; `double('  3.14  ')` whitespace + 1-ULP parse; the
 parser 100K-codepoint cap; the 10K bound-string-list arena OOM during `in`
 scan.

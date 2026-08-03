@@ -241,6 +241,103 @@ void cel_numeric_ge_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   write_bool(out, r == kCmpGreater || r == kCmpEqual);
 }
 
+// ─────────────────────────────────────────────────────────────
+// Map-KEY equality — LOSSLESS, not rounding.
+//
+// The ladder above puts int / uint / double on one continuous number
+// line and tolerates the precision loss of the int→double cast, which
+// is what the `==` operator, list membership, and element compares
+// want (cel-cpp `internal/number.h`, `Number::operator==`).
+//
+// Map-key lookup wants the opposite.  cel-cpp converts the query key
+// to the stored key's type only when the conversion ROUND-TRIPS, then
+// compares exactly — `internal/number.h`
+// `LosslessConvertibleToIntVisitor` / `LosslessConvertibleToUintVisitor`,
+// driven from `eval/eval/container_access_step.cc::LookupInMap`,
+// `runtime/standard/container_membership_functions.cc`'s
+// `doubleKeyInSet` / `intKeyInSet` / `uintKeyInSet`, and
+// `runtime/standard/equality_functions.cc::CheckAlternativeNumericType`.
+//
+// The rules diverge above 2^53, where one double is the rounded image
+// of a RANGE of int64s.  Oracle-pinned in
+// `testdata/cel_cpp_oracle_test.cc` (`MapKeyNumericCrossType`):
+//   `dyn(9007199254740993) == 9007199254740992.0`        -> true
+//   `dyn(9007199254740992.0) in {9007199254740993: 'a'}` -> false
+//
+// The SwissTable index (`cel_map_hash.h`) canonicalizes a double key
+// to the integer it EXACTLY represents, so it already agrees with this
+// predicate: keys this function calls equal always hash identically,
+// and no lookup needs to bypass the index.
+// ─────────────────────────────────────────────────────────────
+
+// Round-trip windows, verbatim from cel-cpp `internal/number.h:35-45`:
+// `RoundingError<T>() == 1 << (digits<T> - digits<double> - 1)` — 512
+// for int64 (63-53-1), 1024 for uint64 (64-53-1) — and the bound is the
+// double image of `max - RoundingError`.  Concretely these evaluate to
+// 2^63-1024 and 2^64-2048, the largest doubles whose integer cast is
+// still in range: `(double)INT64_MAX` is 2^63 and `(double)UINT64_MAX`
+// is 2^64, both one past the end, which is exactly why the naive
+// rounding compare called `UINT64_MAX` equal to `2^64.0`.
+static const double kDoubleToIntMin = (double)INT64_MIN;
+static const double kMaxDoubleAsInt = (double)(INT64_MAX - 512);
+static const double kMaxDoubleAsUint = (double)(UINT64_MAX - 1024);
+
+// `d` → int64 iff exact.  The bounds are written as `!(d >= lo)` /
+// `!(d <= hi)` so NaN (false on every comparison) is rejected by both,
+// and ±Inf by one; the cast round-trip then rejects any non-integral
+// value.  Mirrors `LosslessConvertibleToIntVisitor`.
+static int double_as_int(double d, int64_t* out) {
+  if (!(d >= kDoubleToIntMin) || !(d <= kMaxDoubleAsInt)) return 0;
+  const int64_t i = (int64_t)d;
+  if ((double)i != d) return 0;
+  *out = i;
+  return 1;
+}
+
+// `d` → uint64 iff exact.  Mirrors `LosslessConvertibleToUintVisitor`.
+static int double_as_uint(double d, uint64_t* out) {
+  if (!(d >= 0.0) || !(d <= kMaxDoubleAsUint)) return 0;
+  const uint64_t u = (uint64_t)d;
+  if ((double)u != d) return 0;
+  *out = u;
+  return 1;
+}
+
+// `d` equals the integer-kinded key `i` (CEL_INT or CEL_UINT) iff `d`
+// converts losslessly to that kind AND the converted value matches.
+static int double_matches_integer(double d, const CelValue* i) {
+  if (i->kind == CEL_INT) {
+    int64_t v = 0;
+    return double_as_int(d, &v) && v == i->payload.i;
+  }
+  uint64_t v = 0;
+  return double_as_uint(d, &v) && v == i->payload.u;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int cel_numeric_key_eq(const CelValue* a, const CelValue* b) {
+  if (!is_numeric_kind(a->kind) || !is_numeric_kind(b->kind)) return 0;
+  if (a->kind == CEL_DOUBLE && b->kind == CEL_DOUBLE) {
+    return a->payload.d == b->payload.d;  // IEEE: NaN never equal.
+  }
+  if (a->kind == CEL_DOUBLE) return double_matches_integer(a->payload.d, b);
+  if (b->kind == CEL_DOUBLE) return double_matches_integer(b->payload.d, a);
+  // int / uint: no double is involved, and `numeric_compare_kernel`
+  // already compares that pair exactly (`cmp_int_vs_uint` widens the
+  // non-negative int to uint64), so its verdict IS the lossless one.
+  return numeric_compare_kernel(a, b) == kCmpEqual;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int cel_map_key_eq(const CelValue* a, const CelValue* b) {
+  if (is_numeric_kind(a->kind) && is_numeric_kind(b->kind)) {
+    return cel_numeric_key_eq(a, b);
+  }
+  // bool / string / bytes / null / duration / timestamp compare
+  // structurally in `cel_value_eq`, which is exact for all of them.
+  return cel_value_eq(a, b);
+}
+
 void cel_null_eq_at_vv(uint32_t out_slot, uint32_t a_slot, uint32_t b_slot) {
   CelValue* out = cel_value_at(out_slot);
   const CelValue* a = cel_value_at(a_slot);

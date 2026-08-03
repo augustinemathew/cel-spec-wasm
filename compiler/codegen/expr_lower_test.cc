@@ -166,6 +166,10 @@ void InstallMapImports(WasmModule& m) {
                       BinaryenTypeNone());
   m.AddFunctionImport("cel_map_insert_at_if_bool", "cel",
                       "cel_map_insert_at_if_bool", map4, BinaryenTypeNone());
+  m.AddFunctionImport("cel_map_merge_at", "cel", "cel_map_merge_at", map2,
+                      BinaryenTypeNone());
+  m.AddFunctionImport("cel_map_merge_at_if_bool", "cel",
+                      "cel_map_merge_at_if_bool", map3, BinaryenTypeNone());
   m.AddFunctionImport(std::string(kCelMapInsertAtIfPresentInternalName), "cel",
                       "cel_map_insert_at_if_present", map3, BinaryenTypeNone());
   const BinaryenType iter1[1] = {i32};
@@ -1155,9 +1159,9 @@ TEST(ExprLowerComprehensionTest, TransformMap4ArgEmitsMapInsertAtIfBool) {
 
 TEST(ExprLowerComprehensionTest, TransformMapEntryEmitsMapInsertAt) {
   // `transformMapEntry(k, v, {k': t})` → kMapMerge → N×cel_map_insert_at.
-  // The single-entry case routes through the same helper as
-  // transformMap; the test locks that the merge emitter doesn't
-  // accidentally emit an Entries-specific helper that doesn't exist.
+  // A LITERAL entry is decomposed at compile time, so the runtime
+  // merge helper must NOT appear — that path costs a temp map and
+  // gives up the exact pre-size.
   Pipeline p =
       RunPipeline(R"({"foo": "bar"}.transformMapEntry(k, v, {k + v: k}))");
   WasmModule m;
@@ -1167,7 +1171,52 @@ TEST(ExprLowerComprehensionTest, TransformMapEntryEmitsMapInsertAt) {
   EXPECT_THAT(m.Validate(), IsOk());
   BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
   EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert_at"));
-  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_merge"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_merge_at"));
+}
+
+// A COMPUTED entry expression cannot be decomposed into direct
+// inserts, so it materialises a temp map and hands the merge to the
+// runtime.  Before `cel_map_merge_at` existed this shape hit an
+// ABSL_CHECK(false) and aborted the compiler (CELW-0012).
+TEST(ExprLowerComprehensionTest, TransformMapEntryComputedEntryEmitsMerge) {
+  Pipeline p = RunPipeline(
+      "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1 ? {k: v} : {k + 1: v})");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_merge_at"));
+}
+
+// The 4-arg form with a MULTI-KEY entry: one predicate gates all N
+// inserts, which cel_map_insert_at_if_bool (single k/v) cannot
+// express.  Also formerly an ABSL_CHECK(false) abort.
+TEST(ExprLowerComprehensionTest, TransformMapEntryConditionalMultiKeyMerges) {
+  Pipeline p = RunPipeline(
+      "{1: 2, 3: 4}.transformMapEntry(k, v, k == 1, {k: v, k + 1: v})");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_merge_at_if_bool"));
+}
+
+// A single-key conditional entry keeps the cheaper direct lowering.
+TEST(ExprLowerComprehensionTest, TransformMapEntryConditionalSingleKeyDirect) {
+  Pipeline p =
+      RunPipeline(R"({"a": 1, "b": 2}.transformMapEntry(k, v, v > 1, {k: v}))");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  BinaryenExpressionRef body = BinaryenFunctionGetBody(lowered->func);
+  EXPECT_TRUE(BodyContainsCallTo(body, "cel_map_insert_at_if_bool"));
+  EXPECT_FALSE(BodyContainsCallTo(body, "cel_map_merge_at"));
 }
 
 TEST(ExprLowerComprehensionTest, ExistsEmitsGenericCopy) {
@@ -1226,6 +1275,122 @@ bool BodyContainsBlockNamePrefix(BinaryenExpressionRef expr,
     return BodyContainsBlockNamePrefix(BinaryenLocalSetGetValue(expr), prefix);
   }
   return false;
+}
+
+// ── Loop-cond peephole shape ────────────────────────────────
+//
+// The `exists` / `all` peephole exits the loop by reading the
+// accumulator CelValue out of its workspace slot.  It MUST read the
+// kind word (offset 0) as well as the payload (offset 8): an ERROR
+// parks its error code, and an UNKNOWN its attribute id, in the same
+// payload word, so a payload-only test reads a poison as a bool and
+// short-circuits the 3VL absorption (CELW-0010 —
+// `[0, 2].exists(x, 2/x == 1)` returned divide_by_zero, not true).
+// The behaviour is pinned e2e in m5b_test.cc's
+// ComprehensionAccuAbsorptionE2ETest; this locks the emitted shape so
+// a peephole rewrite cannot silently drop the gate.
+
+// True when `expr` or any descendant is an `i32.load` at `offset`.
+bool SubtreeHasLoadAtOffset(BinaryenExpressionRef expr, uint32_t offset) {
+  if (expr == nullptr) return false;
+  const BinaryenExpressionId id = BinaryenExpressionGetId(expr);
+  if (id == BinaryenLoadId()) {
+    return BinaryenLoadGetOffset(expr) == offset;
+  }
+  if (id == BinaryenBinaryId()) {
+    return SubtreeHasLoadAtOffset(BinaryenBinaryGetLeft(expr), offset) ||
+           SubtreeHasLoadAtOffset(BinaryenBinaryGetRight(expr), offset);
+  }
+  if (id == BinaryenUnaryId()) {
+    return SubtreeHasLoadAtOffset(BinaryenUnaryGetValue(expr), offset);
+  }
+  return false;
+}
+
+// Walks for a conditional `br` to a label starting with `prefix`
+// whose condition reads BOTH the CelValue kind word (offset 0) and
+// its payload (offset 8) — i.e. the kind-gated accu test.
+bool HasKindGatedExitBreak(BinaryenExpressionRef expr, const char* prefix) {
+  if (expr == nullptr) return false;
+  const BinaryenExpressionId id = BinaryenExpressionGetId(expr);
+  if (id == BinaryenBreakId()) {
+    const char* name = BinaryenBreakGetName(expr);
+    BinaryenExpressionRef cond = BinaryenBreakGetCondition(expr);
+    return name != nullptr && std::strncmp(name, prefix, strlen(prefix)) == 0 &&
+           SubtreeHasLoadAtOffset(cond, 0) && SubtreeHasLoadAtOffset(cond, 8);
+  }
+  if (id == BinaryenBlockId()) {
+    const BinaryenIndex n = BinaryenBlockGetNumChildren(expr);
+    for (BinaryenIndex i = 0; i < n; ++i) {
+      if (HasKindGatedExitBreak(BinaryenBlockGetChildAt(expr, i), prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (id == BinaryenLoopId()) {
+    return HasKindGatedExitBreak(BinaryenLoopGetBody(expr), prefix);
+  }
+  if (id == BinaryenIfId()) {
+    return HasKindGatedExitBreak(BinaryenIfGetIfTrue(expr), prefix) ||
+           HasKindGatedExitBreak(BinaryenIfGetIfFalse(expr), prefix);
+  }
+  if (id == BinaryenDropId()) {
+    return HasKindGatedExitBreak(BinaryenDropGetValue(expr), prefix);
+  }
+  if (id == BinaryenLocalSetId()) {
+    return HasKindGatedExitBreak(BinaryenLocalSetGetValue(expr), prefix);
+  }
+  return false;
+}
+
+TEST(ExprLowerComprehensionTest, ExistsLoopCondGatesOnAccuKind) {
+  Pipeline p = RunPipeline("[1, 2, 3].exists(v, v > 1)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_TRUE(HasKindGatedExitBreak(BinaryenFunctionGetBody(lowered->func),
+                                    "comp_exit_"))
+      << "`exists` must exit only on a CEL_BOOL accumulator";
+}
+
+TEST(ExprLowerComprehensionTest, AllLoopCondGatesOnAccuKind) {
+  Pipeline p = RunPipeline("[1, 2, 3].all(v, v > 1)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_TRUE(HasKindGatedExitBreak(BinaryenFunctionGetBody(lowered->func),
+                                    "comp_exit_"))
+      << "`all` must exit only on a CEL_BOOL accumulator";
+}
+
+TEST(ExprLowerComprehensionTest, MapSourceExistsLoopCondGatesOnAccuKind) {
+  Pipeline p = RunPipeline(R"({"a": 1, "b": 2}.exists(k, k == "b"))");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_TRUE(HasKindGatedExitBreak(BinaryenFunctionGetBody(lowered->func),
+                                    "comp_exit_"));
+}
+
+// `exists_one` folds with `+` under a constant-true loop_cond, so it
+// has no accu peephole at all — the negative control proving the
+// assertion above is specific to the two `@not_strictly_false` shapes.
+TEST(ExprLowerComprehensionTest, ExistsOneHasNoAccuPeephole) {
+  Pipeline p = RunPipeline("[1, 2, 3].exists_one(v, v > 1)");
+  WasmModule m;
+  PrepareHostModule(m, p.layout);
+  auto lowered = LowerWithDefaultOverloads(p.ast, p.layout, "$eval", m);
+  ASSERT_THAT(lowered, IsOk());
+  EXPECT_THAT(m.Validate(), IsOk());
+  EXPECT_FALSE(HasKindGatedExitBreak(BinaryenFunctionGetBody(lowered->func),
+                                     "comp_exit_"));
 }
 
 // Range-absorption guard (EmitRangeAbsorptionGuard): every

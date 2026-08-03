@@ -838,5 +838,69 @@ TEST(MapKeyNumericCrossType, DupKeyIntAndDoubleIsError) {
   EXPECT_TRUE(r.is_error) << "expected a duplicate-key CEL error; got value";
 }
 
+// ---- Where the EXACT map-key rule STOPS.  The exact rule is scoped to
+//      map-key matching (`k in m`, `m[k]`, and the key half of map
+//      equality).  Membership in a LIST and the bare `==` operator keep
+//      the LOSSY rounding compare, so the two answer DIFFERENTLY for the
+//      same operand pair.  These cases are the empirical boundary for
+//      which of our runtime call sites may use the lossless predicate. ----
+
+TEST(MapKeyNumericCrossType, ListMembershipStaysLossyAt2Pow53) {
+  // Same operands as DoubleAt2Pow53MissesNeighborIntKey, but the haystack
+  // is a LIST.  OBSERVED: TRUE — list `in` is heterogeneous VALUE equality
+  // (`runtime/standard/container_membership_functions.cc:118`
+  // `HeterogeneousEqualityIn` → `ListValue::Contains` → `Value::Equal` →
+  // `internal::Number::operator==`, the rounding compare), NOT the exact
+  // map-key rule.  So the lossless predicate must NOT be routed into the
+  // list-membership scan.
+  EXPECT_TRUE(OracleBool("dyn(9007199254740992.0) in [9007199254740993]"));
+}
+
+TEST(MapKeyNumericCrossType, ListEqualityStaysLossyAt2Pow53) {
+  // Element equality inside a list compare is the same lossy `==`
+  // (`equality_functions.cc` `ListEqual` → the heterogeneous equal
+  // provider), so a >2^53 int element equals its rounded double.
+  EXPECT_TRUE(OracleBool("dyn([9007199254740993]) == [9007199254740992.0]"));
+}
+
+TEST(MapKeyNumericCrossType, MapIndexAccessUsesExactKeyRule) {
+  // `m[k]` goes through the same lossless conversion as `k in m`
+  // (`eval/eval/container_access_step.cc:114/128` `LookupInMap` →
+  // `LosslessConvertibleToInt` / `...ToUint`), so a rounded double key is
+  // a NO-SUCH-KEY error, not a hit.
+  auto r = OracleEval("{9007199254740993: 'a'}[dyn(9007199254740992.0)]");
+  EXPECT_TRUE(r.is_error) << "expected no-such-key; got a value";
+}
+
+TEST(MapKeyNumericCrossType, DoubleMapLiteralKeyRejectedAtRuntime) {
+  // A double cannot BE a map key: `{9007199254740992.0: 'a'}` evaluates
+  // to the error "Invalid map key type: 'double'" (OBSERVED — this
+  // probe was written expecting a value and the oracle rejected it).
+  //
+  // That bounds where the lossless rule is reachable.  A double only
+  // ever appears as a QUERY key (`m[k]`, `k in m`); the KEY half of map
+  // equality (`equality_functions.cc:187` `CheckAlternativeNumericType`)
+  // can therefore only ever see int↔uint, which both the lossless and
+  // the rounding rule compare exactly.
+  auto r =
+      OracleEval("dyn({9007199254740993: 'a'}) == {9007199254740992.0: 'a'}");
+  EXPECT_TRUE(r.is_error) << "expected an invalid-map-key-type error";
+}
+
+TEST(MapKeyNumericCrossType, MapEqualityMatchesIntAndUintKeysOfSameValue) {
+  // The int↔uint key match survives above 2^53 because it is EXACT on
+  // both sides (`CheckAlternativeNumericType` → `LosslessConvertibleToUint`
+  // → `MapValue::Find(UintValue(...))`), never a widening to double.
+  EXPECT_TRUE(
+      OracleBool("dyn({9007199254740993: 'a'}) == {9007199254740993u: 'a'}"));
+}
+
+TEST(MapKeyNumericCrossType, MapEqualityRejectsNeighbouringIntUintKeys) {
+  // Widening both keys to double would fold 2^53+1 onto 2^53 and report
+  // these maps equal.  They are not.
+  EXPECT_FALSE(
+      OracleBool("dyn({9007199254740993: 'a'}) == {9007199254740992u: 'a'}"));
+}
+
 }  // namespace
 }  // namespace celwasm

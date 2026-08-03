@@ -162,7 +162,7 @@ class StaticMemoryBuilder {
   // the index both depend only on the keys' content, not the offset).
   //
   // Returns `std::nullopt` when the entries contain a duplicate key (under
-  // the runtime's `cel_value_eq`): a duplicate-key map literal must keep
+  // the runtime's `cel_map_key_eq`): a duplicate-key map literal must keep
   // the per-Eval build path so it poisons with `CEL_ERR_DUPLICATE_KEY` at
   // construction time, matching today's semantics.  An empty map writes
   // `entries_offset = 0` / `index_offset = 0` with no run, matching

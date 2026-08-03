@@ -28,6 +28,7 @@
 #include "google/protobuf/descriptor_legacy.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/util/message_differencer.h"
+#include "runtime/cel_internal.h"  // numeric_compare_kernel, cel_numeric_key_eq
 #include "shared/type.h"
 
 namespace celwasm {
@@ -946,8 +947,10 @@ bool ProtoBacking::HasField(int field_number,
 // langdef §"Equality" / §"Map keys": cross-type numeric equality
 // (int ≡ uint by mathematical value; negative int never equals any
 // uint), structural same-kind for bool / string.  Mirrors
-// `map_keys_equal` in `runtime/cel_runtime.c` so host- and arena-
-// built maps lookup identically.  Returns OkStatus on legal compares;
+// `cel_map_key_eq` in `runtime/cel_compare.c` so host- and arena-
+// built maps lookup identically.  There is no double arm because
+// `DecodeKey` admits only bool / int / uint / string; the int↔uint
+// comparison below is exact, which is what the map-key rule requires.  Returns OkStatus on legal compares;
 // returns false for any non-key-kind operand (caller should already
 // have rejected; this is defence-in-depth).
 static bool MapKeysEqual(const celwasm::Value& a, const celwasm::Value& b) {
@@ -2321,9 +2324,10 @@ namespace {
 absl::StatusOr<bool> WireValueEq(const CelValue& a, const CelValue& b,
                                  const TrampolineContext& ctx);
 
-// Scalar-equality matcher mirroring `cel_runtime.c::cel_value_eq`
-// + `map_keys_equal`: cross-type numeric per langdef §"Equality"
-// for int/uint/double; structural for bool / string / bytes / null.
+// Scalar-equality matcher mirroring `cel_runtime.c::cel_value_eq`:
+// cross-type numeric per langdef §"Equality" for int/uint/double;
+// structural for bool / string / bytes / null.  Map KEYS use
+// `HostMapKeyEq` below instead — see its comment.
 // SCALARS ONLY — every aggregate / message operand routes through
 // `WireValueEq` before reaching here, so the `default:` arm is for
 // wire kinds with no scalar identity (error / unknown / type) and
@@ -2368,34 +2372,39 @@ bool HostScalarSameKindEq(const CelValue& a, const CelValue& b,
 }
 
 bool HostNumericCrossEq(const CelValue& a, const CelValue& b) {
-  // langdef §"Equality": int/uint/double compare by mathematical
-  // value across the type ladder.  Unrepresentable cross-type
-  // (e.g. int<0 vs uint) → false.
-  auto get_d = [](const CelValue& v, double* out) {
-    switch (v.kind) {
-      case CEL_INT:
-        *out = static_cast<double>(v.payload.i);
-        return true;
-      case CEL_UINT:
-        *out = static_cast<double>(v.payload.u);
-        return true;
-      case CEL_DOUBLE:
-        *out = v.payload.d;
-        return true;
-      default:
-        return false;
-    }
-  };
-  double da = 0;
-  double db = 0;
-  if (!get_d(a, &da) || !get_d(b, &db)) return false;
-  return da == db;
+  // langdef §"Equality": int/uint/double compare by mathematical value
+  // across the type ladder.  Delegates to the runtime's own ladder
+  // (`numeric_compare_kernel`, runtime/cel_compare.c) rather than
+  // widening both sides to double: the int-vs-uint arm must be EXACT,
+  // and a double widening folds distinct >2^53 magnitudes together.
+  // Sharing the kernel is also what keeps a host-origin operand
+  // answering identically to an arena-built one.  A non-numeric operand
+  // reaches the kernel's default arm and compares unequal.
+  return numeric_compare_kernel(&a, &b) == kCmpEqual;
 }
 
 bool HostScalarValueEq(const CelValue& a, const CelValue& b,
                        const MemoryView& mem) {
   if (a.kind == b.kind) return HostScalarSameKindEq(a, b, mem);
   return HostNumericCrossEq(a, b);
+}
+
+// Map-KEY equality for wire values — the LOSSLESS rule, not the `==`
+// rule that `HostScalarValueEq` implements.  Above 2^53 the two
+// disagree: one double is the rounded image of a range of int64s, and a
+// key lookup converts losslessly or not at all (see `cel_map_key_eq` in
+// runtime/cel_internal.h for the cel-cpp citations).
+//
+// Only the NUMERIC half is shared with the runtime.  `cel_map_key_eq`
+// itself reads spans through `cel_memory_base_()`, which on this side
+// is the host's own buffer, not the wasm instance's linear memory — so
+// span-bearing keys stay on `HostScalarValueEq`, which reads them
+// through the MemoryView.
+bool HostMapKeyEq(const CelValue& a, const CelValue& b, const MemoryView& mem) {
+  if (is_numeric_kind(a.kind) && is_numeric_kind(b.kind)) {
+    return cel_numeric_key_eq(&a, &b) != 0;
+  }
+  return HostScalarValueEq(a, b, mem);
 }
 
 // Read the i-th element of a CEL_LIST_ARENA via the MemoryView.
@@ -3008,20 +3017,19 @@ absl::Status SnapshotMapEntries(
 }
 
 // Returns true iff some entry of `b` has a key equal to `entry`'s
-// key AND a value equal to `entry`'s value.  Key equality goes
-// through HostScalarValueEq, so numeric keys match across the
-// int/uint/double ladder (langdef §"Equality") — same polymorphic
-// rule as the arena kernel's `map_keys_equal`; keys are scalar by
-// construction (langdef restricts map keys to bool / int / uint /
-// string), so the scalar matcher is complete for them.  VALUES may
-// be aggregates and take the deep compare.  Mirrors
-// `cel_runtime.c::arena_map_entry_matches`.
+// key AND a value equal to `entry`'s value.  Key equality goes through
+// `HostMapKeyEq` — the LOSSLESS map-key rule, matching the arena
+// kernel's `cel_map_key_eq`, so a cross-origin comparison answers the
+// same as an arena-only one.  Keys are scalar by construction (langdef
+// restricts map keys to bool / int / uint / string), so the scalar
+// matcher is complete for them.  VALUES may be aggregates and take the
+// deep compare.  Mirrors `cel_runtime.c::arena_map_entry_matches`.
 absl::StatusOr<bool> NormalizedMapEntryMatches(
     const std::pair<CelValue, CelValue>& entry,
     const std::vector<std::pair<CelValue, CelValue>>& b,
     const TrampolineContext& ctx) {
   for (const auto& [kb, vb] : b) {
-    if (HostScalarValueEq(entry.first, kb, ctx.mem)) {
+    if (HostMapKeyEq(entry.first, kb, ctx.mem)) {
       return WireValueEq(entry.second, vb, ctx);
     }
   }

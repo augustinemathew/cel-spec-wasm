@@ -57,18 +57,23 @@ declare -a files=()
 
 # C/C++ sources under the project packages, as git pathspecs (reused below).
 _cc_globs=(
-  'compiler/**/*.cc' 'compiler/**/*.h' 'compiler/**/*.c'
-  'eval/**/*.cc' 'eval/**/*.h' 'eval/**/*.c'
-  'common/**/*.cc' 'common/**/*.h' 'common/**/*.c'
-  'abi/**/*.cc' 'abi/**/*.h' 'abi/**/*.c'
-  'runtime/**/*.cc' 'runtime/**/*.h' 'runtime/**/*.c'
-  'tools/**/*.cc' 'tools/**/*.h' 'tools/**/*.c'
-  'conformance/**/*.cc' 'conformance/**/*.h' 'conformance/**/*.c'
-  'e2e/**/*.cc' 'e2e/**/*.h' 'e2e/**/*.c'
-  'benchmark/**/*.cc' 'benchmark/**/*.h' 'benchmark/**/*.c'
-  'testdata/**/*.cc' 'testdata/**/*.h' 'testdata/**/*.c'
+  ':(glob)compiler/**/*.cc' ':(glob)compiler/**/*.h' ':(glob)compiler/**/*.c'
+  ':(glob)eval/**/*.cc' ':(glob)eval/**/*.h' ':(glob)eval/**/*.c'
+  ':(glob)common/**/*.cc' ':(glob)common/**/*.h' ':(glob)common/**/*.c'
+  ':(glob)abi/**/*.cc' ':(glob)abi/**/*.h' ':(glob)abi/**/*.c'
+  ':(glob)runtime/**/*.cc' ':(glob)runtime/**/*.h' ':(glob)runtime/**/*.c'
+  ':(glob)tools/**/*.cc' ':(glob)tools/**/*.h' ':(glob)tools/**/*.c'
+  ':(glob)conformance/**/*.cc' ':(glob)conformance/**/*.h' ':(glob)conformance/**/*.c'
+  ':(glob)e2e/**/*.cc' ':(glob)e2e/**/*.h' ':(glob)e2e/**/*.c'
+  ':(glob)benchmark/**/*.cc' ':(glob)benchmark/**/*.h' ':(glob)benchmark/**/*.c'
+  ':(glob)testdata/**/*.cc' ':(glob)testdata/**/*.h' ':(glob)testdata/**/*.c'
 )
 
+# NOTE: the `:(glob)` prefixes above are load-bearing.  With git's
+# DEFAULT pathspec magic, `runtime/**/*.c` requires a literal `/` after
+# the `**`, so `runtime/cel_runtime.c` — a file directly under the role
+# dir — never matched and was silently skipped by the branch gate.
+# `:(glob)` gives `**/` its usual "zero or more directories" meaning.
 _dedup_files() {
   if [[ ${#files[@]} -gt 0 ]]; then
     mapfile -t files < <(printf '%s\n' "${files[@]}" | awk 'NF' | sort -u)
@@ -210,6 +215,15 @@ for f in "${targets[@]}"; do
     # DB interpolation picks a TU without the wasmtime include path).
     # Transitively covered by memory_grow_stability_test.cc.
     eval/internal/instance_test_peer.h) continue ;;
+    # The only first-party TU that includes cel-cpp's
+    # `compiler/compiler_factory.h`, which does not parse under the
+    # lint clang — `CompilerBuilder` is undeclared at its own
+    # declaration site (compiler_factory.h:51), so the AST degrades and
+    # the TU reports 15 clang-diagnostic-errors.  Vendored-header vs
+    # pinned-toolchain skew, not a defect here: `bazel build
+    # //testdata:cel_cpp_oracle` is green.  Tracked in
+    # doc/implementation-plan/lint-backlog.md.
+    testdata/cel_cpp_oracle.cc) continue ;;
   esac
   case "$f" in
     *.c)                          c_targets+=("$f") ;;
