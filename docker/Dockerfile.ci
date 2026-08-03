@@ -1,0 +1,57 @@
+# Warm CI image for celwasm — docker/Dockerfile plus a populated bazel
+# disk cache.
+#
+# WHY.  A cold `bazel build //...` spends ~13-15 minutes compiling
+# cel-cpp from source, and EVERY parallel CI lane pays it independently.
+# That tax is what makes splitting CI into jobs expensive: four lanes
+# means four identical cel-cpp compiles.  Baking the cache once, here,
+# drops each lane to fetching pre-built action outputs.
+#
+# Measured on the same action set (2342 actions, compiler/frontend):
+#
+#     cold, populating the cache      146.0s   1134 actions executed
+#     warm, DIFFERENT workspace path   15.9s   1135 disk cache hits
+#
+# 100% hit rate across a different absolute path — bazel's disk cache is
+# content-addressed, so the image does not constrain where CI checks the
+# source out.  That portability is what makes this approach work at all;
+# it was verified before this file was written, not assumed.
+#
+# STALENESS.  The cache stops matching when a pinned input moves
+# (cel-cpp.sha, MODULE.bazel, .bazelversion, the toolchain).  Nothing
+# breaks — content addressing means bazel rebuilds rather than serving a
+# stale artifact — but CI silently returns to cold-build speed.  The
+# stamp baked below lets scripts/ci_check_image_stamp.sh turn that
+# silence into a hard failure.
+# The base is docker/Dockerfile (host toolchain only, no source).  The
+# publishing workflow builds it first and passes its local tag in, so
+# this file never depends on a registry image existing.
+ARG BASE=celwasm-build:local
+FROM ${BASE} AS base
+
+# Build context is the repo root.
+WORKDIR /src
+COPY . /src
+
+# The vendored dep is fetched, not committed — only its SHA is.
+RUN third_party/fetch_cel_cpp.sh
+
+# Populate the cache.  `//...` covers every first-party package plus the
+# wasm cross-compile, which is the bulk of the cold cost.  The build
+# tree itself is discarded; only the content-addressed cache is kept.
+RUN bazel build --disk_cache=/opt/celwasm/disk-cache //... \
+    && bazel shutdown
+
+# Record what this cache was built for, plus the real toolchain identity
+# — `FROM ubuntu:24.04` with unpinned apt clang means the compiler can
+# move without any repo file changing.
+RUN mkdir -p /opt/celwasm \
+    && scripts/ci_image_stamp.sh > /opt/celwasm/ci-image.stamp \
+    && clang --version | head -1 > /opt/celwasm/ci-image.toolchain \
+    && cat /opt/celwasm/ci-image.stamp /opt/celwasm/ci-image.toolchain
+
+# Drop the source; the cache is the product.  A CI job checks out its
+# own commit — baking source would only invite it to be used by mistake.
+RUN rm -rf /src /root/.cache/bazel
+
+WORKDIR /

@@ -1,24 +1,40 @@
 # CI for cel-wasm.
 #
-# Primary leg: ubuntu-24.04 — cheap (free-tier minutes at 1× on the
-# public repo) and fast to schedule.  It runs the complete gate set:
-#   1. `third_party/fetch_cel_cpp.sh` — vendored cel-cpp is fetched on
-#      demand (only the pinned SHA is committed); bazel module
-#      resolution fails without it.
-#   2. `bazel build //...` then `bazel test //...` — every unit test
-#      (fastbuild, same config as local dev + the pre-push gate).
-#   3. `scripts/run_full_suite.sh` — manual-tagged targets (which
-#      `bazel test //...` does NOT pick up; they carry the load-bearing
-#      e2e assertions) plus the dual-mode conformance gate.
+# SHAPE.  Work is split by LINK MODE across parallel jobs, because the
+# mode — not the test count — is what costs:
+#
+#     29 e2e suites, static   36.3 min
+#     the same 29, dynamic     5.3 min
+#     97 other targets        10.0 min
+#
+# Static mode re-verifies LINKING, not semantics: identical assertions,
+# with the runtime compiled in rather than imported.  Link-mode breaks
+# come from BUILD/toolchain changes, not from editing a kernel, so they
+# do not need to gate every review round-trip.
+#
+#   pull_request  fast lane + dynamic conformance      (~20 min)
+#   push (master) the above PLUS static lane + static
+#                 conformance, all in parallel         (~40 min)
+#
+# Nothing is dropped — static still gates master, so a link-mode
+# regression cannot reach a release.  It just stops serialising behind
+# the fast feedback a PR author is waiting on.
+#
+# Each lane selects targets by NAME, via `bazel query filter(...)`, and
+# passes explicit labels.  That matters: explicit labels also run the
+# `manual`-tagged targets, which `bazel test //...` silently skips and
+# which carry the load-bearing e2e assertions.  The old
+# run_full_suite.sh pass is therefore folded into the lanes rather than
+# tacked on after them.
+#
+# Cache: a bazel disk cache keyed on MODULE.bazel + the cel-cpp pin.
+# Cold runs compile cel-cpp from source (~13-15 min) and EVERY lane pays
+# it independently — that tax is what docker/Dockerfile.ci exists to
+# remove.
 #
 # macOS (Apple Silicon) leg: workflow_dispatch only.  The project is
 # developed and pre-push-gated on Apple Silicon locally, so a per-push
-# macOS job is redundant coverage at 10× the runner cost — dispatch it
-# on demand (e.g. before a release cut).
-#
-# Cache: a bazel disk cache keyed on MODULE.bazel + the cel-cpp pin.
-# Cold runs compile cel-cpp from source (~tens of minutes); warm runs
-# are dominated by test execution.
+# macOS job is redundant coverage at 10x the runner cost.
 name: ci
 
 on:
@@ -47,38 +63,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Linux leg — host deps mirror docker/Dockerfile: clang+lld are
-  # required (the runtime C needs clang; gold crashes on the host
-  # link), tzdata-legacy supplies the US/* timezone aliases the
-  # conformance corpus reads.  Verified 2026-06-10 in the
-  # docker/Dockerfile container: full sweep green after the
-  # wasm_clang.sh fuse-ld fix (130/133 with only parallel-load
-  # timeout artifacts, since re-sized).
-  test-linux:
+  # ---- runs on every PR and every master push -------------------------
+  # Everything except the static-link duplicates.  Explicit labels from
+  # the query, so `manual`-tagged targets run here too.
+  fast:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    env:
-      CC: clang
-      CXX: clang++
+    timeout-minutes: 60
+    env: { CC: clang, CXX: clang++ }
     steps:
       - uses: actions/checkout@v4
 
-      # A cold run compiles all of cel-cpp from source, and the bazel
-      # output tree plus disk cache overruns the ~14 GB an
-      # ubuntu-24.04 runner leaves free.  The failure surfaces as an
-      # unrelated-looking compile error ("Compiling runtime/cel_make.c
-      # failed") with the real cause buried in the sandbox's
-      # "No space left on device" note, so reclaim first.  The
-      # toolchains removed here are preinstalled on the image and
-      # nothing in this build uses them.
-      - name: Reclaim runner disk
-        run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
-                      /opt/ghc /usr/local/.ghcup \
-                      /usr/local/share/boost /usr/share/swift || true
-          sudo docker image prune -af || true
-          df -h / | tail -1
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
+      # No-op unless the job runs in the warm CI image; fails loudly if
+      # that image was built for different pins (docker/Dockerfile.ci).
+      - name: Verify CI image freshness
+        run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
@@ -96,27 +97,170 @@ jobs:
             bazel-disk-${{ runner.os }}-
 
       - name: Point bazel at the disk cache
-        # .bazelrc try-imports user.bazelrc; `test` inherits `build` flags.
         run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
 
-      - name: Build
-        run: bazel build //...
+      - name: Test (all but static-link)
+        run: |
+          targets=$(bazel query 'tests(//...) except filter("_static$", tests(//...))' \
+                      2>/dev/null | grep -v cel_oracle_property_test)
+          echo "$targets" | wc -l | xargs echo "targets:"
+          bazel test --test_output=errors $targets
 
-      - name: Test
-        run: bazel test --test_output=errors //...
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
 
-      - name: Manual-tagged targets + dual-mode conformance gate
-        run: scripts/run_full_suite.sh
-
-      # Save even when a test fails: the compiled cel-cpp objects are
-      # the expensive part, and actions/cache's combined action skips
-      # its save on job failure — which kept every retry cold.
-      - name: Save bazel disk cache
+      - name: Prune bazel disk cache
         if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
+
+  conformance-dynamic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env: { CC: clang, CXX: clang++ }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
+      # No-op unless the job runs in the warm CI image; fails loudly if
+      # that image was built for different pins (docker/Dockerfile.ci).
+      - name: Verify CI image freshness
+        run: scripts/ci_check_image_stamp.sh
+
+      - name: Install host deps (mirrors docker/Dockerfile)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+
+      - name: Fetch vendored cel-cpp (pinned SHA)
+        run: third_party/fetch_cel_cpp.sh
+
+      - name: Restore bazel disk cache
+        id: bazel-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/bazel-disk-cache
-          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      - name: Point bazel at the disk cache
+        run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
+
+      - name: Conformance (dynamic)
+        run: scripts/check_conformance_monotonic.sh --mode dynamic
+
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
+
+  # ---- master only ----------------------------------------------------
+  # The expensive half.  Parallel with the lanes above, so it sets the
+  # wall-clock floor instead of adding to it.
+  static:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env: { CC: clang, CXX: clang++ }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
+      # No-op unless the job runs in the warm CI image; fails loudly if
+      # that image was built for different pins (docker/Dockerfile.ci).
+      - name: Verify CI image freshness
+        run: scripts/ci_check_image_stamp.sh
+
+      - name: Install host deps (mirrors docker/Dockerfile)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+
+      - name: Fetch vendored cel-cpp (pinned SHA)
+        run: third_party/fetch_cel_cpp.sh
+
+      - name: Restore bazel disk cache
+        id: bazel-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      - name: Point bazel at the disk cache
+        run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
+
+      - name: Test (static-link)
+        run: |
+          targets=$(bazel query 'filter("_static$", tests(//...))' 2>/dev/null)
+          echo "$targets" | wc -l | xargs echo "targets:"
+          bazel test --test_output=errors $targets
+
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
+
+  conformance-static:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env: { CC: clang, CXX: clang++ }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
+      # No-op unless the job runs in the warm CI image; fails loudly if
+      # that image was built for different pins (docker/Dockerfile.ci).
+      - name: Verify CI image freshness
+        run: scripts/ci_check_image_stamp.sh
+
+      - name: Install host deps (mirrors docker/Dockerfile)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+
+      - name: Fetch vendored cel-cpp (pinned SHA)
+        run: third_party/fetch_cel_cpp.sh
+
+      - name: Restore bazel disk cache
+        id: bazel-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      - name: Point bazel at the disk cache
+        run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
+
+      - name: Conformance (static)
+        run: scripts/check_conformance_monotonic.sh --mode static
+
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
 
   test-macos:
     if: github.event_name == 'workflow_dispatch' && inputs.macos
@@ -141,14 +285,24 @@ jobs:
         # .bazelrc try-imports user.bazelrc; `test` inherits `build` flags.
         run: echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
 
-      - name: Build
-        run: bazel build //...
-
+      # `bazel test //...` builds everything the build step would.
       - name: Test
         run: bazel test --test_output=errors //...
 
       - name: Manual-tagged targets + dual-mode conformance gate
         run: scripts/run_full_suite.sh
+
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      # Same unbounded-growth problem as the Linux leg; macOS runners
+      # have less free space to start with, not more.
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
 
       - name: Save bazel disk cache
         if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
