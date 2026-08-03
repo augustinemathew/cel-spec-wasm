@@ -81,13 +81,16 @@ uint32_t cel_map_index_find(const ArenaMapHeader* hdr, const CelValue* key) {
     const uint64_t group = cel_group_load(ctrl + seq);
 
     // Candidate lanes whose control byte == h2; confirm each with
-    // cel_value_eq (collisions re-check).
+    // cel_map_key_eq (collisions re-check).  The confirmation MUST use
+    // the map-key rule, not `cel_value_eq`: the hash canonicalizes a
+    // double to the integer it exactly represents, so a comparator that
+    // also accepted rounded neighbours would disagree with the hash.
     uint64_t match = group_match(group, h2);
     while (match != 0) {
       const uint32_t lane = (uint32_t)(__builtin_ctzll(match) >> 3);
       const uint32_t slot = (seq + lane) & mask;
       const uint32_t entry = slots[slot];
-      if (cel_value_eq(index_map_entry_key(hdr, entry), key)) {
+      if (cel_map_key_eq(index_map_entry_key(hdr, entry), key)) {
         return entry;
       }
       match &= match - 1;  // clear the lowest matched lane.
@@ -125,7 +128,7 @@ static int index_place_entry(const ArenaMapHeader* hdr, uint8_t* ctrl,
     while (match != 0) {
       const uint32_t lane = (uint32_t)(__builtin_ctzll(match) >> 3);
       const uint32_t slot = (seq + lane) & mask;
-      if (cel_value_eq(index_map_entry_key(hdr, slots[slot]), key)) {
+      if (cel_map_key_eq(index_map_entry_key(hdr, slots[slot]), key)) {
         return 0;  // duplicate key.
       }
       match &= match - 1;

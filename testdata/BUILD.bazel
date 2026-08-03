@@ -33,6 +33,7 @@ proto_library(
         "@com_google_protobuf//:duration_proto",
         "@com_google_protobuf//:struct_proto",
         "@com_google_protobuf//:timestamp_proto",
+        "@com_google_protobuf//:wrappers_proto",
     ],
 )
 
@@ -79,6 +80,8 @@ cc_library(
         "@cel-cpp//compiler:compiler_factory",
         "@cel-cpp//compiler:optional",
         "@cel-cpp//compiler:standard_library",
+        "@cel-cpp//extensions:comprehensions_v2",
+        "@cel-cpp//extensions:comprehensions_v2_functions",
         "@cel-cpp//extensions:encoders",
         "@cel-cpp//extensions:math_ext",
         "@cel-cpp//extensions:math_ext_decls",

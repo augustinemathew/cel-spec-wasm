@@ -23,8 +23,8 @@
 
 #include "absl/strings/string_view.h"
 #include "runtime/cel_data.h"
-#include "runtime/cel_memory.h"
 #include "runtime/cel_internal.h"
+#include "runtime/cel_memory.h"
 #include "runtime/cel_string_ext_internal.h"
 
 namespace {
@@ -188,18 +188,29 @@ int64_t CodepointToByteOffset(absl::string_view s, int64_t n) {
 }
 
 // Pre-flight pos validation common to the 3-arg `indexOf` /
-// `lastIndexOf` shapes.  `allow_negative` matches cel-cpp's split:
-// `IndexOf3` clamps negative pos (allow_negative=true), while
-// `LastIndexOf3` rejects negative pos (allow_negative=false).
+// `lastIndexOf` shapes.  Upstream both compare `pos` against
+// `haystack.Size()`, and `StringValue::Size()` is
+// `internal::Utf8CodePointCount(...)` (cel-cpp
+// common/values/string_value.cc:141-145) — CODE POINTS, not bytes.
+// The two units coincide for ASCII, so bounding on the byte length
+// agreed with every ASCII fixture and diverged only on multi-byte
+// text: `"héllo"` is 6 bytes and 5 code points, and
+// `"héllo".indexOf("", 6)` returned -1 where cel-cpp errors.
+//
+// Negative `pos` is rejected in both directions.  `LastIndexOf3`
+// spells that out (`pos < 0 || pos > Size()`); `IndexOf3` tests only
+// `pos > Size()`, but `Size()` is unsigned, so a negative `pos`
+// promotes to a huge unsigned value and trips the same guard
+// (extensions/strings.cc:120, :133).  Reading that omission as a
+// deliberate clamp is what made `"abc".indexOf("a", -1)` return 0.
+//
+// `CodepointToByteOffset` returns -1 exactly when `pos` exceeds the
+// code-point count, which is the bound wanted here.
+//
 // Returns true on error (caller should bail; `out` has been
 // poisoned).
-bool ValidatePos(CelValue* out, int64_t pos, size_t haystack_bytes,
-                 bool allow_negative) {
-  if (!allow_negative && pos < 0) {
-    Poison(out, CEL_ERR_INVALID_ARGUMENT);
-    return true;
-  }
-  if (pos >= 0 && static_cast<uint64_t>(pos) > haystack_bytes) {
+bool ValidatePos(CelValue* out, int64_t pos, absl::string_view haystack) {
+  if (pos < 0 || CodepointToByteOffset(haystack, pos) < 0) {
     Poison(out, CEL_ERR_INVALID_ARGUMENT);
     return true;
   }
@@ -308,9 +319,8 @@ extern "C" void cel_string_index_of_at_vvv(uint32_t out_slot, uint32_t s_slot,
     Poison(out, CEL_ERR_TYPE_MISMATCH);
     return;
   }
-  // cel-cpp `IndexOf3` byte-size bound — see header.
-  if (ValidatePos(out, pos->payload.i, s->payload.s.len,
-                  /*allow_negative=*/true)) {
+  // cel-cpp `IndexOf3` bound — see the ValidatePos header comment.
+  if (ValidatePos(out, pos->payload.i, BorrowSpan(s->payload.s))) {
     return;
   }
   WriteInt(out, IndexOfImpl(BorrowSpan(s->payload.s),
@@ -353,8 +363,7 @@ extern "C" void cel_string_last_index_of_at_vvv(uint32_t out_slot,
     return;
   }
   // cel-cpp `LastIndexOf3` byte-size bound + negative-pos reject.
-  if (ValidatePos(out, pos->payload.i, s->payload.s.len,
-                  /*allow_negative=*/false)) {
+  if (ValidatePos(out, pos->payload.i, BorrowSpan(s->payload.s))) {
     return;
   }
   WriteInt(out, LastIndexOfImpl(BorrowSpan(s->payload.s),
@@ -379,8 +388,7 @@ extern "C" void cel_string_substring_at_vv(uint32_t out_slot, uint32_t s_slot,
   // Mirrors cel-cpp `Substring(start)` (lines ~647-700): start<0
   // and start>byte_size are early-out errors; the code-point walk
   // refines start>codepoint_count to an error.
-  if (ValidatePos(out, start->payload.i, s->payload.s.len,
-                  /*allow_negative=*/false)) {
+  if (ValidatePos(out, start->payload.i, BorrowSpan(s->payload.s))) {
     return;
   }
   const absl::string_view text = BorrowSpan(s->payload.s);

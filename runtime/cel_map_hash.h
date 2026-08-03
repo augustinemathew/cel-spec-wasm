@@ -20,12 +20,20 @@
 //
 // ── THE LOAD-BEARING INVARIANT (§5) ──────────────────────────────────
 //
-// Keys that the runtime's `cel_value_eq` (`cel_runtime.c:655`,
-// dispatching through `numeric_compare_kernel`, `cel_compare.c:157`)
-// considers EQUAL MUST hash IDENTICALLY.  A hash collision is harmless
-// (the probe re-checks equality via `cel_value_eq`); a false *miss* is a
-// bug.  Canonicalization here guarantees no false miss; it is NOT a
+// Keys that the runtime's `cel_map_key_eq` (`cel_compare.c`) considers
+// EQUAL MUST hash IDENTICALLY.  A hash collision is harmless (the probe
+// re-checks equality via `cel_map_key_eq`); a false *miss* is a bug.
+// Canonicalization here guarantees no false miss; it is NOT a
 // general-purpose value hash.
+//
+// The paired comparator is the map-KEY rule (lossless numeric
+// conversion), NOT `cel_value_eq` (the `==` operator's rounding rule).
+// That pairing is what makes the invariant hold at every magnitude:
+// this kernel folds a double onto the integer it EXACTLY represents,
+// and `cel_map_key_eq` accepts exactly that conversion, so the two
+// agree above 2^53 as well as below.  Pairing it with the rounding rule
+// instead would break the invariant — a rounded double is `==`-equal to
+// a range of int64s, and no single token can land on a range.
 
 #ifndef CELWASM_RUNTIME_CEL_MAP_HASH_H_
 #define CELWASM_RUNTIME_CEL_MAP_HASH_H_
@@ -134,9 +142,9 @@ static inline uint64_t cel_mix64(uint64_t x) {
 // of the same mathematical integer) must share a token, so the numeric
 // canonicalization below does NOT salt by kind — it folds them to one of
 // two integer tokens.  bool / string / bytes get their own salt because
-// `cel_value_eq` never matches them across the kind boundary:
-//   - bool true vs int 1  → 0 (cel_runtime.c:662 guards bool==bool only)
-//   - string "x" vs bytes "x" → 0 (cel_runtime.c:659/665 guard each kind)
+// `cel_map_key_eq` never matches them across the kind boundary:
+//   - bool true vs int 1  → 0 (bool compares bool-to-bool only)
+//   - string "x" vs bytes "x" → 0 (each kind is guarded separately)
 // Salting them apart is correctness-neutral (they never compare equal so
 // a shared hash would only be a harmless collision) but reduces those
 // collisions.
@@ -146,7 +154,7 @@ static const uint64_t kCelHashSaltBytes = 0x00B47E5678901234ULL;
 
 // Sentinel hash for a double key that cannot compare equal to ANY stored
 // int/uint key: non-integral, NaN, ±Inf, or out of [INT64_MIN, UINT64_MAX]
-// integer range.  §5: such a double probes, finds no `cel_value_eq`
+// integer range.  §5: such a double probes, finds no `cel_map_key_eq`
 // confirmation, and correctly misses.  Mixed so it lands in a
 // well-distributed slot rather than always slot 0.
 static inline uint64_t cel_hash_double_sentinel(void) {
@@ -206,27 +214,21 @@ static inline uint64_t cel_hash_bytes(CelSpan s, uint64_t salt) {
 }
 
 // The canonicalizing key hash (§5).  Returns a 64-bit hash such that any
-// two keys `cel_value_eq` considers equal hash identically.
+// two keys `cel_map_key_eq` considers equal hash identically.
 //
 //   - bool   → canonical 0/1 with a kind salt (distinct from numeric
-//              0/1, which `cel_value_eq` requires; cel_runtime.c:662).
+//              0/1, which the comparator requires).
 //   - int / uint / integral-in-range double of the same mathematical
-//              value → the same integer token (cel_runtime.c:656 +
-//              numeric_compare_kernel, cel_compare.c:157).
+//              value → the same integer token.
 //   - non-integral / NaN / ±Inf / out-of-range double → the fixed
-//              non-matching sentinel (cmp_int_vs_double cel_compare.c:132
-//              / cmp_uint_vs_double :139 report equal only for an exact
-//              in-range integer, so a sentinel never causes a false miss).
+//              non-matching sentinel (the comparator's lossless
+//              conversion admits only an exact in-range integer, so a
+//              sentinel never causes a false miss).
 //   - string / bytes → length-delimited byte hash through linear memory,
-//              salted apart (cel_runtime.c:659/665 guard each kind).
+//              salted apart (each kind is guarded separately).
 //
 // Stored keys are only bool/int/uint/string (double rejected on insert
-// by is_valid_map_key_kind, cel_runtime.c:21), so the double arm matters
-// for LOOKUP keys.  The `≥ 2^53` rounding ambiguity (a double equal to a
-// RANGE of int64s under the lossy `cel_value_eq`) is handled by the
-// LOOKUP kernel's linear fallback (§5.1) — NOT here — but an in-range
-// integral double must still hash to the int token it exactly represents,
-// which it does.
+// by is_valid_map_key_kind), so the double arm matters for LOOKUP keys.
 // Hash a double key by the integer it EXACTLY represents (so an in-range
 // integral double folds to the same token as the int/uint of that value),
 // or the non-matching sentinel for non-integral / NaN / ±Inf / out-of-
@@ -234,8 +236,9 @@ static inline uint64_t cel_hash_bytes(CelSpan s, uint64_t salt) {
 // non-integral and ±Inf (their int cast does not round-trip).  The int64
 // representation is tried first (covers negatives and the [0, INT64_MAX]
 // overlap), then the uint64 representation for the (INT64_MAX, UINT64_MAX]
-// tail.  The `≥ 2^53` lossy-range ambiguity is the LOOKUP kernel's linear
-// fallback (§5.1), not this hash's concern — see `cel_map_key_hash`.
+// tail.  Truncation is exactly the conversion `cel_map_key_eq` accepts,
+// so no key needs to bypass the index — including the `≥ 2^53` range
+// that the old rounding comparator forced onto a linear scan.
 static inline uint64_t cel_hash_double_key(double d) {
   if (d == d) {
     if (d >= -9223372036854775808.0 /* (double)INT64_MIN */ &&

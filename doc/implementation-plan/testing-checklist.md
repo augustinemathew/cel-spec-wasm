@@ -456,6 +456,9 @@ variant to the right `Repr`. `RejectDyn` tests live in
 | `kComprehensionExpr` (transformMapEntry 3-arg, single-key entry) | [x] | [x] | [x] | [x] | [x] | [x] |
 | `kComprehensionExpr` (transformMapEntry 3-arg, multi-key entry)  | [x] | [x] | [x] | [x] | [x] | [x] |
 | `kComprehensionExpr` (transformMapEntry 4-arg, single-key entry) | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 3-arg, computed entry)   | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 4-arg, computed entry)   | [x] | [x] | [x] | [x] | [x] | [x] |
+| `kComprehensionExpr` (transformMapEntry 4-arg, multi-key entry)  | [x] | [x] | [x] | [x] | [x] | [x] |
 | `kComprehensionExpr` (cel.bind via Shape-C)  | [x] | [x] | [x] | [x] | [x] | [x] |
 | nested comprehensions with shadowing | [x] | [x] | [x] | [x]  | [x]     | [x] |
 
@@ -656,6 +659,44 @@ variant to the right `Repr`. `RejectDyn` tests live in
       SKIPs at `RejectDyn`-on-empty-literal cases documented
       with cel_map_test.cc runtime equivalents).  Doc:
       `doc/implementation-plan/rewrite/m5-comprehensions-followon.md`.
+
+- [x] **Comprehension 3VL + computed `transformMapEntry` entries**
+      (two P0 fixes, 2026-08-01).
+
+      - Loop-cond peephole gates on `accu.kind == CEL_BOOL`, not the
+        payload word alone, so an ERROR / UNKNOWN accumulator is
+        absorbed by a later element instead of short-circuiting the
+        loop and becoming the result (`[0, 2].exists(x, 2/x == 1)`
+        → `true`).  Emitted shape:
+        `compiler/codegen/expr_lower_test.cc`
+        (`{Exists,All,MapSourceExists}LoopCondGatesOnAccuKind`,
+        `ExistsOneHasNoAccuPeephole`).  Behaviour: the
+        error-then-match / match-then-error / error-and-no-match /
+        all-match / none-match / empty-range matrix for `exists`,
+        `all` and `exists_one` in `e2e/m5b_test.cc`
+        (`ComprehensionAccuAbsorptionE2ETest`), every row
+        oracle-confirmed against cel-cpp in
+        `testdata/cel_cpp_oracle_comprehension_test.cc`
+        (`ComprehensionAccuAbsorptionOracle`).  WAT traces 60 / 61
+        re-authored to the kind-gated shape.
+      - `transformMapEntry` with a COMPUTED entry expression (and
+        the multi-key 4-arg form) compiles instead of aborting:
+        new `cel_map_merge_at` / `cel_map_merge_at_if_bool` runtime
+        helpers, the only insert path that grows the accumulator.
+        Runtime: `runtime/cel_map_test.cc` (`MapMergeTest` — 20
+        cases: empty / single / multi / collision / growth from
+        pre-size and from zero capacity / growth-after-index-build /
+        error / unknown / non-map / poisoned-accu / invalid-key-kind
+        / host-represented entry map / the five predicate arms).
+        Codegen: `expr_lower_test.cc`
+        (`TransformMapEntryComputedEntryEmitsMerge`,
+        `ConditionalMultiKeyMerges`, plus the literal path asserting
+        the merge is NOT emitted).  e2e + oracle: `m5b_test.cc`
+        `ComprehensionTransformMapEntryE2ETest` computed-entry rows
+        against `TransformMapEntryComputedOracle`.
+      - Oracle extended with the comprehensions_v2 compiler library +
+        functions so `transformMap*` questions can be asked at all
+        (`testdata/cel_cpp_oracle.cc`).
 
 ## Front-end semantic coverage (beyond the grids)
 
@@ -3343,13 +3384,15 @@ are staged into the native arena so the kernel reads their bytes).
         `BuildAtThresholdSetsIndexOffset`, `kCelMapIndexThreshold = 8`).
   - [x] multi-group triangular probe (`LargeMapMultiGroupProbeFindsEveryKey`,
         200 entries) + H2==0 control byte (`H2ZeroControlByteKeysResolve`).
-  - [x] ≥2^53 double-lookup-key linear fallback parity
-        (`LargeDoubleKeyFallsBackToLinearParity`; predicate
-        `key_forces_linear` in `cel_runtime.c`).
+  - [x] ≥2^53 double lookup keys resolve THROUGH the index
+        (`LargeDoubleKeyResolvesThroughTheIndex`).  The
+        `key_forces_linear` fallback was deleted with the CELW-0004 fix
+        below — the hash and the lossless comparator now agree at every
+        magnitude, so no key bypasses the index.
   - [x] dup-key re-validation at build poisons CEL_ERR_DUPLICATE_KEY
         (`BuildReValidatesDuplicateOnDirectEntries`,
-        `BuildPoisonsCrossKindDuplicate` — asserts current lossy
-        `cel_value_eq` map-key behaviour, not cel-cpp).
+        `BuildPoisonsCrossKindDuplicate` — asserts our int≡uint map-key
+        identity, which still differs from cel-cpp; see m32 §15).
   - [x] indexed `cel_map_eq_arena` (O(n²)→O(n) inner match)
         (`EqArenaOverLargeIndexedMaps`).
   - [x] `ArenaMapHeader.index_offset` offset pinned (`cel_data_test.cc`).
@@ -3492,6 +3535,81 @@ References to `CelfnType` in earlier shipped-milestone sections above
       OptionalWithoutElementChecks}`; the four cel_plugin
       empty-witness InvalidArgument guards; the emitters'
       empty-payload InternalErrors; Argkind's `"unknown"` fallbacks.
+
+## CELW-0004 — lossless numeric map-key equality (2026-08-01)
+
+Map-key matching used the `==` operator's rule (`cel_value_eq` →
+`numeric_compare_kernel`), which casts an int to double; above 2^53 that
+made a rounded double query key match a DISTINCT stored int key —
+silently wrong, no error.  cel-cpp converts the query key to the stored
+key's type only when the conversion round-trips
+(`internal/number.h` `LosslessConvertibleToInt` / `...ToUint`).
+`cel_map_key_eq` (`runtime/cel_compare.c`) now implements that rule;
+`cel_value_eq` keeps the rounding rule for `==` / list membership /
+element compares, which cel-cpp genuinely answers differently.
+
+**Oracle — the boundary between the two rules** (`testdata/cel_cpp_oracle_test.cc`)
+
+  - [x] `m[k]` uses the exact rule (`MapIndexAccessUsesExactKeyRule` —
+        `{2^53+1:'a'}[dyn(2^53.0)]` is an error, not a hit).
+  - [x] A double cannot BE a map key at all
+        (`DoubleMapLiteralKeyRejectedAtRuntime` — written expecting a
+        value, corrected from what the oracle returned), which bounds
+        the lossless rule to double QUERY keys; the key half of map
+        equality therefore only ever sees int↔uint, exact both ways
+        (`MapEqualityMatchesIntAndUintKeysOfSameValue`,
+        `MapEqualityRejectsNeighbouringIntUintKeys`).
+  - [x] List membership STAYS lossy (`ListMembershipStaysLossyAt2Pow53`)
+        and list element equality stays lossy
+        (`ListEqualityStaysLossyAt2Pow53`) — the negative half that
+        scopes which call sites may use the lossless predicate.
+
+**Kernel — the predicate** (`runtime/cel_compare_test.cc`)
+
+  - [x] Boundary matrix at 2^53-1 / 2^53 / 2^53+1 / 2^53+2 against the
+        neighbouring doubles, asserted in BOTH argument orders
+        (`MapKeyEqTest.IsSymmetricAndMatchesLosslessRule`), plus 2^54+1,
+        the negative equivalents, `INT64_MIN`, and `INT64_MAX`.
+  - [x] uint boundaries including above 2^63: 2^63, 2^63+1, `UINT64_MAX`
+        vs `2^64.0`, and the largest round-tripping double 2^64-2048.
+  - [x] int-vs-uint pairs (no double involved) stay EXACT.
+  - [x] NaN / ±Inf / non-integral query keys never match; `0.0 == -0.0`;
+        bool never equals numeric 0/1.
+  - [x] Non-numeric operands to `cel_numeric_key_eq` compare unequal
+        (`NumericKeyEqRejectsNonNumericOperands`).
+  - [x] The SEPARATION itself — same operand pair, `cel_value_eq` true /
+        `cel_map_key_eq` false (`ValueEqStaysLossyWhereKeyEqIsExact`).
+  - [x] Ordering (`<` `<=` `>` `>=`) and `==` UNCHANGED for every
+        boundary pair (`OrderingUnchangedForTheKeyEqBoundaryPairs`,
+        `OrderingStillDiscriminatesDistinctDoubles`).
+
+**Kernel — through the map API, on BOTH lookup paths**
+(`runtime/cel_map_test.cc`)
+
+  - [x] `MapLosslessKeyTest` runs the whole boundary matrix through
+        `cel_map_lookup_arena` AND `cel_map_in_arena`, each with and
+        without a built SwissTable index (maps padded past
+        `kCelMapIndexThreshold`) — the index and the comparator must
+        agree or a false miss appears only at scale.
+  - [x] Map equality still matches int/uint keys of the same value and
+        no longer matches keys that only agree after rounding
+        (`MapEqualityMatchesIntAndUintKeysOfSameValue`,
+        `MapEqualityRejectsKeysThatOnlyAgreeAfterRounding`).
+
+**Host / cross-origin** (`eval/internal/cel_map_eq_impl_test.cc`)
+
+  - [x] A host-backed map and an arena map with >2^53 keys compare
+        exactly, in both directions
+        (`LargeNumericKeysCompareExactlyNotViaDouble`).  `HostNumericCrossEq`
+        used to widen both operands to double, which folded distinct
+        int/uint magnitudes together regardless of the map-key rule.
+
+**End-to-end** (`e2e/known_bugs_test.cc`)
+
+  - [x] `MapKeyLossyDoubleEquality` — the CELW-0004 `GTEST_SKIP` deleted;
+        `dyn(9007199254740992.0) in {9007199254740993: 'a'}` is `false`.
+
+Conformance held at 2035 PASS / 0 FAIL in both link modes.
 
 ## How to update
 

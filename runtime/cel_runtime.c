@@ -15,28 +15,20 @@
 // only ever produce CEL_MAP_ARENA values — kHost values originate from
 // proto reflection or `Activation::Bind`, never from emitted codegen.
 //
-// `CmpResult`, `numeric_compare_kernel`, `is_numeric_kind`, and
-// `cel_value_eq` come from cel_internal.h (defined in cel_compare.c).
+// `CmpResult`, `numeric_compare_kernel`, `is_numeric_kind`,
+// `cel_value_eq`, and `cel_map_key_eq` come from cel_internal.h
+// (defined in cel_compare.c).
+//
+// Map KEYS compare with `cel_map_key_eq` (lossless numeric conversion),
+// never `cel_value_eq` (the `==` operator's rounding rule) — the two
+// disagree above 2^53, where one double is the rounded image of a range
+// of int64s.  Every key comparison in this TU — lookup, `in`,
+// insert-time duplicate detection, and the key half of map equality —
+// uses the former; VALUES keep the latter.
 
 static int is_valid_map_key_kind(uint32_t kind) {
   return kind == CEL_BOOL || kind == CEL_INT || kind == CEL_UINT ||
          kind == CEL_STRING;
-}
-
-// A double lookup key with magnitude ≥ 2^53 must bypass the hash index
-// and linear-scan instead.  Under the lossy `cel_value_eq` map-key
-// comparison, such a double is map-equal to a *range* of int64s that
-// all round to it, but a single hash token can only land it on one slot
-// — so the index could falsely miss a key the linear scan would hit.
-// Keeping these (rare) keys on the linear path keeps the index in exact
-// parity with the scan.  See m32-swisstable-map-index.md §5.1.
-static int key_forces_linear(const CelValue* key) {
-  if (key->kind != CEL_DOUBLE) return 0;
-  const double d = key->payload.d;
-  // 2^53 == 9007199254740992.0.  `-d >= 2^53` covers the negative side
-  // without <math.h>; NaN compares false on both, which is correct (a
-  // NaN key never matches a stored int/uint key under cel_value_eq).
-  return d >= 9007199254740992.0 || -d >= 9007199254740992.0;
 }
 
 static ArenaMapHeader* arena_map_header(const CelValue* m) {
@@ -126,7 +118,7 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   }
   ArenaMapHeader* hdr = arena_map_header(m);
   for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (cel_value_eq(arena_map_entry_key(hdr, i), key)) {
+    if (cel_map_key_eq(arena_map_entry_key(hdr, i), key)) {
       poison(m, CEL_ERR_DUPLICATE_KEY);
       return;
     }
@@ -139,6 +131,86 @@ void cel_map_insert(uint32_t map_slot, uint32_t key_slot, uint32_t value_slot) {
   if (hdr->count >= hdr->capacity) {
     poison(m, CEL_ERR_OVERFLOW);
     return;
+  }
+  *arena_map_entry_key(hdr, hdr->count) = *key;
+  *arena_map_entry_val(hdr, hdr->count) = *val;
+  hdr->count++;
+}
+
+// Re-allocate an arena map's dense entries run so it can hold one more
+// entry.  Only the merge path grows: literal maps and `transformMap`
+// accumulators have a compile-time-known entry count, but a
+// `transformMapEntry` whose entry expression is COMPUTED does not — its
+// accumulator is pre-sized at one entry per iteration, which is a hint,
+// not an invariant.  The bump arena never frees, so growth allocates a
+// fresh 2x run and copies; the HEADER stays put, which is what keeps
+// every live `CelValue.payload.arena_map` valid across the move.  Any
+// SwissTable index is dropped (`index_offset = 0`); codegen rebuilds it
+// as the terminal construction step after the accumulation loop.
+// Returns 0 when the arena is exhausted (caller poisons).
+static int arena_map_grow_one(ArenaMapHeader* hdr) {
+  const uint64_t want = (uint64_t)hdr->count + 1u;
+  uint64_t new_cap = hdr->capacity != 0 ? (uint64_t)hdr->capacity * 2u : 4u;
+  while (new_cap < want) {
+    new_cap *= 2u;
+  }
+  if (new_cap > (uint64_t)UINT32_MAX) return 0;
+  const uint32_t bytes =
+      entries_bytes_checked((uint32_t)kCelMapEntryStride, (uint32_t)new_cap);
+  if (bytes == 0) return 0;
+  const uint32_t off = arena_alloc(bytes);
+  if (off == 0) return 0;
+  // Copy entry-wise rather than with one bulk memcpy: the two are
+  // equivalent here (the run is a dense array of {key, value} CelValue
+  // pairs), and the typed copy keeps the stride arithmetic explicit.
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    const uint32_t stride = (uint32_t)kCelMapEntryStride * i;
+    const uint32_t cell = (uint32_t)sizeof(CelValue);
+    *cel_value_at(off + stride) = *cel_value_at(hdr->entries_offset + stride);
+    *cel_value_at(off + stride + cell) =
+        *cel_value_at(hdr->entries_offset + stride + cell);
+  }
+  hdr->entries_offset = off;
+  hdr->capacity = (uint32_t)new_cap;
+  hdr->index_offset = 0;
+  return 1;
+}
+
+// Shared last-write-wins insert kernel for comprehension
+// accumulators.  `m` is already known to be a live CEL_MAP_ARENA.
+// `allow_grow` picks the capacity contract: 0 keeps the pre-size
+// invariant (a codegen drift traps); 1 grows, for the merge path where
+// no compile-time entry count exists.
+static void map_insert_at_kernel(CelValue* m, const CelValue* key,
+                                 const CelValue* val, int allow_grow) {
+  if (key->kind == CEL_ERROR || key->kind == CEL_UNKNOWN) {
+    *m = *key;
+    return;
+  }
+  if (val->kind == CEL_ERROR || val->kind == CEL_UNKNOWN) {
+    *m = *val;
+    return;
+  }
+  if (!is_valid_map_key_kind(key->kind)) {
+    poison(m, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  ArenaMapHeader* hdr = arena_map_header(m);
+  for (uint32_t i = 0; i < hdr->count; ++i) {
+    if (cel_map_key_eq(arena_map_entry_key(hdr, i), key)) {
+      *arena_map_entry_val(hdr, i) = *val;
+      return;
+    }
+  }
+  if (hdr->count >= hdr->capacity) {
+    // PRESIZE_INVARIANT: capacity is sized by codegen — N for
+    // literals, iter_range.count for accus.  Trap rather than
+    // poison so a codegen regression surfaces here.
+    if (!allow_grow) __builtin_trap();
+    if (!arena_map_grow_one(hdr)) {
+      poison(m, CEL_ERR_OVERFLOW);
+      return;
+    }
   }
   *arena_map_entry_key(hdr, hdr->count) = *key;
   *arena_map_entry_val(hdr, hdr->count) = *val;
@@ -160,34 +232,107 @@ void cel_map_insert_at(uint32_t map_slot, uint32_t key_slot,
   CEL_LOG("enter");
   CelValue* m = cel_value_at(map_slot);
   if (m->kind != CEL_MAP_ARENA) return;
-  CelValue* key = cel_value_at(key_slot);
-  CelValue* val = cel_value_at(value_slot);
-  if (key->kind == CEL_ERROR || key->kind == CEL_UNKNOWN) {
-    *m = *key;
+  map_insert_at_kernel(m, cel_value_at(key_slot), cel_value_at(value_slot),
+                       /*allow_grow=*/0);
+}
+
+// Arena arm of `cel_map_merge_at` — walk the source map's dense
+// entries run directly, no iterator allocation.  Growth of `m`
+// re-allocates ITS run, never the source's, so `src` stays valid
+// across the loop.
+static void map_merge_arena_entries(CelValue* m, const CelValue* entry) {
+  ArenaMapHeader* src = arena_map_header(entry);
+  const uint32_t n = src->count;
+  for (uint32_t i = 0; i < n; ++i) {
+    map_insert_at_kernel(m, arena_map_entry_key(src, i),
+                         arena_map_entry_val(src, i), /*allow_grow=*/1);
+    // An errored / unknown / mis-keyed entry poisons the accumulator;
+    // the poison is the comprehension's result, so stop merging.
+    if (m->kind != CEL_MAP_ARENA) return;
+  }
+}
+
+// Host arm of `cel_map_merge_at` — an Activation-bound or
+// proto-reflected map reached as the entry expression.  Routed through
+// the same iteration helpers the comprehension prologue uses; the two
+// scratch CelValue cells are arena-allocated once per merge (the iter
+// helpers write through slot offsets, and an arena offset IS a slot).
+static void map_merge_host_entries(CelValue* m, uint32_t entry_slot) {
+  const uint32_t handle = cel_map_iter_init(entry_slot);
+  if (handle == 0) return;  // empty map: nothing to merge.
+  const uint32_t scratch = arena_alloc(2u * (uint32_t)sizeof(CelValue));
+  if (scratch == 0) {
+    poison(m, CEL_ERR_OVERFLOW);
     return;
   }
-  if (val->kind == CEL_ERROR || val->kind == CEL_UNKNOWN) {
-    *m = *val;
+  const uint32_t key_off = scratch;
+  const uint32_t val_off = scratch + (uint32_t)sizeof(CelValue);
+  while (cel_map_iter_next(handle) != 0) {
+    cel_map_iter_key_at(key_off, handle);
+    cel_map_iter_value_at(val_off, handle);
+    map_insert_at_kernel(m, cel_value_at(key_off), cel_value_at(val_off),
+                         /*allow_grow=*/1);
+    if (m->kind != CEL_MAP_ARENA) return;
+  }
+}
+
+// Merge every entry of the map in `entry_slot` into the accumulator in
+// `map_slot` — the general `transformMapEntry` loop step, used when the
+// entry expression is not a map LITERAL codegen can decompose into
+// direct inserts (a ternary, a call, a bound identifier, …).  Literal
+// entries keep the faster N-direct-inserts lowering and never call
+// this.
+//
+// 3VL, matching `cel_map_insert_at`:
+//   - accumulator not CEL_MAP_ARENA (poisoned upstream): silent no-op,
+//     so an earlier error sticks all the way to `result`.
+//   - entry CEL_ERROR / CEL_UNKNOWN: propagate verbatim into the
+//     accumulator, aborting the comprehension.
+//   - entry not a map at all: poison CEL_ERR_TYPE_MISMATCH.
+//   - otherwise: one last-write-wins insert per source entry, in the
+//     source map's own iteration order.
+void cel_map_merge_at(uint32_t map_slot, uint32_t entry_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind != CEL_MAP_ARENA) return;
+  CelValue* entry = cel_value_at(entry_slot);
+  if (entry->kind == CEL_ERROR || entry->kind == CEL_UNKNOWN) {
+    *m = *entry;
     return;
   }
-  if (!is_valid_map_key_kind(key->kind)) {
+  if (entry->kind == CEL_MAP_ARENA) {
+    map_merge_arena_entries(m, entry);
+    return;
+  }
+  if (entry->kind == CEL_MAP_HOST) {
+    map_merge_host_entries(m, entry_slot);
+    return;
+  }
+  // The checker types `entry` as a map, so anything else is drift.
+  poison(m, CEL_ERR_TYPE_MISMATCH);
+}
+
+// 3VL predicate-gated merge for the conditional `transformMapEntry`
+// form.  Mirrors `cel_map_insert_at_if_bool` exactly: an ERROR /
+// UNKNOWN predicate propagates into the accumulator, a non-bool
+// predicate poisons CEL_ERR_TYPE_MISMATCH, false is a no-op, and true
+// delegates to `cel_map_merge_at`.
+void cel_map_merge_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
+                              uint32_t entry_slot) {
+  CEL_LOG("enter");
+  CelValue* m = cel_value_at(map_slot);
+  if (m->kind != CEL_MAP_ARENA) return;
+  CelValue* p = cel_value_at(pred_slot);
+  if (p->kind == CEL_ERROR || p->kind == CEL_UNKNOWN) {
+    *m = *p;
+    return;
+  }
+  if (p->kind != CEL_BOOL) {
     poison(m, CEL_ERR_TYPE_MISMATCH);
     return;
   }
-  ArenaMapHeader* hdr = arena_map_header(m);
-  for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (cel_value_eq(arena_map_entry_key(hdr, i), key)) {
-      *arena_map_entry_val(hdr, i) = *val;
-      return;
-    }
-  }
-  // PRESIZE_INVARIANT: capacity is sized by codegen — N for
-  // literals, iter_range.count for accus.  Trap rather than
-  // grow / poison so a codegen regression surfaces here.
-  if (hdr->count >= hdr->capacity) __builtin_trap();
-  *arena_map_entry_key(hdr, hdr->count) = *key;
-  *arena_map_entry_val(hdr, hdr->count) = *val;
-  hdr->count++;
+  if (p->payload.b == 0) return;
+  cel_map_merge_at(map_slot, entry_slot);
 }
 
 void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
@@ -208,10 +353,13 @@ void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
     return;
   }
   ArenaMapHeader* hdr = arena_map_header(m);
-  // Hash-index fast path: usable only when an index is built AND the key
-  // does not force a linear scan (§5.1).  cel_map_index_find returns
-  // UINT32_MAX when index_offset == 0, so the fallback is the same scan.
-  if (hdr->index_offset != 0 && !key_forces_linear(key)) {
+  // Hash-index fast path.  The hash canonicalizes a double key to the
+  // integer it EXACTLY represents, which is the same conversion
+  // `cel_map_key_eq` accepts — so keys that compare equal always hash
+  // equal and the index can serve every key kind, doubles included.
+  // `cel_map_index_find` returns UINT32_MAX when index_offset == 0, so
+  // the fallback below is the same scan.
+  if (hdr->index_offset != 0) {
     const uint32_t idx = cel_map_index_find(hdr, key);
     if (idx != UINT32_MAX) {
       *out = *arena_map_entry_val(hdr, idx);
@@ -221,7 +369,7 @@ void cel_map_lookup_arena(uint32_t out_slot, uint32_t map_slot,
     return;
   }
   for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (cel_value_eq(arena_map_entry_key(hdr, i), key)) {
+    if (cel_map_key_eq(arena_map_entry_key(hdr, i), key)) {
       *out = *arena_map_entry_val(hdr, i);
       return;
     }
@@ -550,6 +698,54 @@ void cel_map_insert_at_if_bool(uint32_t map_slot, uint32_t pred_slot,
   cel_map_insert_at(map_slot, key_slot, value_slot);
 }
 
+// Coerces a list-index value to an int64, writing it to *i.
+//
+// Per langdef §"Indexing": list index type is int.  When the operand
+// is dyn-typed (e.g. `[1,2,3][dyn(0.0)]`), cel-cpp's runtime admits a
+// CEL_UINT or an integral CEL_DOUBLE as an index — the value must
+// round-trip to an int64.  Non-integral doubles error.  Pinned by
+// oracle tests `ListIndexDoubleAgrees`, `ListIndexUintAgrees`,
+// `ListIndexNonIntegerDoubleAgrees` (testdata/cel_cpp_oracle_test.cc)
+// and conformance rows `lists/index/zero_based_double`,
+// `zero_based_uint`, `zero_based_double_error`.
+//
+// Returns 0 having poisoned *out when the index is unusable.
+static int decode_list_index(CelValue* out, const CelValue* index, int64_t* i) {
+  if (index->kind == CEL_INT) {
+    *i = index->payload.i;
+    return 1;
+  }
+  if (index->kind == CEL_UINT) {
+    if (index->payload.u > (uint64_t)INT64_MAX) {
+      poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
+      return 0;
+    }
+    *i = (int64_t)index->payload.u;
+    return 1;
+  }
+  if (index->kind != CEL_DOUBLE) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return 0;
+  }
+  const double d = index->payload.d;
+  // Integral check: must be finite, within int64 range, and bit-equal
+  // to its int64 truncation.  cel-cpp's ConvertDoubleToInt does the
+  // same range/integrality check.
+  if (d != d || d > 9.2233720368547758e18 ||
+      d < -9.2233720368547758e18) {  // NaN / inf / OOR
+    poison(out, CEL_ERR_INVALID_ARGUMENT);
+    return 0;
+  }
+  const int64_t trunc = (int64_t)d;
+  if ((double)trunc != d) {
+    // non-integral
+    poison(out, CEL_ERR_INVALID_ARGUMENT);
+    return 0;
+  }
+  *i = trunc;
+  return 1;
+}
+
 void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
                        uint32_t index_slot) {
   CEL_LOG("enter");
@@ -564,43 +760,8 @@ void cel_list_at_arena(uint32_t out_slot, uint32_t list_slot,
     *out = *l;
     return;
   }
-  // Per langdef §"Indexing": list index type is int.  When the
-  // operand is dyn-typed (e.g. `[1,2,3][dyn(0.0)]`), cel-cpp's
-  // runtime admits a CEL_UINT or an integral CEL_DOUBLE as an
-  // index — the value must round-trip to an int64.  Non-integral
-  // doubles error.  Pinned by oracle tests `ListIndexDoubleAgrees`,
-  // `ListIndexUintAgrees`, `ListIndexNonIntegerDoubleAgrees`
-  // (testdata/cel_cpp_oracle_test.cc) and conformance rows
-  // `lists/index/zero_based_double`, `zero_based_uint`,
-  // `zero_based_double_error`.
   int64_t i = 0;
-  if (index->kind == CEL_INT) {
-    i = index->payload.i;
-  } else if (index->kind == CEL_UINT) {
-    if (index->payload.u > (uint64_t)INT64_MAX) {
-      poison(out, CEL_ERR_INDEX_OUT_OF_BOUNDS);
-      return;
-    }
-    i = (int64_t)index->payload.u;
-  } else if (index->kind == CEL_DOUBLE) {
-    const double d = index->payload.d;
-    // Integral check: must be finite, within int64 range, and
-    // bit-equal to its int64 truncation.  cel-cpp's
-    // ConvertDoubleToInt does the same range/integrality check.
-    if (d != d || d > 9.2233720368547758e18 ||
-        d < -9.2233720368547758e18) {  // NaN / inf / OOR
-      poison(out, CEL_ERR_INVALID_ARGUMENT);
-      return;
-    }
-    const int64_t trunc = (int64_t)d;
-    if ((double)trunc != d) {
-      // non-integral
-      poison(out, CEL_ERR_INVALID_ARGUMENT);
-      return;
-    }
-    i = trunc;
-  } else {
-    poison(out, CEL_ERR_TYPE_MISMATCH);
+  if (!decode_list_index(out, index, &i)) {
     return;
   }
   ArenaListHeader* hdr = arena_list_header(l);
@@ -619,9 +780,9 @@ extern void cel_host_cel_list_at(uint32_t out_slot, uint32_t list_slot,
                                  uint32_t index_slot)
     __attribute__((import_module("cel_host"), import_name("cel_list_at")));
 #else
-__attribute__((
-    weak)) void cel_host_cel_list_at(  // NOLINT(misc-use-internal-linkage)
-    uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
+__attribute__((weak)) void cel_host_cel_list_at(uint32_t out_slot,
+                                                uint32_t list_slot,
+                                                uint32_t index_slot) {
   (void)list_slot;
   (void)index_slot;
   poison(cel_value_at(out_slot), CEL_ERR_TYPE_MISMATCH);
@@ -657,13 +818,20 @@ void cel_list_at(uint32_t out_slot, uint32_t list_slot, uint32_t index_slot) {
 
 // 3VL absorbers + write_* writers come from cel_internal.h.
 
-// Single-layer scalar equality matcher.  Any numeric pair (cross-kind
-// included) routes through `numeric_compare_kernel` (defined in
-// cel_compare.c, visible via cel_internal.h's extern) so `1 in [1.0]`
-// / `dyn(3) in [1u, 3u]` return true per langdef §"List Membership
-// (in)" + §"Equality".  The common scan-element kinds (numeric,
-// string, bool) come first so a homogeneous `in`-list / map scan hits
-// its arm with the fewest failed branches.
+// Single-layer scalar VALUE equality matcher — the `==` operator's
+// rule.  Any numeric pair (cross-kind included) routes through
+// `numeric_compare_kernel` (defined in cel_compare.c, visible via
+// cel_internal.h's extern) so `1 in [1.0]` / `dyn(3) in [1u, 3u]`
+// return true per langdef §"List Membership (in)" + §"Equality".  The
+// common scan-element kinds (numeric, string, bool) come first so a
+// homogeneous `in`-list scan hits its arm with the fewest failed
+// branches.
+//
+// NOT the map-key rule.  `numeric_compare_kernel` casts an int to
+// double for the int-vs-double arm, so above 2^53 one double compares
+// equal to a RANGE of int64s — correct for `==` and list membership,
+// wrong for a key lookup, which converts losslessly or not at all.
+// Map keys go through `cel_map_key_eq` (cel_compare.c) instead.
 //
 // Returns 1 (equal), 0 (unequal-or-different-shape).  Caller has
 // already absorbed 3VL on the operands; this matcher does not
@@ -1031,14 +1199,13 @@ void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
     return;
   }
   ArenaMapHeader* hdr = arena_map_header(m);
-  // Hash-index fast path, mirroring cel_map_lookup_arena: usable only
-  // when an index is built and the key does not force linear (§5.1).
-  if (hdr->index_offset != 0 && !key_forces_linear(k)) {
+  // Hash-index fast path, mirroring cel_map_lookup_arena.
+  if (hdr->index_offset != 0) {
     write_bool(out, cel_map_index_find(hdr, k) != UINT32_MAX ? 1 : 0);
     return;
   }
   for (uint32_t i = 0; i < hdr->count; ++i) {
-    if (cel_value_eq(arena_map_entry_key(hdr, i), k)) {
+    if (cel_map_key_eq(arena_map_entry_key(hdr, i), k)) {
       write_bool(out, 1);
       return;
     }
@@ -1056,9 +1223,7 @@ void cel_map_in_arena(uint32_t out_slot, uint32_t key_slot, uint32_t map_slot) {
 static int arena_map_entry_matches(ArenaMapHeader* ha, uint32_t i,
                                    ArenaMapHeader* hb, uint32_t* scratch) {
   const CelValue* ka = arena_map_entry_key(ha, i);
-  // Stored keys are always scalar (is_valid_map_key_kind: bool/int/uint/
-  // string), never a double, so `key_forces_linear` never trips here and
-  // the index on `hb` — when built — turns this O(n) inner scan into
+  // The index on `hb` — when built — turns this O(n) inner scan into
   // O(1).  cel_map_index_find returns UINT32_MAX when hb has no index,
   // so the linear arm below still covers the unindexed case.
   if (hb->index_offset != 0) {
@@ -1068,7 +1233,7 @@ static int arena_map_entry_matches(ArenaMapHeader* ha, uint32_t i,
                              arena_map_entry_val_off(hb, j));
   }
   for (uint32_t j = 0; j < hb->count; ++j) {
-    if (cel_value_eq(ka, arena_map_entry_key(hb, j))) {
+    if (cel_map_key_eq(ka, arena_map_entry_key(hb, j))) {
       return deep_values_equal(scratch, arena_map_entry_val_off(ha, i),
                                arena_map_entry_val_off(hb, j));
     }
@@ -1588,7 +1753,7 @@ static void copy_iter_entry(uint32_t out_slot, uint32_t iter_handle,
     return;
   }
   // HOST: snapshot entries are 48 bytes each — key at +0, value at +24.
-  const uint32_t entry_off = state->payload + i * MAP_ITER_HOST_ENTRY_BYTES;
+  const uint32_t entry_off = state->payload + (i * MAP_ITER_HOST_ENTRY_BYTES);
   const uint32_t cell_off = want_value ? entry_off + 24u : entry_off;
   *out = *(CelValue*)(cel_memory_base_() + cell_off);
 }

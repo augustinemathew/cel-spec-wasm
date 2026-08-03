@@ -33,8 +33,6 @@ extern "C" {
 #endif
 
 // int64 — full eq/ne/lt/le/gt/ge matrix.
-void cel_int_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
-void cel_int_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
 void cel_int_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
@@ -45,8 +43,6 @@ void cel_int_gt_at_vv(uint32_t out, uint32_t a, uint32_t b);
 void cel_int_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 
 // uint64 — same matrix.
-void cel_uint_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
-void cel_uint_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
 void cel_uint_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
@@ -59,8 +55,6 @@ void cel_uint_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // double — IEEE 754 ordering.  NaN comparisons follow IEEE: any
 // comparison involving NaN returns false (including NaN == NaN).
 // Mirrors cel-cpp `equality_functions.cc::Equal` for double.
-void cel_double_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
-void cel_double_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
 void cel_double_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
@@ -74,7 +68,6 @@ void cel_double_ge_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // §"Booleans" / cel-cpp `comparison_functions.cc::LessThanBool`,
 // CEL defines a total order on bool with `false < true`.
 void cel_bool_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
-void cel_bool_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
 void cel_bool_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
@@ -102,7 +95,6 @@ void cel_null_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // Type-mismatch on a non-numeric operand → CEL_ERR_TYPE_MISMATCH;
 // 3VL absorption is identical to the same-kind helpers.
 void cel_numeric_eq_at_vv(uint32_t out, uint32_t a, uint32_t b);
-void cel_numeric_ne_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export
 void cel_numeric_lt_at_vv(uint32_t out, uint32_t a, uint32_t b);
 // cel:codegen-export

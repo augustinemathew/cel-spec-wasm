@@ -1,0 +1,106 @@
+# Publishes the warm CI image: docker/Dockerfile plus a populated bazel
+# disk cache, so CI jobs skip the ~13-15 minute cel-cpp compile.
+#
+# The image is tagged with scripts/ci_image_stamp.sh — a digest over
+# cel-cpp.sha, MODULE.bazel(.lock), .bazelversion and the Dockerfile.
+# CI pulls that exact tag, so a moved pin cannot silently reuse a stale
+# cache: the tag simply does not exist yet, and
+# scripts/ci_check_image_stamp.sh fails the job with instructions.
+name: ci-image
+
+on:
+  # Rebuild when anything the cache depends on moves.
+  push:
+    branches: [master]
+    paths:
+      - third_party/cel-cpp.sha
+      - MODULE.bazel
+      - MODULE.bazel.lock
+      - .bazelversion
+      - docker/Dockerfile
+      - docker/Dockerfile.ci
+      - .github/workflows/ci-image.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ci-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # Building the cache needs the same headroom a cold build does.
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
+      - name: Compute image tag
+        id: stamp
+        run: echo "tag=$(scripts/ci_image_stamp.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Skip the expensive build when this exact tag already exists —
+      # a re-run, or a push that touched a path without changing the
+      # pinned content.
+      - name: Already published?
+        id: exists
+        run: |
+          if docker manifest inspect \
+               "ghcr.io/${{ github.repository_owner }}/celwasm-ci:${{ steps.stamp.outputs.tag }}" \
+               >/dev/null 2>&1; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Image for this stamp already exists — nothing to do."
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build base environment
+        if: steps.exists.outputs.hit != 'true'
+        run: docker build -f docker/Dockerfile -t celwasm-build:local .
+
+      - name: Build warm image
+        if: steps.exists.outputs.hit != 'true'
+        run: |
+          docker build -f docker/Dockerfile.ci \
+            --build-arg BASE=celwasm-build:local \
+            -t "ghcr.io/${{ github.repository_owner }}/celwasm-ci:${{ steps.stamp.outputs.tag }}" \
+            -t "ghcr.io/${{ github.repository_owner }}/celwasm-ci:latest" \
+            .
+
+      # Prove the image is warm before publishing it.  A pushed image
+      # that misses its own cache is worse than no image: CI stays slow
+      # and the stamp check passes, because the stamp only proves the
+      # PINS match, not that the cache actually hits.
+      - name: Verify the cache is warm
+        if: steps.exists.outputs.hit != 'true'
+        run: |
+          img="ghcr.io/${{ github.repository_owner }}/celwasm-ci:${{ steps.stamp.outputs.tag }}"
+          docker run --rm -v "$PWD:/w" -w /w "$img" bash -c '
+            set -e
+            third_party/fetch_cel_cpp.sh >/dev/null
+            scripts/ci_check_image_stamp.sh
+            bazel build --disk_cache=/opt/celwasm/disk-cache \
+                        //compiler/frontend:parse_and_check 2>&1 | tee /tmp/warm.log
+            grep -qE "disk cache hit" /tmp/warm.log \
+              || { echo "FAIL: image reported no disk cache hits"; exit 1; }
+            echo "warm image verified: $(grep -oE "[0-9]+ disk cache hit" /tmp/warm.log)"
+          '
+
+      - name: Push
+        if: steps.exists.outputs.hit != 'true'
+        run: |
+          docker push "ghcr.io/${{ github.repository_owner }}/celwasm-ci:${{ steps.stamp.outputs.tag }}"
+          docker push "ghcr.io/${{ github.repository_owner }}/celwasm-ci:latest"

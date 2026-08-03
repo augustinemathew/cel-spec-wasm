@@ -327,7 +327,7 @@ scripts/run_full_suite.sh --quick   # skips conformance (the slow part)
 
 Headline numbers, 2026-05-15, darwin-arm64, `-c opt`:
 
-- Kernel microbench leaves (`cel_int_add_at_vv`, `cel_int_eq_at_vv`,
+- Kernel microbench leaves (`cel_int_add_at_vv`, `cel_numeric_eq_at_vv`,
   `cel_uint_to_int_at_v`, …): 7-10 ns/call.
 - Pipeline Compile: 248-395 µs per CEL source expression.
 - Pipeline Plan: 240-253 µs (wasmtime instantiate dominates).

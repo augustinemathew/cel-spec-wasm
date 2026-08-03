@@ -775,6 +775,8 @@ cc_test(
     ],
 )
 
+
+
 # Internal — pImpl payload for cel::Instance.  Owned via
 # unique_ptr from the public Instance.  Tagged manual; wasmtime dep.
 cc_library(
@@ -787,6 +789,8 @@ cc_library(
         ":cel_host_wasmtime",
         ":host_callback",
         "//abi:cel_abi_cc_proto",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status",
         "//third_party/wasmtime:wasmtime",
     ],
 )

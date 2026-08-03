@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,40 @@ void cel_host_cel_map_lookup(uint32_t out_slot, uint32_t /*map_slot*/,
   out->kind = CEL_INT;
   out->payload.i = 0x4242;  // sentinel — distinguishes from arena hits.
 }
+
+// Strong override of the `cel_host.cel_map_iter_open` weak stub, so the
+// HOST arm of the map iterator (and of `cel_map_merge_at`) can be
+// exercised without the wasmtime trampoline.  Writes the same
+// `MapIterState` shape the real trampoline does — `{kind=HOST(1),
+// cursor=0, payload=snapshot_offset, count}` at `state_offset`, with a
+// snapshot of `count` 48-byte {key, value} CelValue pairs (see
+// eval/internal/cel_host.cc `WriteEmptyMapIterState`).  `count == 0`
+// (the default) reproduces the weak stub exactly, which is what
+// `HostMapInitReturnsZeroHandle` depends on.
+static uint32_t g_host_iter_entry_count = 0;
+static int64_t g_host_iter_first_key = 0;
+void cel_host_cel_map_iter_open(uint32_t state_offset, uint32_t /*map_slot*/) {
+  auto* state = reinterpret_cast<uint32_t*>(cel_mem_base() + state_offset);
+  state[0] = 1;  // MAP_ITER_KIND_HOST
+  state[1] = 0;  // cursor
+  state[2] = 0;  // payload (snapshot offset)
+  state[3] = g_host_iter_entry_count;
+  if (g_host_iter_entry_count == 0) return;
+  const uint32_t snapshot = arena_alloc(
+      g_host_iter_entry_count * 2u * static_cast<uint32_t>(sizeof(CelValue)));
+  state[2] = snapshot;
+  for (uint32_t i = 0; i < g_host_iter_entry_count; ++i) {
+    const int64_t k = g_host_iter_first_key + i;
+    CelValue* key = cel_value_at(
+        snapshot + (i * 2u * static_cast<uint32_t>(sizeof(CelValue))));
+    CelValue* val = cel_value_at(
+        snapshot + (((i * 2u) + 1u) * static_cast<uint32_t>(sizeof(CelValue))));
+    key->kind = CEL_INT;
+    key->payload.i = k;
+    val->kind = CEL_INT;
+    val->payload.i = k * 10;
+  }
+}
 }
 
 namespace celwasm {
@@ -47,6 +82,8 @@ class MapTest : public ::testing::Test {
     arena_init(CELWASM_ARENA_CAPACITY_BYTES);
     arena_reset();
     g_host_lookup_calls = 0;
+    g_host_iter_entry_count = 0;
+    g_host_iter_first_key = 0;
   }
 
  public:
@@ -936,11 +973,16 @@ TEST_F(MapIndexTest, H2ZeroControlByteKeysResolve) {
       << "256 int keys should include at least one H2==0 control byte";
 }
 
-// The ≥2^53 double-lookup-key linear fallback (§5.1): build an int-keyed
-// indexed map and look up a double key ≥2^53; the indexed result must
-// match the linear scan (parity), because the lookup kernel bypasses the
-// index for such keys.
-TEST_F(MapIndexTest, LargeDoubleKeyFallsBackToLinearParity) {
+// ≥2^53 double lookup keys go through the INDEX like every other key.
+// The hash folds a double onto the integer it exactly represents and
+// `cel_map_key_eq` accepts exactly that conversion, so hash and
+// comparator agree at every magnitude — there is no bypass.  (An
+// earlier `key_forces_linear` predicate routed these keys to a linear
+// scan; it existed only because the comparator was then the lossy `==`
+// rule, under which one double matched a RANGE of ints that no single
+// hash token could reach.)  This asserts indexed == linear parity for
+// exactly those keys.
+TEST_F(MapIndexTest, LargeDoubleKeyResolvesThroughTheIndex) {
   constexpr uint32_t kN = 16;
   // Keys span 2^53 .. 2^53+kN-1.  int64 exactly represents these.
   const int64_t kBase = 9007199254740992LL;  // 2^53
@@ -956,7 +998,7 @@ TEST_F(MapIndexTest, LargeDoubleKeyFallsBackToLinearParity) {
   const auto* hdr = reinterpret_cast<const ArenaMapHeader*>(
       cel_mem_base() + cel_value_at(indexed)->payload.arena_map.header_ptr);
   ASSERT_NE(hdr->index_offset, 0u);
-  // A double exactly equal to 2^53 (representable) — forces linear.
+  // A double exactly equal to 2^53 (representable) — hits entry 0.
   const double d = 9007199254740992.0;  // == 2^53
   uint32_t oi = NewSlot();
   uint32_t ol = NewSlot();
@@ -980,14 +1022,16 @@ TEST_F(MapIndexTest, LargeDoubleKeyFallsBackToLinearParity) {
 // Cross-kind dup `{1:1, 1u:2}` built directly (bypassing cel_map_insert's
 // own dup check) is re-validated and poisoned by cel_map_index_build with
 // CEL_ERR_DUPLICATE_KEY.  This asserts the CURRENT runtime behavior
-// (cel_value_eq treats int 1 and uint 1 as equal map keys), not cel-cpp.
+// (cel_map_key_eq treats int 1 and uint 1 as equal map keys); cel-cpp
+// accepts `{1:'a', 1u:'b'}` as two distinct keys — a separate
+// int-vs-uint key-identity gap, not the lossless-conversion rule.
 TEST_F(MapIndexTest, BuildPoisonsCrossKindDuplicate) {
   // Need ≥ threshold entries so the build runs; pad with distinct keys.
   constexpr uint32_t kN = 9;
   uint32_t m = NewSlot();
   cel_map_create(m, kN);
   cel_map_insert(m, cel_make_int(1), cel_make_int(1));
-  // The dup: uint 1 compares equal to int 1 under cel_value_eq, but
+  // The dup: uint 1 compares equal to int 1 under cel_map_key_eq, but
   // cel_map_insert's linear dup check ALSO catches it — so to drive the
   // index-build re-validation we insert distinct keys here and assert the
   // already-poisoned map (the insert path fired first).  This pins that
@@ -1003,7 +1047,7 @@ TEST_F(MapIndexTest, BuildPoisonsCrossKindDuplicate) {
 }
 
 // Direct cross-kind dup that BYPASSES cel_map_insert: write two
-// cel_value_eq-equal keys straight into the entries run (via
+// cel_map_key_eq-equal keys straight into the entries run (via
 // insert_at-style last-write... no — use raw writes), build the index,
 // and assert cel_map_index_build itself poisons.  This is the path the
 // design names (insert paths skip the dup check for dynamic maps).
@@ -1071,6 +1115,547 @@ TEST_F(MapIndexTest, EqArenaOverLargeIndexedMaps) {
   uint32_t out2 = NewSlot();
   cel_map_eq_arena(out2, a, c);
   EXPECT_EQ(cel_value_at(out2)->payload.b, 0);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Lossless map-key lookup (CELW-0004).
+//
+// Map-key matching is EXACT, not the lossy `==` rule: cel-cpp converts
+// the query key to the stored key's type only when the conversion
+// round-trips (`internal/number.h` `LosslessConvertibleToIntVisitor` /
+// `LosslessConvertibleToUintVisitor`, driven from
+// `eval/eval/container_access_step.cc::LookupInMap` and
+// `runtime/standard/container_membership_functions.cc`'s
+// `doubleKeyInSet`).  Above 2^53 one double is the rounded image of a
+// RANGE of int64s, so a rounded double must MISS a neighbouring stored
+// int even though `==` calls them equal.
+//
+// Oracle-pinned in `testdata/cel_cpp_oracle_test.cc`
+// (`MapKeyNumericCrossType`):
+//   `dyn(9007199254740993) == 9007199254740992.0`        -> true
+//   `dyn(9007199254740992.0) in {9007199254740993: 'a'}` -> false
+//
+// Every case runs through BOTH the linear scan and the SwissTable index
+// (the map is padded past `kCelMapIndexThreshold`), because the index
+// and the comparator must agree exactly — a hash that folded a rounded
+// double onto a different token than the comparator accepts is a silent
+// false miss.
+// ══════════════════════════════════════════════════════════════════
+
+constexpr int64_t kTwo53 = 9007199254740992LL;  // 2^53
+constexpr double kTwo53D = 9007199254740992.0;
+constexpr double kTwo53Plus2D = 9007199254740994.0;
+
+struct LosslessKeyCase {
+  const char* name;
+  // Stored key (int or uint), built into a padded map.
+  uint32_t (*store)();
+  // Double lookup key.
+  double query;
+  bool expect_hit;
+};
+
+class MapLosslessKeyTest
+    : public MapTest,
+      public ::testing::WithParamInterface<LosslessKeyCase> {
+ public:
+  // A map holding `key` plus `kPad` filler entries, so `count` clears
+  // `kCelMapIndexThreshold` and `cel_map_index_build` really allocates.
+  // Filler keys are small strings — they can never collide with a
+  // numeric key under any rule.
+  static constexpr uint32_t kPad = 12;
+  uint32_t MakePaddedMap(uint32_t key_slot, bool build_index) {
+    uint32_t m = NewSlot();
+    cel_map_create(m, kPad + 1);
+    cel_map_insert(m, key_slot, cel_make_int(777));
+    for (uint32_t i = 0; i < kPad; ++i) {
+      const std::string f = "pad" + std::to_string(i);
+      cel_map_insert(m,
+                     cel_make_string(f.data(), static_cast<uint32_t>(f.size())),
+                     cel_make_int(static_cast<int64_t>(i)));
+    }
+    if (build_index) cel_map_index_build(m);
+    return m;
+  }
+};
+
+TEST_P(MapLosslessKeyTest, LookupMatchesLosslessRuleOnBothPaths) {
+  const LosslessKeyCase& c = GetParam();
+  for (const bool indexed : {false, true}) {
+    uint32_t m = MakePaddedMap(c.store(), indexed);
+    if (indexed) {
+      const auto* hdr = reinterpret_cast<const ArenaMapHeader*>(
+          cel_mem_base() + cel_value_at(m)->payload.arena_map.header_ptr);
+      ASSERT_NE(hdr->index_offset, 0u)
+          << c.name << ": padded map should carry an index";
+    }
+    uint32_t out = NewSlot();
+    cel_map_lookup_arena(out, m, cel_make_double(c.query));
+    if (c.expect_hit) {
+      ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_INT))
+          << c.name << " indexed=" << indexed;
+      EXPECT_EQ(cel_value_at(out)->payload.i, 777)
+          << c.name << " indexed=" << indexed;
+    } else {
+      ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_ERROR))
+          << c.name << " indexed=" << indexed;
+      EXPECT_EQ(cel_value_at(out)->payload.err,
+                static_cast<uint32_t>(CEL_ERR_NO_SUCH_KEY))
+          << c.name << " indexed=" << indexed;
+    }
+    // `k in m` must agree with `m[k]` on both paths.
+    uint32_t in_out = NewSlot();
+    cel_map_in_arena(in_out, cel_make_double(c.query), m);
+    ASSERT_EQ(cel_value_at(in_out)->kind, static_cast<uint32_t>(CEL_BOOL))
+        << c.name;
+    EXPECT_EQ(cel_value_at(in_out)->payload.b != 0, c.expect_hit)
+        << "in " << c.name << " indexed=" << indexed;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Int53Boundary, MapLosslessKeyTest,
+    ::testing::Values(
+        LosslessKeyCase{"stored_2p53_minus_1_query_exact",
+                        +[]() {
+                          return cel_make_int(kTwo53 - 1);
+                        },
+                        9007199254740991.0, true},
+        LosslessKeyCase{"stored_2p53_query_exact",
+                        +[]() {
+                          return cel_make_int(kTwo53);
+                        },
+                        kTwo53D, true},
+        // CELW-0004: 2^53+1 has no exact double; the rounded 2^53.0 must
+        // NOT find it (though `==` says they are equal).
+        LosslessKeyCase{"stored_2p53_plus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_int(kTwo53 + 1);
+                        },
+                        kTwo53D, false},
+        LosslessKeyCase{"stored_2p53_plus_1_query_upper_neighbour_misses",
+                        +[]() {
+                          return cel_make_int(kTwo53 + 1);
+                        },
+                        kTwo53Plus2D, false},
+        LosslessKeyCase{"stored_2p53_plus_2_query_exact",
+                        +[]() {
+                          return cel_make_int(kTwo53 + 2);
+                        },
+                        kTwo53Plus2D, true},
+        LosslessKeyCase{"stored_2p54_plus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_int(18014398509481985LL);
+                        },
+                        18014398509481984.0, false},
+        // Negative equivalents.
+        LosslessKeyCase{"stored_neg_2p53_query_exact",
+                        +[]() {
+                          return cel_make_int(-kTwo53);
+                        },
+                        -kTwo53D, true},
+        LosslessKeyCase{"stored_neg_2p53_minus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_int(-(kTwo53 + 1));
+                        },
+                        -kTwo53D, false},
+        LosslessKeyCase{"stored_int64_max_query_rounded_misses",
+                        +[]() {
+                          return cel_make_int(INT64_MAX);
+                        },
+                        9223372036854775808.0, false},
+        LosslessKeyCase{"stored_int64_min_query_exact",
+                        +[]() {
+                          return cel_make_int(INT64_MIN);
+                        },
+                        -9223372036854775808.0, true}),
+    [](const ::testing::TestParamInfo<LosslessKeyCase>& i) {
+      return std::string(i.param.name);
+    });
+
+INSTANTIATE_TEST_SUITE_P(
+    UintBoundary, MapLosslessKeyTest,
+    ::testing::Values(
+        LosslessKeyCase{"stored_uint_2p53_query_exact",
+                        +[]() {
+                          return cel_make_uint(9007199254740992ULL);
+                        },
+                        kTwo53D, true},
+        LosslessKeyCase{"stored_uint_2p53_plus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_uint(9007199254740993ULL);
+                        },
+                        kTwo53D, false},
+        LosslessKeyCase{"stored_uint_2p63_query_exact",
+                        +[]() {
+                          return cel_make_uint(9223372036854775808ULL);
+                        },
+                        9223372036854775808.0, true},
+        LosslessKeyCase{"stored_uint_2p63_plus_1_query_rounded_misses",
+                        +[]() {
+                          return cel_make_uint(9223372036854775809ULL);
+                        },
+                        9223372036854775808.0, false},
+        // UINT64_MAX rounds to 2^64, which is out of uint64 range.
+        LosslessKeyCase{"stored_uint64_max_query_rounded_misses",
+                        +[]() {
+                          return cel_make_uint(UINT64_MAX);
+                        },
+                        18446744073709551616.0, false},
+        LosslessKeyCase{"stored_uint_max_representable_double_hits",
+                        +[]() {
+                          return cel_make_uint(18446744073709549568ULL);
+                        },
+                        18446744073709549568.0, true},
+        LosslessKeyCase{"stored_uint_zero_query_negative_misses",
+                        +[]() {
+                          return cel_make_uint(0);
+                        },
+                        -1.0, false}),
+    [](const ::testing::TestParamInfo<LosslessKeyCase>& i) {
+      return std::string(i.param.name);
+    });
+
+INSTANTIATE_TEST_SUITE_P(
+    NonFiniteQuery, MapLosslessKeyTest,
+    ::testing::Values(
+        LosslessKeyCase{"nan_query_misses",
+                        +[]() {
+                          return cel_make_int(0);
+                        },
+                        std::numeric_limits<double>::quiet_NaN(), false},
+        LosslessKeyCase{"pos_inf_query_misses",
+                        +[]() {
+                          return cel_make_int(INT64_MAX);
+                        },
+                        std::numeric_limits<double>::infinity(), false},
+        LosslessKeyCase{"neg_inf_query_misses",
+                        +[]() {
+                          return cel_make_int(INT64_MIN);
+                        },
+                        -std::numeric_limits<double>::infinity(), false},
+        LosslessKeyCase{"non_integral_query_misses",
+                        +[]() {
+                          return cel_make_int(1);
+                        },
+                        1.5, false},
+        LosslessKeyCase{"integral_query_below_2p53_hits",
+                        +[]() {
+                          return cel_make_int(3);
+                        },
+                        3.0, true}),
+    [](const ::testing::TestParamInfo<LosslessKeyCase>& i) {
+      return std::string(i.param.name);
+    });
+
+// The KEY half of map equality uses the same lossless rule (cel-cpp
+// `equality_functions.cc::CheckAlternativeNumericType`).  Our stored
+// keys are never doubles, so the reachable divergence here is int-vs-
+// uint — which both rules compare exactly.  This pins that map equality
+// keeps matching int and uint keys of the same mathematical value, and
+// stops matching ones that only agree after rounding.
+TEST_F(MapTest, MapEqualityMatchesIntAndUintKeysOfSameValue) {
+  uint32_t a = NewSlot();
+  uint32_t b = NewSlot();
+  cel_map_create(a, 1);
+  cel_map_create(b, 1);
+  cel_map_insert(a, cel_make_int(kTwo53 + 1), cel_make_int(5));
+  cel_map_insert(b, cel_make_uint(9007199254740993ULL), cel_make_int(5));
+  uint32_t out = NewSlot();
+  cel_map_eq_arena(out, a, b);
+  ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(cel_value_at(out)->payload.b, 1);
+}
+
+TEST_F(MapTest, MapEqualityRejectsKeysThatOnlyAgreeAfterRounding) {
+  uint32_t a = NewSlot();
+  uint32_t b = NewSlot();
+  cel_map_create(a, 1);
+  cel_map_create(b, 1);
+  cel_map_insert(a, cel_make_int(kTwo53 + 1), cel_make_int(5));
+  cel_map_insert(b, cel_make_uint(9007199254740992ULL), cel_make_int(5));
+  uint32_t out = NewSlot();
+  cel_map_eq_arena(out, a, b);
+  ASSERT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_BOOL));
+  EXPECT_EQ(cel_value_at(out)->payload.b, 0);
+}
+
+// ════════ cel_map_merge_at / cel_map_merge_at_if_bool ════════
+//
+// The general `transformMapEntry` loop step: merge every entry of a
+// computed entry map into the accumulator.  Distinguishing properties
+// against `cel_map_insert_at` (which these delegate to per entry):
+//   - the entry VALUE gets its own 3VL arm (error / unknown / non-map);
+//   - the accumulator GROWS instead of trapping, because a computed
+//     entry expression has no compile-time key count for codegen to
+//     pre-size against.
+// Regression cover for CELW-0012 (`{1: 2, 3: 4}.transformMapEntry(k,
+// v, k == 1 ? {k: v} : {})` used to ABORT the compiler).
+
+class MapMergeTest : public MapTest {
+ public:
+  // A fresh CEL_MAP_ARENA accumulator with `capacity` slots.
+  uint32_t Accu(uint32_t capacity) {
+    uint32_t m = NewSlot();
+    cel_map_create(m, capacity);
+    return m;
+  }
+  // A source map of `n` int→int entries starting at `first`.
+  uint32_t IntMap(int64_t first, uint32_t n) {
+    uint32_t m = NewSlot();
+    cel_map_create(m, n);
+    for (uint32_t i = 0; i < n; ++i) {
+      cel_map_insert(m, cel_make_int(first + i),
+                     cel_make_int((first + i) * 10));
+    }
+    return m;
+  }
+  int64_t LookupInt(uint32_t map_slot, int64_t key) {
+    uint32_t out = NewSlot();
+    cel_map_lookup_arena(out, map_slot, cel_make_int(key));
+    EXPECT_EQ(cel_value_at(out)->kind, static_cast<uint32_t>(CEL_INT))
+        << "key " << key << " missing";
+    return cel_value_at(out)->payload.i;
+  }
+  static uint32_t MapCount(uint32_t map_slot) {
+    auto* hdr = reinterpret_cast<ArenaMapHeader*>(
+        cel_mem_base() + cel_value_at(map_slot)->payload.arena_map.header_ptr);
+    return hdr->count;
+  }
+};
+
+TEST_F(MapMergeTest, EmptyEntryMapLeavesAccumulatorUntouched) {
+  uint32_t accu = Accu(4);
+  cel_map_insert_at(accu, cel_make_int(1), cel_make_int(10));
+  uint32_t entry = Accu(0);
+  cel_map_merge_at(accu, entry);
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 1u);
+  EXPECT_EQ(LookupInt(accu, 1), 10);
+}
+
+TEST_F(MapMergeTest, SingleEntryMerges) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at(accu, IntMap(/*first=*/7, /*n=*/1));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 1u);
+  EXPECT_EQ(LookupInt(accu, 7), 70);
+}
+
+TEST_F(MapMergeTest, MultiEntryMergesEveryPair) {
+  uint32_t accu = Accu(8);
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/3));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 3u);
+  EXPECT_EQ(LookupInt(accu, 1), 10);
+  EXPECT_EQ(LookupInt(accu, 2), 20);
+  EXPECT_EQ(LookupInt(accu, 3), 30);
+}
+
+// Last-write-wins on collision — same rule as cel_map_insert_at, NOT
+// cel_map_insert's duplicate-key poison (CELW-0011 tracks the
+// divergence from cel-cpp for the accumulator path as a whole).
+TEST_F(MapMergeTest, CollidingKeyOverwritesValue) {
+  uint32_t accu = Accu(4);
+  cel_map_insert_at(accu, cel_make_int(1), cel_make_int(999));
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/1));
+  EXPECT_EQ(MapCount(accu), 1u);
+  EXPECT_EQ(LookupInt(accu, 1), 10);
+}
+
+// The load-bearing difference from cel_map_insert_at: codegen
+// pre-sizes a computed-entry accumulator at ONE entry per iteration,
+// so a two-key entry map overruns it.  Growing is correct here;
+// trapping (the pre-size invariant) would be a crash on ordinary
+// input.
+TEST_F(MapMergeTest, GrowsPastPresizedCapacity) {
+  uint32_t accu = Accu(1);
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/5));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 5u);
+  for (int64_t k = 1; k <= 5; ++k) {
+    EXPECT_EQ(LookupInt(accu, k), k * 10);
+  }
+}
+
+// Growth out of a ZERO-capacity accumulator (the pre-size a comprehension
+// over an empty range produces) must allocate a run rather than write
+// through the null entries_offset.
+TEST_F(MapMergeTest, GrowsFromZeroCapacity) {
+  uint32_t accu = Accu(0);
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/2));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 2u);
+  EXPECT_EQ(LookupInt(accu, 1), 10);
+  EXPECT_EQ(LookupInt(accu, 2), 20);
+}
+
+// Growth drops any hash index (entries moved), so a lookup after a
+// growing merge must still find every key — through the linear scan
+// until codegen's terminal cel_map_index_build re-indexes.
+TEST_F(MapMergeTest, LookupsSurviveGrowthAfterIndexBuild) {
+  uint32_t accu = Accu(2);
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/2));
+  cel_map_index_build(accu);
+  cel_map_merge_at(accu, IntMap(/*first=*/3, /*n=*/40));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 42u);
+  cel_map_index_build(accu);
+  for (int64_t k = 1; k <= 42; ++k) {
+    EXPECT_EQ(LookupInt(accu, k), k * 10);
+  }
+}
+
+// ── 3VL on the entry value ──
+
+TEST_F(MapMergeTest, ErrorEntryPropagatesVerbatim) {
+  uint32_t accu = Accu(4);
+  uint32_t entry = NewSlot();
+  cel_value_at(entry)->kind = CEL_ERROR;
+  cel_value_at(entry)->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  cel_map_merge_at(accu, entry);
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+TEST_F(MapMergeTest, UnknownEntryPropagatesVerbatim) {
+  uint32_t accu = Accu(4);
+  uint32_t entry = NewSlot();
+  cel_value_at(entry)->kind = CEL_UNKNOWN;
+  cel_value_at(entry)->payload.unk = 0x1234;
+  cel_map_merge_at(accu, entry);
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(cel_value_at(accu)->payload.unk, 0x1234u);
+}
+
+TEST_F(MapMergeTest, NonMapEntryPoisonsTypeMismatch) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at(accu, cel_make_int(5));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+}
+
+// A poisoned accumulator stays poisoned — an earlier iteration's error
+// must reach `result` rather than being overwritten by a later merge.
+TEST_F(MapMergeTest, PoisonedAccumulatorIsStickyNoOp) {
+  uint32_t accu = NewSlot();
+  cel_value_at(accu)->kind = CEL_ERROR;
+  cel_value_at(accu)->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  cel_map_merge_at(accu, IntMap(/*first=*/1, /*n=*/2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+// An invalid key kind inside the entry map poisons the accumulator and
+// stops the merge — entries after the bad one must not land.
+TEST_F(MapMergeTest, InvalidKeyKindInEntryPoisonsAndStops) {
+  uint32_t accu = Accu(8);
+  uint32_t entry = Accu(4);
+  cel_map_insert_at(entry, cel_make_int(1), cel_make_int(10));
+  // Write a double key straight into the entry run — cel_map_insert
+  // would have rejected it, but a host-built map can carry one.
+  auto* hdr = reinterpret_cast<ArenaMapHeader*>(
+      cel_mem_base() + cel_value_at(entry)->payload.arena_map.header_ptr);
+  const size_t off = static_cast<size_t>(hdr->entries_offset) +
+                     (static_cast<size_t>(kCelMapEntryStride) * hdr->count);
+  auto* bad_key = reinterpret_cast<CelValue*>(cel_mem_base() + off);
+  auto* bad_val =
+      reinterpret_cast<CelValue*>(cel_mem_base() + off + sizeof(CelValue));
+  bad_key->kind = CEL_DOUBLE;
+  bad_key->payload.d = 1.5;
+  bad_val->kind = CEL_INT;
+  bad_val->payload.i = 20;
+  hdr->count = 2;
+  cel_map_merge_at(accu, entry);
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+}
+
+// A HOST-represented entry map (an Activation-bound map reached as the
+// entry expression) merges through the iterator arm rather than the
+// direct entries walk.
+TEST_F(MapMergeTest, HostEntryMapMergesThroughIterator) {
+  g_host_iter_entry_count = 3;
+  g_host_iter_first_key = 4;
+  uint32_t accu = Accu(1);  // pre-sized for one; the merge grows it.
+  uint32_t entry = NewSlot();
+  cel_value_at(entry)->kind = CEL_MAP_HOST;
+  cel_value_at(entry)->payload.ref_slot = 7;
+  cel_map_merge_at(accu, entry);
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 3u);
+  EXPECT_EQ(LookupInt(accu, 4), 40);
+  EXPECT_EQ(LookupInt(accu, 5), 50);
+  EXPECT_EQ(LookupInt(accu, 6), 60);
+}
+
+TEST_F(MapMergeTest, EmptyHostEntryMapIsNoOp) {
+  uint32_t accu = Accu(2);
+  cel_map_insert_at(accu, cel_make_int(1), cel_make_int(10));
+  uint32_t entry = NewSlot();
+  cel_value_at(entry)->kind = CEL_MAP_HOST;
+  cel_value_at(entry)->payload.ref_slot = 7;
+  cel_map_merge_at(accu, entry);
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 1u);
+}
+
+// ── predicate-gated merge ──
+
+TEST_F(MapMergeTest, IfBoolTrueMerges) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at_if_bool(accu, cel_make_bool(1), IntMap(1, 2));
+  EXPECT_EQ(MapCount(accu), 2u);
+}
+
+TEST_F(MapMergeTest, IfBoolFalseIsNoOp) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at_if_bool(accu, cel_make_bool(0), IntMap(1, 2));
+  ASSERT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_MAP_ARENA));
+  EXPECT_EQ(MapCount(accu), 0u);
+}
+
+TEST_F(MapMergeTest, IfBoolErrorPredicatePropagates) {
+  uint32_t accu = Accu(4);
+  uint32_t pred = NewSlot();
+  cel_value_at(pred)->kind = CEL_ERROR;
+  cel_value_at(pred)->payload.err = CEL_ERR_DIVIDE_BY_ZERO;
+  cel_map_merge_at_if_bool(accu, pred, IntMap(1, 2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_DIVIDE_BY_ZERO));
+}
+
+TEST_F(MapMergeTest, IfBoolUnknownPredicatePropagates) {
+  uint32_t accu = Accu(4);
+  uint32_t pred = NewSlot();
+  cel_value_at(pred)->kind = CEL_UNKNOWN;
+  cel_value_at(pred)->payload.unk = 0x99;
+  cel_map_merge_at_if_bool(accu, pred, IntMap(1, 2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_UNKNOWN));
+  EXPECT_EQ(cel_value_at(accu)->payload.unk, 0x99u);
+}
+
+TEST_F(MapMergeTest, IfBoolNonBoolPredicatePoisonsTypeMismatch) {
+  uint32_t accu = Accu(4);
+  cel_map_merge_at_if_bool(accu, cel_make_int(1), IntMap(1, 2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_TYPE_MISMATCH));
+}
+
+TEST_F(MapMergeTest, IfBoolPoisonedAccumulatorIsStickyNoOp) {
+  uint32_t accu = NewSlot();
+  cel_value_at(accu)->kind = CEL_ERROR;
+  cel_value_at(accu)->payload.err = CEL_ERR_NO_SUCH_KEY;
+  cel_map_merge_at_if_bool(accu, cel_make_bool(1), IntMap(1, 2));
+  EXPECT_EQ(cel_value_at(accu)->kind, static_cast<uint32_t>(CEL_ERROR));
+  EXPECT_EQ(cel_value_at(accu)->payload.err,
+            static_cast<uint32_t>(CEL_ERR_NO_SUCH_KEY));
 }
 
 }  // namespace

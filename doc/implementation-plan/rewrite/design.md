@@ -760,10 +760,11 @@ constexpr Seed kBuiltinSeeds[] = {
   {StandardOverloadIds::kSizeMap,    {kRT, "cel_map_size_at_v"}},
 
   // ── equality (polymorphic) ─────────────────────────────────────
-  {StandardOverloadIds::kEqualsInt,    {kRT, "cel_int_eq_at_vv"}},
-  {StandardOverloadIds::kEqualsString, {kRT, "cel_string_eq_at_vv"}},
-  {StandardOverloadIds::kEqualsBytes,  {kRT, "cel_bytes_eq_at_vv"}},
-  // … one row per equality overload id.
+  // ONE row each, not one per kind: every `==` / `!=` overload id
+  // lowers to the same polymorphic dispatcher, which switches on the
+  // operand kinds at runtime (`equality_kernel` in cel_runtime.c).
+  {StandardOverloadIds::kEquals,    {kRT, "cel_equals_at_vv"}},
+  {StandardOverloadIds::kNotEquals, {kRT, "cel_not_equals_at_vv"}},
 
   // ── logical / 3VL ──────────────────────────────────────────────
   {StandardOverloadIds::kLogicalAnd, {kRT, "cel_and_at_vv"}},

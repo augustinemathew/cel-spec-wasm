@@ -1,0 +1,31 @@
+# The runtime is C compiled for wasm32-wasi, and every symbol here is
+# part of the wasm ABI.  Two check families are actively wrong for that
+# shape and are disabled; everything else inherits from the repo-root
+# .clang-tidy (the function-size gate very much included).
+#
+#   misc-use-internal-linkage
+#       Reports exported kernels as "can be made static" because no C
+#       translation unit references them.  Their callers are the wasm
+#       modules codegen emits: `cel_not_equals_at_vv` is seeded in
+#       compiler/codegen/overload_table.cc, `cel_map_count` is imported
+#       by compiler/internal/compile.cc.  clang-tidy cannot see that
+#       edge, and making these static drops them from the export table
+#       and breaks linking.
+#
+#   cppcoreguidelines-macro-to-enum, modernize-macro-to-enum
+#       The runtime's integral constants are deliberately unsigned
+#       (`0u`, `48u`) and are compared against uint32_t fields and used
+#       in address arithmetic.  A C enumeration constant has type int
+#       (C17 6.7.2.2p3), so the suggested rewrite silently changes them
+#       from unsigned to signed.
+
+# CAVEAT: clang-tidy configs are directory-scoped with no file globs,
+# so these two also relax the C++ `*_test.cc` files in this directory.
+# The cost is small (a missed "this test helper could be static") and
+# there is no way to narrow it short of moving the runtime's C sources
+# into their own subdirectory.
+InheritParentConfig: true
+Checks: >
+  -misc-use-internal-linkage,
+  -cppcoreguidelines-macro-to-enum,
+  -modernize-macro-to-enum
