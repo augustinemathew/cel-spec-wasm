@@ -53,7 +53,7 @@
 ;;   [184+]  bump arena (malloc'd in heap)
 ;;
 ;; ── Runtime helpers ─────────────────────────────────────────
-;;   cel.cel_int_ne_at_vv     (M5.B)          — `v != 2`
+;;   cel.cel_not_equals_at_vv (M5.B)          — `v != 2`
 ;;   cel.cel_list_append_at   (Slice D NEW)
 (module
   (import "cel" "memory" (memory 2 1024 shared))
@@ -61,11 +61,8 @@
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
   (import "cel" "cel_list_create" (func $cel_list_create (param i32 i32)))
   (import "cel" "cel_list_append_at" (func $cel_list_append_at (param i32 i32)))
-  (import "cel" "cel_int_ne_at_vv"
-          (func $cel_int_ne_at_vv (param i32 i32 i32)))
-  ;; DEPENDS ON Slice D.
-  (import "cel" "cel_list_append_at"
-          (func $cel_list_append_at (param i32 i32)))
+  (import "cel" "cel_not_equals_at_vv"
+          (func $cel_not_equals_at_vv (param i32 i32 i32)))
 
   (data (i32.const 16)
         "\02\00\00\00" "\00\00\00\00"
@@ -108,7 +105,7 @@
 
         ;; loop_step: predicate then conditional append.
         ;;   pred_slot = (v != 2)
-        (call $cel_int_ne_at_vv
+        (call $cel_not_equals_at_vv
               (i32.const 160)
               (local.get $iter_off)
               (i32.const 88))

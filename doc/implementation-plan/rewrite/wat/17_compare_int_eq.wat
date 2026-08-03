@@ -15,9 +15,9 @@
 ;;   [88+]  bump arena (malloc'd in heap)
 ;;
 ;; New import this milestone:
-;;   cel.cel_int_eq_at_vv(out_slot, a_slot, b_slot) — i32×3 → ()
+;;   cel.cel_equals_at_vv(out_slot, a_slot, b_slot) — i32×3 → ()
 ;;
-;; cel_int_eq_at_vv contract (cel-cpp parity:
+;; cel_equals_at_vv contract (cel-cpp parity:
 ;;   third_party/cel-cpp/runtime/standard/equality_functions.cc::Equal):
 ;;     - reads a / b as CEL_INT.  Any other kind on either operand →
 ;;       out_slot = {CEL_ERROR, err=CEL_ERR_TYPE_MISMATCH}.  Cross-
@@ -34,8 +34,8 @@
   (import "cel" "memory" (memory 2 1024 shared))
   (import "cel" "arena_reset" (func $arena_reset))
   (import "cel" "arena_alloc" (func $arena_alloc (param i32) (result i32)))
-  (import "cel" "cel_int_eq_at_vv"
-          (func $cel_int_eq_at_vv (param i32 i32 i32)))
+  (import "cel" "cel_equals_at_vv"
+          (func $cel_equals_at_vv (param i32 i32 i32)))
 
   (data (i32.const 16)
         "\02\00\00\00" "\00\00\00\00"
@@ -50,7 +50,7 @@
     ;; out_slot=64, a=16, b=40.  Helper reads two CEL_INT frames out
     ;; of memory, writes a CEL_BOOL CelValue (false here, since
     ;; 1 != 2) into slot 64.
-    (call $cel_int_eq_at_vv
+    (call $cel_equals_at_vv
           (i32.const 64) (i32.const 16) (i32.const 40))
 
     (i32.const 64))

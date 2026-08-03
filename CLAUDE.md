@@ -1076,7 +1076,7 @@ ships.  The three layers and their flags:
     `third_party/wasi_sdk/cc_toolchain_config.bzl:199`) and explicit
     `-flto` in `runtime/BUILD.bazel`'s wasm `cc_binary` (both copts
     and linkopts).  LTO is load-bearing — it lets the linker inline
-    helpers like `cel_int_eq_at_vv` into `cel_list_in`'s scan loop
+    helpers like `cel_numeric_eq_at_vv` into `cel_list_in`'s scan loop
     across TU boundaries; without it, the hot loop pays a non-inlined
     call per element.  The native `cc_library` for `cel_runtime` has
     had `-O3 -flto` since 2026-05-15; **the wasm side gained `-flto`
