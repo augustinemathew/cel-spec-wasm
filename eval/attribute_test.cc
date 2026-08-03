@@ -313,7 +313,7 @@ TEST_P(AttributePatternParseRejects, Rejected) {
 // One representative per rejection class (FSM unit coverage).  The
 // exhaustive "almost-correct" matrix is exercised end-to-end through
 // the partial-eval entry point in
-// e2e/partial_eval_test.cc::MalformedPatternBoundaryTest.
+// e2e/m2_partial_eval_test.cc::MalformedPatternBoundaryTest.
 INSTANTIATE_TEST_SUITE_P(
     Malformed, AttributePatternParseRejects,
     ::testing::Values(BadPattern{"", "empty"}, BadPattern{"x.", "trailing dot"},

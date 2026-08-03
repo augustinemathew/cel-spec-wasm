@@ -49,7 +49,7 @@ namespace celwasm {
 // One segment in a resolved attribute path.  Segments are string
 // keys only (`foo["bar"]` or `foo.bar`): the resolver interns string
 // `.field` qualifiers exclusively (index / key access breaks the
-// attribute chain — see e2e/partial_eval_test.cc §8), so an int /
+// attribute chain — see e2e/m2_partial_eval_test.cc §8), so an int /
 // uint / bool qualifier can never be built or matched.  cel-cpp's
 // typed-variant breadth was deliberately dropped here; restore it
 // from git if index-qualified attributes ever become internable.
