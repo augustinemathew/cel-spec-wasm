@@ -45,7 +45,11 @@ cel_wasm_plugin(
 # doc/implementation-plan/rewrite/m28-configurable-linking.md §5.5.
 link_mode_e2e_cc_test(
     name = "demo_plugin_e2e_test",
-    size = "small",
+    # "large" (900s) to match the rest of the e2e suite: the _static
+    # variant links the whole runtime into the expr module, and the
+    # kind-matrix round-trip instantiates the plugin component once per
+    # kind.  At "small" (60s) the static variant timed out mid-fixture.
+    size = "large",
     srcs = ["demo_plugin_e2e_test.cc"],
     data = [
         "fns.idl",  # exact-bytes pin for the embedded cel.fns payload
