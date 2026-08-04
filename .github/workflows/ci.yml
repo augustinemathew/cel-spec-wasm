@@ -295,7 +295,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # `llvm` on top of the primary leg's deps: it supplies
+      # Mandatory here, not optional: an instrumented tree is LARGER
+      # than the plain one that was already exhausting the runner, so
+      # this lane cannot fit without reclaiming the preinstalled SDKs.
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
+      # No-op unless the job runs in the warm CI image; fails loudly if
+      # that image was built for different pins (docker/Dockerfile.ci).
+      - name: Verify CI image freshness
+        run: scripts/ci_check_image_stamp.sh
+
+      # `llvm` on top of the other lanes' deps: it supplies
       # llvm-symbolizer, without which a sanitizer report is a list of
       # raw addresses.
       - name: Install host deps
@@ -333,11 +344,23 @@ jobs:
             echo "::warning::llvm-symbolizer not found; sanitizer reports will be unsymbolized"
           fi
 
-      - name: Build
-        run: bazel build --config=${{ matrix.sanitizer }} //...
-
+      # One `bazel test` rather than build-then-test: `test` already
+      # builds, and the duplicate pass was dropped from the other lanes
+      # for the same reason.  Scope is `//...` plus the manual-tagged
+      # targets; conformance is deliberately excluded (see the job
+      # comment above).
       - name: Test (unit + manual-tagged)
         run: scripts/run_full_suite.sh --quick --config=${{ matrix.sanitizer }}
+
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
 
       - name: Save bazel disk cache
         if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
