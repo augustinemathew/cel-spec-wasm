@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,18 @@
 
 namespace celwasm {
 namespace {
+
+// Scope guard for a `wasmtime_extern_t` from `wasmtime_caller_export_get`,
+// which returns ownership of the extern it fills in (wasmtime/instance.h).
+// The extern is a caller-provided value, so the guard owns the RESOURCE
+// while the storage stays on the stack: the deleter releases, it does not
+// `delete`.  Mirrors `ExternGuard` in eval/engine.cc.
+struct ExternReleaser {
+  void operator()(wasmtime_extern_t* ext) const {
+    wasmtime_extern_delete(ext);
+  }
+};
+using ExternGuard = std::unique_ptr<wasmtime_extern_t, ExternReleaser>;
 
 // Byte layout of one `argv` slot.  Two 8-byte words: the first's low
 // 32 bits carry the tag (high 32 reserved), the second is the
@@ -387,8 +400,15 @@ absl::Span<const uint8_t> CallerMemory(wasmtime_caller_t* caller) {
   if (!wasmtime_caller_export_get(caller, kName, sizeof(kName) - 1, &ext)) {
     return {};
   }
+  // `wasmtime_caller_export_get` returns ownership of the extern
+  // (wasmtime/instance.h), so it has to be released on EVERY path out of
+  // here — the kind-mismatch branch used to be the only one that did,
+  // which leaked on every successful log call.  Releasing the handle
+  // does not invalidate the returned span: `wasmtime_memory_data` points
+  // into the store's linear memory, which the store owns, not the
+  // extern.
+  ExternGuard ext_guard(&ext);
   if (ext.kind != WASMTIME_EXTERN_MEMORY) {
-    wasmtime_extern_delete(&ext);
     return {};
   }
   const uint8_t* data = wasmtime_memory_data(ctx, &ext.of.memory);
