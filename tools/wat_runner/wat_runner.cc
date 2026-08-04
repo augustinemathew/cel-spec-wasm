@@ -24,6 +24,24 @@ namespace celwasm {
 
 namespace {
 
+// Scope guard for a `wasmtime_extern_t` from `wasmtime_caller_export_get`,
+// which *returns ownership* of the extern it fills in (wasmtime/instance.h:
+// "does return ownership of the #wasmtime_extern_t").  Each host-callback
+// stub below looks up the caller's memory export on every call, so without
+// this each host call leaked a handle plus the store internals behind it —
+// LeakSanitizer flagged exactly that in wat_runner_test.
+//
+// The extern is a caller-provided value, so the guard owns the RESOURCE
+// while the storage stays on the stack: the deleter releases, it does not
+// `delete`.  Constructed only after a successful lookup — releasing an
+// unfilled extern is undefined.  Mirrors `ExternGuard` in eval/engine.cc.
+struct ExternReleaser {
+  void operator()(wasmtime_extern_t* ext) const {
+    wasmtime_extern_delete(ext);
+  }
+};
+using ExternGuard = std::unique_ptr<wasmtime_extern_t, ExternReleaser>;
+
 // Names of every helper exported by `cel_runtime.wasm` that the
 // harness's expr modules may import.  Bound onto the linker by
 // `InstantiateRuntime` after instantiation — mirrors the
@@ -229,6 +247,7 @@ wasm_trap_t* StubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
+  ExternGuard ext_guard(&ext);
   uint8_t* data = wasmtime_sharedmemory_data(ext.of.sharedmemory);
   const size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
 
@@ -369,6 +388,7 @@ wasm_trap_t* ThreeArgStubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
+  ExternGuard ext_guard(&ext);
   uint8_t* base = wasmtime_sharedmemory_data(ext.of.sharedmemory);
   size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
 
@@ -429,6 +449,7 @@ wasm_trap_t* TwoArgStubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
+  ExternGuard ext_guard(&ext);
   uint8_t* base = wasmtime_sharedmemory_data(ext.of.sharedmemory);
   size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
 
