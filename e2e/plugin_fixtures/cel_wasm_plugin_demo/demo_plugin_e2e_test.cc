@@ -181,13 +181,15 @@ TEST(CelWasmPluginDemo, OneNounFlowLoadUseCompileUsePlanEval) {
 }
 
 TEST(CelWasmPluginDemo, OneNounFlowProtoArg) {
-  GTEST_SKIP()
-      << "blocked on the demo_plugin_proto fixture's pre-existing, "
-         "unrelated wasm32-wasip2 cross-compile break (absl "
-         "synchronization does not build under the wasip2 sysroot), so "
-         "this test cannot depend on demo_plugin_proto bytes.  Un-skip "
-         "by porting this body onto demo_plugin_proto once that build "
-         "is fixed.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: the demo_plugin_proto fixture does not build for
+  wasm32-wasip2 -- absl synchronization does not compile under that sysroot
+  -- so this test cannot depend on its bytes.  Pre-existing and unrelated to
+  the plugin path being exercised.  Un-skip by porting this body onto
+  demo_plugin_proto once that build is fixed.
+citation: e2e/plugin_fixtures/cel_wasm_plugin_demo (demo_plugin_proto target)
+)CELSKIP";
   // Intended: Plugin::Load(demo_plugin_proto bytes) →
   // Compiler::Builder::Use → Compile("is_adult(u)") → Engine::Use →
   // Plan → Eval with a bound acme.User message, asserting the
@@ -220,18 +222,18 @@ TEST(CelWasmPluginDemo, AddRoundTrips) {
 }
 
 TEST(CelWasmPluginDemo, GreetRoundTripsString) {
-  GTEST_SKIP()
-      << "engine.cc now stubs `wasi:random/random.get-random-bytes` with a "
-         "deterministic-bytes host fn (m26 #44 partial mitigation), so the "
-         "AddRoundTrips path passes — but std::to_string + std::string "
-         "concat still trips a `wasm trap: cannot leave component instance` "
-         "INSIDE libc++ AFTER random_get returns (the trap is at the wasm "
-         "function-92 level, post-adapter, somewhere in libc++'s "
-         "post-RNG-init machinery — possibly thread-local destructor "
-         "registration or canonical-ABI re-entrancy guard).  Un-skip once "
-         "the wasmtime C API exposes a real wasi-preview2 store context, "
-         "OR once we rebuild the demo against wasm32-wasi + the preview1 "
-         "adapter so the existing wasi.hh WasiConfig satisfies libc++.";
+  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
+reason: harness-limit
+why-not-a-bug: a wasmtime C API gap, not a defect in our code.  Engine now
+  stubs wasi:random/random.get-random-bytes with a deterministic-bytes host
+  fn, so the AddRoundTrips path passes; but std::to_string + std::string
+  concat still traps "cannot leave component instance" INSIDE libc++ AFTER
+  random_get returns, at the wasm function level post-adapter (likely
+  thread-local destructor registration or a canonical-ABI re-entrancy
+  guard).  Un-skip once the wasmtime C API exposes a real wasi-preview2
+  store context.
+citation: eval/engine.cc (wasi:random stub); m26 item 44
+)CELSKIP";
   auto engine_or = Engine::NewBuilder().Build();
   ASSERT_THAT(engine_or, IsOk());
   const auto lib = BuildDemoLibrary();

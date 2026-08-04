@@ -75,6 +75,14 @@ something in them, update them in the same commit as the code.
     PR description.  **`bazel test $PROJ` being green does
     NOT mean a milestone is done — manual-tagged tests carry the
     load-bearing e2e assertions; they MUST be run explicitly.**
+    The `manual` set is now scoped to targets that are genuinely
+    expensive: every remaining one takes 33 s or more, and everything
+    at or under ~14 s runs in the default sweep.  `manual` is a
+    RUNTIME-COST exemption only — never a way to keep a fragile or
+    inconvenient test out of CI.  Before adding it, measure with
+    `bazel test --nocache_test_results <target>`: cached "PASSED in
+    Ns" lines report the last recorded run under whatever load the
+    machine was under, and were overstating several targets by 3-4x.
 
 ### Naming a new design doc
 

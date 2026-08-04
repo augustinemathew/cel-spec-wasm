@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
@@ -309,6 +310,61 @@ const Production* PickProduction(const std::vector<Production>& rules,
   return nullptr;  // unreachable
 }
 
+// Sampling weight of one in-scope iter_var ident, relative to the
+// catalog's (mostly weight-1) productions.  High enough that a
+// comprehension body references its loop variable often — the
+// per-element data path is the whole point — without drowning out
+// the rest of the catalog.
+constexpr int kScopeIdentWeight = 3;
+
+// Total eligible production weight under the `require_leaf` filter.
+int EligibleWeight(const std::vector<Production>& rules, bool require_leaf) {
+  int total_weight = 0;
+  for (const Production& p : rules) {
+    if (require_leaf && !p.is_leaf) continue;
+    if (p.weight <= 0) continue;
+    total_weight += p.weight;
+  }
+  return total_weight;
+}
+
+// In-scope idents usable at `target`.  Later bindings shadow earlier
+// same-named ones (nested comprehensions reuse iter-var names, and
+// CEL resolves a reference to the innermost binding), so scan
+// back-to-front and keep only the innermost occurrence of each name —
+// and only when ITS type matches.
+std::vector<absl::string_view> ScopeIdents(
+    const std::vector<std::pair<std::string, CelType>>& in_scope,
+    const CelType& target) {
+  std::vector<absl::string_view> out;
+  absl::flat_hash_set<absl::string_view> seen;
+  const std::string target_key = TypeKey(target);
+  for (auto it = in_scope.rbegin(); it != in_scope.rend(); ++it) {
+    if (!seen.insert(it->first).second) continue;
+    if (TypeKey(it->second) == target_key) out.push_back(it->first);
+  }
+  return out;
+}
+
+// Draws between the in-scope ident pool and the grammar rule pool.
+// Returns the picked ident, or empty for "use a production".  The
+// two-stage draw is distribution-identical to one flat weighted draw
+// over both pools.
+std::string MaybePickScopeIdent(const std::vector<Production>& rules,
+                                bool require_leaf, const GenCtx& ctx,
+                                const CelType& target) {
+  const std::vector<absl::string_view> idents =
+      ScopeIdents(ctx.in_scope, target);
+  if (idents.empty()) return "";
+  const int ident_weight = kScopeIdentWeight * static_cast<int>(idents.size());
+  const int rule_weight = EligibleWeight(rules, require_leaf);
+  std::uniform_int_distribution<int> dist(0, ident_weight + rule_weight - 1);
+  const int pick = dist(*ctx.rng);
+  if (pick >= ident_weight) return "";
+  return std::string(
+      idents[static_cast<std::size_t>(pick / kScopeIdentWeight)]);
+}
+
 }  // namespace
 
 std::string GenerateExpr(const Grammar& grammar, const CelType& target,
@@ -322,6 +378,16 @@ std::string GenerateExpr(const Grammar& grammar, const CelType& target,
   // full set.  If we somehow exhaust eligible options at non-zero
   // depth (zero non-leaf weights), fall back to leaves.
   const bool require_leaf = ctx.depth_budget <= 0;
+
+  // Comprehension iter_vars in scope here join the candidate pool as
+  // ident leaves of their bound type, so a body can actually
+  // reference the element it is iterating over.  Without this the
+  // `in_scope` plumbing is dead and every `filter`/`map` body is
+  // constant w.r.t. its loop variable.
+  std::string scope_ident =
+      MaybePickScopeIdent(rules, require_leaf, ctx, target);
+  if (!scope_ident.empty()) return scope_ident;
+
   const Production* p = PickProduction(rules, require_leaf, *ctx.rng);
   if (p == nullptr && !require_leaf) {
     p = PickProduction(rules, /*require_leaf=*/true, *ctx.rng);
