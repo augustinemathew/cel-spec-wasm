@@ -210,10 +210,39 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
   return absl::OkStatus();
 }
 
+// Scope guard for a `wasmtime_extern_t` obtained from a wasmtime
+// `*_export_get`.
+//
+// Those calls *return ownership* of the extern they fill in —
+// wasmtime/instance.h: "Doesn't take ownership of any arguments but does
+// return ownership of the #wasmtime_extern_t" — so every successful
+// lookup has to be released with `wasmtime_extern_delete`.  We were
+// releasing exactly one of them (eval/host/cel_log.cc), which leaked a
+// handle per lookup; `Engine::Plan` does several, so a server leaked on
+// every plan.
+//
+// The extern is a caller-provided *value*, not a pointer the API hands
+// back, so the guard owns the RESOURCE while the storage stays on the
+// stack: the deleter calls `wasmtime_extern_delete`, never `delete`.
+// Declare the guard after the lookup returns true — a failed lookup
+// leaves the extern unfilled, and releasing an unfilled one is
+// undefined.  Most call sites below take an early return between the
+// lookup and the last use, which is why this is scope-bound rather than
+// a hand-written release per return.
+struct ExternReleaser {
+  void operator()(wasmtime_extern_t* ext) const {
+    wasmtime_extern_delete(ext);
+  }
+};
+using ExternGuard = std::unique_ptr<wasmtime_extern_t, ExternReleaser>;
+
 // Pull the helpers instance's exported `memory` into `*out`.
 // Shared by the handle-caching half (`CacheRuntimeMemory`, both link
 // modes) and the linker-population half (`DefineCelLinkerBindings`,
 // dynamic mode only).
+//
+// On success the caller receives ownership of `*out` and must guard it;
+// on the kind-mismatch path below we own it and release it here.
 absl::Status GetRuntimeMemoryExport(wasmtime_context_t* ctx,
                                     celwasm::InstanceImpl* impl,
                                     wasmtime_extern_t* out) {
@@ -222,11 +251,15 @@ absl::Status GetRuntimeMemoryExport(wasmtime_context_t* ctx,
     return absl::FailedPreconditionError(
         "runtime instance has no export `memory`");
   }
+
   // Phase C: the runtime is built for wasm32-wasi-threads and exports
   // its memory as shared.  The expr module imports `cel.memory` with
   // matching shared shape (codegen sets `shared=true` on the import,
   // see `WasmModule::AddMemoryImport`).
   if (out->kind != WASMTIME_EXTERN_SHAREDMEMORY) {
+    // We own it only on this path; on success ownership passes to the
+    // caller, which guards it.
+    ExternGuard release_on_error(out);
     return absl::FailedPreconditionError(
         absl::StrCat("`memory` is not a shared memory (kind=", out->kind, ")"));
   }
@@ -241,6 +274,7 @@ absl::Status CacheRuntimeMemory(wasmtime_context_t* ctx,
                                 celwasm::InstanceImpl* impl) {
   wasmtime_extern_t mem_ext;
   if (auto s = GetRuntimeMemoryExport(ctx, impl, &mem_ext); !s.ok()) return s;
+  ExternGuard mem_guard(&mem_ext);
   // The handle pulled out of `wasmtime_instance_export_get` is a
   // shared-memory pointer owned by the store; we clone it so this
   // InstanceImpl owns its own refcounted handle (deleted in the dtor).
@@ -262,6 +296,7 @@ absl::Status BindRuntimeExport(wasmtime_linker_t* linker,
     return absl::FailedPreconditionError(
         absl::StrCat("runtime instance has no export `", name, "`"));
   }
+  ExternGuard ext_guard(&ext);
   wasmtime_error_t* err = wasmtime_linker_define(
       linker, ctx, "cel", 3, name.data(), name.size(), &ext);
   if (err != nullptr) {
@@ -315,6 +350,7 @@ absl::Status DefineCelLinkerBindings(celwasm::InstanceImpl* impl,
                                      wasmtime_context_t* ctx) {
   wasmtime_extern_t mem_ext;
   if (auto s = GetRuntimeMemoryExport(ctx, impl, &mem_ext); !s.ok()) return s;
+  ExternGuard mem_guard(&mem_ext);
   wasmtime_error_t* err = wasmtime_linker_define(impl->linker, ctx, "cel", 3,
                                                  "memory", 6, &mem_ext);
   if (err != nullptr) {
@@ -343,6 +379,7 @@ absl::Status BindRuntimeFuncHandles(celwasm::InstanceImpl* impl,
     return absl::FailedPreconditionError(
         "runtime instance has no export `arena_alloc` (cel_host needs it)");
   }
+  ExternGuard alloc_ext_guard(&alloc_ext);
   if (alloc_ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError("`arena_alloc` is not a function");
   }
@@ -365,6 +402,7 @@ absl::Status BindRuntimeFuncHandles(celwasm::InstanceImpl* impl,
     return absl::FailedPreconditionError(
         "runtime instance has no export `malloc`");
   }
+  ExternGuard malloc_ext_guard(&malloc_ext);
   if (malloc_ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError("`malloc` is not a function");
   }
@@ -393,6 +431,7 @@ absl::Status SeedRuntimeArena(celwasm::InstanceImpl* impl,
     return absl::FailedPreconditionError(
         "runtime instance has no export `arena_init`");
   }
+  ExternGuard init_ext_guard(&init_ext);
   if (init_ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError("`arena_init` is not a function");
   }
@@ -429,6 +468,7 @@ void EnforceRuntimeMemoryInvariants(celwasm::InstanceImpl* impl,
     // Pre-WASI / stripped build — A14 is a soft check.
     return;
   }
+  ExternGuard heap_base_guard(&heap_base_ext);
   ABSL_CHECK_EQ(heap_base_ext.kind, WASMTIME_EXTERN_GLOBAL)
       << "DESIGN A14: __heap_base must be a global";
   wasmtime_val_t hb_val;
@@ -480,9 +520,15 @@ absl::Status BindStaticModeHelpers(celwasm::InstanceImpl* impl) {
   impl->helpers_instance = impl->expr_instance;
   wasmtime_context_t* ctx = wasmtime_store_context(impl->store);
   wasmtime_extern_t ctors_ext;
+  // Split out of the `&&` so the guard covers the case where the lookup
+  // succeeds but the export is not a function — the body is skipped
+  // there, and a guard inside it would miss that path.
+  ExternGuard ctors_guard;
   if (wasmtime_instance_export_get(ctx, &impl->expr_instance,
-                                   "__wasm_call_ctors", 17, &ctors_ext) &&
-      ctors_ext.kind == WASMTIME_EXTERN_FUNC) {
+                                   "__wasm_call_ctors", 17, &ctors_ext)) {
+    ctors_guard.reset(&ctors_ext);
+  }
+  if (ctors_guard != nullptr && ctors_ext.kind == WASMTIME_EXTERN_FUNC) {
     wasm_trap_t* trap = nullptr;
     auto err = wasmtime_func_call(ctx, &ctors_ext.of.func, /*args=*/nullptr,
                                   /*nargs=*/0, /*results=*/nullptr,
@@ -1277,6 +1323,7 @@ absl::Status InstantiateExpr(celwasm::InstanceImpl* impl) {
                                     &ext)) {
     return absl::FailedPreconditionError("expr module does not export `eval`");
   }
+  ExternGuard eval_guard(&ext);
   if (ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError(
         "expr module's `eval` export is not a function");
