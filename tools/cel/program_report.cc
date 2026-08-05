@@ -18,20 +18,16 @@ std::string FormatProgramFacts(const ::celwasm::abi::ProgramFacts& facts) {
   for (const ::celwasm::abi::DeclaredVar& v : facts.vars) {
     rendered.push_back(absl::StrCat(v.name, ":", v.type_spec));
   }
-  // Split by what the caller can actually do about each: a plugin
-  // function is satisfiable with a wasm artifact, an @host function
-  // only from C++ in the embedder's process.
+  // Required functions are @host callbacks: C++ in the embedder's
+  // process, so a program that needs one runs only through the C++
+  // API.
   std::vector<std::string> host_fns;
-  std::vector<std::string> plugin_fns;
   for (const ::celwasm::abi::RequiredFn& fn : facts.required_fns) {
-    (fn.is_host ? host_fns : plugin_fns).push_back(fn.signature);
+    host_fns.push_back(fn.signature);
   }
   std::string out = absl::StrCat(
       "vars:       ", rendered.empty() ? "none" : absl::StrJoin(rendered, ", "),
       "\n");
-  absl::StrAppend(&out, "plugin fns: ",
-                  plugin_fns.empty() ? "none" : absl::StrJoin(plugin_fns, ", "),
-                  "\n");
   absl::StrAppend(&out, "host fns:   ",
                   host_fns.empty() ? "none" : absl::StrJoin(host_fns, ", "),
                   "\n");

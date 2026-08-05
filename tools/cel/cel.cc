@@ -4,8 +4,8 @@
 //   cel eval    <expr> [--var ...] [--proto ... | --descriptor_set ...] ...
 //   cel check   <expr> [--var name:Type] [--proto ... | --descriptor_set ...]
 //   cel compile <expr> --output <out.wasm> [--O 0..3] ...
-//   cel generate --idl <fns.idl> --out_dir <dir> [--language cpp] ...
-//   cel embed-decls --plugin <in.wasm> --idl <fns.idl> --out <out.wasm>
+//   cel run     <prog.wasm> [--var name=value] ...
+//   cel inspect <prog.wasm>
 //
 // See tools/cel/var_parser.h for the `--var` literal
 // grammar and tools/cel/value_format.h for `--format`.
@@ -22,7 +22,6 @@
 #include <utility>
 #include <vector>
 
-#include "abi/plugin.h"
 #include "abi/program_facts.h"
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
@@ -49,8 +48,6 @@
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "tools/cel/program_report.h"
-#include "tools/cel/run_embed_decls.h"
-#include "tools/cel/run_generate.h"
 #include "tools/cel/value_format.h"
 #include "tools/cel/var_parser.h"
 
@@ -87,29 +84,6 @@ ABSL_FLAG(int, O, 0,
 ABSL_FLAG(std::string, output, "",
           "`cel compile` only: path to write the emitted wasm bytes.  "
           "If empty, bytes go to stdout.");
-
-// `cel generate` flags.  Drive the emitter set from a single `.idl`
-// file; outputs go to --out_dir.
-ABSL_FLAG(std::string, idl, "",
-          "`cel generate` only: path to the .idl input file.");
-ABSL_FLAG(std::string, language, "cpp",
-          "`cel generate` only: target language.  `cpp` (default); "
-          "`go` is planned.");
-ABSL_FLAG(std::string, out_dir, "",
-          "`cel generate` only: directory to write generated files into "
-          "(fns.wit, codec.h, generated_stub.cc, user_fns.h).");
-ABSL_FLAG(std::vector<std::string>, include, {},
-          "`cel generate` only: comma-separated #include paths to inject "
-          "at the top of the generated user_fns.h + generated_stub.cc.  "
-          "Typical use: `--include=acme/user.pb.h` for proto-typed fns.");
-
-// `cel embed-decls` flags (`--idl` is shared with `cel generate`).
-ABSL_FLAG(std::string, plugin, "",
-          "`cel embed-decls` only: path to the input Component-Model "
-          ".wasm plugin binary.");
-ABSL_FLAG(std::string, out, "",
-          "`cel embed-decls` only: path to write the output .wasm (the "
-          "input plugin with the cel.fns declaration section embedded).");
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization)
 
 namespace celwasm::tools::cel {
@@ -117,7 +91,6 @@ namespace {
 
 using ::celwasm::Activation;
 using ::celwasm::Engine;
-using ::celwasm::Plugin;
 using ::celwasm::Program;
 using ::celwasm::Value;
 using ::celwasm::abi::DeclaredVar;
@@ -339,10 +312,6 @@ std::vector<std::string>& VarFlags() {
   static auto* v = new std::vector<std::string>{};
   return *v;
 }
-std::vector<std::string>& PluginFlags() {
-  static auto* v = new std::vector<std::string>{};
-  return *v;
-}
 std::vector<std::string>& FormatFlags() {
   static auto* v = new std::vector<std::string>{};
   return *v;
@@ -370,26 +339,13 @@ absl::StatusOr<std::vector<ParsedVar>> ParseAllVars(
 // rather than repeated per subcommand.
 struct CliSetup {
   PoolBundle pool;
-  // Held for the whole compile: `CompileOptions::function_libraries`
-  // references each plugin's library.
-  std::vector<Plugin> plugins;
   std::unique_ptr<google::protobuf::DynamicMessageFactory> factory;
   std::vector<ParsedVar> vars;
   celwasm::CompileOptions opts;
 };
 
-// Defined below, next to the file-reading helper it uses.
-absl::StatusOr<std::vector<Plugin>> LoadPluginFlags();
-
 absl::StatusOr<CliSetup> PrepareCli(absl::string_view source_desc) {
   CliSetup s;
-  // A plugin carries its own declarations, so `--plugin` is what lets
-  // the checker resolve `customfn.add(2, 3)` at compile time.  Without
-  // it the call site is an undeclared reference and nothing that calls
-  // a plugin function could ever be compiled from the CLI.
-  auto plugins = LoadPluginFlags();
-  if (!plugins.ok()) return plugins.status();
-  s.plugins = *std::move(plugins);
   auto pool = BuildPool();
   if (!pool.ok()) return pool.status();
   s.pool = *std::move(pool);
@@ -401,14 +357,6 @@ absl::StatusOr<CliSetup> PrepareCli(absl::string_view source_desc) {
   auto opts = BuildCompileOptions(source_desc, s.vars);
   if (!opts.ok()) return opts.status();
   s.opts = *std::move(opts);
-  // Both lists, as `Compiler::Builder::Build` does: `check.` feeds the
-  // type-checker so the call site resolves, the outer one feeds
-  // codegen so the import is emitted.  Setting only one gives either
-  // an "undeclared reference" or a missing import.
-  for (const Plugin& plugin : s.plugins) {
-    s.opts.check.function_libraries.push_back(plugin.library());
-    s.opts.function_libraries.push_back(plugin.library());
-  }
   return s;
 }
 
@@ -455,20 +403,10 @@ int ReportResult(const Value& value, const std::vector<Format>& formats) {
   return kExitOk;
 }
 
-// A plugin named on the command line is needed twice: its declarations
-// let the checker resolve the call site, and the artifact itself
-// satisfies the import at Plan.  This is the second half.
-absl::Status RegisterPlugins(Engine& engine, absl::Span<const Plugin> plugins) {
-  for (const Plugin& plugin : plugins) {
-    if (auto s = engine.Use(plugin); !s.ok()) return s;
-  }
-  return absl::OkStatus();
-}
-
 // --- Subcommands ------------------------------------------------------------
 
-// Compile `expr`, stand up an engine, register any --plugin artifacts,
-// and Plan.  Split out of RunEval so both stay under the size gate.
+// Compile `expr`, stand up an engine, and Plan.  Split out of RunEval
+// so both stay under the size gate.
 absl::StatusOr<Instance> CompileAndPlan(absl::string_view expr,
                                         const CliSetup& setup) {
   auto artifact = celwasm::Compile(expr, setup.opts);
@@ -476,7 +414,6 @@ absl::StatusOr<Instance> CompileAndPlan(absl::string_view expr,
   Program program(std::move(artifact->wasm_bytes));
   auto engine = Engine::NewBuilder().Build();
   if (!engine.ok()) return engine.status();
-  if (auto s = RegisterPlugins(*engine, setup.plugins); !s.ok()) return s;
   return engine->Plan(program);
 }
 
@@ -563,24 +500,6 @@ absl::StatusOr<std::vector<uint8_t>> ReadFileBytes(absl::string_view path) {
   std::string bytes((std::istreambuf_iterator<char>(in)),
                     std::istreambuf_iterator<char>());
   return std::vector<uint8_t>(bytes.begin(), bytes.end());
-}
-
-// Read and parse every `--plugin` artifact.  Split out of the run
-// prologue so both stay under the function-size gate.
-absl::StatusOr<std::vector<Plugin>> LoadPluginFlags() {
-  std::vector<Plugin> out;
-  out.reserve(PluginFlags().size());
-  for (const std::string& path : PluginFlags()) {
-    auto bytes = ReadFileBytes(path);
-    if (!bytes.ok()) return bytes.status();
-    auto plugin = Plugin::Load(*bytes);
-    if (!plugin.ok()) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("--plugin ", path, ": ", plugin.status().message()));
-    }
-    out.push_back(*std::move(plugin));
-  }
-  return out;
 }
 
 int RunInspect(absl::string_view path) {
@@ -672,48 +591,22 @@ absl::Status BindDeclaredVars(const ProgramFacts& facts,
 // Refuse a program the CLI provably cannot run, before Plan, naming
 // the functions responsible.
 //
-// `@host` implementations are C++ in the embedder's process, so no
-// generic binary can supply them.  The program says so itself:
-// `cel.abi.required_functions` records every `cel_fn` import with its
-// backend, so this is a straight read rather than a guess at
-// wasmtime's link-failure text.
-absl::Status RejectIfHostFunctionsRequired(const ProgramFacts& facts) {
-  std::vector<std::string> host;
+// Custom-function implementations are C++ in the embedder's process,
+// so no generic binary can supply them.  The program says so itself:
+// `cel.abi.required_functions` records every `cel_fn` import, so this
+// is a straight read rather than a guess at wasmtime's link-failure
+// text.
+absl::Status RejectIfFunctionsRequired(const ProgramFacts& facts) {
+  std::vector<std::string> required;
   for (const RequiredFn& fn : facts.required_fns) {
-    if (fn.is_host) host.push_back(fn.signature);
+    required.push_back(fn.signature);
   }
-  if (host.empty()) return absl::OkStatus();
+  if (required.empty()) return absl::OkStatus();
   return absl::FailedPreconditionError(absl::StrCat(
-      "this program requires @host function(s) the CLI cannot supply: ",
-      absl::StrJoin(host, ", "),
-      "\n  @host implementations are C++ in your process — evaluate via "
-      "the C++ API (Engine::AddFunction), or redefine the function with a "
-      "@plugin backend so it travels with the artifact and `--plugin` can "
-      "supply it"));
-}
-
-// A plugin function, unlike an @host one, IS satisfiable from the
-// command line: the implementation is a wasm artifact, so `--plugin`
-// can hand it over.  Report the shortfall before Plan so the message
-// names what to pass rather than surfacing as a link failure.
-
-absl::Status CheckPluginsSatisfied(const ProgramFacts& facts,
-                                   const std::vector<Plugin>& loaded) {
-  if (facts.required_fns.empty()) return absl::OkStatus();
-  std::size_t plugin_fns = 0;
-  for (const RequiredFn& fn : facts.required_fns) {
-    if (!fn.is_host) ++plugin_fns;
-  }
-  if (plugin_fns == 0 || !loaded.empty()) return absl::OkStatus();
-  std::vector<std::string> names;
-  for (const RequiredFn& fn : facts.required_fns) {
-    if (!fn.is_host) names.push_back(fn.signature);
-  }
-  return absl::FailedPreconditionError(absl::StrCat(
-      "this program requires plugin function(s) but no --plugin was given: ",
-      absl::StrJoin(names, ", "),
-      "\n  supply the plugin artifact with `--plugin <file.wasm>` "
-      "(repeatable)"));
+      "this program requires custom function(s) the CLI cannot supply: ",
+      absl::StrJoin(required, ", "),
+      "\n  custom-function implementations are C++ in your process — "
+      "evaluate via the C++ API (Engine::AddFunction)"));
 }
 
 // Everything `run` needs before it can Plan: the program bytes, the
@@ -726,9 +619,6 @@ struct LoadedProgram {
   // Value::Message references the message by const&.
   std::vector<ParsedVar> owned;
   Activation activation;
-  // Held for the whole run: `Engine::Use` reads the declarations out
-  // of each plugin at registration time.
-  std::vector<Plugin> plugins;
 };
 
 absl::StatusOr<LoadedProgram> LoadProgramAndBind(absl::string_view path) {
@@ -738,11 +628,7 @@ absl::StatusOr<LoadedProgram> LoadProgramAndBind(absl::string_view path) {
   out.bytes = *std::move(bytes);
   auto facts = DescribeProgram(out.bytes);
   if (!facts.ok()) return facts.status();
-  if (auto s = RejectIfHostFunctionsRequired(*facts); !s.ok()) return s;
-  auto plugins = LoadPluginFlags();
-  if (!plugins.ok()) return plugins.status();
-  out.plugins = *std::move(plugins);
-  if (auto s = CheckPluginsSatisfied(*facts, out.plugins); !s.ok()) return s;
+  if (auto s = RejectIfFunctionsRequired(*facts); !s.ok()) return s;
   auto pool = BuildPool();
   if (!pool.ok()) return pool.status();
   out.pool = *std::move(pool);
@@ -772,10 +658,6 @@ int RunProgram(absl::string_view path) {
   if (!engine.ok()) {
     std::cerr << "ERROR: engine: " << engine.status().message() << "\n";
     return kExitExprFailure;
-  }
-  if (auto s = RegisterPlugins(*engine, loaded->plugins); !s.ok()) {
-    std::cerr << "ERROR: --plugin: " << s.message() << "\n";
-    return kExitUsage;
   }
   auto instance = engine->Plan(program);
   if (!instance.ok()) {
@@ -827,13 +709,9 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "  compile  <expr>        compile to wasm bytes\n"
      << "  run      <prog.wasm>   evaluate a precompiled program\n"
      << "  inspect  <prog.wasm>   print what a program declares and needs\n"
-     << "  generate               emit plugin bindings from a .idl\n"
-     << "  embed-decls            stamp .idl decls into a plugin .wasm\n"
      << "\n"
      << "eval <expr>\n"
      << "  optional  --var name:Type[=value]  (repeatable) declare, and bind\n"
-     << "            --plugin PATH            (repeatable) plugin .wasm whose\n"
-     << "                                     functions the expression calls\n"
      << "            --proto PATH             .proto for message-typed vars\n"
      << "            --descriptor_set PATH    FileDescriptorSet, instead of "
         "--proto\n"
@@ -843,38 +721,21 @@ void PrintUsage(std::ostream& os, absl::string_view argv0) {
      << "\n"
      << "check <expr>\n"
      << "  optional  --var name:Type          (repeatable) declare\n"
-     << "            --plugin PATH            (repeatable)\n"
      << "            --proto | --descriptor_set | --container\n"
      << "\n"
      << "compile <expr>\n"
      << "  required  --output PATH            wasm output (omit for stdout)\n"
      << "  optional  --var name:Type          (repeatable) declare\n"
-     << "            --plugin PATH            (repeatable)\n"
      << "            --proto | --descriptor_set | --container | --O\n"
      << "\n"
      << "run <prog.wasm>\n"
      << "  optional  --var name=value         (repeatable) bind; the type\n"
      << "                                     comes from the program\n"
-     << "            --plugin PATH            (repeatable) required if the\n"
-     << "                                     program needs plugin functions\n"
      << "            --proto PATH             .proto for message-typed vars\n"
      << "            --format FMT             (repeatable) textproto|json|cel\n"
      << "\n"
      << "inspect <prog.wasm>\n"
      << "  (no flags)\n"
-     << "\n"
-     << "generate\n"
-     << "  required  --idl PATH               .idl input\n"
-     << "            --out_dir PATH           output directory\n"
-     << "  optional  --language LANG          cpp (default); go planned\n"
-     << "            --package PKG            WIT package-name override\n"
-     << "            --include PATH           (comma-separated) extra "
-        "#includes\n"
-     << "\n"
-     << "embed-decls\n"
-     << "  required  --plugin PATH            input Component-Model .wasm\n"
-     << "            --idl PATH               .celfn declaration text\n"
-     << "            --out PATH               output .wasm\n"
      << "\n"
      << "exit codes: 0 success · 1 the expression or program failed · "
         "2 usage\n";
@@ -892,14 +753,8 @@ bool WantsHelp(absl::Span<char* const> argv) {
 }
 
 bool IsKnownSubcommand(absl::string_view s) {
-  return s == "eval" || s == "check" || s == "compile" || s == "generate" ||
-         s == "run" || s == "inspect" || s == "embed-decls";
-}
-
-// `generate` and `embed-decls` take no positional argument; their
-// inputs arrive via flags (--idl / --plugin / --out).
-bool TakesNoPositional(absl::string_view s) {
-  return s == "generate" || s == "embed-decls";
+  return s == "eval" || s == "check" || s == "compile" || s == "run" ||
+         s == "inspect";
 }
 
 // True for subcommands whose positional argument is a path to a
@@ -917,7 +772,7 @@ bool TakesProgramPath(absl::string_view s) {
 // "expression failed" code.  Reporting them here keeps flag errors
 // classified as usage.  Returns nullopt when a flag was unrecognized.
 std::optional<std::vector<char*>> ParseFlagsAfterSubcommand(
-    absl::Span<char* const> argv, absl::string_view subcommand) {
+    absl::Span<char* const> argv) {
   std::vector<char*> rest;
   rest.reserve(argv.size() - 1);
   rest.push_back(argv[0]);
@@ -926,13 +781,6 @@ std::optional<std::vector<char*>> ParseFlagsAfterSubcommand(
   }
   rest = ExtractRepeated(rest, "var", VarFlags());
   rest = ExtractRepeated(rest, "format", FormatFlags());
-  // `--plugin` is repeatable everywhere except `embed-decls`, where
-  // it is a single absl flag naming the artifact being stamped.  Peel
-  // it out for the others only, or the extraction would consume
-  // embed-decls' value before absl ever sees it.
-  if (subcommand != "embed-decls") {
-    rest = ExtractRepeated(rest, "plugin", PluginFlags());
-  }
 
   std::vector<char*> positional;
   std::vector<absl::UnrecognizedFlag> unrecognized;
@@ -945,40 +793,11 @@ std::optional<std::vector<char*>> ParseFlagsAfterSubcommand(
   return positional;
 }
 
-int RunGenerateSubcommand() {
-  GenerateOptions opts;
-  opts.idl_path = absl::GetFlag(FLAGS_idl);
-  opts.language = absl::GetFlag(FLAGS_language);
-  opts.out_dir = absl::GetFlag(FLAGS_out_dir);
-  opts.extra_includes = absl::GetFlag(FLAGS_include);
-  return RunGenerate(opts);
-}
-
-int RunEmbedDeclsSubcommand() {
-  EmbedDeclsOptions opts;
-  opts.plugin_path = absl::GetFlag(FLAGS_plugin);
-  opts.idl_path = absl::GetFlag(FLAGS_idl);
-  opts.out_path = absl::GetFlag(FLAGS_out);
-  return RunEmbedDecls(opts);
-}
-
 // Validate the positional count for `subcommand` and dispatch.
 // `positional[0]` is argv[0]; expression- and program-taking
 // subcommands need exactly one more.
 int Dispatch(absl::string_view subcommand, absl::Span<char* const> positional,
              absl::string_view argv0) {
-  if (TakesNoPositional(subcommand)) {
-    if (positional.size() != 1) {
-      std::cerr << "ERROR: `" << subcommand
-                << "` takes no positional argument; use its flags "
-                   "instead.  Got "
-                << (positional.size() - 1) << " unexpected.\n";
-      PrintUsage(std::cerr, argv0);
-      return kExitUsage;
-    }
-    return subcommand == "generate" ? RunGenerateSubcommand()
-                                    : RunEmbedDeclsSubcommand();
-  }
   if (positional.size() != 2) {
     std::cerr << "ERROR: expected exactly one positional "
               << (TakesProgramPath(subcommand) ? "<prog.wasm>" : "<expr>")
@@ -1017,7 +836,7 @@ int main(int argc, char** argv) {  // NOLINT(bugprone-exception-escape)
     return cli::kExitUsage;
   }
 
-  auto positional = cli::ParseFlagsAfterSubcommand(args, subcommand);
+  auto positional = cli::ParseFlagsAfterSubcommand(args);
   if (!positional.has_value()) {
     cli::PrintUsage(std::cerr, argv[0]);
     return cli::kExitUsage;

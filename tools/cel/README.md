@@ -17,8 +17,6 @@ them as-is. `cel` below means `bazel-bin/tools/cel/cel`.
 | `compile` | `<expr>` | emit portable wasm bytes |
 | `run` | `<prog.wasm>` | evaluate a precompiled program — no recompile |
 | `inspect` | `<prog.wasm>` | print what a program declares and requires |
-| `generate` | — | emit plugin bindings from a `.idl` |
-| `embed-decls` | — | stamp `.idl` declarations into a plugin `.wasm` |
 
 `cel --help` is the authoritative flag list — per command, required and
 optional split out.
@@ -49,7 +47,6 @@ cel compile 'a * b + 1' --var a:int --var b:int --output /tmp/expr.wasm
 
 cel inspect /tmp/expr.wasm
 # vars:       a:int, b:int
-# plugin fns: none
 # host fns:   none
 # link:       static (cel.abi v1, runtime abi v4)
 
@@ -108,15 +105,6 @@ pastes straight back into a binding.
 ```bash
 cel inspect /tmp/expr.wasm
 ```
-
-### `generate` and `embed-decls`
-
-Build-time tooling for plugins. `generate` emits bindings (`fns.wit`,
-`codec.h`, `generated_stub.cc`, `user_fns.h`) from a `.idl`;
-`embed-decls` stamps declaration text into an existing plugin `.wasm`
-as its `cel.fns` section. Normally the `cel_wasm_plugin` Bazel macro
-drives both — see
-[writing plugins](../../doc/user-guide/writing-plugins.md).
 
 ## Binding variables — `--var`
 
@@ -182,45 +170,14 @@ cel check "Customer{name: 'Ada'}.name" \
     --proto testdata/e2e_fixture.proto --container celwasm.testdata   # → OK
 ```
 
-## Plugin functions — `--plugin`
+## Custom functions
 
-A plugin is a Component-Model `.wasm` carrying its own CEL
-declarations. `--plugin` serves both halves — the declarations let the
-type-checker resolve the call site, and the artifact satisfies the
-import at evaluation — so it is needed at **both** compile and run.
-
-```bash
-PLUGIN=bazel-bin/e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin.wasm
-
-cel eval 'add(2, 3)' --plugin "$PLUGIN"                       # → 5
-
-cel compile 'add(a, b)' --plugin "$PLUGIN" \
-    --var a:int --var b:int --output /tmp/prog.wasm
-cel run /tmp/prog.wasm --plugin "$PLUGIN" --var a=20 --var b=22    # → 42
-```
-
-Names are used bare — `add`, not `customfn.add`. A `Module` directive
-in the `.idl` names the wasm module, not a CEL namespace.
-
-Omit the flag and the failure names what is missing, rather than
-surfacing as a wasm link error:
-
-```
-ERROR: this program requires plugin function(s) but no --plugin was given:
-       int add(int, int)
-  supply the plugin artifact with `--plugin <file.wasm>` (repeatable)
-```
-
-Two things to expect. At the default `--O 0` every declared plugin
-function is imported whether the expression calls it or not, so
-`inspect` lists all of them; `--O 1` and above drop the unused. And a
-plugin function returning a **string** currently traps on
-wasm32-wasip2 — string *arguments* are fine
-([details](../../doc/user-guide/writing-plugins.md)).
-
-`@host` functions are the case `--plugin` cannot help with: they are
-C++ in your process, so a program calling one runs only through the
-C++ API.
+`@host` functions are C++ callbacks in the embedder's process
+(`Engine::AddFunction`), so a program that requires one runs only
+through the C++ API — no generic binary can supply the
+implementation. `inspect` lists what a program requires, and `cel
+run` refuses such a program up front, naming the functions, rather
+than surfacing a wasm link error.
 
 ## Output — `--format`
 
@@ -266,7 +223,7 @@ fi
 | `--var x: unexpected trailing characters at offset N` | value doesn't match the declared type (e.g. `int=3.14`) |
 | `undefined field 'X' not found in struct 'Y'` | field absent from the bound message |
 | `found no matching overload for '_+_' applied to '(int, uint)'` | CEL has no implicit numeric coercion |
-| `undeclared reference to 'X' (in container '')` | missing `--container`, or a plugin's `--plugin` |
+| `undeclared reference to 'X' (in container '')` | missing `--container`, or an undeclared variable / function |
 | `expression's static footprint … exceeds …` | too many constants/slots — simplify |
 
 ## Where to look next
@@ -274,8 +231,6 @@ fi
 - [Getting started](../../doc/user-guide/getting-started.md) — the C++
   embedding path
 - [User guide](../../doc/user-guide/index.md) — the full embedder API
-- [Writing plugins](../../doc/user-guide/writing-plugins.md) —
-  sandboxed custom functions
 - [`var_parser.h`](var_parser.h) / [`value_format.h`](value_format.h) —
   the `--var` and `--format` grammars, with exhaustive shape coverage
   in their `_test.cc` siblings
