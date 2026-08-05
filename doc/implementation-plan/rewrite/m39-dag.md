@@ -83,6 +83,6 @@ graph TD
 | 4 | DOC2 design docs + user guide | agent | done (e7c50f0, 30 files +638/−1556; §5 fully executed; 6 extra claim-corrections; mkdocs nav fixed; leftovers routed: abi/wit + engine.h comment → A1, diagrams → DOC3) |
 | 5 | F1 ofNonZeroValue(message) full-depth delete | agent | CLOSED NO-CHANGE — premise false: backlog #41 was a stale duplicate of #10 (fixed 2026-06-10); feature verified working at every layer, oracle-confirmed; deletion would fail the monotonic conformance gate. Residual doc closures → DOC3 |
 | 5 | F2 stale-skip un-skips | agent | done (1c79305; both un-skips observed green in both link modes; skips had no bodies — written from siblings; instance.cc comment corrected to deliberate-reject framing) |
-| 5 | A1 dead-API audit | agent | running |
-| 5 | DOC3 diagrams + final pass | agent | pending |
+| 5 | A1 dead-API audit | agent | done (5 commits, net −213; 5 candidates deleted by census, ~10 doc-promised surfaces kept with reasons; full //... non-manual sweep 157/157; 3 owner-triage items flagged) |
+| 5 | DOC3 diagrams + final pass | agent | running |
 | 6 | G gates + push | orchestrator | pending |

@@ -260,9 +260,10 @@ In-milestone:
   - [x] F1 — closed NO-CHANGE (premise stale; see decisions log)
   - [x] Master reconcile after #38/#39 merged (rebase onto 9a85cd8)
   - [x] Header-comment stub-claim fixes (value.h, cel_string_format.h)
-  - [ ] A1 dead-API audit (census running; candidates: kUser,
-        WasmLayer::kComponent, toolchain `threads` attr, program_facts
-        fields, abi/wit/ orphan, DeclareFunctions internal-type leak)
+  - [x] A1 dead-API audit (5 commits, net −213; kUser +
+        wasm_import_module_name, WasmLayer::kComponent, 3 toolchain
+        knobs, RequiredFn::is_host, abi/wit/ all deleted by census;
+        ~10 doc-promised surfaces kept with reasons; 157/157 sweep)
   - [ ] DOC3 diagrams regen (render.py: drop plugin edges,
         trust-boundary SVGs) + final doc pass + close backlog #41 as
         fixed-by-#10 + correct stale-feature-inventory §5/summary
