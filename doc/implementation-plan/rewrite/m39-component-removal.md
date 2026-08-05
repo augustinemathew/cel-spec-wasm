@@ -1,7 +1,14 @@
 # m39 — Component-model removal (prime-time cleanup, phase 1)
 
-Status: plan — drafted 2026-08-04, not yet started.  Execution begins
-only after owner review of this inventory.
+Status: in progress — plan drafted and owner-approved 2026-08-04.
+Execution ordering + live status: `m39-dag.md`.
+
+Decisions log (owner, 2026-08-04):
+  - Branch basis approved: `rip-out-components` on top of #38+#39.
+  - `known_bugs_test.cc` plugin pins are DELETED with the feature,
+    not kept as tombstones.
+  - Work is executed by multiple agents per the DAG; ≤2 build-heavy
+    concurrent, lint once at the final gate.
 
 ## 1. Decision
 
@@ -131,24 +138,35 @@ conformance monotonic both modes, `bug_pins.py validate`, and a
 zero-hit grep for `wit|wasip2|component|plugin` outside
 `third_party/cel-cpp`, archive-branch docs, and history notes.
 
-## 5. Docs inventory
+## 5. Docs inventory — per-doc deltas
 
 DELETE: `doc/user-guide/writing-plugins.md`.
 
-REWRITE (host-only custom functions): `doc/design/05-custom-functions.md`
-(drop §5 pipeline, WIT tables, plugin stations),
-`doc/user-guide/custom-functions.md`, `writing-host-functions.md`
-(absorb anything still-true from the plugins page), `faq.md`,
-`security-model.md` (sandboxing claims now runtime-only),
-`getting-started.md`, `index.md`, `doc/index.md`, `doc/README.md`,
-root `README.md`, `tools/cel/README.md`.
+REWRITE — what each doc says after m39:
 
-TRIM refs: `doc/design/{00-architecture,02-evaluator,06-testing-strategy,
-07-benchmarking,08-abi-wire-format}.md`, `doc/design/notes/*`,
-`current-capabilities.md`, `feature-pipeline-checklist.md`
-(plugin feature-type section), `per-component-test-coverage.md`,
-`testing-checklist.md` (mark plugin rows removed, not ticked),
-`cleanup-backlog.md`, `lint-backlog.md`, `modules-and-ffi.md`.
+| Doc | Delta |
+|---|---|
+| `doc/design/05-custom-functions.md` | Becomes the host-callback design doc.  §§ on the celfnc pipeline, WIT type-mapping tables, the four emitters, the build macro, `Plugin::Load`, plugin dispatch, and selective instantiation are removed.  The overload-id identity chain, `.celfn` IDL, `FunctionLibrary`, `BindFunction` validation, and the host-call adapter layers stay and become the whole story.  Backend enum documented as host-only. |
+| `doc/design/00-architecture.md` | Component backend removed from the architecture overview, module table, and trust story; custom functions described as host callbacks; pointer to the archive branch for the removed backend. |
+| `doc/design/02-evaluator.md` | `Engine` surface loses `Use(Plugin)` / `AddPlugin`; plugin registry, per-Plan component instantiation, and the plugin half of required-fn verification removed from the Plan walkthrough. |
+| `doc/design/06-testing-strategy.md` | Plugin fixture/e2e strategy rows removed; the foreign-fn type-matrix described as host-backend-only. |
+| `doc/design/07-benchmarking.md` | Plugin bench section removed. |
+| `doc/design/08-abi-wire-format.md` | `required_functions` documented without the PLUGIN row kind (wire-format change, pre-1.0). |
+| `doc/design/notes/{00-consolidated-findings,celfn,eval-public}.md` | Component findings marked resolved-by-removal; eval-public loses the plugin surface. |
+| `doc/implementation-plan/rewrite/design.md` | The 3 component refs updated to host-only custom functions. |
+| `doc/user-guide/custom-functions.md` | Rewritten host-only; opens with the `AddTypedFunction` runnable example; states plainly that sandboxed wasm plugins are not offered (limitation-in-place rule). |
+| `doc/user-guide/writing-host-functions.md` | Absorbs any still-true content from `writing-plugins.md`; becomes the single custom-fn how-to. |
+| `doc/user-guide/security-model.md` | Sandboxing claims scoped to the expression/runtime wasm only; the "sandboxed plugin code" claim removed. |
+| `doc/user-guide/{faq,getting-started,index}.md`, `doc/index.md`, `doc/README.md` | Plugin mentions removed; feature lists updated. |
+| Root `README.md`, `tools/cel/README.md` | Feature lists + CLI subcommand tables lose `generate`/`embed-decls`/plugins (both tellings — site and GitHub). |
+| `PROPOSALS.md` | Decision record added (what/why/alternatives/archive pointer). |
+
+TRIM refs: `current-capabilities.md`, `feature-pipeline-checklist.md`
+(the "new plugin fn" feature-type section removed),
+`per-component-test-coverage.md` (plugin targets out of the manual
+catalog), `testing-checklist.md` (plugin rows marked removed, not
+ticked), `cleanup-backlog.md` (plugin items closed as
+resolved-by-removal), `lint-backlog.md`, `modules-and-ffi.md`.
 
 REGENERATE: `doc/design/diagrams/` via `render.py` (dependency graph
 + trust boundary lose the component nodes); `doc/img/pipeline-*.svg`
