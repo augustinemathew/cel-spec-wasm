@@ -128,9 +128,10 @@ class Engine {
   //
   // Plan-time verification is ARITY-ONLY for this path: a raw
   // callback carries no declared parameter/return types, so the
-  // required-function check (`Engine::Plan`, m35-plugin-ergonomics.md
-  // §5.3) can only compare the wasm arity.  Register through
-  // `BindFunction` to get the full recursive signature compare.
+  // required-function check (`Engine::Plan`, via
+  // `eval/internal/required_fn_check.cc`) can only compare the wasm
+  // arity.  Register through `BindFunction` to get the full recursive
+  // signature compare.
   //
   // **NOT thread-safe** — same contract as `AddFunction`.
   ABSL_MUST_USE_RESULT absl::Status AddFunction(absl::string_view overload_id,
