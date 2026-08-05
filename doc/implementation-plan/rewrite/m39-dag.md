@@ -79,6 +79,8 @@ graph TD
 | 3 | D4 compiler + abi | agent | pending |
 | 4 | D5 toolchain | agent | pending |
 | 4 | DOC2 design docs + user guide | agent | pending |
+| 5 | F1 ofNonZeroValue(message) full-depth delete | agent | pending |
+| 5 | F2 stale-skip un-skips | agent | pending |
 | 5 | A1 dead-API audit | agent | pending |
 | 5 | DOC3 diagrams + final pass | agent | pending |
 | 6 | G gates + push | orchestrator | pending |

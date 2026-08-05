@@ -9,6 +9,19 @@ Decisions log (owner, 2026-08-04):
     not kept as tombstones.
   - Work is executed by multiple agents per the DAG; ≤2 build-heavy
     concurrent, lint once at the final gate.
+  - S1-inventory triage (owner, 2026-08-04): DELETE the
+    `optional.ofNonZeroValue(message)` arm at every layer (frontend
+    reject, runtime zero-predicate arm, the
+    `cel_host.cel_message_is_zero` trampoline + wasm import, WAT
+    trace 69) — new node F1, after D3/D4.  DELETE the
+    `@native`/`kCelDefined` parse-only stub — folded into D4 (same
+    files as the kPlugin arm; verified no codegen/eval consumer, so
+    frontend-only depth).  DELETE the two stale skips
+    (`type_value_test.cc:256`, `list_test.cc:448`) + the
+    contradicting comment at `eval/instance.cc:936` — new node F2,
+    after D3; each un-skip observed green, not assumed.  Host-fn
+    error carriage (PROPOSALS #2) = tracked work item AFTER m39, not
+    in scope.
 
 ## 1. Decision
 
