@@ -1,6 +1,6 @@
 # m39 — execution DAG
 
-Status: live tracking doc, created 2026-08-04.  Node definitions live
+Status: FROZEN 2026-08-05 — the milestone shipped; this is the as-executed record.  Node definitions live
 in `m39-component-removal.md` (§3 inventory, §4 commit plan, §5 docs,
 §6 dead-API audit, §7 stale-feature inventory) — this file adds only
 ordering, parallelism, and status.
@@ -85,4 +85,4 @@ graph TD
 | 5 | F2 stale-skip un-skips | agent | done (1c79305; both un-skips observed green in both link modes; skips had no bodies — written from siblings; instance.cc comment corrected to deliberate-reject framing) |
 | 5 | A1 dead-API audit | agent | done (5 commits, net −213; 5 candidates deleted by census, ~10 doc-promised surfaces kept with reasons; full //... non-manual sweep 157/157; 3 owner-triage items flagged) |
 | 5 | DOC3 diagrams + final pass | agent | done (dependency-graph re-rendered, trust-boundary rewritten two-zone, pipeline caption fix; A1 doc-handoff corrections landed; #41 closed fixed-by-#10; stale-feature-inventory §5/summary corrected; Future-work section appended to m39 doc) |
-| 6 | G gates + push | orchestrator | pending |
+| 6 | G gates + push | orchestrator | done (green 2026-08-05; 4 attempts — lint findings, then two orchestrator-introduced decoder/reflection bugs, all fixed en route) |

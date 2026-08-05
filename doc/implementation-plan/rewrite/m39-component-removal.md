@@ -1,7 +1,12 @@
 # m39 — Component-model removal (prime-time cleanup, phase 1)
 
-Status: in progress — plan drafted and owner-approved 2026-08-04.
-Execution ordering + live status: `m39-dag.md`.
+Status: shipped 2026-08-05.  Executed as planned via the multi-agent
+DAG (`m39-dag.md`, now frozen as the as-executed record); deltas from
+the as-written plan are recorded in the decisions log below (F1
+rescinded by evidence; bazel/ not deleted whole; three dead-API
+surfaces beyond the plan).  Gate G: lint --branch clean, 157/157
+non-manual + 10/10 manual-tagged, conformance 2085/2085 both link
+modes, 16 pins valid, zero-hit grep.
 
 Decisions log (owner, 2026-08-04):
   - Branch basis approved: `rip-out-components` on top of #38+#39.
@@ -273,9 +278,9 @@ In-milestone:
         core-module-only contract, testing-checklist m39 section) +
         backlog #41 closed as fixed-by-#10 + stale-feature-inventory
         §5/summary corrected
-  - [ ] G gate: `lint.sh --branch`, `bazel test $PROJ` + manual
-        catalog, conformance monotonic BOTH modes, `bug_pins.py
-        validate`, zero-hit grep, push
+  - [x] G gate green 2026-08-05: lint clean (27 findings fixed en
+        route + 2 of my own), 157/157 + 10/10 manual, conformance
+        2085/2085 dynamic AND static, 16 pins valid, zero-hit grep
 
 Post-gate (owner-scheduled, in order):
 
