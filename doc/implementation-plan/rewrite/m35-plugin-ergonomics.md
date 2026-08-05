@@ -13,6 +13,10 @@ mark each delta in place.  Closeout gates: $PROJ 155/155, full
 manual-tagged suite, conformance 2035/2035 both legs.  Deferred:
 slices C (`Swap`, §8) and D (C ABI, §10).
 
+> **2026-08-04:** the component/plugin backend this doc describes was
+> removed from the tree (see `m39-component-removal.md`); the work is
+> preserved on branch `component-functions-archive`.
+
 Plan history: revised 2026-07-25 after an interactive API-design
 session with the user; superseded the 2026-07-22 draft in place.
 Naming settled 2026-07-25 (second session): the public noun is

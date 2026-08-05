@@ -5,6 +5,11 @@ Status: experiment complete — 2026-05-24. Throwaway probe under
 Go-glue generation against `modules-and-ffi.md` §5 and `user-guide.md` §8.4/§8.5.
 **Both cases run end-to-end and pass.** Verdict + doc corrections at the bottom.
 
+> **2026-08-04:** the foreign-function backend these findings fed
+> (later realized as the component/plugin backend) was removed from
+> the tree (see `m39-component-removal.md`); the work is preserved on
+> branch `component-functions-archive`.
+
 ## TL;DR verdict
 
 - The §5 foreign FFI shape (per-fn `//go:wasmexport`, `celfn_realloc`,

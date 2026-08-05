@@ -9,6 +9,10 @@ guess. (The WIT tree originally lived alongside this doc under
 `doc/implementation-plan/rewrite/wit/`; the split-by-role placement
 landed when m24 began wiring it in.)
 
+> **2026-08-04:** the component/plugin backend this doc designs was
+> removed from the tree (see `m39-component-removal.md`); the work is
+> preserved on branch `component-functions-archive`.
+
 ## 0. TL;DR
 
 For **foreign / polyglot / untrusted** custom functions (a CEL custom fn

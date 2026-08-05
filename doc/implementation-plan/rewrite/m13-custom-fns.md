@@ -5,6 +5,13 @@ end-to-end 2026-05-24; CEL-defined (single-module) backend shipped
 end-to-end 2026-05-24; foreign deferred.**  Supersedes the stale
 `m-custom-fns.md` (old M6 numbering, pre-rewrite).
 
+> **2026-08-04:** the foreign/component portions of this doc (the
+> deferred "foreign" backend, later realized as the plugin/component
+> backend) describe a backend that was removed from the tree (see
+> `m39-component-removal.md`); the work is preserved on branch
+> `component-functions-archive`.  The `@host.` host-callback backend
+> this doc shipped remains the surviving custom-function mechanism.
+
 > **§0.5 below is the current, authoritative plan (2026-05-24).** It
 > supersedes the original slice plan in §12 where they disagree (§12
 > predates the single-module decision + the layering review). The deep

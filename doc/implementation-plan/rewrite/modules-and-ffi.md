@@ -3,6 +3,14 @@
 Status: **shipped** — design drafted 2026-05-24; execution landed
 **2026-06-03 (m24)** + **2026-06-04 (m26)**.
 
+> **2026-08-04:** the plugin/component portions of this doc (the §5
+> foreign-module / cross-memory FFI design and the m24/m26 milestones
+> that shipped it) describe a backend that was removed from the tree
+> (see `m39-component-removal.md`); the work is preserved on branch
+> `component-functions-archive`.  The single-module (`@native` /
+> `@host`) material remains historical background for the surviving
+> host-callback path.
+
 **What landed.**  The foreign-module / cross-memory FFI design captured
 in §5 of this doc shipped as **two milestones**, not the single one
 this draft originally framed:
