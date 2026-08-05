@@ -75,7 +75,7 @@ graph TD
 | 1 | D1 e2e/examples/benches | agent | done (a3f5c62; foreign_fn_type_matrix was plugin-only → deleted whole; ArgkindSlug coverage handoff → D4) |
 | 1 | D2 CLI | agent | done (fda6124; its staged deletions were swept into 478c3ec by an orchestrator commit — content correct, wrong message; orchestrator now commits with pathspecs while agents share the tree) |
 | 2 | D3 eval layer | agent | running |
-| 2 | DOC1 milestone annotations | agent | running |
+| 2 | DOC1 milestone annotations | agent | done (b37df50; 13/13 annotated, history untouched) |
 | 3 | D4 compiler + abi | agent | pending |
 | 4 | D5 toolchain | agent | pending |
 | 4 | DOC2 design docs + user guide | agent | pending |
