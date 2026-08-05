@@ -168,16 +168,6 @@ celwasm::abi::RequiredFunction RequiredFunctionFromDecl(const CelfnDecl& decl) {
     case CelfnDecl::Backend::kHost:
       row.set_backend(celwasm::abi::RequiredFunction::HOST);
       break;
-    case CelfnDecl::Backend::kPlugin:
-      row.set_backend(celwasm::abi::RequiredFunction::PLUGIN);
-      break;
-    case CelfnDecl::Backend::kCelDefined:
-      // kCelDefined decls import under their per-module alias, never
-      // `cel_fn` — they have no wire backend and no RequiredFunction
-      // row; reaching here is a caller invariant violation.
-      ABSL_CHECK(false) << "RequiredFunctionFromDecl: kCelDefined decl `"
-                        << decl.overload_id << "` has no cel_fn wire backend";
-      break;
   }
   for (const CelfnParam& param : decl.params) {
     *row.add_param_types() = TypeFromCelType(param.type);

@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,7 +16,6 @@
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
-#include "absl/strings/strip.h"
 #include "antlr4-runtime.h"
 #include "compiler/celfn/CelfnLexer.h"
 #include "compiler/celfn/CelfnParser.h"
@@ -75,10 +73,6 @@ absl::string_view BackendPrefix(CelfnDecl::Backend backend) {
   switch (backend) {
     case CelfnDecl::Backend::kHost:
       return "@host.";
-    case CelfnDecl::Backend::kCelDefined:
-      return "@native.";
-    case CelfnDecl::Backend::kPlugin:
-      return "@plugin.";
   }
   ABSL_CHECK(false) << "BackendPrefix: unhandled CelfnDecl::Backend = "
                     << static_cast<int>(backend);
@@ -87,55 +81,12 @@ absl::string_view BackendPrefix(CelfnDecl::Backend backend) {
 
 namespace {
 
-// Mirrors a structural-recursion check across CelType for the
-// permanently-out-of-scope kinds (`optional<T>` and `type`).  Used by
-// Build() to
-// reject kPlugin decls whose return / any param shape
-// contains either — `optional<T>` and `type` are permanently out of
-// scope as plugin declarable shapes (user direction; see
-// m24 §14 "Permanently out of scope, not deferred").  Catching the
-// violation at Build() turns the failure from a runtime
-// kInvalidArgument deep inside Lift into a compile-time refusal at
-// `Compiler::Builder::DeclareFunctions` time, with the offending decl named.  CEL
-// `null` (kNull) is a distinct kind and stays supported — see the
-// kNull arm in eval/internal/cel_plugin.cc.
-bool MentionsOptional(const CelType& t) {
-  if (t.kind() == CelType::Kind::kOptional) return true;
-  if (t.kind() == CelType::Kind::kList) {
-    return MentionsOptional(t.list_element());
-  }
-  if (t.kind() == CelType::Kind::kMap) {
-    return MentionsOptional(t.map_key()) || MentionsOptional(t.map_value());
-  }
-  return false;
-}
-
-// Mirrors MentionsOptional for kType — the CEL type-of-types is
-// permanently out of scope as a plugin declarable shape.
-// `type` Lift/Lower stays implemented in cel_plugin.cc because
-// other kCelFn / kHost paths can still use it; only the plugin
-// decl surface is closed.
-bool MentionsType(const CelType& t) {
-  if (t.kind() == CelType::Kind::kType) return true;
-  if (t.kind() == CelType::Kind::kList) {
-    return MentionsType(t.list_element());
-  }
-  if (t.kind() == CelType::Kind::kMap) {
-    return MentionsType(t.map_key()) || MentionsType(t.map_value());
-  }
-  if (t.kind() == CelType::Kind::kOptional) {
-    return MentionsType(t.optional_element());
-  }
-  return false;
-}
-
 // langdef "Map type" restricts keys to {bool, int, uint, string}.
 // Source-driven decls hit this at the grammar layer
 // (ExtractType in this file's `mapType` arm);
-// programmatically-built decls (AddHost / AddPlugin /
-// AddPlugin with a constructed CelType) bypass the grammar and
-// would otherwise surface the error at first Eval (kPlugin
-// via Lift) or at codegen / runtime (kHost via the trampoline).
+// programmatically-built decls (AddHost with a constructed CelType)
+// bypass the grammar and would otherwise surface the error at
+// codegen / runtime (via the trampoline).
 // Catching it here names the offending decl at registration time.
 bool IsLegalMapKeyKind(CelType::Kind k) {
   return k == CelType::Kind::kBool || k == CelType::Kind::kInt ||
@@ -212,40 +163,6 @@ FunctionLibrary::Builder& FunctionLibrary::Builder::AddHost(
   return *this;
 }
 
-FunctionLibrary::Builder& FunctionLibrary::Builder::AddPlugin(
-    absl::string_view fn_name, CelType return_type,
-    std::vector<CelfnParam> params) {
-  CelfnDecl d{};
-  d.backend = CelfnDecl::Backend::kPlugin;
-  d.fn_name = std::string(fn_name);
-  // Dispatch path is shared with @host (m24 §2: a plugin fn is a host
-  // fn at the call site).  The wasm `(import "cel_fn" "<helper>" …)`
-  // shape is therefore identical; plugin-ness is invisible to the
-  // codegen / overload table / checker.
-  d.module_name = "cel_fn";
-  d.return_type = std::move(return_type);
-  d.params = std::move(params);
-  Finalise(d);
-  decls_.push_back(std::move(d));
-  return *this;
-}
-
-FunctionLibrary::Builder& FunctionLibrary::Builder::AddCelDefined(
-    absl::string_view fn_name, CelType return_type,
-    std::vector<CelfnParam> params, absl::string_view body) {
-  CelfnDecl d{};
-  d.backend = CelfnDecl::Backend::kCelDefined;
-  d.fn_name = std::string(fn_name);
-  // module_name resolved at Build() time once SetModuleName has been
-  // applied; the Builder doesn't have it yet here.
-  d.return_type = std::move(return_type);
-  d.params = std::move(params);
-  d.body = std::string(body);
-  Finalise(d);
-  decls_.push_back(std::move(d));
-  return *this;
-}
-
 // Decl-shape gates that apply uniformly across every backend:
 //   - langdef map-key restriction (FirstIllegalMapKey, return + params).
 namespace {
@@ -267,56 +184,9 @@ absl::Status CheckUniversalDeclShape(const CelfnDecl& d) {
   return absl::OkStatus();
 }
 
-// kPlugin permanently-out-of-scope rule (m24 §14): the
-// foreign-fn author surface does not accept `optional<T>` or `type`
-// as declarable shapes.  CEL `null` (kNull) stays supported.
-absl::Status CheckPluginDeclShape(const CelfnDecl& d) {
-  if (MentionsOptional(d.return_type)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("plugin `", d.fn_name,
-                     "` has an optional<...> return type — optional<T> is not "
-                     "supported as a plugin argument or return shape"));
-  }
-  if (MentionsType(d.return_type)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("plugin `", d.fn_name,
-                     "` has a `type` return — `type` is not supported as a "
-                     "plugin argument or return shape"));
-  }
-  for (const auto& p : d.params) {
-    if (MentionsOptional(p.type)) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "plugin `", d.fn_name, "` parameter `", p.name,
-          "` is `optional<...>` — optional<T> is not supported as a "
-          "plugin argument or return shape"));
-    }
-    if (MentionsType(p.type)) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("plugin `", d.fn_name, "` parameter `", p.name,
-                       "` is `type` — `type` is not supported as a "
-                       "plugin argument or return shape"));
-    }
-  }
-  return absl::OkStatus();
-}
-
 }  // namespace
 
 absl::StatusOr<FunctionLibrary> FunctionLibrary::Builder::Build() {
-  bool has_cel_defined = false;
-  for (auto& d : decls_) {
-    if (d.backend == CelfnDecl::Backend::kCelDefined) {
-      has_cel_defined = true;
-      d.module_name = module_name_;
-    }
-  }
-
-  if (has_cel_defined && module_name_.empty()) {
-    return absl::InvalidArgumentError(
-        "library contains CEL-defined functions but no module name was set "
-        "(call SetModuleName() before Build())");
-  }
-
   absl::flat_hash_set<std::string> seen_overload_ids;
   for (const auto& d : decls_) {
     if (auto s = ValidateThisPlacement(d.fn_name, d.params); !s.ok()) {
@@ -328,22 +198,12 @@ absl::StatusOr<FunctionLibrary> FunctionLibrary::Builder::Build() {
                        "` already declared in this library"));
     }
     if (auto s = CheckUniversalDeclShape(d); !s.ok()) return s;
-    if (d.backend == CelfnDecl::Backend::kPlugin) {
-      if (auto s = CheckPluginDeclShape(d); !s.ok()) return s;
-    }
   }
 
   FunctionLibrary lib;
   lib.module_name_ = std::move(module_name_);
-  lib.wit_interface_ = std::move(wit_interface_);
   lib.decls_ = std::move(decls_);
   return lib;
-}
-
-FunctionLibrary::Builder& FunctionLibrary::Builder::SetWitInterface(
-    absl::string_view wit_interface) {
-  wit_interface_ = std::string(wit_interface);
-  return *this;
 }
 
 // ── ParseCelfnSource ────────────────────────────────────────────────
@@ -488,46 +348,17 @@ absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source) {
       auto ps = ExtractParams(host->params());
       if (!ps.ok()) return ps.status();
       b.AddHost(host->Identifier()->getText(), std::move(*rt), std::move(*ps));
-    } else if (auto* comp = item->pluginFnDecl(); comp != nullptr) {
-      auto rt = ExtractType(comp->type());
-      if (!rt.ok()) return rt.status();
-      auto ps = ExtractParams(comp->params());
-      if (!ps.ok()) return ps.status();
-      b.AddPlugin(comp->Identifier()->getText(), std::move(*rt),
-                  std::move(*ps));
     } else if (auto* bare = item->bareHostDecl(); bare != nullptr) {
       return absl::InvalidArgumentError(
           absl::StrCat("`host` is a reserved alias; use `@host.",
                        bare->Identifier()->getText(), "(…)` instead of `host.",
                        bare->Identifier()->getText(), "(…)`"));
-    } else if (auto* def = item->nativeFnDecl(); def != nullptr) {
-      auto rt = ExtractType(def->type());
-      if (!rt.ok()) return rt.status();
-      auto ps = ExtractParams(def->params());
-      if (!ps.ok()) return ps.status();
-      const std::string body = std::string(
-          absl::StripAsciiWhitespace(def->celExprBody()->getText()));
-      b.AddCelDefined(def->Identifier()->getText(), std::move(*rt),
-                      std::move(*ps), body);
     } else {
       return absl::InternalError("fileItem matched no expected alternative");
     }
   }
 
   return std::move(b).Build();
-}
-
-// ── WIT name derivation ─────────────────────────────────────────────
-
-std::string DeriveWitPackageName(absl::string_view module_name) {
-  return absl::StrCat("cel:", module_name.empty()
-                                  ? absl::string_view("customfn")
-                                  : module_name);
-}
-
-std::string DeriveWitInterface(absl::string_view module_name) {
-  return absl::StrCat(DeriveWitPackageName(module_name), "/fns@",
-                      kWitPackageVersion);
 }
 
 }  // namespace celwasm

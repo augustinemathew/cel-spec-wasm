@@ -632,13 +632,20 @@ TEST(EngineBindFunctionTest, MultiDeclStringRejected) {
       << s.message();
 }
 
-TEST(EngineBindFunctionTest, NativeBackendRejected) {
+TEST(EngineBindFunctionTest, RemovedNativePrefixFailsParse) {
+  // `@native.` (the removed CEL-defined backend) is no longer a
+  // grammar production; the decl fails at parse, with the message
+  // naming the offending prefix token and the one legal spelling.
   auto s = BindOnFreshEngine("Module m;\nint @native.f(int x) = x + 1;",
                              [](int64_t x) -> absl::StatusOr<int64_t> {
                                return x;
                              });
   EXPECT_EQ(s.code(), absl::StatusCode::kInvalidArgument) << s;
-  EXPECT_TRUE(absl::StrContains(s.message(), "@native")) << s.message();
+  EXPECT_TRUE(absl::StrContains(s.message(), "Engine::BindFunction"))
+      << s.message();
+  EXPECT_TRUE(absl::StrContains(s.message(),
+                                "mismatched input 'native' expecting 'host'"))
+      << s.message();
 }
 
 // — signature-vs-declaration rejections —

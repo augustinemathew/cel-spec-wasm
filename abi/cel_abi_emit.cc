@@ -120,9 +120,8 @@ absl::StatusOr<celwasm::abi::CelAbi> BuildCelAbi(
 
 namespace {
 
-// The wasm import-module name shared by every host- and
-// plugin-backed custom fn (`CelfnDecl::module_name` for kHost /
-// kPlugin; see compiler/celfn/function_library.h).
+// The wasm import-module name shared by every host-backed custom fn
+// (`CelfnDecl::module_name`; see compiler/celfn/function_library.h).
 constexpr absl::string_view kCelFnModule = "cel_fn";
 
 const CelfnDecl* FindDeclByOverloadId(
@@ -150,8 +149,6 @@ std::vector<celwasm::abi::RequiredFunction> BuildRequiredFunctions(
         << "` has no matching decl across the registered function "
            "libraries — codegen installed the import from those libraries, "
            "so a miss is an overload-table wiring bug";
-    // A cel_fn import resolving to a kCelDefined decl is the same
-    // wiring-invariant violation — RequiredFunctionFromDecl CHECKs it.
     rows.push_back(RequiredFunctionFromDecl(*decl));
   }
   return rows;

@@ -26,18 +26,17 @@ namespace celwasm {
 
 // Which wasm import module an overload's function lives under.  The first
 // three resolve to fixed module strings; `kUser` uses the per-overload
-// alias in `OverloadDef::wasm_import_module_name` (a plugin /
-// CEL-defined backend declares its own module name).
+// alias in `OverloadDef::wasm_import_module_name`.
 enum class ImportModuleSource : uint8_t {
   kCel = 0,      // "cel"      — cel_runtime.wasm exports (built-in seeds)
   kCelHost = 1,  // "cel_host" — host trampolines
   kCelFn = 2,    // "cel_fn"   — host-backed custom functions
-  kUser = 3,     // uses OverloadDef::wasm_import_module_name (foreign backend)
+  kUser = 3,     // uses OverloadDef::wasm_import_module_name
 };
 
 // One overload: a CEL overload id paired with the wasm import that
 // implements it.  Built-in standard overloads and embedder-declared
-// custom functions all flow through this one type, in three distinct
+// custom functions all flow through this one type, in two distinct
 // shapes — every field of each shown below.
 //
 //   1) built-in — a CEL spec standard overload, e.g. `1 + 2`.  Build()
@@ -48,24 +47,13 @@ enum class ImportModuleSource : uint8_t {
 //        wasm_import_module_name   = ""             (module name → "cel")
 //        num_args                  = 3              (out_slot + 2 args)
 //
-//   2) @host / @plugin custom — a trusted C++ lambda OR a sandboxed
-//      wasm plugin, e.g. `myorg.up(s)`.  The two share ONE shape: a
-//      plugin fn is a host fn at the call site (m24), so both import
-//      from "cel_fn" and the trampoline picks lambda-vs-plugin at
-//      runtime.
+//   2) @host custom — a trusted C++ lambda the embedder binds at Plan
+//      time, e.g. `myorg.up(s)`.
 //        overload_id               = "up_str"
 //        wasm_import_function_name = "up_str"
 //        wasm_import_module_type   = kCelFn
 //        wasm_import_module_name   = ""             (module name → "cel_fn")
 //        num_args                  = 2              (out_slot + 1 arg)
-//
-//   3) @native — a CEL-defined function compiled to its own wasm module,
-//      e.g. `mylib.pct(n)`.
-//        overload_id               = "pct_int"
-//        wasm_import_function_name = "pct_int"
-//        wasm_import_module_type   = kUser
-//        wasm_import_module_name   = "mylib"        (the module alias)
-//        num_args                  = 2
 struct OverloadDef {
   // The table's lookup key, and a CEL spec concept rather than a local
   // one: it is the spec's canonical name for one specific typed overload

@@ -443,7 +443,7 @@ namespace {
 // §6).  `libraries` feeds the required-functions table, which is
 // derived from `module`'s CURRENT import surface — the caller must
 // invoke this after the optimize pass so the table equals the final
-// `cel_fn` import list (m35-plugin-ergonomics.md §5.2).
+// `cel_fn` import list.
 absl::Status AttachCelAbiSection(WasmModule& module, const StaticLayout& layout,
                                  absl::Span<const FieldRefRow> field_refs,
                                  celwasm::abi::LinkMode link_mode,
@@ -506,7 +506,7 @@ absl::StatusOr<CompiledArtifact> RunFrontAndLayout(
 // `SerializeModule`: the `cel.abi` attach happens BETWEEN the two,
 // because the required-functions table must reflect the
 // POST-optimize import surface (Binaryen drops unused imports at
-// O1+; see m35-plugin-ergonomics.md §5.2).
+// O1+).
 absl::Status ValidateAndOptimize(CompiledArtifact& out,
                                  const CompileOptions& opts) {
   if (opts.validate) {
@@ -541,31 +541,19 @@ absl::Status SerializeModule(CompiledArtifact& out,
 //     the OverloadTable lookup key).
 //   - `wasm_import_function_name` = same as `overload_id` (one wasm import
 //     per decl; the IDL guarantees uniqueness).
-//   - `wasm_import_module_type`   = `kCelFn` (the host-callback module) for
-//     `kHost` and `kPlugin` (a Component-Model backend is a host
-//     fn at the call site — m24 §2-§3); `kUser` for `kCelDefined`.
-//   - `wasm_import_module_name`   = the decl's per-module alias for
-//     `kCelDefined` (`kUser`); empty otherwise.
+//   - `wasm_import_module_type`   = `kCelFn` (the host-callback module).
 //   - `num_args`                  = wasm function arity (1 out_slot + N CEL
 //     args, as recorded on `CelfnDecl::num_args`).
-bool DispatchesViaCelFn(CelfnDecl::Backend backend) {
-  return backend == CelfnDecl::Backend::kHost ||
-         backend == CelfnDecl::Backend::kPlugin;
-}
-
 absl::StatusOr<OverloadTable> BuildOverloadTable(
     const std::vector<FunctionLibrary>& libraries) {
   std::vector<OverloadDef> customs;
   for (const auto& lib : libraries) {
     for (const auto& decl : lib.decls()) {
-      const bool via_cel_fn = DispatchesViaCelFn(decl.backend);
       customs.push_back(OverloadDef{
           /*overload_id=*/std::string(decl.overload_id),
           /*wasm_import_function_name=*/std::string(decl.overload_id),
-          /*wasm_import_module_type=*/
-          via_cel_fn ? ImportModuleSource::kCelFn : ImportModuleSource::kUser,
-          /*wasm_import_module_name=*/
-          via_cel_fn ? std::string() : std::string(decl.module_name),
+          /*wasm_import_module_type=*/ImportModuleSource::kCelFn,
+          /*wasm_import_module_name=*/std::string(),
           /*num_args=*/decl.num_args});
     }
   }
@@ -647,7 +635,7 @@ absl::StatusOr<CompiledArtifact> LowerExportAndFinalise(
   // Validate + optimize BEFORE attaching `cel.abi`: the section's
   // required-functions table is derived from the post-optimize
   // import surface, and must equal the final module's `cel_fn`
-  // import list (m35-plugin-ergonomics.md §5.2).  Every other
+  // import list.  Every other
   // section field is optimization-independent, so the move is
   // behavior-neutral for them (pinned by the emit/decode
   // round-trip tests).

@@ -46,9 +46,8 @@ class CelType {
     // CEL `null` as a signature type (the celfn grammar's `null`).
     // Not declarable as a variable type.
     kNull = 14,
-    // CEL `optional<T>` (the plugin-author signature surface).
-    // Element type in optional_element().  Not declarable as a
-    // variable type.
+    // CEL `optional<T>` as a signature type.  Element type in
+    // optional_element().  Not declarable as a variable type.
     kOptional = 15,
   };
 
