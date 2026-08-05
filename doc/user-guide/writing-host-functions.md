@@ -2,8 +2,10 @@
 
 > Part of the [CEL → WebAssembly user guide](index.md). This is the deep-dive
 > page for **host functions** — CEL functions whose body is your C++, called
-> back at eval time. For CEL-defined (`@native`) and sandboxed plugin
-> (`@plugin`) functions, see [Custom functions §3 / §4](custom-functions.md).
+> back at eval time. Host callbacks are the only custom-function mechanism:
+> they run as native code in your process, not in the wasm sandbox
+> ([security model](security-model.md)). The declaration side (the `.celfn`
+> IDL, function libraries) is on [Custom functions](custom-functions.md).
 
 A host function is declared with the `@host.` prefix, type-checked at compile
 time, and backed by a C++ callback registered on the `Engine`. Three
@@ -12,9 +14,9 @@ registration surfaces, highest-level first:
 | API | You work in | Use when | Status |
 |---|---|---|---|
 | **Declaration-first** — `BindFunction` | the `.celfn` decl string + a plain typed lambda | **start here** — same decl string both sides, no overload-id spelling, signature validated at registration | ✅ shipped |
-| **Typed** — `AddTypedFunction` | plain C++ types + a hand-spelled overload id | you already have the synthesized overload id | ✅ shipped (m21) |
-| **Context** — `HostCallContext&` | typed accessors (`ctx.ArgInt(0)`, `ctx.ReturnProto(...)`) | you need per-arg control or dynamic arity | ✅ shipped (m21) |
-| **Raw** — `HostCallback` | n/a — there is no raw callback anymore | — | removed (m21) |
+| **Typed** — `AddTypedFunction` | plain C++ types + a hand-spelled overload id | you already have the synthesized overload id | ✅ shipped |
+| **Context** — `HostCallContext&` | typed accessors (`ctx.ArgInt(0)`, `ctx.ReturnProto(...)`) | you need per-arg control or dynamic arity | ✅ shipped |
+| **Raw** — `HostCallback` | n/a — there is no raw callback anymore | — | removed |
 
 Status legend (as in the index): ✅ shipped + tested; 🟡 designed, not yet
 wired; ⛔ not started. Every `@host` callback receives a typed context — there
@@ -273,16 +275,14 @@ indexing path.
 
 CEL is 3-valued: a value can be concrete, an **error**, or an **unknown**
 (typically because an input attribute was withheld during `PartialEval`). A
-host function participates in two distinct, **distinguishable** ways
-(m21 §3.4 / §3.6).
+host function participates in two distinct, **distinguishable** ways.
 
 **(1) Unknown / error *arguments* are auto-propagated — you do nothing.** The
 trampoline checks every arg before invoking your callback; if any is
 unknown/error it writes that value straight to the out-slot — *attribute id
 preserved* — and **does not call your function at all**. Your body only ever
 runs with all-known arguments; there are **no** `ArgIsUnknown` /
-`ArgIsError` accessors and no `PropagateIfUnknown` call to make (m21 §3.4,
-§3 line 124).
+`ArgIsError` accessors and no `PropagateIfUnknown` call to make.
 
 ```cpp
 // Declared:  int @host.double_it(int x);
@@ -296,7 +296,7 @@ engine->AddTypedFunction("double_it_int",
 function with all-known arguments may still decide its result is unknown. It
 does **not** mint a fresh attribute id; it stamps the **reserved
 function-origin sentinel** — `celwasm::kFunctionUnknownSentinel`
-(`= UINT32_MAX`, m21 §9.5) — distinct from a propagated input unknown
+(`= UINT32_MAX`) — distinct from a propagated input unknown
 carrying a real attribute id.
 
 ```cpp
@@ -320,7 +320,7 @@ engine->AddTypedFunction("rate_lookup_string",
 ```
 
 **Detecting a function-returned unknown (consumer side).** Compare the
-unknown's attribute id against the sentinel (m21 §9.5):
+unknown's attribute id against the sentinel:
 
 ```cpp
 celwasm::Value v = *instance->PartialEval(act, patterns);
@@ -333,7 +333,7 @@ if (v.IsUnknown() &&
 (`Value::UnknownAttribute()` returns `absl::StatusOr<AttributeId>`, hence the
 `->id`; `eval/attribute.h`.) `ReturnError` behaves analogously.
 
-> **Status ✅ shipped (m21).** Both mechanisms are live and tested:
+> **Status ✅ shipped.** Both mechanisms are live and tested:
 > auto-propagation of unknown/error args (error takes precedence over
 > unknown), explicit `ctx.ReturnUnknown()` /
 > `Value::Unknown(AttributeId{sentinel})`, and the sentinel surviving the
@@ -384,7 +384,7 @@ auto-propagated before your callback runs (§1.7).
 
 ## 3. The old raw API — removed
 
-The pre-m21 raw form — a `HostCallback` receiving raw linear memory + slot
+The original raw form — a `HostCallback` receiving raw linear memory + slot
 offsets and `memcpy`ing 24-byte `CelValue` cells by hand — **no longer
 exists**. `HostCallback` is now
 `std::function<absl::Status(HostCallContext&)>`, so every callback receives
@@ -437,14 +437,14 @@ global function taking the same first argument.
 
 | Capability | Status |
 |---|---|
-| Typed `AddTypedFunction` — canonical-type lambdas | ✅ (m21) |
-| `HostCallContext` — kind-checked typed accessors | ✅ (m21) |
-| proto / list / map args, aggregate / new-string returns | ✅ (m21) |
-| Owning proto return (`unique_ptr`) | ✅ (m21) |
-| Polymorphic proto arg (`const google::protobuf::Message*`) | ✅ (m21) |
-| Explicit unknown return + function-origin sentinel | ✅ (m21) |
+| Typed `AddTypedFunction` — canonical-type lambdas | ✅ |
+| `HostCallContext` — kind-checked typed accessors | ✅ |
+| proto / list / map args, aggregate / new-string returns | ✅ |
+| Owning proto return (`unique_ptr`) | ✅ |
+| Polymorphic proto arg (`const google::protobuf::Message*`) | ✅ |
+| Explicit unknown return + function-origin sentinel | ✅ |
 | Receiver (`this`) dispatch | ✅ |
-| Raw 4-arg `HostCallback` (`memcpy` slots) | removed (m21) — replaced by `HostCallContext&` |
+| Raw 4-arg `HostCallback` (`memcpy` slots) | removed — replaced by `HostCallContext&` |
 
 ---
 
@@ -505,9 +505,7 @@ the WASM pipeline *cannot* express:
 ## See also
 
 - [User guide index](index.md) — mental model, quick start, the full API.
+- [Custom functions](custom-functions.md) — the `.celfn` IDL, function
+  libraries, and Plan-time verification.
 - `doc/implementation-plan/rewrite/m21-host-call-adapter.md` — the design
   behind the typed + context APIs (the authoritative spec).
-- `doc/implementation-plan/rewrite/m13-custom-fns.md` — the `.celfn` IDL
-  grammar and the custom-function backends.
-- [Custom functions §3 / §4](custom-functions.md) — CEL-defined (`@native`)
-  and sandboxed plugin (`@plugin`) functions.

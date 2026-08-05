@@ -21,7 +21,14 @@ struck through or removed.
 
 ## Open
 
-- [ ] **#52** — m35 dedupe items deliberately deferred at the
+- [x] **#52** — RESOLVED-BY-REMOVAL 2026-08-04 (m39): both dedupe
+      targets lived in the plugin surface, which was deleted whole
+      (m39-component-removal.md) — (a) `IsValidUtf8` went with
+      `abi/plugin.cc`; (b) the `kComponentPreamble`/`kCorePreamble`
+      test constants went with the plugin/embed-decls tests; the one
+      surviving copy (`abi/wasm_binary_test.cc`) is no duplication.
+      Original entry follows.
+      m35 dedupe items deliberately deferred at the
       post-review cleanup: (a) **D6** — a third first-party UTF-8
       validator (`IsValidUtf8` in `abi/plugin.cc`) alongside
       `runtime/cel_string_ext_internal.h::Utf8Decode` (wasm-C-side;
@@ -98,7 +105,11 @@ struck through or removed.
       Why P1: every future declarable-type feature pays the
       three-vocabulary tax until this lands.
 
-- [ ] **#51** — pre-existing wasm32-wasip2 cross-compile break:
+- [x] **#51** — RESOLVED-BY-REMOVAL 2026-08-04 (m39): the wasip2
+      toolchain, the demo fixture, and the two hostage e2e pins were
+      all deleted with the plugin backend (m39-component-removal.md).
+      Original entry follows.
+      pre-existing wasm32-wasip2 cross-compile break:
       `//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin_proto`
       (manual) fails to build — `@abseil-cpp` `synchronization/
       mutex.cc` doesn't compile for wasm32-wasip2 (`std::this_thread`
@@ -355,7 +366,13 @@ struck through or removed.
             rejection assertion back to a value check.  Localised to
             the operand-nesting in `compiler/codegen/expr_lower.cc`.
 
-- [ ] **#44** — unimplemented-but-declared surfaces swept in the
+- [x] **#44** — CLOSED 2026-08-04 (m39): every remaining open half
+      is gone.  The Activation half closed in m36 (`BindLazy`
+      implemented, `OverrideFunction` deleted); the `cel_component`
+      Lower type-of-types Unimplemented and the `AddForeignComponent`
+      admission were deleted with the plugin backend
+      (m39-component-removal.md).  Original entry follows.
+      unimplemented-but-declared surfaces swept in the
       2026-06-10 review.  **Partially cleared 2026-07-25 (m36):**
       `Activation::BindLazy` is implemented and
       `Activation::OverrideFunction` was removed from the public
@@ -395,7 +412,12 @@ struck through or removed.
       `BindLazy` / `OverrideFunction` API-honesty half and
       `cel_component` Lower's type-of-types Unimplemented.
 
-- [ ] **#43** — true-e2e coverage gap for `cel_component.cc`'s
+- [x] **#43** — RESOLVED-BY-REMOVAL 2026-08-04 (m39):
+      `eval/internal/cel_component.{h,cc}` (later `cel_plugin`) and
+      its tests were deleted with the plugin backend
+      (m39-component-removal.md); the coverage gap no longer has a
+      subject.  Original entry follows.
+      true-e2e coverage gap for `cel_component.cc`'s
       malformed-`wasmtime_component_val_t` NULL guards (closes
       out gap left when #37 shipped).  Today's coverage:
       `eval/internal/cel_component_test.cc` exercises
@@ -1803,7 +1825,17 @@ struck through or removed.
       Surfaced: 2026-06-09 production-readiness review.
       Severity: P1 — fix before promoting the repo.
 
-- [ ] **#32** — `Engine::AddComponent` (public API, eval/engine.h)
+- [x] **#32** — RESOLVED-BY-REMOVAL 2026-08-04 (m39):
+      `Engine::AddComponent` (later `AddPlugin`) was deleted with
+      the plugin backend (m39-component-removal.md); the surviving
+      decl-string surface is `Engine::BindFunction`.  Residual (not
+      this entry's subject): `Compiler::Builder::DeclareFunctions`
+      still takes `FunctionLibrary` (`//:internal`) on a public
+      builder — external embedders use the string-based
+      `Builder::AddFunction` / `Engine::BindFunction` pair; fold
+      into the m39 dead-API audit if it needs its own entry.
+      Original entry follows.
+      `Engine::AddComponent` (public API, eval/engine.h)
       takes `const FunctionLibrary&`, but
       `//compiler/celfn:function_library` is `//:internal` —
       a public method whose parameter type an external consumer

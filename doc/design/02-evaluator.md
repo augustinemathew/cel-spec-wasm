@@ -63,8 +63,7 @@ Ownership and threading in three facts: the Engine is built once and shared (it 
       │  (the cel.abi label is only a            │        cel_runtime.wasm
       │   tripwire — the imports decide)         └─ no  → STATIC: runtime is
       ▼                                                   already in the module
-   4. bind embedder extensions: custom modules, cel_fn.* host callbacks,
-      │            the REQUIRED plugins only               (§3, §4, §9)
+   4. bind embedder extensions: cel_fn.* host callbacks     (§3, §4)
       ▼
    5. instantiate the expr module;  pull out  $eval
       ▼
@@ -98,7 +97,7 @@ engine->BindFunction(kDecl,             // engine side: implement it
 
 The lambda's parameter types are checked positionally against the declared CEL types at registration, and it registers under the *synthesized* overload-id — one source, no drift. (From `examples/04_host_functions.cc`.)
 
-The other surfaces: `AddTypedFunction(id, lambda)` is the typed adapter without a decl; `AddFunction(id, num_args, callback)` is the raw layer underneath (§4, L1); `AddModule(alias, bytes)` binds a foreign wasm module; `Use(plugin)` registers a self-describing sandboxed plugin, statically checking — against the parsed component, nothing instantiated — that it exports its declared interface and every declared function (§9); `AddPlugin(bytes, lib)` is the explicit-decls escape hatch (no static export check; resolution is Plan-time). All validate what they can at registration and defer store-dependent checks to Plan. The residual call-time surface is the export's WIT-level *FuncType*: no path compares it to the decl, so a wrong-shaped export on a hand-built plugin traps when first called (unreachable for macro-built plugins, whose WIT and decls derive from one `.idl`).
+The other surfaces: `AddTypedFunction(id, lambda)` is the typed adapter without a decl; `AddFunction(id, num_args, callback)` is the raw layer underneath (§4, L1). These are the only registration surfaces — every custom function is a native C++ callback in the embedder's process. All validate what they can at registration (id conflicts, arity, declared-type/lambda agreement on the `BindFunction` path) and defer store-dependent checks to Plan.
 
 ## 4. The host-call stack — L0, L1, L2
 
@@ -264,20 +263,15 @@ Two specifics on the value path:
 - **Error *messages* are dropped at the host→wasm boundary.** The wire carries only the error *code*; message and source location are discarded, and read-back synthesizes a generic message from the code. Known limitation (cleanup-backlog #31), not a deep invariant. It is also why a host callback's `InvalidArgument("boom")` reaches the embedder as a generic `Internal "Eval trapped"` — the trap path loses the code (§10).
 - **3VL precedence for strict ops is "error dominates unknown," regardless of operand order** — oracle-confirmed against cel-cpp. Both the kernel and the trampolines implement it.
 
-## 9. Plugins — sandboxed custom functions
+## 9. The required-function check
 
-The plugin path makes a plugin's exports callable as CEL functions, with the plugin in its **own** linear memory (a plugin is packaged as a Component-Model component). A plugin registers via `Engine::Use(plugin)` — the `Plugin` noun carries bytes, declarations (parsed from the artifact's embedded `cel.fns` section), and a content hash; `05-custom-functions.md` §5.0 owns that surface.
-
-Plan runs the **required-function check** first (`eval/internal/required_fn_check`): every `required_functions` row the Program's `cel.abi` carries — `@host` and `@plugin` alike — must exist in the registry with an exactly matching signature (receiver-ness, arity, each param, return type; protos by FQN; host functions registered through raw `AddFunction`/`AddTypedFunction` are checked arity-only, since no declared types were captured). Failures are `FailedPrecondition` naming the function, the signature, and — for a plugin mismatch — the registered plugin's content hash. Then Plan instantiates **only the plugins owning at least one required row** into the per-Plan store — register ten plugins and a program calling one instantiates one — and binds each of a selected plugin's decls as a `cel_fn.<overload_id>` trampoline; the wasm import shape is identical to an `@host` decl, only the callback body differs. A legacy Program with no `required_functions` table gets the pre-verification behavior: no check, instantiate-all.
-
-The trampoline 3VL-absorbs (same contract as §4), lifts each argument CelValue into a plugin-side value per the decl's type witness, calls, and lowers the single result back. Type mapping: strings are length-based (NUL-safe), bytes cross as `list<u8>`, durations/timestamps as `record{seconds, nanos}`, maps as `list<tuple<K,V>>`, and **protos cross as serialized bytes** (never a handle), re-materialized from the descriptor pool on the way back. `optional<T>` is rejected both directions. Unsatisfied wasi-preview2 imports are **trap-stubbed** so a runaway libc++ call traps naming the missing interface — except `wasi:random/random`, which returns deterministic bytes (the libc++ runtime reads it during static init and there is no per-store WASI context to wire instead).
+Plan runs the **required-function check** before any binding (`eval/internal/required_fn_check`): every `required_functions` row the Program's `cel.abi` carries must be satisfiable by the engine's registration-time-frozen host-callback map, or Plan fails with a `FailedPrecondition` naming the function — per row, first failure wins, in wire order. A HOST row resolves against `host_callbacks[overload_id]`: missing → fail; wasm-arity mismatch (`param_types.size() + 1 != num_args`) → fail; the full recursive signature compare (receiver-ness, each param, return type; protos by FQN) runs only when the registration captured a decl (`Engine::BindFunction`) — raw `AddFunction` / `AddTypedFunction` registrations are checked arity-only, since no declared types were captured. Rows carrying the retired wasm-component plugin backend (wire value 2, now `reserved` in `cel_abi.proto`) are **rejected outright** — this engine has no plugin backend, so such a Program can never run and fails loudly here rather than as an opaque wasmtime link error. Rows with an unknown backend are skipped (open-set wire data; an unbound import still fails loudly at link time). A Program with an empty `required_functions` list no-ops the check.
 
 ## 10. Known gaps and future work
 
 - **Host-callback status codes are lost.** A callback returning `InvalidArgument("boom")` surfaces as a generic `Internal "Eval trapped"` (cleanup-backlog #31, same root as the §8 error-message loss). Fix as one contract.
-- **No WIT-level FuncType check on plugin exports** — decl↔declaration signature agreement is verified at Plan (§9) and export *existence* at `Use`, but the export's actual wasm-level shape is never compared to the decl; a hand-built plugin with a wrong-shaped export still traps at call time.
 - **Per-Plan expr re-parse** — the expression module is re-parsed every Plan; a cache seam exists but is unexploited.
 - **Cross-origin list concat** poisons host-involved pairs with a type-mismatch; the planned fix is to materialize into the arena.
-- Smaller follow-ons: dynamic-schema descriptor pools, field-descriptor caching, the kType plugin lower stub.
+- Smaller follow-ons: dynamic-schema descriptor pools, field-descriptor caching.
 
-Unverified questions (the exact plugin-arity trap site, zero-arg `Eval()` handle-table growth, the host-callback status-code contract) live in [`design/notes/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/design/notes).
+Unverified questions (zero-arg `Eval()` handle-table growth, the host-callback status-code contract) live in [`design/notes/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/design/notes).

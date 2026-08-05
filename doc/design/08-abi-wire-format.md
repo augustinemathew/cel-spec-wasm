@@ -53,8 +53,8 @@ vocabulary; `abi/celfn_wire.{h,cc}`: `TypeFromCelType`, `TypeEquals`,
 `RenderSignature`; `KIND_PROTO` carries `CelType::Kind::kMessage`'s
 FQN). `Type` is the section's *general* type
 vocabulary, not a function-specific one: `RequiredFunction` carries
-it today, and `VariableEntry`'s reserved slot 5 adopts the same
-message when variable introspection lands.
+it, and `VariableEntry.type` (field 5) carries the same message for
+variable introspection (see the section at the bottom of this doc).
 
 ```proto
 message Type {
@@ -76,7 +76,12 @@ message Type {
 }
 
 message RequiredFunction {
-  enum Backend { BACKEND_UNSPECIFIED = 0; HOST = 1; PLUGIN = 2; }
+  enum Backend {
+    reserved 2;            // was PLUGIN — the removed wasm-component
+    reserved "PLUGIN";     // plugin backend; never reassigned
+    BACKEND_UNSPECIFIED = 0;
+    HOST = 1;
+  }
   string overload_id = 1;    // == the cel_fn import base name
   string fn_name = 2;        // source-level name, for messages
   Backend backend = 3;
@@ -88,13 +93,15 @@ message RequiredFunction {
 
 Wire-design facts: **open-set on wire** — unknown `Kind` / `Backend`
 values decode and compare numerically, never rejected (additive enum
-growth is free). **`@host` rows are included** — the wire cost is
-trivial, and it converts the worst legacy failure (an opaque
-`unknown import cel_fn.<id>` wasmtime link error when a host
+growth is free), with one carve-out: wire value 2 (the retired PLUGIN
+backend) is `reserved` and Plan **rejects** rows carrying it with a
+clear message — a Program compiled against the removed plugin backend
+can never run, and an outright rejection beats an opaque link error
+(`eval/internal/required_fn_check.cc`). **`@host` rows are included** —
+the wire cost is trivial, and it converts the worst legacy failure (an
+opaque `unknown import cel_fn.<id>` wasmtime link error when a host
 registration was forgotten) into a clean `FailedPrecondition` at Plan.
-`@native` decls are excluded naturally: their imports are per-module
-aliases, not `cel_fn`. **Empty table = legacy Program**: the Plan-time
-check no-ops and plugin instantiation reverts to instantiate-all —
+**Empty table = legacy Program**: the Plan-time check no-ops —
 pre-field-8 Programs keep working unchanged. `TypeEquals` is
 recursive and proto-FQN-sensitive; `RenderSignature` is shared by emit
 tests and Plan diagnostics so both render a signature identically.
@@ -175,50 +182,18 @@ The precedence between UNKNOWN and ERROR operands is **per-op-class**, not globa
 | host-call trampoline `AbsorbUnknownOrErrorArg` (strict: custom fns) | error dominates (scans all args with an explicit `!have_error` guard on the unknown arm) | `eval/engine.cc` |
 | runtime kernel `cel_and` / `cel_or` (logic ops) | absorbing bool > UNKNOWN (merged) > ERROR, left-bias within each class | `runtime/cel_3vl.c`; `cel_3vl_test.cc` 4×4 matrices; e2e in `e2e/m5_test.cc::ControlFlowUnknownErrorPrecedenceE2ETest` |
 
-## 4. The plugin boundary (WIT vocabulary)
+## 4. Wasm binary framing (`abi/wasm_binary`)
 
-Plugin functions speak a parallel, typed contract — not the CelValue slot ABI. Two layers:
-
-**The shared dynamic vocabulary** — `abi/wit/cel.wit` (`package cel:value@0.2.0`): the complete CEL value model as a WIT `resource value`. WIT forbids recursive variants, so aggregates nest through handles; proto messages cross as `record message {type-name, wire: list<u8>}` (serialized bytes, never a handle); map keys are restricted via `variant map-key {bool, int, uint, string}`. A `custom-fn` interface (`invoke(name, args) -> result<value, eval-error>`) and two worlds complete it. Reserved for the dynamic/variadic path; no first-party caller dispatches through it.
-
-**The common concretely-typed path** — per-function typed WIT plus the canonical-ABI lift/lower bridge in `eval/internal/cel_plugin.{h,cc}`; the authoritative per-CEL-type mapping table is `cel_plugin.h:12-34`. Highlights: bytes ↔ `list<u8>`; duration/timestamp ↔ a `{seconds, nanos}` record; `map<K,V>` ↔ `list<tuple<K,V>>`; `proto(fqn)` ↔ `SerializePartialToString` bytes re-materialised via the descriptor pool; `optional<T>` permanently rejected both directions; kType lifts as a type-name string (its Lower arm is an Unimplemented stub — unreachable: kType is rejected at library Build). 3VL absorption is the **caller's** job: lift/lower never see Error/Unknown (`02-evaluator.md` §9). Naming seam: the wasm import stays snake_case (`cel_fn.<overload_id>`); the Component-Model identifier grammar rejects snake_case, so the engine kebab-cases consumer-side (`OverloadIdToKebab`).
-
-### 4.1 The `cel.fns` section — the self-describing plugin
-
-A plugin binary carries its own declarations: the **`cel.fns` custom
-section** holds the `.celfn`/`.idl` declaration text **verbatim**
-(UTF-8, uncompressed), appended at *component top level* with raw
-custom-section framing — id `0x00`, LEB128 payload size, then LEB128
-name length, the name bytes (`cel.fns`), and the payload. Writer: the
-`cel_wasm_plugin` macro's final step / the standalone `cel embed-decls`
-tool (`tools/cel/run_embed_decls.cc`); reader: `Plugin::Load`
-(`abi/plugin.cc`).
-
-Why a build-time tool appends it, not the compiler toolchain: the
-wasm32-wasip2 toolchain emits a Component-Model component directly, so
-a linker-emitted custom section (`__attribute__((section))`) would land
-inside the *nested core module*, invisible to a top-level walker — and
-Binaryen's `AddCustomSection` cannot produce or edit CM binaries at
-all. Raw top-level framing is the only correct mechanism.
-
-The framing knowledge lives in exactly one module: `//abi:wasm_binary`
-(`abi/wasm_binary.{h,cc}`) — preamble classification (`\0asm` +
-version word `0x00000001` = core module vs `0x0001000d` = component),
-LEB128 read/append, `FindCustomSection` (works on both layers; never
-recurses into nested core-module/component payloads; a duplicate of the
-*requested* name is an error), `AppendCustomSection`. It is absl-only —
-no Binaryen, no wasmtime — so it sits below both `compiler/` and
-`eval/`; a magic constant or LEB decoder anywhere else in first-party
-code is a review finding. `eval/internal/abi_decode.cc`'s `cel.abi`
-walk rides the same module.
-
-Identity: `Plugin::hash()` = SHA-256(wasm bytes ‖ section text)
-(`abi/internal/sha256`), surfaced in Plan-time diagnostics, not
-enforced. The WIT interface name needs no side channel — it is always
-`cel:<module>/fns@0.1.0`, derived from the section text's `Module`
-directive (fallback `customfn`); a hand-built plugin whose actual WIT
-disagrees fails loudly at `Engine::Use`'s static export check
-("does not export interface …").
+Custom-section framing knowledge lives in exactly one module:
+`//abi:wasm_binary` (`abi/wasm_binary.{h,cc}`) — preamble
+classification (`\0asm` + version word), LEB128 read/append,
+`FindCustomSection` (a duplicate of the *requested* name is an
+error), `AppendCustomSection`. It is absl-only — no Binaryen, no
+wasmtime — so it sits below both `compiler/` and `eval/`; a magic
+constant or LEB decoder anywhere else in first-party code is a review
+finding. `eval/internal/abi_decode.cc`'s `cel.abi` walk rides this
+module (the evaluator cannot link Binaryen, so the decode side walks
+raw bytes).
 
 ## 5. Change discipline
 

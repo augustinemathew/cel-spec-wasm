@@ -1,6 +1,6 @@
 # PROPOSALS — feature work needing an owner decision
 
-Status: live — created 2026-06-09; reconciled against HEAD 2026-07-25.
+Status: live — created 2026-06-09; reconciled against HEAD 2026-08-04.
 
 This is the running list of **changes that need a decision before they
 can be made**: anything that alters a public signature, observable
@@ -16,15 +16,33 @@ file in the commit message; and re-check entries against HEAD before
 citing them — items 6 and 7 below sat here claiming the repo had no CI
 and no module version for weeks after both landed.
 
+## Decision record — m39 component-model removal (2026-08-04)
+
+The wasm Component-Model custom-function backend (`@plugin.`) was
+removed in its entirety: the wit-bindgen pipeline, the wasm32-wasip2
+toolchain, the canonical-ABI marshalling layer, the `Plugin` API, the
+`cel generate` / `cel embed-decls` subcommands, and every consumer.
+The decision rests on empirical evidence: WIT's type coverage is a
+strict subset of ours (maps-as-returns never emitted, protos degrade
+to `list<u8>`), the component boundary imposes import restrictions we
+had to stub around (the `wasi:random` hash-seed stub was load-bearing),
+and the feature carried a second, parallel toolchain. Native host
+callbacks (`AddFunction` / `AddTypedFunction` / `BindFunction`) are
+the sole custom-function mechanism. The alternatives menu for any
+future sandboxed backend is `doc/implementation-plan/rewrite/
+m39-component-removal.md` §10; the removed implementation, at its best
+state, is archived on branch **`component-functions-archive`**.
+
 ## API changes
 
-1. **`Engine::AddPlugin(bytes, FunctionLibrary)` takes an
-   internal-visibility type** (cleanup-backlog #32). A public method
-   whose parameter type (`//compiler/celfn:function_library`,
-   `//:internal`) external code cannot legally depend on. Options:
-   promote `function_library` to public (smallest), or add a public
-   declaration-string overload mirroring `BindFunction`. Affected:
-   `eval/engine.h`, root `BUILD.bazel` examples carve-out.
+1. ~~**`Engine::AddPlugin(bytes, FunctionLibrary)` takes an
+   internal-visibility type** (cleanup-backlog #32).~~ Resolved by
+   the m39 removal — `AddPlugin` no longer exists. A residual echo of
+   the same shape (`Compiler::Builder::DeclareFunctions` takes the
+   `//:internal` `FunctionLibrary` on a public builder; the
+   string-based `AddFunction`/`BindFunction` pair is the
+   external-usable surface) is noted at cleanup-backlog #32 for the
+   m39 dead-API audit.
 2. **Host-fn `ErrorPayload.message` does not cross the wasm boundary**
    (cleanup-backlog #31). `Value::Error({code, "msg"})` from a callback
    decodes as `"runtime error code N"`. Behavior change: wire the

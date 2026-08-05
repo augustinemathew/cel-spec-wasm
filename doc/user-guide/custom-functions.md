@@ -1,39 +1,56 @@
-# Custom functions — host functions vs wasm plugins
+# Custom functions
 
 A CEL expression sees only what the host hands it. Custom functions are
 the escape hatch: you register functions, and rule authors call them
-like built-ins. There are **two shipped mechanisms**, and one decision
-picks between them: *does the function's code belong inside your
-process?*
+like built-ins.
 
-| | `@host.` — host function | `@plugin.` — plugin function |
-|---|---|---|
-| Trust model | **fully trusted** — your C++, your address space, your privileges | **untrusted OK** — sealed in its own wasm sandbox |
-| Body lives in | a C++ lambda in your binary | a sandboxed wasm plugin (own linear memory) |
-| Declared as | `int @host.length(string s);` | `bool @plugin.allow(string s, string a);` |
-| Compile-side registration | `Builder::AddFunction(decl)` / `DeclareFunctions(lib)` | `Builder::Use(plugin)` |
-| Eval-side registration | `Engine::BindFunction(decl, lambda)` | `Engine::Use(plugin)` |
-| Values cross by | zero-copy slots in shared memory | marshalled across the boundary (protos as serialized bytes) |
-| Update | re-link your binary | hand new bytes to a fresh `Engine` |
-| Per-call cost | ~110 ns | ~450 ns |
-| Guide | [Writing host functions](writing-host-functions.md) | [Writing plugins](writing-plugins.md) |
+Custom functions run as **native host callbacks** — C++ lambdas
+registered on the `Engine`, executing in the embedder's process with the
+embedder's privileges. Sandboxed wasm plugins are not offered: the
+expression itself is sandboxed, but a custom function is your code,
+running unsandboxed in your address space, and you must trust it
+accordingly. The precise trust boundaries are in the
+[security model](security-model.md).
 
-Rule of thumb: **a function body you wrote → `@host`; a function body
-you didn't → `@plugin`.** (A third prefix, `@native`, is reserved for
-CEL-defined bodies and unimplemented — §3.)
+The shortest complete example — declare a function at compile time,
+implement it at eval time, call it from CEL:
 
-Both mechanisms share the same `.celfn` IDL, the same synthesized
-overload-ids, and the same call-site experience — an expression cannot
-tell them apart. The trust boundary is the only difference that
-matters. Precise sandbox guarantees: [security model](security-model.md).
+```cpp
+// Compile side: declare the function so call sites type-check.
+auto b = celwasm::Compiler::NewBuilder();
+b.AddFunction("int @host.double_it(int x);");
+b.DeclareVariable("x", celwasm::CelType::Int());
+auto compiler = std::move(b).Build().value();
+auto program  = compiler.Compile("double_it(x)").value();
+
+// Eval side: register the implementation by its overload id.
+auto engine = celwasm::Engine::NewBuilder().Build().value();
+CHECK_OK(engine.AddTypedFunction("double_it_int",
+    [](int64_t x) -> absl::StatusOr<int64_t> { return x * 2; }));
+
+auto instance = engine.Plan(program).value();
+celwasm::Activation act;
+act.Bind("x", celwasm::Value::Int(21));
+auto v = instance.Eval(act);            // → 42
+```
+
+The full how-to — the typed API, `HostCallContext`, proto / list / map
+arguments, errors and unknowns — is
+[Writing host functions](writing-host-functions.md). This page covers
+the declaration side: the `.celfn` IDL and how declarations reach the
+compiler and the engine.
 
 ---
 
 ## 1. The `.celfn` IDL — declarations first
 
-Custom functions are declared in a small IDL; the **backend prefix**
-(`@host.` / `@plugin.` / `@native.`) selects the mechanism. Every
-declaration carries a prefix; there is no unprefixed form.
+Custom functions are declared in a small IDL. Every declaration carries
+the `@host.` backend prefix (there is no unprefixed form, and no other
+backend):
+
+```celfn
+int @host.length(string s);
+```
 
 The type grammar (`compiler/celfn/function_library.h`):
 `bool int uint double string bytes null Duration Timestamp`, `list<T>`,
@@ -46,29 +63,24 @@ Register declarations on the `Compiler` so call sites type-check:
 auto b = celwasm::Compiler::NewBuilder();
 b.AddFunction("int @host.length(string s);");       // one decl from a string
 b.DeclareFunctions(*celwasm::ParseCelfnSource(celfn_text));   // a whole .celfn file/library (StatusOr — check in real code)
-b.Use(plugin);                                      // a Plugin's embedded declarations (§4)
 auto compiler = std::move(b).Build();
 ```
 
 `AddFunction(celfn_source)` parses one (or more) decl from a string;
 `DeclareFunctions(FunctionLibrary)` registers a parsed `.celfn` library
-(from `celwasm::ParseCelfnSource(text)` or `FunctionLibrary::Builder`);
-`Use(plugin)` registers a plugin's own embedded declarations (§4). A
-call to an unregistered function fails at compile time with
+(from `celwasm::ParseCelfnSource(text)` or `FunctionLibrary::Builder`).
+A call to an unregistered function fails at compile time with
 `"undeclared reference to '<fn>'"`.
 
 ### 1.1 Building a reusable expression library (`.celfn` files)
 
-The IDL's point is a **named, documented, reusable library** of function
+The IDL's point is a **named, reusable library** of function
 declarations — a project "standard library":
 
 ```celfn
 // policy.celfn  — a library of policy function declarations
 
-/// True if the user is an adult (>= 18) per their proto `age` field.
 bool @host.is_adult(proto(acme.User) u) ;
-
-/// Look up today's rate for `currency` from the host rate table.
 double @host.rate(string currency) ;
 ```
 
@@ -90,36 +102,31 @@ auto p1 = compiler->Compile("is_adult(u) && rate('USD') < 2.0");
 auto p2 = compiler->Compile("rate('USD') * 1.05");
 ```
 
-At eval time, bind each `@host` declaration to its C++ impl on the `Engine`
-(§2).
-
-**Doc-comments.** ✅ A `///` run (or `/** … */` block) directly above a
-declaration is captured as that function's **description** (sigils + one
-leading space stripped, lines joined) and exposed on `CelfnDecl` — generate
-reference docs or a function picker from it. 🟡 *Carrying the description into
-the Program's `cel.abi` for cross-process introspection is not wired yet;
-today it's reachable via `FunctionLibrary::decls()` on the in-process
-library.*
+At eval time, bind each declaration to its C++ impl on the `Engine`
+(§2). Comments (`//` and `/* … */`) are permitted in `.celfn` source
+and skipped by the parser; they are **not** captured as machine-readable
+descriptions — `CelfnDecl` carries no description field.
 
 **Introspection.** Walk the registered functions:
 
 ```cpp
 for (const celwasm::FunctionLibrary& lib : compiler->function_libraries()) {
   for (const celwasm::CelfnDecl& d : lib.decls()) {
-    // d.fn_name, d.params, d.return_type, d.backend, d.description
+    // d.fn_name, d.overload_id, d.params, d.return_type
   }
 }
 ```
 
 ---
 
-## 2. Host functions (`@host.`) — trusted, in-process
+## 2. Implementing a function — the three registration surfaces
 
-A host function is implemented by your C++ at runtime. The expression
+A custom function is implemented by your C++ at runtime. The expression
 imports it; you register the impl on the `Engine`. It runs in your
 address space with your privileges — the sandbox does nothing for you
-here, which is exactly right for code you already trust (an in-memory
-cache lookup, a call into a library you already ship).
+here, so register only code you trust (an in-memory cache lookup, a
+call into a library you already ship), and validate its inputs as you
+would any externally reachable surface.
 
 > **→ Full guide: [Writing host functions](writing-host-functions.md)** — the
 > typed API, `HostCallContext` accessors, proto / list / map args, owning
@@ -163,113 +170,17 @@ may explicitly emit an unknown via `ctx.ReturnUnknown()` (stamping
 `AddFunction` is `params + 1`; the typed layers derive arity from the
 lambda.
 
-## 3. CEL-defined functions (`@native`) ⛔
-
-> **Not implemented — treat `@native` as reserved syntax.** The grammar
-> reserves the `@native` backend for functions whose body is written in CEL
-> itself and compiled into the same wasm module as the expression. Today a
-> `@native` declaration parses and type-checks (so call sites compile), but no
-> body lowering exists: a program that calls one compiles and then fails to
-> evaluate. Use `@host` (§2) or `@plugin` (§4) for function bodies that
-> need to run.
-
 ---
 
-## 4. Plugin functions (`@plugin.`) — sandboxed wasm ✅
+## 3. Verification at Plan time
 
-> **→ Full guide: [Writing plugins](writing-plugins.md)** — the
-> quickstart, the `cel_wasm_plugin` Bazel macro, the sharing model, the
-> proto path, the type matrix, and how verification works. This section
-> is the summary.
-
-A plugin function is implemented inside a **sandboxed WebAssembly
-plugin** — a separate wasm artifact with its own linear memory, no
-syscalls, and no access to your process. It is the path for code you
-didn't write: a customer-authored scoring function, a partner's
-predicate, anything not yet reviewed.
-
-### 4.1 One noun, both sides
-
-A plugin built with the `cel_wasm_plugin` Bazel macro is
-**self-describing**: the macro embeds the `.idl` declaration text
-verbatim in a `cel.fns` custom section inside the `.wasm`.
-`Plugin::Load` reads it back out, so the declarations provably describe
-the deployed bytes — there is no hand-written C++ mirror to drift:
-
-```cpp
-#include "abi/plugin.h"
-
-auto plugin = celwasm::Plugin::Load(plugin_bytes).value();
-// plugin.decls()      — the parsed declarations
-// plugin.hash_hex()   — SHA-256 over (bytes ‖ declarations)
-
-// Compile side: call sites type-check against the artifact's decls.
-auto b = celwasm::Compiler::NewBuilder();
-b.Use(*plugin);
-auto compiler = std::move(b).Build();
-
-// Eval side (possibly another process): the same noun registers the
-// sandboxed backend.  Registration statically checks the plugin
-// actually exports every declared function — a bad upload fails
-// here, not at traffic time.
-CHECK_OK(engine.Use(*plugin));
-```
-
-At `Plan`, the engine verifies every custom function the program calls
-exists in its registry with an **exactly matching signature** (recorded
-in the program's `cel.abi`), then instantiates only the plugins the
-program actually needs — each into its own sandbox. A missing or
-drifted plugin is a clean `FailedPrecondition` at `Plan`, before any
-traffic.
-
-### 4.2 What crosses the boundary
-
-Unlike a host function (zero-copy slots in shared memory), a plugin has
-its own linear memory, so a host trampoline **marshals** every call:
-scalars, `string`, `bytes`, `list<T>`, `map<K,V>`, nested aggregates,
-`Duration`, `Timestamp` — and **proto messages as serialized bytes**
-(both sides compile the same `.proto`; the generated codec
-de/serializes). `type` and `optional<T>` are rejected at the plugin
-boundary. The full matrix: [Writing plugins §5](writing-plugins.md#5-type-matrix).
-
-### 4.3 When a plugin fails
-
-A plugin function that traps mid-call surfaces as a **failed Eval** (a
-non-OK `absl::Status`) — the embedding process does not crash, and the
-failure cannot masquerade as a legitimate value (pinned by
-`e2e/plugin_dispatch_test.cc`, `TrappingPluginFnFailsEvalCleanly`).
-Plugin state (anything `static` in the plugin, caches, allocations) is
-**per-`Instance`** — see the sharing model in
-[Writing plugins §4](writing-plugins.md#4-the-sharing-model-where-plugin-state-lives).
-
-### 4.4 Legacy escape hatch: `Engine::AddPlugin(bytes, lib)`
-
-Before plugins were self-describing, registration took the raw bytes
-*plus* a hand-built `FunctionLibrary` mirroring the plugin's
-declarations. That surface remains as
-`Engine::AddPlugin(plugin_bytes, lib)` for exactly one audience:
-**pre-`cel.fns` artifacts** — hand-built or pure-WAT plugins that carry
-no embedded declarations. It validates less (no static export check;
-export resolution is Plan-time only) and keeps the drift risk `Use`
-was built to end. If you have such an artifact, prefer re-embedding its
-declarations with `cel embed-decls` and loading it as a `Plugin`
-([Writing plugins §6](writing-plugins.md#6-plugins-built-outside-the-macro-cel-embed-decls));
-reach for `AddPlugin` only when you can't.
-
-### 4.5 What about `Engine::AddModule`?
-
-`Engine::AddModule(alias, wasm_bytes)` — an alias-keyed "register a
-core wasm module" API — is reserved for the unimplemented `@native`
-backend (§3) and is **not** a plugin registration path. Use
-`Engine::Use` (or the `AddPlugin` escape hatch) for every
-plugin-backed function.
-
----
-
-## 5. Authoring languages
-
-The shipped authoring path is **C++** via the `cel_wasm_plugin` macro
-(`wasm32-wasip2`). A Go path (TinyGo for scalar/string functions, stock
-Go where proto support is needed) is probe-validated design — see
-[Writing plugins §7](writing-plugins.md#7-go-authoring-designed-not-implemented)
-and `doc/implementation-plan/rewrite/foreign-go-bindgen-findings.md`.
+A compiled `Program` records every custom function it calls — name plus
+full signature — in its `cel.abi` section (`required_functions`). At
+`Engine::Plan`, each one is verified against the engine's registry: a
+missing registration, or one whose signature differs from what the
+program was compiled against, is a clean `FailedPrecondition` naming
+the function, before any traffic. Because the implementations are C++
+in the embedder's process, a program that requires custom functions can
+only run through the C++ API; the generic `cel` CLI refuses such a
+program up front and lists the required signatures
+([CLI reference](index.md#9-command-line-tool-cel)).

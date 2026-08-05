@@ -1,5 +1,11 @@
 # 00 — Consolidated findings (design-documentation rebuild)
 
+> **2026-08-04:** the wasm-component plugin backend and the `@native`
+> stub were removed (m39-component-removal.md; archived on
+> `component-functions-archive`). Findings below that concern the
+> plugin/component/`@native` surfaces are resolved-by-removal;
+> read them as historical.
+
 Input: all 13 component notes + 4 lens passes in `doc/design/notes/`,
 read in full 2026-06-10. This file is the merge point: the deduplicated
 discrepancy register, the ordered validation backlog, the proposed new

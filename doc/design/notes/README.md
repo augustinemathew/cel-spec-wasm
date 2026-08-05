@@ -1,5 +1,14 @@
 # Design-rebuild notes
 
+> **2026-08-04:** these notes predate the removal of the
+> wasm-component plugin backend (`@plugin.`, `celfnc_emit/`, `cel
+> generate`, `Plugin`, wasip2) and the `@native`/kCelDefined stub —
+> see `doc/implementation-plan/rewrite/m39-component-removal.md`;
+> the removed code is archived on `component-functions-archive`.
+> Findings about those surfaces are resolved-by-removal. The notes
+> are a dated historical record; the current architecture is
+> `doc/design/`.
+
 Working notes for the 2026-06-10 design-documentation rebuild. Each
 file is the output of an exhaustive read of one component — its code,
 its tests, and its historical design docs together. The notes are the

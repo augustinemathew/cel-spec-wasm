@@ -15,7 +15,7 @@ decisions** you make, and **one** known sharp edge. The rest is detail.
 ![Trust boundaries](../design/diagrams/trust-boundary-light.svg#only-light)
 ![Trust boundaries](../design/diagrams/trust-boundary-dark.svg#only-dark)
 
-*Updated 2026-07-25; every claim is checked against the code cited next
+*Updated 2026-08-04; every claim is checked against the code cited next
 to it.*
 
 ## 1. The boundary — what the expression can and can't do
@@ -58,96 +58,50 @@ The guarantees, precisely:
   context: no filesystem preopens, no environment, no stdio
   (`eval/engine.cc::InitStore`). There is no path from CEL evaluation to
   the filesystem, network, clock-as-capability, or process control.
-- **No unbounded control flow.** CEL is a *total* language. Comprehensions
-  lower to counted loops; recursive `@native` bodies are rejected at
-  compile. An expression cannot spin forever.
-- **Failures unwind, they don't corrupt.** A guest trap or a panic in a
-  plugin surfaces as a non-OK `absl::Status` or a CEL error value — the
-  host stays intact. (One residual exception, at *compile* time, in §3.)
+- **No unbounded control flow.** CEL is a *total* language, and
+  comprehensions lower to counted loops. An expression cannot spin
+  forever.
+- **Failures unwind, they don't corrupt.** A guest trap surfaces as a
+  non-OK `absl::Status` or a CEL error value — the host stays intact.
+  (One residual exception, at *compile* time, in §3.)
+
+One scope statement to hold onto: **the sandbox guarantees above cover
+the expression and runtime wasm only.** Custom (`@host`) functions are
+*native* code — C++ lambdas executing in your process, outside every
+guarantee on this page. Sandboxed wasm plugins are not offered; if an
+expression needs to call back into logic, that logic runs with your
+privileges, and you must trust it accordingly (§2).
 
 ## 2. The trust model — three decisions
 
-Everything you feed cel-wasm falls into one of four buckets, and only one
-of them needs real thought:
+Everything you feed cel-wasm falls into one of three buckets:
 
 | What you provide | Trust required | The one-liner |
 |---|---|---|
 | **CEL expression source** | 🟡 **Semi-trusted** | Sandboxed once compiled — but *compilation* runs in your process, and one input shape can still crash the compiler (§3). Compile untrusted source in a separate worker (§4). |
 | **`@host` functions** | 🔴 **Fully trusted** | Your C++ lambdas, your address space, your privileges. The sandbox does nothing for you here. |
-| **`@plugin` functions** | 🟢 **Untrusted OK** | Own memory, trap-stubbed imports, failures become CEL errors. The path for third-party / customer code. |
 | **`Program` bytes** | 🔴 **Trusted compiler only** | Treat like a shared library; see below. |
 
-The decision that matters most is **how you let an expression call back
-into your code** — and that's exactly the `@host` vs `@plugin` split:
+**Custom functions are native code in your process — there is no
+sandboxed alternative.** A `@host` function registered on the `Engine`
+(`AddFunction` / `AddTypedFunction` / `BindFunction`) is an ordinary
+C++ callback: it runs in your memory, with your privileges, and can do
+anything your process can do — the same posture as a custom function
+registered on stock cel-cpp. Sandboxed wasm plugins for third-party
+function bodies are **not offered**; if you need to run a function
+body you did not write, review it as you would any other native
+dependency, or isolate it yourself (a separate process, a service
+call inside the lambda). The `Program` can invoke every function you
+register with arguments of its choosing (see below), so treat each
+registered lambda as externally reachable attack surface and validate
+its inputs.
 
-```
-   @host  function                     @plugin  function
-   ════════════════                    ═══════════════════
-   your C++ lambda                     a WebAssembly plugin
-   ┌──────────────────────┐            ┌──────────────────────┐
-   │ runs in YOUR memory  │            │ runs in its OWN linear│
-   │ with YOUR privileges │            │ memory — can't see    │
-   │                      │            │ the expression's, let │
-   │ can do anything your │            │ alone yours           │
-   │ process can do       │            │                      │
-   │                      │            │ every import is a     │
-   │ = same posture as    │            │ trap stub (no I/O)    │
-   │   stock cel-cpp fns  │            │                      │
-   └──────────────────────┘            └──────────────────────┘
-        FULLY TRUSTED                       UNTRUSTED OK
-   (you wrote it, you own it)          (3rd-party plugins,
-                                        customer-authored predicates)
-```
-
-So the rule of thumb: **a function body you wrote → `@host`; a function
-body you didn't → `@plugin`.** A plugin is supplied as bytes at
-runtime (`Plugin::Load` + `Engine::Use`), so swapping one means handing
-a fresh engine new bytes — no re-link, no redeploy. Its only capability
-is one deterministic `wasi:random` stub (for libc++'s hash seed);
-touching `wasi:filesystem` / `clocks` / `io` / `cli` traps with a named
-error.
-
-**The plugin path is verified in stages, each failing before the next.**
-A plugin is a *self-describing* artifact — its declarations travel
-inside the `.wasm` (the `cel.fns` section), so there is no hand-written
-declaration mirror that can drift from the deployed bytes:
-
-1. **`Plugin::Load(bytes)`** rejects a malformed artifact up front:
-   not a Component-Model binary, missing/unparseable declarations, a
-   non-`@plugin.` decl (`abi/plugin.cc`, pinned by `abi/plugin_test.cc`).
-2. **`Engine::Use(plugin)`** statically checks — against the *parsed*
-   component, with nothing instantiated — that the plugin actually
-   exports its declared interface and every declared function
-   (`eval/engine.cc::CheckPluginExportsStatically`). A bad upload is
-   rejected at registration, not at traffic time.
-3. **`Engine::Plan(program)`** verifies every custom function the
-   program calls (recorded with its full signature in the program's
-   `cel.abi`) exists in the registry with an **exactly matching**
-   signature — protos compared by fully-qualified name. A plugin
-   update that changed a signature under a compiled program is a
-   `FailedPrecondition` at Plan, never a call-time trap or a silently
-   wrong value.
-4. **Selective instantiation shrinks the blast radius.** Plan
-   instantiates only the plugins the program actually calls, each into
-   its own store with its own linear memory. A broken or hostile
-   registered plugin that a program doesn't use never even
-   instantiates into that program's sandbox — and two Instances never
-   share plugin state (see the sharing model in
-   [Writing plugins §4](writing-plugins.md#4-the-sharing-model-where-plugin-state-lives)).
-
-What is deliberately **not** checked, stated honestly: program↔plugin
-**hash** agreement (`Plugin::hash()` — SHA-256 over bytes ‖
-declarations — is exposed for embedder bookkeeping and named in
-Plan-time diagnostics, but nothing enforces that the plugin a program
-was compiled against is byte-identical to the one registered), and the
-**WIT-level `FuncType`** of exports (the wasmtime C API's component
-type introspection is too thin; for macro-built plugins this is
-unreachable — WIT and declarations derive from the same `.idl` — but a
-hand-built plugin whose export *shape* disagrees with its declarations
-can still trap at call time). The legacy
-`Engine::AddPlugin(bytes, lib)` escape hatch skips stages 1–2
-entirely — its export resolution is Plan-time only — which is why the
-self-describing path is the default.
+Plan-time verification still applies to the *wiring*: a compiled
+program records every custom function it calls — name plus full
+signature — in its `cel.abi`, and `Engine::Plan` fails with a clean
+`FailedPrecondition` (naming the function) if one is missing from the
+registry, before any traffic. That is a correctness check on
+registration drift, not a trust boundary.
 
 **Why `Program` bytes need a compiler you trust.** `Engine::Plan`
 validates *structure, not provenance* — it checks the wasm is valid, the
@@ -230,7 +184,7 @@ For expression source you don't fully control, in priority order:
    ④ bound evaluation cost      ── NOT yet available; see the note below
    ⑤ audit @host functions      ── the Program can call them with
                                    arbitrary args; validate inside the
-                                   lambda — or use @plugin instead
+                                   lambda
 ```
 
 1. **Cap expression source length** well below the 100k default — real
@@ -254,6 +208,6 @@ For expression source you don't fully control, in priority order:
    size of the collections you bind, and run evaluation somewhere you can
    abandon) until an evaluation deadline ships.
 5. **Audit your `@host` functions as attack surface.** Anything you
-   register is callable by the Program with arbitrary arguments — validate
-   inputs inside the lambda, and prefer `@plugin` for any body you
-   didn't write yourself.
+   register is callable by the Program with arbitrary arguments —
+   validate inputs inside the lambda, and register only function
+   bodies you trust (they run as native code in your process, §2).

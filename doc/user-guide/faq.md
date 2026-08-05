@@ -16,10 +16,9 @@ Three reasons, one trade:
   `cel.abi`). Compile once, ship it, evaluate it in a process — or, in
   the future, a language — that never links the compiler. Semantic
   drift between host implementations is structurally impossible.
-- **Sandboxed custom functions.** `@plugin` functions run in their
-  own wasm linear memory with no syscalls and no access to your
-  process. Stock CEL only gives you trusted in-process callbacks.
-  See the [security model](security-model.md).
+- **A sandboxed evaluator.** The compiled expression runs inside a
+  wasmtime sandbox: bounded memory, no syscalls, no I/O, guaranteed
+  termination. See the [security model](security-model.md).
 
 The trade: no `dyn` (next question), and a smaller extension surface
 than cel-cpp. Of the upstream conformance corpus, **every attempted
@@ -101,8 +100,7 @@ The contract, verbatim from `eval/engine.h` / `eval/instance.h`:
 |---|---|
 | `Program` | pure bytes, immutable — share and serialize freely |
 | `Engine::Plan` | **safe to call concurrently** from many threads |
-| `Engine::Use` / `BindFunction` / `AddFunction` / `AddModule` / `AddPlugin` | **not** thread-safe — configure once at startup, then `Plan` from many threads |
-| `Plugin` | immutable after `Load` — share across threads, register on many compilers/engines |
+| `BindFunction` / `AddFunction` / `AddTypedFunction` | **not** thread-safe — configure once at startup, then `Plan` from many threads |
 | `Instance` | thread-owned, single-threaded — bind one per worker; it outlives the Engine handle (shared_ptr) |
 
 ### Can my custom function return an error or unknown?
@@ -129,50 +127,27 @@ does not — the decoded error carries a synthesized
 
 ### How do I ship a custom function without trusting its code?
 
-Use a **wasm plugin** (`@plugin.`). The function is compiled to a
-sandboxed WebAssembly artifact with its own linear memory — it cannot
-read your process memory, cannot syscall, cannot do I/O, and a crash
-inside it fails that Eval cleanly instead of taking your process down.
+You can't — there is no sandboxed custom-function mechanism. Custom
+functions run as **native host callbacks**: C++ lambdas registered on
+the `Engine` (`AddFunction` / `AddTypedFunction` / `BindFunction`),
+executing in your process with your privileges. The wasm sandbox
+covers the *expression*, not the functions you register — so review a
+function body you didn't write as you would any native dependency, or
+isolate it yourself (a separate process, a service call inside the
+lambda). The trust model, stated precisely:
+[security model](security-model.md).
 
-The artifact is *self-describing*: its declarations are embedded in the
-`.wasm` (the `cel.fns` section), so the whole integration is one noun:
+### Why did Plan fail with a "missing function" error?
 
-```cpp
-auto plugin = celwasm::Plugin::Load(plugin_bytes).value();
-builder.Use(*plugin);           // compile side: call sites type-check
-CHECK_OK(engine.Use(*plugin));  // eval side: sandboxed dispatch
-```
-
-`Engine::Use` statically checks the plugin exports everything it
-declares, and `Plan` verifies the program's required function
-signatures before anything runs. Full guide:
-[Writing plugins](writing-plugins.md); guarantees and the honest list
-of what is *not* checked: [security model](security-model.md).
-
-### Why did Plan start failing after a plugin update?
-
-Because the update changed a function signature out from under an
-already-compiled program — and `Plan` is where that is caught. A
-compiled `Program` records every custom function it calls (name + full
-signature) in its `cel.abi`; `Engine::Plan` verifies each one against
-the registered plugins and fails with a `FailedPrecondition` naming
-the function, both signatures, and the registered plugin's content
-hash, e.g.:
-
-```
-Engine::Plan: program requires plugin function
-`is_adult_message_acme_Person` with signature
-`bool is_adult(proto(acme.User))` but the registered plugin
-(hash 3f9a2c1b04de) declares `bool is_adult(proto(acme.Person))`;
-signatures must match exactly — recompile the program or rebuild the
-plugin
-```
-
-This is deliberate: the alternative is a call-time trap or a silently
-wrong answer mid-traffic. The fix is what the message says — recompile
-the program against the updated plugin (`Compiler::Builder::Use`), or
-roll the plugin back. Signatures must match **exactly** (protos by
-fully-qualified name); there is no implicit widening.
+Because the program calls a custom function the engine doesn't have —
+and `Plan` is where that is caught. A compiled `Program` records every
+custom function it calls (name + full signature) in its `cel.abi`;
+`Engine::Plan` verifies each one against the registered callbacks and
+fails with a `FailedPrecondition` naming the function before anything
+runs. The fix is to register the implementation
+(`Engine::BindFunction` with the same `.celfn` declaration the program
+was compiled against) on the engine that plans it. This is deliberate:
+the alternative is a call-time trap mid-traffic.
 
 ### What proto schemas work?
 
@@ -199,8 +174,8 @@ reproducible: differential fuzzing against the cel-cpp oracle runs
 nightly in CI, constant list/map literals materialize into the Program
 at compile time, and oversized literals are rejected at compile with a
 graceful `ResourceExhausted`. What remains is listed, not hidden: no
-bindings beyond C++, allocator caps and CPU-time limits for plugin
-functions still to come, and no release-versioning policy yet. See
+bindings beyond C++, no per-evaluation time budget, and no
+release-versioning policy yet. See
 "Limitations" in the [README](https://github.com/augustinemathew/cel-wasm/blob/master/README.md), the
 [security model](security-model.md) for the threat-relevant items, and
 `e2e/known_bugs_test.cc` +

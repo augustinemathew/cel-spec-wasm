@@ -14,8 +14,8 @@ feature must close out by running the full suite — including the
 > `bazel test --nocache_test_results` before tagging anything
 > `manual` — cached "PASSED in Ns" lines report the last recorded
 > run under whatever load the machine had, and were overstating
-> several of these by 3-4x (`plugin_dispatch_test_dynamic` read as
-> 18.3 s, actually 5.3 s).
+> several of these by 3-4x (the since-deleted
+> `plugin_dispatch_test_dynamic` read as 18.3 s, actually 5.3 s).
 
 It complements:
 

@@ -8,11 +8,11 @@ baselines). The operator manual for running individual benches is
 
 > **2026-06-11 restructure:** the original two-tree split (`bench/` vs
 > `benchmark/`) was dissolved; `bench/` no longer exists. Kernel localisation
-> lives at `//benchmark/kernel`, plugin-boundary at `//benchmark/plugin`,
-> Compile/Plan at `//benchmark/compiler`, and the comparative eval corpus at
-> `benchmark/eval`. `bench/README.md` is archived at
-> `doc/implementation-plan/rewrite/archive/bench-tree-readme.md`; `bench/*`
-> references below are historical.
+> lives at `//benchmark/kernel`, Compile/Plan at `//benchmark/compiler`, and
+> the comparative eval corpus at `benchmark/eval`. `bench/README.md` is
+> archived at `doc/implementation-plan/rewrite/archive/bench-tree-readme.md`;
+> `bench/*` references below are historical. (`//benchmark/plugin` was deleted
+> with the plugin backend, 2026-08-04.)
 
 This doc is the design authority for performance measurement: what we measure,
 under what configuration a number counts as a baseline, how the comparative
@@ -38,8 +38,9 @@ Historical notes, both resolved 2026-06-11: the orphaned
 `bench/cel_pipeline_bench.cc` (V35) is superseded by
 `//benchmark/compiler:stage_bench`; the out-of-bazel
 `bench/foreign_component/` probe set was deleted — findings remain in
-rw/m23-foreign-fn-component-abi.md; the production bench is
-`//benchmark/plugin:plugin_bench`.
+rw/m23-foreign-fn-component-abi.md. (Its successor
+`//benchmark/plugin:plugin_bench` was deleted with the plugin backend,
+2026-08-04.)
 
 ## 2. Measured boundaries
 
@@ -55,7 +56,6 @@ innermost boundary; everything outside it is pre-staged before the loop.**
 | `Compiler::Compile`          | `BM_Compile_*` (pipeline_bench)      |
 | `Engine::Plan`               | `BM_Plan_*` (pipeline_bench)         |
 | `Instance::Eval`             | `BM_Eval_*`, all of `benchmark/eval` |
-| Plugin-call overhead         | `plugin_bench`                       |
 | cel-cpp comparator           | `*_cel_cpp_bench`, `celcpp_bench`    |
 | Program size (not timing)    | `program_size_main`                  |
 
@@ -69,17 +69,12 @@ Per-row staging rules:
 - **Plan**: Program pre-built; measures incremental module-new + instantiate.
 - **Eval**: Compile + Plan happen in the registration lambda; only
   `Instance::Eval(act)` is timed (celwasm_bench.cc `RegisterAll`).
-- **Plugin-call overhead**: `Engine::AddPlugin` dispatch vs an
-  `AddTypedFunction` host-callback baseline on the same declaration; the
-  delta IS the boundary cost (plugin_bench.cc).
 - **cel-cpp comparator**: eval steady state only; parse + check +
   CreateProgram outside the loop.
 - **Program size**: `program_size_main` prints expr-module wasm bytes at
   optimize_level 0 vs 2, AST wire size, and `sizeof` of public C++ types.
 
-Engine sharing: one process-static `GlobalEngine()` everywhere, EXCEPT
-`plugin_bench`, where each benchmark owns a heap `Engine`
-(`AddPlugin` is per-Plan; shared Engine state interferes across Plans).
+Engine sharing: one process-static `GlobalEngine()` everywhere.
 
 Two formerly hand-coded shapes are corpus cells now: the activation-marshal
 isolation pair (`arith.abcAbcShape{Vars,Lit}`, arithmetic.yaml) and the

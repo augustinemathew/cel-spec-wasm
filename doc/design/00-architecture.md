@@ -17,7 +17,7 @@ Two workloads drive the design:
    one compile  ───────────────────────────────────►  many evals, anywhere
 ```
 
-The two phases separate in **time, process, and machine**. A Program is plain bytes carrying everything the evaluator needs: compile on a build server, evaluate in a process that never links the compiler — or in a browser tab over pure TypeScript (`bindings/`).
+The two phases separate in **time, process, and machine**. A Program is plain bytes carrying everything the evaluator needs: compile on a build server, evaluate in a process that never links the compiler. (Bindings beyond C++ are designed, not built — the `.wasm` + `cel.abi` carry everything a future non-C++ shim needs.)
 
 Byte-level detail lives in [`03-abi-and-memory.md`](03-abi-and-memory.md); compiler and evaluator internals in [`01-compiler.md`](01-compiler.md) and [`02-evaluator.md`](02-evaluator.md). Section 6 maps the doc set.
 
@@ -55,7 +55,7 @@ Instance  --Eval(activation)------->  Value
 
 **`celwasm::Program`** (`compiler/program.h`) — pure data: a `std::vector<uint8_t>` of wasm bytes with an embedded `cel.abi` custom section, behind `wasm_bytes()`. No handles, no wasmtime state, no validation at construction — wasm parsing happens at `Engine::Plan`. (A design where Program held compiler-owned wasmtime state was rejected as role conflation.) Pure bytes make Program a serialization boundary and keep the Compiler/Engine edges one-directional; both speak only `shared/`.
 
-**`celwasm::Engine`** (`eval/engine.h`) — the process-shared machinery: one `wasm_engine_t` (tail calls, threads, shared memory enabled) plus the parsed `cel_runtime.wasm` module, in a `shared_ptr<WasmtimeEngineState>`. Caching the parsed runtime module is bench-justified (~34x per-Plan). The Engine also carries the registration surfaces — `Use` (self-describing plugin artifacts, with a static export check at registration), `AddFunction` / `AddTypedFunction` / `BindFunction` (host callbacks), `AddModule`, and the `AddPlugin` explicit-decls escape hatch (`02-evaluator.md`, `05-custom-functions.md`). At `Plan`, every custom function a Program's `cel.abi` records as required is verified against that registry (existence + exact signature), and only the plugins the Program calls are instantiated.
+**`celwasm::Engine`** (`eval/engine.h`) — the process-shared machinery: one `wasm_engine_t` (tail calls, threads, shared memory enabled) plus the parsed `cel_runtime.wasm` module, in a `shared_ptr<WasmtimeEngineState>`. Caching the parsed runtime module is bench-justified (~34x per-Plan). The Engine also carries the custom-function registration surfaces — `AddFunction` / `AddTypedFunction` / `BindFunction`, all binding native C++ host callbacks (`02-evaluator.md`, `05-custom-functions.md`). At `Plan`, every custom function a Program's `cel.abi` records as required is verified against that registry (existence + exact signature). Custom functions run in the embedder's process, outside the sandbox; a sandboxed wasm-plugin backend existed and was removed 2026-08-04 (archived on `component-functions-archive`; rationale in `doc/implementation-plan/rewrite/m39-component-removal.md`).
 
 **`Engine::Plan(const Program&)`** produces an **`Instance`** (`eval/instance.h`): a fresh store, linker, instantiated module(s), a cloned handle to the runtime's shared memory, the `eval` export, and the decoded ABI. `Eval(activation)` marshals bindings into guest memory, calls `$eval`, and decodes the result into a host-owned `Value`. An Instance holds the engine state `shared_ptr`, so it outlives the Engine handle that minted it (pinned by `EnginePlanTest.InstanceOutlivesEngineAndCompilerWithEvalProof`).
 
@@ -129,7 +129,7 @@ Reader path: 00 → 01/02 → 03/04/05 → 06/07.
 | [`09-lowering.md`](09-lowering.md) | Codegen: per-node lowering arms and the two link-mode bootstraps. |
 | [`02-evaluator.md`](02-evaluator.md) | Plan/instantiate/eval lifecycle; registration; host-call dispatch; marshal and decode. |
 | [`03-abi-and-memory.md`](03-abi-and-memory.md) | The value model: CelValue layout, calling convention, memory map, arena. |
-| [`08-abi-wire-format.md`](08-abi-wire-format.md) | The wire descriptors: `cel.abi`, runtime catalogue, errors/unknowns, plugin boundary. |
+| [`08-abi-wire-format.md`](08-abi-wire-format.md) | The wire descriptors: `cel.abi`, runtime catalogue, errors/unknowns. |
 | [`04-runtime.md`](04-runtime.md) | The runtime kernel: build topology, kernel conventions, aggregates, arena. |
 | [`05-custom-functions.md`](05-custom-functions.md) | The `.celfn` subsystem across compiler/eval/tools. |
 | [`06-testing-strategy.md`](06-testing-strategy.md) | The layer pyramid, gates, disciplines, coverage ledger. |
@@ -142,7 +142,7 @@ Repo layout, by lifecycle role (the cel-cpp convention):
 - `compiler/` — CEL source → Program. Children: `frontend/` (parse + type-check, wraps cel-cpp), `ir/` (typed AST + annotations), `codegen/` (Binaryen lowering), `celfn/` (function library), `internal/` (the `compile.{h,cc}` facade). Public face: `compiler.{h,cc}` + `program.h`. Never depends on `eval/` or wasmtime.
 - `eval/` — Program + Activation → Value. Public leaves: `engine`, `instance`, `activation`, `value`, `error`, `attribute`, `host_call_context`, `typed_function`; `host/` and `internal/` (wasmtime glue, `abi_decode`, `cel_host`) are private.
 - `shared/` — `CelType`, the type vocabulary both phases speak.
-- `abi/` — the wire-contract layer: `cel.abi` emit, the generated runtime catalogue, the public `Plugin` artifact (`abi/plugin.h` — both `Compiler::Builder::Use` and `Engine::Use` take it, so it sits below both roles), and `wasm_binary` (the only first-party code allowed to know wasm binary framing); `abi/wit/` holds the plugin-boundary vocabulary.
+- `abi/` — the wire-contract layer: `cel.abi` emit, the `.celfn` wire vocabulary (`celfn_wire`), the generated runtime catalogue, and `wasm_binary` (the only first-party code allowed to know wasm binary framing).
 - `runtime/` — the C kernel, twice-compiled: `cel_runtime.wasm` and the native twin.
 - `bazel/` — first-party Starlark, incl. `gen_runtime_catalogue`.
 - `tools/` (the `cel` CLI, `wat_runner`), `conformance/`, `e2e/`, `benchmark/`, `testdata/`, `examples/` — leaf binaries and tests.

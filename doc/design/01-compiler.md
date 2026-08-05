@@ -175,7 +175,6 @@ Recorded so they aren't re-proposed without new evidence:
 - Tie the hand-copied CelValue wire constants in codegen to `runtime/cel_data.h` (today a layout change compiles green and fails only at e2e).
 - Grow origin inference (`kCall → kHost`, comprehension-fold → arena) — measure before building.
 - A relocatable / growable static region, lifting the rodata-bound ceilings (the `in`-list cliff at ~327 ints).
-- The `@native` library-module fork — its producer (`CompileLibraryBodies` / `rodata_base_override`) is declared but unbuilt; it gets a producer or gets deleted ([`05-custom-functions.md`](05-custom-functions.md)).
 
 Unverified questions (repr edge cases, option-contract pins, the dyn-cond ternary behavior, short-circuit `orValue`, single-walk Pass-D) are catalogued in [`design/notes/`](https://github.com/augustinemathew/cel-wasm/tree/master/doc/design/notes).
 

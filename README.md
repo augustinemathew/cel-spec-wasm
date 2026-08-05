@@ -108,8 +108,9 @@ buys three properties:
   is structurally impossible.
 - **Sandboxed by construction.** Bounded linear memory. No syscalls, no
   I/O. Host access only through explicitly granted imports. Termination
-  is the language's guarantee — CEL has no unbounded loops. The sandbox
-  extends to custom functions.
+  is the language's guarantee — CEL has no unbounded loops. (The sandbox
+  covers the expression; custom functions you register are native C++
+  callbacks in your process.)
 - **Native speed.** Not from WebAssembly itself — from the runtime
   behind it, which emits machine code. What executes per Eval is that
   machine code, not an interpreter loop.
@@ -248,7 +249,7 @@ Extensions implemented: `string_ext` (including `strings.format` —
 172/216, 0 fails), `math_ext` (194/199, 0 fails), `network_ext` (69/69),
 and `optionals` (26/70; the remainder require `dyn`).
 
-## Custom functions — two trust models
+## Custom functions
 
 A CEL expression sees only what the host hands it. Custom functions are
 the escape hatch: the host registers functions, and rule authors call
@@ -259,32 +260,14 @@ them like built-ins.
 price - price * discount_pct(tier) / 100
 ```
 
-One decision picks the flavor: does the function's code belong inside
-your process?
-
-- **`@host` — trusted.** Your own C++, in your address space. An
-  in-memory cache lookup, a call into a library you already ship.
-- **`@plugin` — untrusted.** Code you didn't write. A
-  customer-authored scoring function, a partner's plugin. It runs in
-  its own WebAssembly sandbox; updating it is handing new bytes to a
-  fresh `Engine` — no re-link, no redeploy.
-
-| | `@host` — trusted C++ | `@plugin` — sandboxed wasm |
-| --- | --- | --- |
-| Runs | in your address space, as a C++ lambda | in an isolated wasm instance with its own linear memory |
-| Author language | C++ | anything with a `wasm32-wasip2` toolchain (C++ today; TinyGo planned) |
-| Can read host memory / syscall | yes — whatever the C++ does | no — cannot escape the sandbox or perform I/O |
-| Update | re-link your binary | hand new bytes to a fresh `Engine` (`Engine::Use`) |
-| Per-call cost | ~110 ns | ~450 ns |
+A custom function is declared in a small `.celfn` IDL and implemented
+as a **native host callback** — a C++ lambda registered on the
+`Engine`, bound with the same declaration string the compiler saw. The
+signature is validated at registration:
 
 ```celfn
-int  @host.length(string s);                           // trusted C++ path
-bool @plugin.allow(string subject, string action);     // sandboxed wasm path
+int @host.length(string s);
 ```
-
-Both flavors share the `.celfn` IDL; the `@<prefix>` selects the
-backend. A host function binds with the same declaration string the
-compiler saw. The signature is validated at registration:
 
 ```cpp
 engine.BindFunction("int @host.length(string s);",
@@ -293,21 +276,18 @@ engine.BindFunction("int @host.length(string s);",
                     });
 ```
 
-A plugin is a **self-describing artifact**: the `cel_wasm_plugin` build
-macro embeds its declarations in the `.wasm` itself, so one
-`Plugin::Load(bytes)` yields an object that registers on both sides —
-`Compiler::Builder::Use(plugin)` for type-checking,
-`Engine::Use(plugin)` for sandboxed dispatch. No hand-written mirror of
-the declarations to drift. At `Plan`, the engine verifies every
-function the program calls exists with an exactly matching signature,
-then instantiates only the plugins that program needs.
+At `Plan`, the engine verifies every function the program calls is
+registered with an exactly matching signature before anything runs
+(the program records its requirements in its `cel.abi`, so a missing
+implementation fails loudly up front, never mid-traffic).
 
-Loading not-yet-reviewed third-party code safely is the point. A stock
-in-process CEL runtime cannot do it. Guides:
-[host functions](doc/user-guide/writing-host-functions.md) ·
-[plugin functions](doc/user-guide/writing-plugins.md);
-runnable: [`examples/04`](examples/04_host_functions.cc),
-[`examples/09`](examples/09_plugin_functions.cc).
+The callbacks run in your address space with your privileges — the
+same posture as custom functions in stock cel-cpp. The wasm sandbox
+covers the compiled expression, not the functions you register;
+sandboxed wasm plugins for third-party function bodies are not
+offered. Guide:
+[host functions](doc/user-guide/writing-host-functions.md);
+runnable: [`examples/04`](examples/04_host_functions.cc).
 
 ## Correctness
 
@@ -341,8 +321,9 @@ Known gaps, each pinned by a skipped-with-reason test
 
 - **No dynamic typing (`dyn`).** The 227-row conformance skip. A
   deliberate trade.
-- **`@native` CEL-defined helper bodies** type-check, but body codegen
-  has not shipped.
+- **No sandboxed custom functions.** Custom functions are native C++
+  callbacks in the embedder's process; there is no isolated backend
+  for function bodies you don't trust.
 - **Very large constant literals are rejected at compile time** with a
   graceful `ResourceExhausted`, never a miscompile. Put large constant
   data in an activation-bound variable.
@@ -351,15 +332,15 @@ Known gaps, each pinned by a skipped-with-reason test
 - **Bindings beyond C++ are designed, not built.** The `.wasm` +
   `cel.abi` carry everything a Go/TS/Rust shim needs.
 - **Hardening continues.** Differential fuzzing and a sanitizer gate
-  ship today. Allocator caps, CPU-time limits for plugin functions,
-  and a release-versioning policy are still to come. See the
+  ship today. A per-evaluation time budget and a release-versioning
+  policy are still to come. See the
   [security model](doc/user-guide/security-model.md).
 
 ## Documentation
 
 Using cel-wasm:
 - [Getting started](doc/user-guide/getting-started.md) — install to first eval
-- [Examples](examples/) — nine runnable programs
+- [Examples](examples/) — eight runnable programs
 - [User guide](doc/user-guide/index.md) — the embedder API in depth
 - [FAQ](doc/user-guide/faq.md) · [Security model](doc/user-guide/security-model.md)
 - [CEL language definition](doc/langdef.md)

@@ -1,5 +1,14 @@
 # celfn — design notes (undefined)
 
+> **2026-08-04:** the wasm-component plugin backend (`@plugin.`, the
+> `celfnc_emit/` emitters, `cel generate`) and the parse-only
+> `@native.`/kCelDefined stub described below were **removed**
+> (m39-component-removal.md; archived on `component-functions-archive`).
+> Every plugin-/native-backend finding in this note is
+> resolved-by-removal; the surviving surface is host-only
+> (`doc/design/05-custom-functions.md`). Historical record — do not
+> cite as current.
+
 Component: custom-function subsystem — the `.celfn` IDL (`compiler/celfn/Celfn.g4`),
 `FunctionLibrary` (`compiler/celfn/function_library.{h,cc}`), the orphaned
 `library_module.h`, and the `cel generate` emitters

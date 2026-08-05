@@ -24,8 +24,9 @@ code in a bounded, syscall-free sandbox.
     multi-tenant SaaS. Evaluate sensitive business rules or *customer-authored*
     predicates (a fraud check, an entitlement rule, a transaction-limit policy)
     without the expression seeing more than you marshal in, escaping the
-    sandbox, or being able to crash or hang your service. Even custom functions
-    can run as isolated WebAssembly plugins you don't have to trust.
+    sandbox, or being able to crash or hang your service. (Custom functions
+    you register are native C++ callbacks in your process — the sandbox covers
+    the expression, not your own code.)
 
     **⚡ Lightweight & at the edge** — Envoy / API-gateway filters, request
     routing, rate-limit decisions, feature flags. One tiny, deterministic
@@ -70,8 +71,9 @@ bazel-bin/tools/cel/cel eval 'age >= 18 && country in ["US","CA"]' \
   knows CEL. Every host runs the same bytes, so cross-language semantic drift
   is structurally impossible.
 - **Sandboxed by construction.** Bounded linear memory, no syscalls, no I/O, no
-  recursion. Even *custom functions* can come from code you don't fully trust
-  (sandboxed WebAssembly plugins with their own linear memory).
+  recursion. The sandbox covers the compiled expression; custom functions you
+  register run as trusted native callbacks in your process
+  ([security model](user-guide/security-model.md)).
 - **A `Program` is pure bytes.** Compile it in one process, write it to disk,
   evaluate it in a process that never links the compiler.
 
