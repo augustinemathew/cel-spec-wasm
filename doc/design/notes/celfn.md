@@ -38,9 +38,12 @@ import namespace — `module_name` is always `"cel_fn"`
 function_library_test.cc:37, 58, 184).  "A component fn is a host fn at
 the call site": codegen/OverloadTable/checker cannot tell them apart
 (compile.cc:461-484 `DispatchesViaCelFn` → `ImportModule::kCelFn`).
-kCelDefined alone routes to `ImportModule::kUserModule` with the
-library's `Module foo;` name as the wasm import module
-(compile.cc:472-475; OverloadTable doc overload_table.h:124).
+kCelDefined alone routed to a `kUserModule` import-module kind with the
+library's `Module foo;` name as the wasm import module.
+> **Removed 2026-08-04 (m39):** the `kUser`/`kUserModule` routing is
+> gone.  At HEAD `ImportModuleSource` is `kCel`/`kCelHost`/`kCelFn`
+> only, and `OverloadDef` carries no per-overload wasm import-module
+> name (`compiler/codegen/overload_table.h:29-63`).
 
 ### 1.2 CelfnType and overload-id synthesis
 
@@ -130,9 +133,12 @@ descriptor-lookup; kType/kOptional CHECK-stub), sets
 `overload.set_id(decl.overload_id)` so the checker stamps OUR synthesised
 id on resolved call nodes — that id is the OverloadTable lookup key.
 
-Codegen side: `BuildOverloadTable` (compile.cc:466-485) registers one
+Codegen side: `BuildOverloadTable` registered one
 `RegisterCustom(overload_id, kCelFn|kUserModule, module_name,
-helper_name=overload_id, num_args)` row per decl.
+helper_name=overload_id, num_args)` row per decl — as-shipped at HEAD
+(post-m39) every custom row is `kCelFn` and an `OverloadDef` has no
+module-name string; the module string is derived from
+`wasm_import_module_type` alone (`overload_table.h:29-67`).
 `InstallOverloadImportsExport` (compile.cc:301-357) then installs one
 wasm function import per row — `(import "cel_fn"|"<module>"
 "<overload_id>" (param i32 ×num_args))`, all-void returns, out_slot
@@ -281,9 +287,10 @@ m13 (three backends):
   - @host: **shipped** end-to-end (decl → checker → `cel_fn` import →
     host callback; complex types via the m21 typed adapter;
     e2e/host_fn_test.cc + host_fn_type_matrix_test.cc).
-  - @native (kCelDefined): **declaration layer only** on this branch.
+  - @native (kCelDefined): **declaration layer only** on this branch
+    (and **deleted entirely in m39**, kUserModule emission included).
     Grammar + Builder + checker registration + kUserModule import
-    emission exist; the body compiler, recursion guard, scale probes,
+    emission existed; the body compiler, recursion guard, scale probes,
     and e2e suites the doc lists live on `master-local` /
     `backup/local-pre-reorg-20260526` (commit 0386851e), which never
     merged.  The doc was replayed onto master (26019b06 "docs +

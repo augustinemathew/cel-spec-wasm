@@ -264,9 +264,15 @@ In-milestone:
         wasm_import_module_name, WasmLayer::kComponent, 3 toolchain
         knobs, RequiredFn::is_host, abi/wit/ all deleted by census;
         ~10 doc-promised surfaces kept with reasons; 157/157 sweep)
-  - [ ] DOC3 diagrams regen (render.py: drop plugin edges,
-        trust-boundary SVGs) + final doc pass + close backlog #41 as
-        fixed-by-#10 + correct stale-feature-inventory §5/summary
+  - [x] DOC3 diagrams regen (render.py plugin edges/labels dropped,
+        dependency-graph.svg re-rendered; trust-boundary-*.svg
+        rewritten two-zone by hand; pipeline-*.svg plugin caption
+        removed) + final doc pass (A1 handoff corrections: abi-shared
+        §1.6, celfn/codegen-lowering/compiler-toplevel kUserModule
+        claims, 00-consolidated-findings wit row, 08-abi-wire-format
+        core-module-only contract, testing-checklist m39 section) +
+        backlog #41 closed as fixed-by-#10 + stale-feature-inventory
+        §5/summary corrected
   - [ ] G gate: `lint.sh --branch`, `bazel test $PROJ` + manual
         catalog, conformance monotonic BOTH modes, `bug_pins.py
         validate`, zero-hit grep, push
@@ -316,3 +322,36 @@ recommended; (B) link-time composition via kStatic-style fusion;
 tooling); (D) components with hand-rolled bindings — not recommended
 (keeps the boundary restrictions).  Archive branch:
 `component-functions-archive`.
+
+## Future work
+
+(Skeleton appended at DOC3; the gate has NOT run — status stays
+"in progress" until G is green.  Everything below is post-gate,
+owner-scheduled.)
+
+Post-gate queue (§7b, in order):
+
+  - CI adjustments: dead-grep cleanup if anything survived A1;
+    publish the warm CI image via `workflow_dispatch` AFTER merge;
+    one green run of all lanes on the post-m39 tree.
+  - Toolchain analysis agent: WASI import-surface trim feasibility;
+    threads-triple cost quantification (keep is the default).
+  - Host-fn error carriage decision (PROPOSALS #2 / backlog #31).
+  - Owner triage of `stale-feature-inventory.md` FINISH bucket —
+    chiefly execution cost limits (fuel/epoch), or soften the
+    security-model claims before any upstream submission.
+
+A1 owner-triage items (surfaced by the dead-API audit, kept pending
+an explicit decision):
+
+  - `FunctionLibrary` visibility promotion: A1 recommends promoting
+    `//compiler/celfn:function_library` into the curated public set —
+    the public `Engine`/`Compiler` custom-fn surfaces take it by
+    reference, so embedders already need the type; decide and update
+    the visibility-regime list in `CLAUDE.md` in the same commit.
+  - `CelType::Optional`: land backlog #44 (a consumer for the
+    optional declaration kind) or delete the factory per the pre-1.0
+    delete-rather-than-deprecate rule.
+  - wasi_sdk legacy tool aliases: decide whether the unused legacy
+    tool-name aliases in the wasi_sdk toolchain config stay (upstream
+    parity) or go (dead surface).

@@ -3634,6 +3634,26 @@ element compares, which cel-cpp genuinely answers differently.
 
 Conformance held at 2035 PASS / 0 FAIL in both link modes.
 
+## Rewrite m39 — component-model removal (coverage deltas)
+
+The m39 removal (m39-component-removal.md) deleted features rather
+than adding them, so its checklist impact is annotations, not new
+rows:
+
+  - [x] `abi/wasm_binary` is core-module-only; the former two-layer
+        (core vs component) classification rows in
+        `abi/wasm_binary_test.cc` were rewritten as **negative pins**:
+        component bytes (version/layer word `0x0001000d`) are refused —
+        `IsCoreModuleTest.ComponentPreambleIsNotACoreModule`,
+        `FindCustomSectionTest.InvalidArgumentOnComponentPreamble`,
+        `AppendCustomSectionTest.RejectsComponentPreamble`.
+  - The `kUserModule` OverloadTable rows (round-trip + death tests)
+    were **deleted with the routing** — `ImportModuleSource` is
+    `kCel`/`kCelHost`/`kCelFn` only; not ticked-off, removed.
+  - Plugin/component/`@native` rows elsewhere in this file are marked
+    *(removed (m39))* in place; their sections carry removal banners
+    (Rewrite M24, M35) — history retained, boxes not counted.
+
 ## How to update
 
 When you add a test, flip the box to `[x]` and include the test's path in

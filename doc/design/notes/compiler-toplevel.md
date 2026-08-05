@@ -246,17 +246,11 @@ expressions).
    bytes identical to level-0 output; `o.optimize_level = 4` expect
    `InvalidArgument`. Settles discrepancy #5 and pins whichever contract
    the fix chooses.
-3. **What happens end-to-end with a `kCelDefined` decl today?** The parser
-   can produce `Backend::kCelDefined` (function_library.cc:254) and
-   `BuildOverloadTable` registers it under `kUserModule`
-   (compile.cc:461-485), so codegen emits an
-   `(import "<module>" "<overload_id>")` — but no library-module bytes
-   exist (discrepancy #2). Probe: build a library from
-   `Module m; int @native.twice(int x) { x * 2 };`-style source,
-   Compile + `Engine::Plan`, and observe where it fails (expected:
-   instantiate-time unresolved import). Settles whether the M13 Slice D
-   surface is "not yet landed" or reachable through `Engine::AddComponent`
-   by hand.
+3. **Resolved-by-removal (m39, 2026-08-04):** the `kCelDefined`/
+   `@native.` parse-only stub and its `kUserModule` import routing were
+   deleted outright (the D4 agent probed the end-to-end behaviour first
+   and pinned the parse error); `ImportModuleSource` at HEAD is
+   `kCel`/`kCelHost`/`kCelFn` only.
 4. **Does `container` work through the public `Compiler::Compile`?** Test:
    declare `c: celwasm.testdata.Customer`, set
    `opts.container = "celwasm.testdata"`, compile an expr referencing a

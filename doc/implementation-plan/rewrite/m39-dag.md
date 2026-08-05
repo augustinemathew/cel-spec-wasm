@@ -84,5 +84,5 @@ graph TD
 | 5 | F1 ofNonZeroValue(message) full-depth delete | agent | CLOSED NO-CHANGE — premise false: backlog #41 was a stale duplicate of #10 (fixed 2026-06-10); feature verified working at every layer, oracle-confirmed; deletion would fail the monotonic conformance gate. Residual doc closures → DOC3 |
 | 5 | F2 stale-skip un-skips | agent | done (1c79305; both un-skips observed green in both link modes; skips had no bodies — written from siblings; instance.cc comment corrected to deliberate-reject framing) |
 | 5 | A1 dead-API audit | agent | done (5 commits, net −213; 5 candidates deleted by census, ~10 doc-promised surfaces kept with reasons; full //... non-manual sweep 157/157; 3 owner-triage items flagged) |
-| 5 | DOC3 diagrams + final pass | agent | running |
+| 5 | DOC3 diagrams + final pass | agent | done (dependency-graph re-rendered, trust-boundary rewritten two-zone, pipeline caption fix; A1 doc-handoff corrections landed; #41 closed fixed-by-#10; stale-feature-inventory §5/summary corrected; Future-work section appended to m39 doc) |
 | 6 | G gates + push | orchestrator | pending |

@@ -1744,9 +1744,9 @@ no codegen — pure wasmtime wiring.  Host harness in
 The simplest model that supports cross-language modules.  Both
 modules import the memory; the host owns it.  When Probe 2 swaps
 the stub for TinyGo-built wasm, the TinyGo side imports the same
-`cel.memory` — drop-in.  Component-model isolation is the future
-story but not what TinyGo / AS support cleanly today (§10.5 of
-m13-custom-fns.md).
+`cel.memory` — drop-in.  (§10.5 of m13-custom-fns.md floated
+component-model isolation as the future story; that backend was
+built and then removed 2026-08-04, m39-component-removal.md.)
 
 **Runnable today**
 

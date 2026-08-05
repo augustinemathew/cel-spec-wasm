@@ -52,10 +52,11 @@ this draft originally framed:
     init succeeds without a per-store wasi-preview2 context (which
     the wasmtime v43 C API doesn't yet expose).
 
-**User-facing reference.**  The embedder guide for this surface is
-[`doc/user-guide/writing-component-functions.md`](../../user-guide/writing-component-functions.md).
-Read this doc for *how the FFI works*; read the user guide for *how
-to ship a function*.
+**User-facing reference.**  The embedder guide for this surface,
+`doc/user-guide/writing-component-functions.md`, was deleted with the
+backend (m39); it survives on `component-functions-archive`.  The
+live custom-function guide is
+[`doc/user-guide/writing-host-functions.md`](../../user-guide/writing-host-functions.md).
 
 **Future work** (surfaced during execution, not yet scheduled): Go
 authoring via TinyGo wasip2 (m26 H.4); wasmtime C-API binding for

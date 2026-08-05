@@ -185,10 +185,13 @@ The precedence between UNKNOWN and ERROR operands is **per-op-class**, not globa
 ## 4. Wasm binary framing (`abi/wasm_binary`)
 
 Custom-section framing knowledge lives in exactly one module:
-`//abi:wasm_binary` (`abi/wasm_binary.{h,cc}`) — preamble
-classification (`\0asm` + version word), LEB128 read/append,
-`FindCustomSection` (a duplicate of the *requested* name is an
-error), `AppendCustomSection`. It is absl-only — no Binaryen, no
+`//abi:wasm_binary` (`abi/wasm_binary.{h,cc}`) — core-module preamble
+check (`\0asm` magic + version word `0x00000001`; anything else,
+including a Component-Model component's `0x0001000d`, is not a core
+module), LEB128 read/append, `FindCustomSection` (a duplicate of the
+*requested* name is an error), `AppendCustomSection`. The module is
+core-module-only: `FindCustomSection` / `AppendCustomSection` reject
+component bytes with `InvalidArgument`. It is absl-only — no Binaryen, no
 wasmtime — so it sits below both `compiler/` and `eval/`; a magic
 constant or LEB decoder anywhere else in first-party code is a review
 finding. `eval/internal/abi_decode.cc`'s `cel.abi` walk rides this

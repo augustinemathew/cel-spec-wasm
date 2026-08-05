@@ -555,7 +555,7 @@ comment updates.
 | `doc/contributing.md`, `CLAUDE.md` | Process docs; two targeted corrections (WAT-corpus claim R50, oracle-gaps claim R67) rather than rewrite. |
 | `rw/wat/*.wat` + `wat-traces.md` prose | The on-disk WAT files are the maintained regression corpus (never inline listings in new docs); wat-traces stays as the per-arm walkthrough reference with the R70 corrections + a banner deferring the memory map to 03. |
 | All other `rw/mNN-*.md` milestone docs | Historical intent ([hist]); they get archive banners pointing at the superseding design doc, not rewrites — the git-log-free "why" trail. |
-| `abi/wit/README.md`, `user-guide/**` | Live with one-line corrections (R65); user-guide is a separate audience from design docs. |
+| `user-guide/**` | Live with one-line corrections (R65); user-guide is a separate audience from design docs.  (`abi/wit/README.md`, formerly in this row, was deleted with `abi/wit/` in m39.) |
 
 ---
 

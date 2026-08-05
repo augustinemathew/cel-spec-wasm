@@ -149,7 +149,7 @@ SHIP AS-IS is honest but weakens the headline claim.
 
 ---
 
-## 5. Optionals — partial extension (26/70 conformance) + one trap
+## 5. Optionals — partial extension (26/70 conformance)
 
 **What it is:** the CEL optionals extension.
 
@@ -161,19 +161,25 @@ SHIP AS-IS is honest but weakens the headline claim.
     Pin: `e2e/known_bugs_test.cc:698`.  This is the bulk of the 44
     skipped conformance rows ("the rest need `dyn`",
     `doc/user-guide/faq.md:193`).
-  - **cleanup-backlog #41 (P2 as filed, but it is a wasm TRAP on
-    reachable input):** `optional.ofNonZeroValue(<message>)` traps
-    (`INTERNAL: Eval trapped`) — the message arm of the overload is
-    unwired; scalar arms ship.  1 conformance row.
+  - **CORRECTION (2026-08-04, F1 verification):** this inventory
+    originally repeated cleanup-backlog #41's claim that
+    `optional.ofNonZeroValue(<message>)` traps.  **The claim was
+    stale** — #41 was a duplicate of #10, whose fix
+    (`cel_host.cel_message_is_zero`) landed 2026-06-10; the m39 F1
+    node re-verified the arm end-to-end at HEAD (oracle-confirmed,
+    every layer green, conformance row PASS in both link modes —
+    `conformance/README.md:189-194`).  #41 is closed as
+    fixed-by-#10.  Pin-hygiene lesson: a backlog entry survived its
+    own fix by ~2 months because the fixing commit closed #10
+    without sweeping for duplicate entries — and this inventory then
+    amplified it into an owner decision.  Closure sweeps should grep
+    the backlog for the symptom, not just the entry number.
   - Everything else in the extension passes (26/70 green, 0 FAIL
-    other than the trap row's section).
+    corpus-wide).
 
-**Recommendation: FINISH (L for CELW-0015; S–M for #41).**  #41
-deserves priority despite its P2 filing — a trap is loud, but "crash
-on a conformance-corpus expression" is a bad look in an upstream PR.
-CELW-0015 is genuine feature work (admitting `optional_type` through
-the static subset); if deferred, SHIP AS-IS with the FAQ line as the
-documented boundary.
+**Recommendation: FINISH (L for CELW-0015).**  CELW-0015 is genuine
+feature work (admitting `optional_type` through the static subset);
+if deferred, SHIP AS-IS with the FAQ line as the documented boundary.
 
 ---
 
@@ -416,7 +422,7 @@ One line each; none blocks the PR; all tracked in
 | Recommendation | Item | Section | Size |
 |---|---|---|---|
 | **FINISH — do before upstream PR** | Execution cost limits (epoch/deadline) — the P0 | §4 | M |
-| FINISH | `optional.ofNonZeroValue(message)` wasm trap (#41) | §5 | S–M |
+| ~~FINISH~~ NO WORK — stale claim | `optional.ofNonZeroValue(message)` "trap" (#41) — already fixed 2026-06-10 by #10; F1 verified working, oracle-confirmed | §5 | — |
 | FINISH | Conversions pin batch CELW-0001/0002/0003/0016 (+0014) | §8.1 | S each |
 | FINISH | format-render pin batch CELW-0008/0009/0019 | §8.2 | S (one batch) |
 | FINISH | string_ext pins CELW-0007/0018 | §8.3 | S each |
@@ -443,11 +449,13 @@ One line each; none blocks the PR; all tracked in
 | REMOVE | `wasi/experiments/exp1_re2/` garbage (#3) | §14 | trivial |
 | **RESOLVED-BY-REMOVAL** | Entire §1 list: plugin backend, CELW-0021, backlog #51/#43/#32/#44-rem./#52(a), plugin skips, Go authoring, `cel generate`/`embed-decls`, `bindings/c/` | §1 | — (m39) |
 
-Counts: FINISH 18 (5 marked optional, 1 deferred-OK) · SHIP AS-IS 6
-families · REMOVE 2 · RESOLVED-BY-REMOVAL 13 items.
+Counts: FINISH 17 (5 marked optional, 1 deferred-OK) · SHIP AS-IS 6
+families · REMOVE 2 · RESOLVED-BY-REMOVAL 13 items · 1 closed as a
+stale claim (#41, fixed-by-#10).
 
 Owner decision points, in priority order: (1) §4 cost limits —
-land pre-PR or soften the sandbox claim; (2) §5 the ofNonZeroValue
-trap; (3) §2 `@native` remove-vs-reserve; (4) §6 error-message
-carriage vs permanent code-only contract; (5) §13 P#7 release
-contract.
+land pre-PR or soften the sandbox claim; (2) ~~§5 the ofNonZeroValue
+trap~~ closed — stale claim, feature works (F1 verification above);
+(3) §2 `@native` remove-vs-reserve — executed as REMOVE in m39/D4 per
+the decisions log; (4) §6 error-message carriage vs permanent
+code-only contract; (5) §13 P#7 release contract.

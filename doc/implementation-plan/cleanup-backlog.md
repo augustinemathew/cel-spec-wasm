@@ -580,7 +580,19 @@ struck through or removed.
       bypass) by the trampoline code path.  No known production
       input produces the attack ptr today.
 
-- [ ] **#41** — `optional.ofNonZeroValue(message)` overload causes
+- [x] **#41** — CLOSED 2026-08-04 as a **stale duplicate of #10**
+      (which fixed it 2026-06-10 via the
+      `cel_host.cel_message_is_zero` trampoline).  The row this
+      entry cites has been PASS since then — the corpus is at 0
+      FAIL in both link modes and names this exact row as the last
+      FAIL fixed (`conformance/README.md:189-194`).  The m39 F1
+      node re-verified the feature end-to-end (oracle-confirmed,
+      all layers green) before closing no-change; see the F1
+      record in `rewrite/m39-component-removal.md`'s decisions
+      log.  Pin-hygiene lesson: this entry survived its own fix by
+      ~2 months because #10's closure didn't sweep for duplicates.
+      Original entry (stale) follows.
+      `optional.ofNonZeroValue(message)` overload causes
       a wasm trap.  Conformance row
       `optionals/optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`:
       `optional.ofNonZeroValue(TestAllTypes{?single_double_wrapper:
