@@ -418,57 +418,10 @@ def wasm_wasi_toolchains(name):
             target_compatible_with = [
                 "@platforms//cpu:wasm32",
                 "@platforms//os:wasi",
-                # Distinguish from the wasip2 toolchain below — same
-                # @platforms cpu/os, different threading mode.
+                # Threading-mode constraint (see BUILD.bazel).
                 ":wasi_threads_on",
             ],
             toolchain = ":%s_cc_toolchain_%s" % (name, host),
             toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
         )
 
-        # ── wasm32-wasip2 (no threads) variant ────────────────────────
-        # Used by the cel_wasm_component macro: targets the wasi-preview2
-        # ABI the Component Model speaks natively, with no shared
-        # memory (CM components are single-instance per component
-        # instantiation).
-        cc_toolchain_config(
-            name = "%s_config_p2_%s" % (name, host),
-            clang_path = "wasm_clang.sh",
-            ar_path = "wasm_ar.sh",
-            nm_path = "wasm_nm.sh",
-            sysroot_path = sysroot,
-            target_triple = "wasm32-wasip2",
-            threads = False,
-            toolchain_identifier = "wasm32_wasip2_toolchain",
-            builtin_include_directories = [
-                sysroot + "/include/wasm32-wasip2/c++/v1",
-                sysroot + "/include/wasm32-wasip2",
-                sysroot + "/include",
-                prefix + "/lib/clang/19/include",
-            ],
-        )
-
-        cc_toolchain(
-            name = "%s_cc_toolchain_p2_%s" % (name, host),
-            all_files = ":%s_tool_inputs_%s" % (name, host),
-            ar_files = ":%s_tool_inputs_%s" % (name, host),
-            compiler_files = ":%s_tool_inputs_%s" % (name, host),
-            dwp_files = ":%s_tool_inputs_%s" % (name, host),
-            linker_files = ":%s_tool_inputs_%s" % (name, host),
-            objcopy_files = ":%s_tool_inputs_%s" % (name, host),
-            strip_files = ":%s_tool_inputs_%s" % (name, host),
-            toolchain_config = ":%s_config_p2_%s" % (name, host),
-            toolchain_identifier = "wasm32_wasip2_%s" % host,
-        )
-
-        native.toolchain(
-            name = "%s_toolchain_p2_%s" % (name, host),
-            exec_compatible_with = [plat.os, plat.cpu],
-            target_compatible_with = [
-                "@platforms//cpu:wasm32",
-                "@platforms//os:wasi",
-                ":wasi_threads_off",
-            ],
-            toolchain = ":%s_cc_toolchain_p2_%s" % (name, host),
-            toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
-        )

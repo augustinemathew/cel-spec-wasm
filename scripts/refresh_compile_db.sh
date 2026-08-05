@@ -61,14 +61,14 @@ if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   # generated headers / proto outputs land on disk) and the aquery
   # target pattern (so the action set is exhaustive).  Non-manual
   # entries are unchanged — the union is idempotent.
-  # Exclude wasm32-platform manual targets (plugin-fixture
-  # `.bin`s, wasm plugin cores): they can't be configured for the
-  # host platform, and aquery hard-fails on the dependency chain.
-  # Lint only analyzes native-host TUs anyway.
+  # Exclude wasm32-platform manual targets (the runtime `.bin`
+  # wasm binaries): they can't be configured for the host platform,
+  # and aquery hard-fails on the dependency chain.  Lint only
+  # analyzes native-host TUs anyway.
   manual_cc=$(bazel query \
     "attr(tags, \"\\bmanual\\b\", ${PROJ_UNION}) intersect kind(\"cc_.*\", ${PROJ_UNION})" \
     2>/dev/null \
-    | grep -v 'plugin_fixtures\|\.bin$\|wasm_plugin' \
+    | grep -v '\.bin$' \
     | paste -sd '+' -)
   if [[ -n "${manual_cc}" ]]; then
     aquery_pattern="${PROJ_UNION} + ${manual_cc}"
@@ -83,7 +83,7 @@ if ! grep -q "hedron_compile_commands" MODULE.bazel 2>/dev/null; then
   fi
   # `--skip_incompatible_explicit_targets`: the manual_cc union can
   # name platform-incompatible targets (e.g. the wasm32-only
-  # demo_plugin_core.bin) that the host config cannot analyze;
+  # cel_runtime_wasm.bin) that the host config cannot analyze;
   # skip them instead of hard-failing the whole aquery.
   bazel aquery --output=jsonproto \
     --skip_incompatible_explicit_targets \

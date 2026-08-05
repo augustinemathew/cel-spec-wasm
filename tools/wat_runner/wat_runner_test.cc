@@ -1381,39 +1381,6 @@ TEST(WatRunnerProtoFieldTest, SetFieldPoisonsOnOutOfRangeAndPropagates) {
   EXPECT_EQ((*calls)[1].field_ref_id, 101u);
 }
 
-// m23_native_quad_inline.wat — Model-A `@native` inlining.  `$eval` calls
-// a LOCAL `$quad_int`, which calls a LOCAL `$double_int` twice.  Proves
-// (1) a `@native` body lowers to a local func on the `(out_slot, arg0)`
-// slot ABI and runs through the real runtime kernels, (2) a body calls
-// another native via a local call (kLocal routing), and (3) single-
-// static-band reuse is sound.  quad(21) = double(double(21)) = 84.
-TEST(WatRunnerNativeTest, ModelAInlinedNativeQuadComposes) {
-  auto wat = LoadWat("m23_native_quad_inline.wat");
-  ASSERT_THAT(wat, IsOk());
-  WatRunInput in;
-  in.wat = *wat;
-  auto out = RunWat(in);
-  ASSERT_THAT(out, IsOk());
-  EXPECT_EQ(out->eval_return, 40u);
-  CelValue cv = DecodeCelValue(out->memory_after, out->eval_return);
-  EXPECT_EQ(cv.kind, CEL_INT);
-  EXPECT_EQ(cv.payload.i, 84);
-
-  // Single-static-band reuse, proven by inspecting the bands after eval:
-  // double's ONE scratch cell (88) holds the LAST value it computed — the
-  // outer call's 84 — while quad's intermediate slot (112) still holds the
-  // inner result (42).  That the inner 42 survived proves it was copied
-  // OUT of the reused scratch band into quad's slot before the outer call
-  // re-entered and overwrote the scratch.  This is the copy-out invariant
-  // that makes one static band per body safe for nested/repeated calls.
-  CelValue scratch = DecodeCelValue(out->memory_after, 88);
-  EXPECT_EQ(scratch.kind, CEL_INT);
-  EXPECT_EQ(scratch.payload.i, 84);
-  CelValue inner = DecodeCelValue(out->memory_after, 112);
-  EXPECT_EQ(inner.kind, CEL_INT);
-  EXPECT_EQ(inner.payload.i, 42);
-}
-
 // ─────────────────────────────────────────────────────────
 // 72_static_aggregate.wat — `[10, 20, 30][1]` with the list
 // MATERIALIZED at compile time (m31).

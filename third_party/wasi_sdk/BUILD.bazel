@@ -65,32 +65,13 @@ platform(
     ],
 )
 
-# wasi-preview2 platform — Component-Model-native target.  Used by
-# `cel_wasm_component` (m26 §6).  Same wasm32 + wasi platform pair
-# but different threading-mode constraint so toolchain resolution
-# picks the wasm32-wasip2 cc_toolchain that targets non-shared
-# memory (the Component Model preview2 ABI requirement).
-platform(
-    name = "wasm32_wasip2",
-    constraint_values = [
-        "@platforms//cpu:wasm32",
-        "@platforms//os:wasi",
-        ":wasi_threads_off",
-    ],
-)
-
-# Disambiguates the two wasi cc_toolchains.  Constraint setting
-# (`wasi_threads`) + two values (`on`, `off`) per the cc_toolchain
-# resolution model.  The bazel solver inspects
-# `target_compatible_with` on the platforms and the toolchains and
+# Threading-mode constraint carried by the wasm32_wasi platform and
+# the wasm32-wasi-threads cc_toolchains.  The bazel solver inspects
+# `target_compatible_with` on the platform and the toolchains and
 # picks the matching pair.
 constraint_setting(name = "wasi_threads")
 constraint_value(
     name = "wasi_threads_on",
-    constraint_setting = ":wasi_threads",
-)
-constraint_value(
-    name = "wasi_threads_off",
     constraint_setting = ":wasi_threads",
 )
 
