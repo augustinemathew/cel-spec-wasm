@@ -250,9 +250,9 @@ class WasmtimeMemoryView final : public MemoryView {
 // the host.  Used both by host trampolines and by
 // `Instance::Eval(Activation)` when marshalling kString / kBytes
 // activation values (canonical reentry pattern).  Slot-into-
-// `out_offset` contract matches `EncodeSpan` in cel_host.cc — zero-
-// byte alloc still succeeds with a valid offset; OOM / trap returns
-// nullptr.
+// `out_offset` contract matches `EncodeSpan` in cel_host_common.cc —
+// zero-byte alloc still succeeds with a valid offset; OOM / trap
+// returns nullptr.
 class WasmtimeArenaAllocator final : public ArenaAllocator {
  public:
   WasmtimeArenaAllocator(wasmtime_context_t* absl_nonnull ctx,
