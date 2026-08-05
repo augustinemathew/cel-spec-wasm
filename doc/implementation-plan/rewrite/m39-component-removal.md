@@ -243,6 +243,51 @@ recommendation, built from:
 Owner triages the inventory; nothing partially-working ships in the
 Google PR without an explicit line in this doc.
 
+## 7b. Work items (tick as they land; mirrors m39-dag.md status)
+
+In-milestone:
+
+  - [x] P0 plan + DAG docs
+  - [x] S1 stale-feature inventory (`stale-feature-inventory.md`, 478c3ec)
+  - [x] D1 e2e/examples/benches deletion (a3f5c62)
+  - [x] D2 CLI deletion (fda6124)
+  - [x] D3 eval layer (+204/−3835)
+  - [x] D4 compiler/abi/bindings + @native retirement (+242/−5589)
+  - [x] D5 toolchain: wit-bindgen, wasm-tools, wasip2, macro (+16/−840)
+  - [x] DOC1 historical milestone annotations (13 docs)
+  - [x] DOC2 design/user-guide/README/PROPOSALS rewrite (30 files)
+  - [x] F2 stale-skip un-skips, observed green both link modes
+  - [x] F1 — closed NO-CHANGE (premise stale; see decisions log)
+  - [x] Master reconcile after #38/#39 merged (rebase onto 9a85cd8)
+  - [x] Header-comment stub-claim fixes (value.h, cel_string_format.h)
+  - [ ] A1 dead-API audit (census running; candidates: kUser,
+        WasmLayer::kComponent, toolchain `threads` attr, program_facts
+        fields, abi/wit/ orphan, DeclareFunctions internal-type leak)
+  - [ ] DOC3 diagrams regen (render.py: drop plugin edges,
+        trust-boundary SVGs) + final doc pass + close backlog #41 as
+        fixed-by-#10 + correct stale-feature-inventory §5/summary
+  - [ ] G gate: `lint.sh --branch`, `bazel test $PROJ` + manual
+        catalog, conformance monotonic BOTH modes, `bug_pins.py
+        validate`, zero-hit grep, push
+
+Post-gate (owner-scheduled, in order):
+
+  - [ ] CI adjustments: clean dead plugin greps in
+        `refresh_compile_db.sh` remnants if any survive A1; publish
+        the warm CI image via `workflow_dispatch` AFTER m39 merges
+        (stamp digests MODULE.bazel — publishing earlier warms a
+        stale dep set); one green run of all lanes on the post-m39
+        tree.  `ci.yml` itself needs no edits (query-driven targets).
+  - [ ] Toolchain analysis agent: WASI import-surface trim
+        feasibility; threads-triple cost quantification (absl mutex
+        via cctz AND self-hosted RE2 — keep is the default).
+  - [ ] Host-fn error carriage decision (PROPOSALS #2 /
+        backlog #31): ABI carriage vs documented code-only contract;
+        example 08 asserts the current drop.
+  - [ ] Owner triage of `stale-feature-inventory.md` FINISH bucket —
+        chiefly execution cost limits (fuel/epoch), or soften the
+        security-model claims before any upstream submission.
+
 ## 8. Branch / PR mechanics
 
 Working branch: `rip-out-components`, based on `pr3-e2e-tests`
