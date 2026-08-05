@@ -1,11 +1,8 @@
-// Custom functions, path 1: `@host.` — a trusted C++ lambda running
+// Custom functions: `@host.` — a trusted C++ lambda running
 // in your process.  ONE `.celfn` declaration string is the whole
 // contract: the Compiler type-checks call sites against it, and
 // Engine::BindFunction registers your lambda under it, validating the
 // lambda's signature against the declaration at registration time.
-//
-// (Path 2 — `@plugin.`, sandboxed wasm plugins for code you
-// DON'T trust — is examples/09_plugin_functions.cc.)
 //
 //   bazel run //examples:04_host_functions
 //

@@ -12,8 +12,8 @@ binaries produce those three columns: `celcpp_bench`, and
 `celwasm_bench` run once per `--link_mode`.  Each is a *single binary*
 that loads the whole corpus at startup and registers one Google
 Benchmark per cell — so any slice of the corpus is just a
-`--benchmark_filter` away.  The other tiers (`compiler/`, `kernel/`,
-`plugin/`) exist to localize, not to compare.
+`--benchmark_filter` away.  The other tiers (`compiler/`, `kernel/`)
+exist to localize, not to compare.
 
 You're here for one of three reasons:
 
@@ -28,12 +28,8 @@ Every corpus cell runs on celwasm and cel-cpp; mismatched results are
 flagged `⚠️parity` — a mismatch is a bug, not a number.  If a number
 moved and you want to know *which layer* is at fault, drop a tier:
 `//benchmark/kernel:kernel_bench` times the native runtime kernels with
-no wasm in the loop, `//benchmark/compiler:*` times Compile/Plan,
-`//benchmark/plugin:plugin_bench` isolates the
-Component-Model call boundary, and
-`//benchmark/compiler:plugin_compile_bench` the plugin compile path
-(`Plugin::Load`, `Use` decl registration, required-functions
-emission; latest numbers: `compiler/results/`).
+no wasm in the loop, and `//benchmark/compiler:*` times Compile/Plan
+(latest numbers: `compiler/results/`).
 
 **You want publishable numbers.** On an idle machine:
 
