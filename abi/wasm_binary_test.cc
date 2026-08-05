@@ -1,16 +1,15 @@
 // Tests for the wasm binary-format layer.  Covers the matrix from
-// feature-pipeline-checklist §2.7: both layers positive; preamble
-// negatives (empty / truncated / wrong magic / wrong version); LEB
-// truncation and overrun; section size past EOF; duplicate name;
-// missing section; zero-length payload; multi-byte UTF-8 name; the
-// no-recursion pin (nested core module inside a component); Append →
-// Find round-trip on both layers; BuildCustomSection framing bytes
-// asserted literally.
+// feature-pipeline-checklist §2.7: core-module positive; preamble
+// negatives (empty / truncated / wrong magic / wrong version /
+// component preamble); LEB truncation and overrun; section size past
+// EOF; duplicate name; missing section; zero-length payload;
+// multi-byte UTF-8 name; the no-recursion pin (complete core module
+// nested inside an opaque section payload); Append → Find round-trip;
+// BuildCustomSection framing bytes asserted literally.
 
 #include "abi/wasm_binary.h"
 
 #include <cstdint>
-#include <optional>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -28,7 +27,9 @@ using ::absl_testing::StatusIs;
 // `\0asm` + version 0x00000001 — a minimal (empty) core module.
 const std::vector<uint8_t> kCorePreamble = {0x00, 0x61, 0x73, 0x6d,
                                             0x01, 0x00, 0x00, 0x00};
-// `\0asm` + version/layer word 0x0001000d — a minimal CM component.
+// `\0asm` + version/layer word 0x0001000d — a Component-Model
+// component preamble.  Kept as a negative case: components are not
+// core modules, and every entry point here rejects them.
 const std::vector<uint8_t> kComponentPreamble = {0x00, 0x61, 0x73, 0x6d,
                                                  0x0d, 0x00, 0x01, 0x00};
 
@@ -38,47 +39,41 @@ std::vector<uint8_t> Concat(std::vector<uint8_t> a,
   return a;
 }
 
-// --- ClassifyWasmBinary / IsCoreModule / IsComponentBinary --------
+// --- IsCoreModule -------------------------------------------------
 
-TEST(ClassifyWasmBinaryTest, CoreModulePreamble) {
-  EXPECT_EQ(ClassifyWasmBinary(kCorePreamble), WasmLayer::kCoreModule);
+TEST(IsCoreModuleTest, CoreModulePreamble) {
   EXPECT_TRUE(IsCoreModule(kCorePreamble));
-  EXPECT_FALSE(IsComponentBinary(kCorePreamble));
 }
 
-TEST(ClassifyWasmBinaryTest, ComponentPreamble) {
-  EXPECT_EQ(ClassifyWasmBinary(kComponentPreamble), WasmLayer::kComponent);
-  EXPECT_TRUE(IsComponentBinary(kComponentPreamble));
+TEST(IsCoreModuleTest, ComponentPreambleIsNotACoreModule) {
   EXPECT_FALSE(IsCoreModule(kComponentPreamble));
 }
 
-TEST(ClassifyWasmBinaryTest, EmptyBytes) {
-  EXPECT_EQ(ClassifyWasmBinary({}), std::nullopt);
+TEST(IsCoreModuleTest, EmptyBytes) {
   EXPECT_FALSE(IsCoreModule({}));
-  EXPECT_FALSE(IsComponentBinary({}));
 }
 
-TEST(ClassifyWasmBinaryTest, TruncatedPreamble) {
+TEST(IsCoreModuleTest, TruncatedPreamble) {
   const std::vector<uint8_t> bytes = {0x00, 0x61, 0x73};
-  EXPECT_EQ(ClassifyWasmBinary(bytes), std::nullopt);
+  EXPECT_FALSE(IsCoreModule(bytes));
 }
 
-TEST(ClassifyWasmBinaryTest, SevenBytePreambleIsTruncated) {
+TEST(IsCoreModuleTest, SevenBytePreambleIsTruncated) {
   const std::vector<uint8_t> bytes = {0x00, 0x61, 0x73, 0x6d,
                                       0x01, 0x00, 0x00};
-  EXPECT_EQ(ClassifyWasmBinary(bytes), std::nullopt);
+  EXPECT_FALSE(IsCoreModule(bytes));
 }
 
-TEST(ClassifyWasmBinaryTest, WrongMagic) {
+TEST(IsCoreModuleTest, WrongMagic) {
   const std::vector<uint8_t> bytes = {0xff, 0xff, 0xff, 0xff,
                                       0x01, 0x00, 0x00, 0x00};
-  EXPECT_EQ(ClassifyWasmBinary(bytes), std::nullopt);
+  EXPECT_FALSE(IsCoreModule(bytes));
 }
 
-TEST(ClassifyWasmBinaryTest, UnknownVersionWord) {
+TEST(IsCoreModuleTest, UnknownVersionWord) {
   const std::vector<uint8_t> bytes = {0x00, 0x61, 0x73, 0x6d,
                                       0x02, 0x00, 0x00, 0x00};
-  EXPECT_EQ(ClassifyWasmBinary(bytes), std::nullopt);
+  EXPECT_FALSE(IsCoreModule(bytes));
 }
 
 // --- ReadLeb128U32 / AppendLeb128U32 ------------------------------
@@ -199,12 +194,12 @@ TEST(FindCustomSectionTest, FindsOnCoreModule) {
   EXPECT_LE(found->data() + found->size(), wasm.data() + wasm.size());
 }
 
-TEST(FindCustomSectionTest, FindsOnComponent) {
-  const std::vector<uint8_t> payload = {9, 8};
-  const auto wasm = WithSection(kComponentPreamble, "cel.fns", payload);
-  auto found = FindCustomSection(wasm, "cel.fns");
-  ASSERT_THAT(found, IsOk());
-  EXPECT_EQ(std::vector<uint8_t>(found->begin(), found->end()), payload);
+TEST(FindCustomSectionTest, InvalidArgumentOnComponentPreamble) {
+  // Components are not core modules; the walker refuses them up
+  // front rather than walking a layer it no longer supports.
+  const auto wasm = WithSection(kComponentPreamble, "cel.fns", {9, 8});
+  EXPECT_THAT(FindCustomSection(wasm, "cel.fns"),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(FindCustomSectionTest, FindsZeroLengthPayload) {
@@ -313,23 +308,23 @@ TEST(FindCustomSectionTest, InvalidArgumentOnDuplicateName) {
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(FindCustomSectionTest, DoesNotRecurseIntoNestedCoreModule) {
-  // A component whose id-1 (core module) section payload is a
+TEST(FindCustomSectionTest, DoesNotRecurseIntoSectionPayloads) {
+  // A core module whose opaque id-5 section payload is itself a
   // complete core module carrying a "cel.fns" custom section.  The
   // top-level walker must NOT find the nested section.
   const auto nested = WithSection(kCorePreamble, "cel.fns", {0x01});
-  std::vector<uint8_t> component = kComponentPreamble;
-  component.push_back(0x01);  // component-level core-module section id
-  AppendLeb128U32(component, static_cast<uint32_t>(nested.size()));
-  component = Concat(std::move(component), nested);
-  EXPECT_THAT(FindCustomSection(component, "cel.fns"),
+  std::vector<uint8_t> outer = kCorePreamble;
+  outer.push_back(0x05);  // an opaque non-custom section
+  AppendLeb128U32(outer, static_cast<uint32_t>(nested.size()));
+  outer = Concat(std::move(outer), nested);
+  EXPECT_THAT(FindCustomSection(outer, "cel.fns"),
               StatusIs(absl::StatusCode::kNotFound));
 
   // A top-level section with the same name IS found, and the nested
   // one still isn't (payloads differ).
   const std::vector<uint8_t> top_payload = {0xaa};
   const auto with_top =
-      Concat(component, BuildCustomSection("cel.fns", top_payload));
+      Concat(outer, BuildCustomSection("cel.fns", top_payload));
   auto found = FindCustomSection(with_top, "cel.fns");
   ASSERT_THAT(found, IsOk());
   EXPECT_EQ(std::vector<uint8_t>(found->begin(), found->end()), top_payload);
@@ -346,13 +341,9 @@ TEST(AppendCustomSectionTest, RoundTripsOnCoreModule) {
   EXPECT_EQ(std::vector<uint8_t>(found->begin(), found->end()), payload);
 }
 
-TEST(AppendCustomSectionTest, RoundTripsOnComponent) {
-  const std::vector<uint8_t> payload = {0x07};
-  auto appended = AppendCustomSection(kComponentPreamble, "cel.fns", payload);
-  ASSERT_THAT(appended, IsOk());
-  auto found = FindCustomSection(*appended, "cel.fns");
-  ASSERT_THAT(found, IsOk());
-  EXPECT_EQ(std::vector<uint8_t>(found->begin(), found->end()), payload);
+TEST(AppendCustomSectionTest, RejectsComponentPreamble) {
+  EXPECT_THAT(AppendCustomSection(kComponentPreamble, "cel.fns", {0x07}),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(AppendCustomSectionTest, AppendsAfterExistingSections) {

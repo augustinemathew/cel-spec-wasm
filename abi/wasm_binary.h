@@ -1,4 +1,4 @@
-// The wasm binary-format layer: preamble classification, LEB128
+// The wasm binary-format layer: core-module preamble check, LEB128
 // codec, and top-level custom-section read/write over raw bytes.
 //
 // This is the ONLY first-party code allowed to know wasm binary
@@ -14,7 +14,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <vector>
 
 #include "absl/base/attributes.h"
@@ -24,17 +23,11 @@
 
 namespace celwasm {
 
-// The two binary layers a `.wasm` file can carry: a core module or a
-// Component-Model component (which nests core modules as sections).
-enum class WasmLayer : std::uint8_t { kCoreModule, kComponent };
-
-// Preamble classification: `\0asm` + version word 0x00000001 (core
-// module) vs version/layer word 0x0001000d (CM component).  Returns
-// nullopt when `bytes` is shorter than the 8-byte preamble or the
-// magic/version words match neither layer.
-std::optional<WasmLayer> ClassifyWasmBinary(absl::Span<const uint8_t> bytes);
+// Preamble check: true iff `bytes` starts with the 8-byte core-module
+// preamble — `\0asm` magic + version word 0x00000001.  False on a
+// truncated preamble, wrong magic, or any other version word (e.g. a
+// Component-Model component's 0x0001000d).
 bool IsCoreModule(absl::Span<const uint8_t> bytes);
-bool IsComponentBinary(absl::Span<const uint8_t> bytes);
 
 // LEB128 (unsigned 32-bit) read/append — shared by walk and build.
 //
@@ -45,15 +38,14 @@ bool ReadLeb128U32(absl::Span<const uint8_t> bytes, size_t* pos,
                    uint32_t* out);
 void AppendLeb128U32(std::vector<uint8_t>& out, uint32_t value);
 
-// Finds the top-level custom section named `name`.  Works on BOTH
-// layers (the id/size framing is identical; custom sections keep
-// id 0x00 at component level); never recurses into nested
-// core-module (id 1) / component (id 4) payloads.  Returns:
+// Finds the top-level custom section named `name` in a core module.
+// Non-custom sections are skipped opaquely — the walk never descends
+// into section payloads.  Returns:
 //   - OK: zero-copy span into `wasm_bytes` (the payload after the
 //     name field; valid only while the input outlives it).
 //   - NotFound: no top-level custom section named `name`.
-//   - InvalidArgument: bad preamble, framing overrun (truncated LEB
-//     / section size or name length past EOF), or more than one
+//   - InvalidArgument: not a core module, framing overrun (truncated
+//     LEB / section size or name length past EOF), or more than one
 //     top-level custom section named `name`.
 ABSL_MUST_USE_RESULT absl::StatusOr<absl::Span<const uint8_t>>
 FindCustomSection(absl::Span<const uint8_t> wasm_bytes,
