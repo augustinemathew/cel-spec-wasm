@@ -721,7 +721,6 @@ cc_binary(
         "cel_type.h",
     ],
     additional_linker_inputs = [
-        "wasm_imports.txt",
         ":wasm_export_args",
     ],
     copts = [
@@ -767,7 +766,6 @@ cc_binary(
         # include the broader `-Wl,--allow-undefined`; this file-based
         # form is documented for the day the toolchain feature is
         # split out so per-target strict mode is opt-in.
-        "-Wl,--allow-undefined-file=$(location wasm_imports.txt)",
         # Runtime owns and exports its memory.  By default
         # wasi-sdk's wasm-ld exports the module-defined memory as
         # `memory`; the host pulls it off `runtime_instance` after
