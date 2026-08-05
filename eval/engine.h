@@ -36,13 +36,10 @@
 #include <memory>
 #include <string>
 
-#include "abi/plugin.h"
 #include "absl/base/attributes.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/span.h"
-#include "compiler/celfn/function_library.h"
 #include "compiler/program.h"
 #include "eval/host_callback.h"
 #include "eval/instance.h"
@@ -139,51 +136,6 @@ class Engine {
   ABSL_MUST_USE_RESULT absl::Status AddFunction(absl::string_view overload_id,
                                                 uint8_t num_args,
                                                 HostCallback impl);
-
-  // Register a Plugin as the sandboxed backend for its
-  // declarations — the eval-side half of the one-noun flow.  Wraps
-  // the AddPlugin internals and adds:
-  //   - a STATIC export check: the interface
-  //     (`plugin.wit_interface()`) and every decl's kebab-case
-  //     export are resolved against the parsed component — a
-  //     missing interface/export fails HERE, FailedPrecondition,
-  //     naming it.  No instantiation.
-  //   - the plugin's content hash is retained for Plan-time
-  //     diagnostics (names which plugin mismatched).
-  // Collisions (vs AddFunction/BindFunction and prior plugins)
-  // -> AlreadyExists.  NOT thread-safe; startup-only, same contract
-  // as the rest of the registration family.
-  ABSL_MUST_USE_RESULT absl::Status Use(const Plugin& plugin);
-
-  // Register a plugin (a Component-Model wasm binary) as the backend
-  // for every `kPlugin` decl in `lib` — the explicit-decls escape
-  // hatch (pure-WAT tests, pre-`cel.fns` artifacts).  Prefer
-  // `Use(plugin)`, which derives `lib` from the artifact itself and
-  // adds a registration-time static export check.
-  //
-  // Registration validates ONLY:
-  //   - Any `overload_id` from `lib`'s kPlugin decls already
-  //     registered → AlreadyExists.
-  //   - `plugin_bytes` empty → InvalidArgument; failing to parse as
-  //     a Component-Model component → FailedPrecondition (the
-  //     wasmtime parse error, passed through).
-  //
-  // Export ↔ decl resolution is Plan-time-only on this path: each
-  // Plan instantiates the component and looks up every decl's
-  // kebab-case export, so a missing export surfaces as
-  // FailedPrecondition from `Plan`, not here (pinned by
-  // e2e/plugin_dispatch_test.cc MissingExportFailsAtPlanNotAddPlugin).
-  // No `FuncType`-vs-decl signature validation exists on either
-  // path — the wasmtime C API's component type introspection is too
-  // thin — so a wrong-arity export surfaces only as a call-time
-  // trap (`Use` narrows this to export *existence*, checked
-  // statically at registration).
-  //
-  // **NOT thread-safe** — same contract as `AddFunction`.
-  //
-  // See `examples/09_plugin_functions.cc` for an end-to-end embed.
-  ABSL_MUST_USE_RESULT absl::Status AddPlugin(
-      absl::Span<const uint8_t> plugin_bytes, const FunctionLibrary& lib);
 
   // Typed sugar over `AddFunction` (host-call adapter Layer 2,
   // eval/typed_function.h): adapts a plain typed lambda into a

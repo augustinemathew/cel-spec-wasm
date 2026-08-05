@@ -6,11 +6,7 @@
 #include "abi/cel_abi.pb.h"
 #include "abi/celfn_wire.h"
 #include "absl/status/status.h"
-#include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/string_view.h"
-#include "absl/types/span.h"
-#include "compiler/celfn/function_library.h"
 #include "eval/internal/wasmtime_engine_state.h"
 
 namespace celwasm {
@@ -18,48 +14,6 @@ namespace celwasm {
 namespace {
 
 using ::celwasm::abi::RequiredFunction;
-
-// Renders a registered plugin's content identity for the §2
-// signature-mismatch message: the first 12 lowercase hex chars of
-// its SHA-256 (`Plugin::hash()`), e.g. `hash 3f9a2c1b04de`.  A
-// legacy `AddPlugin(bytes, lib)` registration has no Plugin object
-// and an all-zero hash — rendering 12 zeros would look like a real
-// digest, so it renders as prose instead.
-std::string RenderPluginHash(const RegisteredPlugin& reg) {
-  bool all_zero = true;
-  for (uint8_t b : reg.hash) {
-    if (b != 0) {
-      all_zero = false;
-      break;
-    }
-  }
-  if (all_zero) {
-    return "hash unavailable; registered via AddPlugin";
-  }
-  const absl::string_view prefix(reinterpret_cast<const char*>(reg.hash.data()),
-                                 6);
-  return absl::StrCat("hash ", absl::BytesToHexString(prefix));
-}
-
-// The registered `kPlugin` decl with this overload-id, plus its
-// owning registry entry (for the hash in the mismatch message).
-// Overload-ids are unique across the registry (enforced at Use /
-// AddPlugin registration), so at most one decl can match.
-struct FoundPluginDecl {
-  const RegisteredPlugin* plugin = nullptr;
-  const CelfnDecl* decl = nullptr;
-};
-
-FoundPluginDecl FindPluginDecl(absl::Span<const RegisteredPlugin> registry,
-                               absl::string_view overload_id) {
-  for (const RegisteredPlugin& reg : registry) {
-    for (const CelfnDecl& decl : reg.library.decls()) {
-      if (decl.backend != CelfnDecl::Backend::kPlugin) continue;
-      if (decl.overload_id == overload_id) return {&reg, &decl};
-    }
-  }
-  return {};
-}
 
 // Full recursive signature compare between a Program's row and a
 // registered decl's wire spelling: is_receiver, param count, each
@@ -74,31 +28,6 @@ bool SignaturesAgree(const RequiredFunction& row,
     }
   }
   return TypeEquals(row.return_type(), registered.return_type());
-}
-
-// One PLUGIN row: registry lookup + full signature compare.  Message
-// shapes frozen in m35-plugin-ergonomics.md §2.
-absl::Status CheckPluginRow(const RequiredFunction& row,
-                            absl::Span<const RegisteredPlugin> registry) {
-  const FoundPluginDecl found = FindPluginDecl(registry, row.overload_id());
-  if (found.decl == nullptr) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "Engine::Plan: program requires plugin function `", row.overload_id(),
-        "` (`", RenderSignature(row),
-        "`) but no registered plugin declares it; register the providing "
-        "plugin with Engine::Use before Plan"));
-  }
-  const RequiredFunction registered = RequiredFunctionFromDecl(*found.decl);
-  if (!SignaturesAgree(row, registered)) {
-    return absl::FailedPreconditionError(absl::StrCat(
-        "Engine::Plan: program requires plugin function `", row.overload_id(),
-        "` with signature `", RenderSignature(row),
-        "` but the registered plugin (", RenderPluginHash(*found.plugin),
-        ") declares `", RenderSignature(registered),
-        "`; signatures must match exactly — recompile the program or rebuild "
-        "the plugin"));
-  }
-  return absl::OkStatus();
 }
 
 // One HOST row: callback lookup, wasm-arity check, and — only for
@@ -139,21 +68,41 @@ absl::Status CheckHostRow(
 
 }  // namespace
 
+namespace {
+
+// Wire value 2 of `abi.RequiredFunction.backend` is the retired
+// wasm-component plugin backend.  Spelled numerically (not via the
+// generated enum member) so this arm keeps compiling — and keeps
+// rejecting stale Programs, whose decoded rows retain the value
+// through proto3's open-enum semantics — after the PLUGIN member is
+// deleted from abi/cel_abi.proto.  Once no Program in circulation
+// can carry backend value 2, this constant and its switch arm are
+// dead and should be deleted.
+constexpr auto kRetiredPluginBackend =
+    static_cast<RequiredFunction::Backend>(2);
+
+}  // namespace
+
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 absl::Status CheckRequiredFunctions(
     const celwasm::abi::CelAbi& abi,
-    const std::map<std::string, RegisteredHostCallback>& host_callbacks,
-    absl::Span<const RegisteredPlugin> plugin_registry) {
+    const std::map<std::string, RegisteredHostCallback>& host_callbacks) {
   for (const RequiredFunction& row : abi.required_functions()) {
     switch (row.backend()) {
       case RequiredFunction::HOST: {
         if (auto s = CheckHostRow(row, host_callbacks); !s.ok()) return s;
         break;
       }
-      case RequiredFunction::PLUGIN: {
-        if (auto s = CheckPluginRow(row, plugin_registry); !s.ok()) return s;
-        break;
-      }
+      case kRetiredPluginBackend:
+        // A plugin-backed Program can never run on this engine —
+        // fail loudly here, naming the row, instead of surfacing an
+        // opaque `unknown import: cel_fn.<id>` at wasmtime link time.
+        return absl::FailedPreconditionError(absl::StrCat(
+            "Engine::Plan: program requires function `", row.overload_id(),
+            "` (`", RenderSignature(row),
+            "`) via the removed wasm-component plugin backend; this engine "
+            "supports only host-backed custom functions — recompile the "
+            "program declaring the function with the `@host.` backend"));
       default:
         // Open-set wire data: rows stamped by a future compiler with
         // a backend this engine doesn't know are skipped, never
