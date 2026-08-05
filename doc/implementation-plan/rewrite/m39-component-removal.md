@@ -161,7 +161,9 @@ REWRITE — what each doc says after m39:
 | Root `README.md`, `tools/cel/README.md` | Feature lists + CLI subcommand tables lose `generate`/`embed-decls`/plugins (both tellings — site and GitHub). |
 | `PROPOSALS.md` | Decision record added (what/why/alternatives/archive pointer). |
 
-TRIM refs: `current-capabilities.md`, `feature-pipeline-checklist.md`
+TRIM refs: `tools/celwasm-tool/DESIGN.md` (~10 plugin/component
+mentions — found by D2, missed by the original inventory),
+`current-capabilities.md`, `feature-pipeline-checklist.md`
 (the "new plugin fn" feature-type section removed),
 `per-component-test-coverage.md` (plugin targets out of the manual
 catalog), `testing-checklist.md` (plugin rows marked removed, not
