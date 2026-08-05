@@ -6,13 +6,11 @@
 // `Value::String("hi")`, `Value::Unknown(attr)`).  Inspection is by
 // `StatusOr<T> AsX()`; a mismatch is a user error, not a crash.
 //
-// M1 scope: scalar kinds + Unknown + Error land fully.  Aggregate
-// builders (List/Map/Message/OwnedMessage) and equality (`CelEquals`)
-// are declared with signature-final stubs whose bodies `ABSL_CHECK`
-// (per CLAUDE.md "unimplemented features" convention), surfacing
-// pre-milestone callers loudly instead of silently miscompiling.
-// The stubs keep the header stable across M1-Mn — populating an arm
-// later does not change the user surface.
+// All kinds are fully implemented: scalars, Unknown, Error, and the
+// aggregate builders (List/Map/Message/OwnedMessage) plus equality
+// (`CelEquals`).  The only `ABSL_CHECK` sites in the implementation
+// are closed-enum defaults on `Value::Kind` switches — invariant
+// tripwires, not unimplemented arms.
 
 #ifndef CELWASM_EVAL_VALUE_H_
 #define CELWASM_EVAL_VALUE_H_

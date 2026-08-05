@@ -13,9 +13,8 @@
 //   2. The renderer (Slice E) walks the parsed sequence against the
 //      args list, dispatching to per-CelKind canonical formatters.
 //
-// Slice D ships the parser plus a stub renderer that
-// `ABSL_CHECK(false)`-fails per the CLAUDE.md unimplemented-feature
-// rule.  Slice E lifts the CHECK and lands the renderer.
+// Both stages are fully implemented; malformed input surfaces as a
+// status, never a CHECK.
 
 #ifndef CELWASM_RUNTIME_CEL_STRING_FORMAT_H_
 #define CELWASM_RUNTIME_CEL_STRING_FORMAT_H_
