@@ -9,40 +9,8 @@
 
 package(default_visibility = ["//visibility:public"])
 
-filegroup(
-    name = "clang",
-    srcs = ["bin/clang"],
-)
-
-filegroup(
-    name = "clang++",
-    srcs = ["bin/clang++"],
-)
-
-filegroup(
-    name = "ar",
-    srcs = ["bin/llvm-ar"],
-)
-
-filegroup(
-    name = "ranlib",
-    srcs = ["bin/llvm-ranlib"],
-)
-
 # The sysroot tree: wasi-libc headers + libc/libc++ static archives.
 # Passed via --sysroot=$(execpath @wasi_sdk//:sysroot) at compile time.
-filegroup(
-    name = "sysroot",
-    srcs = glob(
-        [
-            "share/wasi-sysroot/**/*.h",
-            "share/wasi-sysroot/**/*.a",
-            "share/wasi-sysroot/**/*",
-        ],
-        allow_empty = True,
-    ),
-)
-
 # Everything in the SDK — used by genrules that need the whole tree
 # (e.g. clang's lib/clang/19/lib/wasi/* runtime libraries).
 filegroup(

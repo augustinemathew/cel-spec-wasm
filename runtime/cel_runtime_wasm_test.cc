@@ -27,9 +27,12 @@
 // fails immediately rather than the bug staying latent until a
 // downstream caller actually invokes the runtime on the wasm path.
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "runtime/cel_runtime_wasm_bytes.h"
@@ -790,6 +793,131 @@ TEST(CelRuntimeWasmTest, ArenaGrowSizeRespectsFloorAndOverride) {
   const uint32_t off2 = ArenaAlloc(h, 8192);
   EXPECT_NE(off2, 0u);
   EXPECT_GE(ArenaCapacity(h), 8u + 4096u + 8192u);
+}
+
+// ——— Import-set golden ———————————————————————————————————————————
+//
+// The runtime's import list IS its wire ABI: every row is a symbol
+// some host must provide before the module instantiates.  Nothing
+// else pins it — `DefineWasiStubs`' table above only fails when an
+// import it stubs *exists*, so a silently GROWN import set fails
+// instantiation by accident, and a silently SHRUNK one leaves a dead
+// stub row with no signal at all.  This golden makes both loud.
+//
+// When this test fails, the import set changed.  If that was
+// intentional (a new host trampoline, a libc symbol wasi-sdk started
+// or stopped pulling), update the list below AND audit every
+// embedder-facing host: `eval/engine.cc` (trampoline registration +
+// wasi_config), `tools/wat_runner`, and the stub table above.
+
+// Reads one unsigned LEB128 at `*pos`, advancing it.
+uint64_t ReadLeb(const uint8_t* bytes, size_t* pos) {
+  uint64_t result = 0;
+  int shift = 0;
+  uint8_t byte = 0;
+  do {
+    byte = bytes[*pos];
+    ++*pos;
+    result |= static_cast<uint64_t>(byte & 0x7f) << shift;
+    shift += 7;
+  } while ((byte & 0x80) != 0);
+  return result;
+}
+
+// Skips the post-name descriptor of one import entry.  `kind` is the
+// import-kind byte: 0 func, 1 table, 2 memory, 3 global.
+void SkipImportDescriptor(const uint8_t* bytes, size_t* pos, uint8_t kind) {
+  switch (kind) {
+    case 0:  // func: type index
+      ReadLeb(bytes, pos);
+      return;
+    case 1:  // table: reftype byte, then limits
+      ++*pos;
+      [[fallthrough]];
+    case 2: {  // memory: limits = flags, min, [max]
+      const uint64_t flags = ReadLeb(bytes, pos);
+      ReadLeb(bytes, pos);                        // min
+      if ((flags & 1) != 0) ReadLeb(bytes, pos);  // max
+      return;
+    }
+    case 3:  // global: valtype byte + mutability byte
+      *pos += 2;
+      return;
+    default:
+      FAIL() << "unknown wasm import kind " << static_cast<int>(kind);
+  }
+}
+
+// Enumerates the import section (id 2) of a core wasm module as
+// sorted "module.name" strings.
+std::vector<std::string> EnumerateImports(const uint8_t* bytes, size_t size) {
+  std::vector<std::string> imports;
+  size_t pos = 8;  // \0asm + version
+  while (pos < size) {
+    const uint8_t section_id = bytes[pos];
+    ++pos;
+    const uint64_t section_size = ReadLeb(bytes, &pos);
+    const size_t section_end = pos + section_size;
+    if (section_id == 2) {
+      const uint64_t count = ReadLeb(bytes, &pos);
+      for (uint64_t i = 0; i < count; ++i) {
+        const uint64_t module_len = ReadLeb(bytes, &pos);
+        std::string module(reinterpret_cast<const char*>(bytes + pos),
+                           module_len);
+        pos += module_len;
+        const uint64_t name_len = ReadLeb(bytes, &pos);
+        std::string name(reinterpret_cast<const char*>(bytes + pos), name_len);
+        pos += name_len;
+        const uint8_t kind = bytes[pos];
+        ++pos;
+        SkipImportDescriptor(bytes, &pos, kind);
+        module += ".";
+        module += name;
+        imports.push_back(std::move(module));
+      }
+    }
+    pos = section_end;
+  }
+  std::sort(imports.begin(), imports.end());
+  return imports;
+}
+
+TEST(CelRuntimeWasmTest, ImportSetMatchesGolden) {
+  const std::vector<std::string> kGolden = {
+      "cel_env.cel_log",
+      "cel_host.cel_list_at",
+      "cel_host.cel_list_concat",
+      "cel_host.cel_list_eq",
+      "cel_host.cel_list_in",
+      "cel_host.cel_list_iter_open",
+      "cel_host.cel_list_size",
+      "cel_host.cel_map_eq",
+      "cel_host.cel_map_in",
+      "cel_host.cel_map_iter_open",
+      "cel_host.cel_map_lookup",
+      "cel_host.cel_map_size",
+      "cel_host.cel_message_eq",
+      "cel_host.cel_message_is_zero",
+      "cel_host.cel_set_field",
+      "cel_host.cel_timestamp_tz_accessor",
+      "cel_host.resolve_message_type_name",
+      "wasi_snapshot_preview1.clock_time_get",
+      "wasi_snapshot_preview1.environ_get",
+      "wasi_snapshot_preview1.environ_sizes_get",
+      "wasi_snapshot_preview1.fd_close",
+      "wasi_snapshot_preview1.fd_fdstat_get",
+      "wasi_snapshot_preview1.fd_prestat_dir_name",
+      "wasi_snapshot_preview1.fd_prestat_get",
+      "wasi_snapshot_preview1.fd_read",
+      "wasi_snapshot_preview1.fd_seek",
+      "wasi_snapshot_preview1.fd_write",
+      "wasi_snapshot_preview1.poll_oneoff",
+      "wasi_snapshot_preview1.proc_exit",
+      "wasi_snapshot_preview1.random_get",
+      "wasi_snapshot_preview1.sched_yield",
+  };
+  EXPECT_EQ(EnumerateImports(kCelRuntimeWasmBytes, kCelRuntimeWasmBytesSize),
+            kGolden);
 }
 
 }  // namespace
