@@ -333,6 +333,18 @@ std::optional<Value> DecodeImmediateCelValue(const CelValue& cv) {
       return Value::Uint(cv.payload.u);
     case CEL_DOUBLE:
       return Value::Double(cv.payload.d);
+    case CEL_DURATION:
+      // CelDurTs uses sign-correlated (seconds, nanos) — see
+      // `rewrite/m7b-duration-timestamp.md` §4.6.  absl::Seconds(s)
+      // + absl::Nanoseconds(ns) is the canonical reconstruction
+      // since absl::Duration shares the sign-correlated convention
+      // with proto Duration text format.
+      return Value::Duration(absl::Seconds(cv.payload.dur.seconds) +
+                             absl::Nanoseconds(cv.payload.dur.nanos));
+    case CEL_TIMESTAMP:
+      return Value::Timestamp(absl::UnixEpoch() +
+                              absl::Seconds(cv.payload.ts.seconds) +
+                              absl::Nanoseconds(cv.payload.ts.nanos));
     default:
       return std::nullopt;
   }
