@@ -103,7 +103,7 @@ RegisteredHostCallback TypedHostCb(const RequiredFunction& decl_signature) {
 // proto3's open-enum model — rather than a C++ enum cast.
 RequiredFunction::Backend WireBackend(int value) {
   RequiredFunction f;
-  f.GetReflection()->SetEnumValue(
+  RequiredFunction::GetReflection()->SetEnumValue(
       &f, RequiredFunction::descriptor()->FindFieldByName("backend"), value);
   return f.backend();
 }
@@ -123,8 +123,8 @@ TEST(RequiredFnCheckTest, UnknownBackendRowsAreSkipped) {
   auto abi = AbiWith(
       {Row("mystery_int", "mystery", RequiredFunction::BACKEND_UNSPECIFIED,
            {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT)),
-       Row("future_int", "future", WireBackend(99),
-           {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
+       Row("future_int", "future", WireBackend(99), {Wire(Type::KIND_INT)},
+           Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, HostMap()), IsOk());
 }
 
@@ -138,9 +138,9 @@ TEST(RequiredFnCheckTest, RetiredPluginBackendRowRejectedLoudly) {
   // skipped.  Spelled numerically so this pin outlives the deletion
   // of the generated PLUGIN enum member (proto3 open-enum decode
   // preserves the value on stale Programs).
-  auto abi = AbiWith({Row("is_adult_message_acme_User", "is_adult",
-                          WireBackend(2),
-                          {WireProto("acme.User")}, Wire(Type::KIND_BOOL))});
+  auto abi =
+      AbiWith({Row("is_adult_message_acme_User", "is_adult", WireBackend(2),
+                   {WireProto("acme.User")}, Wire(Type::KIND_BOOL))});
   auto s = CheckRequiredFunctions(abi, HostMap());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_EQ(s.message(),
@@ -157,9 +157,9 @@ TEST(RequiredFnCheckTest, RetiredPluginBackendRejectsEvenWithMatchingHostCb) {
   // compiled for a backend that no longer exists.
   HostMap hosts;
   hosts.emplace("mul_int_int", HostCb(3));
-  auto abi = AbiWith({Row(
-      "mul_int_int", "mul", WireBackend(2),
-      {Wire(Type::KIND_INT), Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
+  auto abi = AbiWith({Row("mul_int_int", "mul", WireBackend(2),
+                          {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
+                          Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),

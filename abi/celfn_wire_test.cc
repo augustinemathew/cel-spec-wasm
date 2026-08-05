@@ -58,7 +58,7 @@ Type WireUnknownKind(int value) {
   // reflection, the way an unknown value arrives off the wire in
   // proto3's open-enum model (no C++-level enum cast involved).
   Type t;
-  t.GetReflection()->SetEnumValue(
+  Type::GetReflection()->SetEnumValue(
       &t, Type::descriptor()->FindFieldByName("kind"), value);
   return t;
 }

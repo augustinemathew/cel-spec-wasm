@@ -26,16 +26,16 @@ using ::absl_testing::StatusIs;
 
 // `\0asm` + version 0x00000001 — a minimal (empty) core module.
 const std::vector<uint8_t>& CorePreamble() {
-  static const auto* bytes = new std::vector<uint8_t>{0x00, 0x61, 0x73, 0x6d,
-                                                      0x01, 0x00, 0x00, 0x00};
+  static const auto* bytes =
+      new std::vector<uint8_t>{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00};
   return *bytes;
 }
 // `\0asm` + version/layer word 0x0001000d — a Component-Model
 // component preamble.  Kept as a negative case: components are not
 // core modules, and every entry point here rejects them.
 const std::vector<uint8_t>& ComponentPreamble() {
-  static const auto* bytes = new std::vector<uint8_t>{
-      0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00};
+  static const auto* bytes =
+      new std::vector<uint8_t>{0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00};
   return *bytes;
 }
 

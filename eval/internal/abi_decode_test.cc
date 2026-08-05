@@ -190,12 +190,12 @@ TEST(AbiDecodeTest, DecodesUnknownFnKindAndBackendWithoutRejection) {
   fn->set_overload_id("future_fn");
   // Raw wire values via reflection — proto3 open enums preserve
   // unknown values; a C++ enum cast is not part of that model.
-  fn->GetReflection()->SetEnumValue(
-      fn, celwasm::abi::RequiredFunction::descriptor()->FindFieldByName(
-              "backend"),
+  celwasm::abi::RequiredFunction::GetReflection()->SetEnumValue(
+      fn,
+      celwasm::abi::RequiredFunction::descriptor()->FindFieldByName("backend"),
       7);
   auto* rt = fn->mutable_return_type();
-  rt->GetReflection()->SetEnumValue(
+  celwasm::abi::Type::GetReflection()->SetEnumValue(
       rt, celwasm::abi::Type::descriptor()->FindFieldByName("kind"), 99);
 
   auto decoded = DecodeCelAbiFromWasm(
