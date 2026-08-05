@@ -933,8 +933,10 @@ struct EncoderContext {
 
 // Dispatch a declared Repr to the right per-kind encoder.  String
 // / bytes payload bytes land in the activation buffer (malloc'd
-// inside linear memory via wasm reentry).  Map / enum / unknown
-// activation marshalling not yet implemented.
+// inside linear memory via wasm reentry); message / list / map
+// bindings intern their backing into the per-Instance
+// ExternrefTable.  Non-bindable reprs (null / enum / unknown) are
+// rejected in the switch below.
 absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
                               absl::string_view name, CelValue* dst,
                               EncoderContext& ec) {
