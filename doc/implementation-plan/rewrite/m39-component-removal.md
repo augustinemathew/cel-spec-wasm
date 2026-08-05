@@ -10,10 +10,15 @@ Decisions log (owner, 2026-08-04):
   - Work is executed by multiple agents per the DAG; ≤2 build-heavy
     concurrent, lint once at the final gate.
   - S1-inventory triage (owner, 2026-08-04): DELETE the
-    `optional.ofNonZeroValue(message)` arm at every layer (frontend
-    reject, runtime zero-predicate arm, the
-    `cel_host.cel_message_is_zero` trampoline + wasm import, WAT
-    trace 69) — new node F1, after D3/D4.  DELETE the
+    `optional.ofNonZeroValue(message)` arm at every layer — new node
+    F1, after D3/D4.  **RESCINDED BY EVIDENCE 2026-08-05:** the F1
+    agent found backlog #41 (the basis for the decision) was a stale
+    duplicate of #10, fixed 2026-06-10; the arm is fully working and
+    conformance-passing at HEAD (oracle-confirmed, all layers
+    green), and deleting it would fail the monotonic conformance
+    gate.  F1 closed no-change; #41 closes as fixed-by-#10 (DOC3).
+    Reopening requires an explicit owner decision to diverge from
+    cel-cpp plus a baseline change.  DELETE the
     `@native`/`kCelDefined` parse-only stub — folded into D4 (same
     files as the kPlugin arm; verified no codegen/eval consumer, so
     frontend-only depth).  DELETE the two stale skips

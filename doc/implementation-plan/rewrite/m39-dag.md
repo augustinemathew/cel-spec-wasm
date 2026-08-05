@@ -81,8 +81,8 @@ graph TD
 | 3 | D4 compiler + abi | agent | done (541ffea → 5f2a9fb post-rebase, +242/−5589; census: wasm_binary KEEP, sha256 DELETE; @native parse error probed+pinned; new A1 candidate: ImportModuleSource::kUser zero producers) |
 | 4 | D5 toolchain | agent | done (71f865c, +16/−840; //... green 322 targets; DEVIATIONS: bazel/ NOT plugin-only — kept catalogue gen + link-mode macro; dead boringssl dep removed; new A1 candidates: toolchain threads attr single-setting) |
 | 4 | DOC2 design docs + user guide | agent | running |
-| 5 | F1 ofNonZeroValue(message) full-depth delete | agent | running |
+| 5 | F1 ofNonZeroValue(message) full-depth delete | agent | CLOSED NO-CHANGE — premise false: backlog #41 was a stale duplicate of #10 (fixed 2026-06-10); feature verified working at every layer, oracle-confirmed; deletion would fail the monotonic conformance gate. Residual doc closures → DOC3 |
 | 5 | F2 stale-skip un-skips | agent | done (1c79305; both un-skips observed green in both link modes; skips had no bodies — written from siblings; instance.cc comment corrected to deliberate-reject framing) |
-| 5 | A1 dead-API audit | agent | pending |
+| 5 | A1 dead-API audit | agent | running |
 | 5 | DOC3 diagrams + final pass | agent | pending |
 | 6 | G gates + push | orchestrator | pending |
