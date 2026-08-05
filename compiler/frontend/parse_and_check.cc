@@ -882,15 +882,14 @@ std::optional<cel::Type> DeclScalarToCheckerType(CelType::Kind k) {
     case CelType::Kind::kMessage:
     case CelType::Kind::kType:
     case CelType::Kind::kOptional:
-      // kType / kOptional are admitted by the kPlugin
-      // backend — the structural shape is handled in the
-      // caller (kOptional has an inner element like kList; kType is
-      // the type-of-types).  Neither is reachable through any current
-      // kHost / kCelDefined decl path: the celfn IDL has no `type` or
-      // `option(...)` keyword (compiler/celfn/function_library.cc
-      // ExtractType), and the corresponding cel::Type spellings
-      // (cel::TypeType, cel::OptionalType) are not yet wired through
-      // this scalar arm.
+      // kType / kOptional are representable on a programmatically
+      // built decl but not reachable through the `.celfn` IDL (no
+      // `type` or `option(...)` keyword in
+      // compiler/celfn/function_library.cc ExtractType), and the
+      // corresponding cel::Type spellings (cel::TypeType,
+      // cel::OptionalType) are not yet wired through this scalar
+      // arm.  The structural kinds (kList / kMap / kMessage) are
+      // handled in the caller.
       return std::nullopt;
   }
   ABSL_CHECK(false) << "DeclScalarToCheckerType: unhandled CelType::Kind = "
@@ -950,8 +949,8 @@ absl::StatusOr<cel::Type> DeclTypeToCheckerType(
   if (t.kind() == CelType::Kind::kMessage) {
     return DeclMessageToCheckerType(t, pool);
   }
-  // kType / kOptional are admitted on CelfnDecl by AddPlugin
-  // but have no type-checker mapping to cel::TypeType /
+  // kType / kOptional are representable on a programmatically built
+  // CelfnDecl but have no type-checker mapping to cel::TypeType /
   // cel::OptionalType here (cleanup-backlog #44) — a decl using them
   // fails loudly rather than miscompiling.  Guarded upstream by
   // `ValidateDeclTypesMappable` (compiler.cc); this CHECK is the

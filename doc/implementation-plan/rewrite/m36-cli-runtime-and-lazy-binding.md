@@ -2,6 +2,14 @@
 
 Status: in progress — drafted 2026-07-25.
 
+> **2026-08-04:** the plugin/component portions of this doc — the
+> `inspect` "plugin fns" reporting, the `run` diagnostics pointing at
+> `Engine::AddComponent`, and the deferred `--module` plugin-loading
+> flag — describe a backend that was removed from the tree (see
+> `m39-component-removal.md`); the work is preserved on branch
+> `component-functions-archive`.  The rest of the doc (exit codes,
+> `run`/`inspect`, lazy binding) is unaffected.
+
 Closes the two halves of the production-readiness gap that the 2026-07-25
 readiness audit rated launch-blocking:
 

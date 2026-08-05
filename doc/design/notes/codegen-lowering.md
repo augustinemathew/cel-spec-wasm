@@ -170,10 +170,12 @@ of `//compiler/codegen` and only fails at e2e.
   AlreadyExists, CHECKs kCelRuntime registrations and the module_name
   empty/non-empty rules per kind (overload_table.cc:823-870).  Interned ids
   are 1-based, 0 = unresolved (overload_table.h:187-191).
-- `ImportModuleName(enum)` CHECKs on kUserModule; the `OverloadImpl` overload
-  returns the per-impl alias (overload_table.cc:22-50).  Two aliases may share
-  a helper name; collision rule is on overload-id only
-  (overload_table_test.cc:315-340).
+- `ImportModuleName(def)` maps `wasm_import_module_type` to the module
+  string — `kCel`/`kCelHost`/`kCelFn` are the only members at HEAD (the
+  `kUser`/`kUserModule` per-library routing was removed 2026-08-04, m39,
+  with the `@native` stub; `OverloadDef` carries no import-module-name
+  string — see `overload_table.h:29-67`).  Two overloads may share a
+  helper name; collision rule is on overload-id only.
 
 ### WasmModule (Binaryen wrapper)
 - RAII over `BinaryenModuleRef`; default feature set = ReferenceTypes |
@@ -313,9 +315,9 @@ Pinned well:
 - Comprehension classifier→helper chain: one test per LoopStepShape kind +
   cel.bind generic-path lock (:938-1049).
 - OverloadTable: seed count, custom interning order, dangling-string-view
-  safety, move-survival, UsedImports filtering, kUserModule round-trip and
-  death tests, and the standard-id coverage tripwire (overload_table_test.cc
-  throughout).
+  safety, move-survival, UsedImports filtering, and the standard-id
+  coverage tripwire (overload_table_test.cc throughout; the kUserModule
+  round-trip/death cases were deleted with the routing in m39).
 - WasmModule: Adopt union semantics, Optimize level-0 byte-identity and
   level-2 must-shrink, memory-import preconditions, named-"0" segment landing
   (module_test.cc).

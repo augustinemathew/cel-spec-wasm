@@ -222,7 +222,7 @@ exhaustive pass is explicit.
    Cite the query, never a name list — a hardcoded list rotted the first time
    the dual-mode macro renamed every e2e target. Manual today covers the
    wasmtime-instantiating eval tests, the wasm-cross runtime test, wat_runner,
-   the four host/foreign-fn e2e matrices, the CLI smoke + activation matrix,
+   the host-fn e2e matrices, the CLI smoke + activation matrix,
    `run_conformance`, the PBT mining property, and all of `//benchmark/...`.
 3. **`scripts/check_conformance_monotonic.sh`** — §2.4. Wired into
    `.githooks/pre-push`, which then runs
@@ -299,13 +299,12 @@ Verified stale-skip inventory:
 - `e2e/m2_test.cc:206,210`, `e2e/m4_test.cc:448` — cite a host arena-plumbing
   gap; the bindings work throughout `e2e/m5_test.cc` and
   `e2e/activation_boundary_test.cc`.
-- `e2e/foreign_fn_type_matrix_test.cc` — ~40 skips cite `kBlockerB0`
-  ("AddPlugin returns Unimplemented"); AddPlugin is fully implemented
-  and exercised by `e2e/plugin_dispatch_test.cc`.
 - `compiler/codegen/expr_lower_test.cc:600` — cites a long-shipped lowering
   dependency.
-- `eval/engine_test.cc:899` — cites a missing plugin fixture; fixtures
-  exist under `e2e/plugin_fixtures/`.
+- (Two former entries — the `foreign_fn_type_matrix` `kBlockerB0` skips and
+  the `engine_test.cc` plugin-fixture skip — were deleted with the plugin
+  backend, 2026-08-04; the host-backend rows live on in
+  `e2e/host_fn_type_matrix_test.cc`.)
 
 > **Open question (V22):** the stale-skip sweep — delete each skip, run its
 > target, classify pass / fail-with-new-reason. The periodic review pass

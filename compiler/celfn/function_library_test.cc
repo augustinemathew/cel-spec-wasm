@@ -1,13 +1,15 @@
-// M13 Slice B — semantic-validation tests for `ParseCelfnSource`.
+// Semantic-validation tests for `ParseCelfnSource` and the
+// programmatic `FunctionLibrary::Builder`.
 //
 // Companion to `celfn_parser_probe_test.cc` (which exercises the
 // grammar layer only).  These tests cover the visitor + semantic
-// validations on top — overload-id synthesis, proto-on-foreign
-// rejection (§4.5.1), alias collisions, etc.
+// validations on top — overload-id synthesis, alias collisions,
+// map-key legality, etc.
 
 #include "compiler/celfn/function_library.h"
 
 #include <string>
+#include <utility>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -19,6 +21,14 @@ namespace celwasm {
 namespace {
 
 using ::testing::HasSubstr;
+
+CelType ListOf(CelType inner) {
+  return CelType::List(std::move(inner));
+}
+
+CelType MapOf(CelType k, CelType v) {
+  return CelType::Map(std::move(k), std::move(v));
+}
 
 TEST(FunctionLibrary, EmptyFileProducesEmptyResult) {
   auto r = ParseCelfnSource("");
@@ -45,35 +55,6 @@ TEST(FunctionLibrary, ExtractsHostDecl) {
   EXPECT_TRUE(d.params[0].is_receiver);
 }
 
-TEST(FunctionLibrary, ExtractsPluginDecl) {
-  auto r = ParseCelfnSource("bool @plugin.allow(this string user, string r);");
-  ASSERT_TRUE(r.ok()) << r.status();
-  ASSERT_EQ(r->decls().size(), 1u);
-  const auto& d = r->decls()[0];
-  EXPECT_EQ(d.backend, CelfnDecl::Backend::kPlugin);
-  EXPECT_EQ(d.fn_name, "allow");
-  // Plugin decls share the kHost dispatch path (m24 §2):
-  // wasm `(import "cel_fn" "<helper>" …)`, NOT a per-alias module.
-  EXPECT_EQ(d.module_name, "cel_fn");
-  EXPECT_EQ(d.overload_id, "allow_string_string");
-  EXPECT_EQ(d.num_args, 3u);  // out + 2 args
-}
-
-TEST(FunctionLibrary, ExtractsCelDefinedFn) {
-  auto r = ParseCelfnSource(
-      "Module foo;\n"
-      "bool @native.is_number(this string s) = s.matches(\"^[0-9]+$\");");
-  ASSERT_TRUE(r.ok()) << r.status();
-  EXPECT_EQ(r->module_name(), "foo");
-  ASSERT_EQ(r->decls().size(), 1u);
-  const auto& d = r->decls()[0];
-  EXPECT_EQ(d.backend, CelfnDecl::Backend::kCelDefined);
-  EXPECT_EQ(d.fn_name, "is_number");
-  EXPECT_EQ(d.module_name, "foo");
-  EXPECT_EQ(d.overload_id, "is_number_string");
-  EXPECT_THAT(d.body, HasSubstr("s.matches"));
-}
-
 TEST(FunctionLibrary, SynthesisesOverloadIdsForAllTypes) {
   auto r = ParseCelfnSource(
       "int @host.f1(int x);"
@@ -94,25 +75,24 @@ TEST(FunctionLibrary, SynthesisesOverloadIdsForAllTypes) {
   EXPECT_EQ(r->decls()[6].overload_id, "f7_message_acme_User");
 }
 
-// ─── proto handling across backends ─────────────────────────────────
+TEST(ArgkindSlugTest, ArgkindForTypeAndOptionalKinds) {
+  // kType / kOptional have no `.celfn` grammar spelling, so the
+  // overload-id path for them is only reachable programmatically —
+  // pin the slugs directly.
+  EXPECT_EQ(ArgkindSlug(CelType::Type()), "type");
+  EXPECT_EQ(ArgkindSlug(CelType::Optional(CelType::Int())), "optional_int");
+  EXPECT_EQ(ArgkindSlug(CelType::Optional(ListOf(CelType::String()))),
+            "optional_list_string");
+}
 
 TEST(FunctionLibrary, HostDeclAllowedToCarryProtos) {
-  // The constraint applies to FOREIGN decls only.  Host trampolines
-  // routinely carry proto messages (externref → cel_host adapter).
+  // Host trampolines routinely carry proto messages
+  // (externref → cel_host adapter).
   auto r = ParseCelfnSource(
       "bool @host.is_admin(proto(acme.User) u);"
       "proto(acme.User) @host.fetch_user(string id);");
   ASSERT_TRUE(r.ok()) << r.status();
   EXPECT_EQ(r->decls().size(), 2u);
-}
-
-TEST(FunctionLibrary, CelDefinedAllowedToCarryProtos) {
-  auto r = ParseCelfnSource(
-      "Module foo;\n"
-      "bool @native.is_adult(this proto(acme.User) u) = u.age >= 18;");
-  ASSERT_TRUE(r.ok()) << r.status();
-  EXPECT_EQ(r->decls().size(), 1u);
-  EXPECT_EQ(r->decls()[0].overload_id, "is_adult_message_acme_User");
 }
 
 // ─── Other semantic validations ────────────────────────────────────
@@ -125,11 +105,28 @@ TEST(FunctionLibrary, RejectsBareHostDecl) {
   EXPECT_THAT(std::string(r.status().message()), HasSubstr("@host."));
 }
 
-TEST(FunctionLibrary, RejectsCelDefinedFnWithoutModuleDirective) {
-  auto r = ParseCelfnSource(
-      "bool @native.is_number(this string s) = s.matches(\"a\");");
+TEST(FunctionLibrary, RejectsRemovedPluginPrefixAtParse) {
+  // `@plugin.` was the removed sandboxed-wasm backend's spelling; the
+  // grammar no longer has a production for it, so it fails as a plain
+  // parse error.
+  auto r = ParseCelfnSource("bool @plugin.allow(this string u, string r);");
   ASSERT_FALSE(r.ok());
-  EXPECT_THAT(std::string(r.status().message()), HasSubstr("no module name"));
+  EXPECT_EQ(r.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("parse error"));
+  EXPECT_THAT(std::string(r.status().message()),
+              HasSubstr("mismatched input 'plugin' expecting 'host'"));
+}
+
+TEST(FunctionLibrary, RejectsRemovedNativePrefixAtParse) {
+  // `@native.` (CEL-defined bodies) was removed with the plugin
+  // backend; the grammar no longer has a production for it.
+  auto r = ParseCelfnSource(
+      "bool @native.is_number(this string s) = s.matches(\"^[0-9]+$\");");
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_THAT(std::string(r.status().message()), HasSubstr("parse error"));
+  EXPECT_THAT(std::string(r.status().message()),
+              HasSubstr("mismatched input 'native' expecting 'host'"));
 }
 
 TEST(FunctionLibrary, RejectsDuplicateOverloadId) {
@@ -162,45 +159,6 @@ TEST(FunctionLibraryBuilder, ProgrammaticHostDecl) {
   EXPECT_TRUE(d.is_receiver);
 }
 
-TEST(FunctionLibraryBuilder, ProgrammaticPluginDecl) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin("allow", CelType::Bool(),
-                               {{true, CelType::String(), "u"},
-                                {false, CelType::String(), "r"}})
-                    .Build();
-  ASSERT_TRUE(lib_or.ok()) << lib_or.status();
-  ASSERT_EQ(lib_or->decls().size(), 1u);
-  EXPECT_EQ(lib_or->decls()[0].backend, CelfnDecl::Backend::kPlugin);
-  EXPECT_EQ(lib_or->decls()[0].overload_id, "allow_string_string");
-  EXPECT_EQ(lib_or->decls()[0].module_name, "cel_fn");
-}
-
-TEST(FunctionLibraryBuilder, ProgrammaticCelDefinedNeedsModuleName) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddCelDefined("isNum", CelType::Bool(),
-                         {{true, CelType::String(), "s"}}, "s.matches(\"a\")")
-          .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()),
-              HasSubstr("no module name"));
-}
-
-TEST(FunctionLibraryBuilder, ProgrammaticCelDefinedWithModuleName) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .SetModuleName("foo")
-          .AddCelDefined("isNum", CelType::Bool(),
-                         {{true, CelType::String(), "s"}}, "s.matches(\"a\")")
-          .Build();
-  ASSERT_TRUE(lib_or.ok()) << lib_or.status();
-  EXPECT_EQ(lib_or->module_name(), "foo");
-  ASSERT_EQ(lib_or->decls().size(), 1u);
-  EXPECT_EQ(lib_or->decls()[0].overload_id, "isNum_string");
-  EXPECT_EQ(lib_or->decls()[0].module_name, "foo");
-  EXPECT_EQ(lib_or->decls()[0].body, "s.matches(\"a\")");
-}
-
 TEST(FunctionLibraryBuilder, ProgrammaticDuplicateOverloadIdIsRejected) {
   auto lib_or =
       FunctionLibrary::Builder()
@@ -211,169 +169,34 @@ TEST(FunctionLibraryBuilder, ProgrammaticDuplicateOverloadIdIsRejected) {
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("duplicate"));
 }
 
-// ─── kPlugin v1: optional<T> rejection ───────────────────
-
-// optional<T> as a declarable plugin argument or return
-// shape was dropped from v1 (user direction 2026-06-03; the marshaling
-// layer in eval/internal/cel_plugin.cc refuses kOptional outright).
-// Build() catches the violation here, naming the offending decl, so
-// the surprise isn't a runtime InvalidArgument deep inside a host
-// callback or — pre-fix — an ABSL_CHECK(false) crash in
-// parse_and_check.cc::DeclTypeToCheckerType's stub arm.
-
-CelType ListOf(CelType inner) {
-  return CelType::List(std::move(inner));
-}
-
-TEST(FunctionLibraryBuilder, PluginOptionalReturnRejectedAtBuild) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin("lookup", CelType::Optional(CelType::Int()),
-                               {CelfnParam{false, CelType::String(), "k"}})
-                    .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("optional"));
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("lookup"));
-}
-
-TEST(FunctionLibraryBuilder, PluginOptionalParamRejectedAtBuild) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin(
-              "f", CelType::Bool(),
-              {CelfnParam{false, CelType::Optional(CelType::String()), "u"}})
-          .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("optional"));
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("u"));
-}
-
-TEST(FunctionLibraryBuilder, PluginOptionalNestedInListRejectedAtBuild) {
-  // list<optional<int>> — nested optional must be rejected too.
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin(
-              "g", CelType::Bool(),
-              {CelfnParam{false, ListOf(CelType::Optional(CelType::Int())),
-                          "xs"}})
-          .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("optional"));
-}
-
-TEST(FunctionLibraryBuilder, PluginTypeReturnRejectedAtBuild) {
-  // kType (the CEL type-of-types) is permanently out of scope as a
-  // plugin declarable shape (user direction; m24 §14).
-  // The Lift/Lower for kType stays implemented in
-  // eval/internal/cel_plugin.cc because other kCelFn / kHost
-  // paths can still use it; only the plugin decl surface
-  // is closed.
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin("type_of", CelType::Type(),
-                               {CelfnParam{false, CelType::String(), "x"}})
-                    .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("type"));
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("type_of"));
-}
-
-TEST(FunctionLibraryBuilder, PluginTypeParamRejectedAtBuild) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin("f", CelType::Bool(),
-                               {CelfnParam{false, CelType::Type(), "t"}})
-                    .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("type"));
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("t"));
-}
-
-TEST(FunctionLibraryBuilder, PluginTypeNestedInListRejectedAtBuild) {
-  // list<type> — nested type must be rejected too, mirroring the
-  // optional<T> nested rejection.
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin("g", CelType::Bool(),
-                     {CelfnParam{false, ListOf(CelType::Type()), "ts"}})
-          .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("type"));
-}
-
-TEST(FunctionLibraryBuilder, PluginTypeNestedInsideOptionalIsRejected) {
-  // optional<type> — the optional check fires first (it's an outer
-  // optional), but the test pins that nesting type inside any
-  // rejected carrier is still rejected.
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin(
-              "h", CelType::Bool(),
-              {CelfnParam{false, CelType::Optional(CelType::Type()), "ot"}})
-          .Build();
-  ASSERT_FALSE(lib_or.ok());
-  // Either "optional" or "type" naming the violation is acceptable;
-  // the order of MentionsOptional vs MentionsType determines which
-  // message wins.  The current order returns the optional error first.
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("optional"));
-}
-
-TEST(FunctionLibraryBuilder, PluginNullParamIsAccepted) {
-  // CEL `null` (kNull) is a distinct kind from kOptional and stays
-  // supported as a plugin declarable shape.  Wire-level
-  // null encodes as `option<unit>` (a canonical-ABI detail), but
-  // the IDL/decl-level kind is kNull, not kOptional, and
-  // MentionsOptional must not flag it.
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin("accepts_null", CelType::Bool(),
-                               {CelfnParam{false, CelType::Null(), "n"}})
-                    .Build();
-  ASSERT_TRUE(lib_or.ok()) << lib_or.status();
-}
-
-TEST(FunctionLibraryBuilder, PluginNullReturnIsAccepted) {
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin("returns_null", CelType::Null(),
-                               {CelfnParam{false, CelType::Int(), "x"}})
-                    .Build();
-  ASSERT_TRUE(lib_or.ok()) << lib_or.status();
-}
-
-// ─── kPlugin: nested aggregates ──────────────────────────
+// ─── Nested aggregates ─────────────────────────────────────────────
 //
-// Recursion at the foreign-fn surface is by **concrete expansion**,
-// not a recursive type (m24 §6).  Every layer — IDL parse (ExtractType
-// recurses on list_element and map_kv), Builder gates
-// (MentionsOptional / MentionsType / FirstIllegalMapKey all recurse),
-// and marshaling (Lift/Lower dispatch recurses on the same fields) —
-// handles arbitrary nesting uniformly.  The matrix-layer cases at
-// eval/internal/cel_plugin_test.cc::{ListListIntRaggedNesting,
-// LargeNestedListLiftsAt10kLeafCells, LargeMapStringListIntLifts…}
-// pin the *marshaling*; these pin the **decl-time acceptance**.
+// Recursion at the decl surface is by **concrete expansion**, not a
+// recursive type.  Every layer — IDL parse (ExtractType recurses on
+// list_element and map_kv) and the Builder gate (FirstIllegalMapKey
+// recurses) — handles arbitrary nesting uniformly.
 
-// Shared with the legal-map-key block further down.
-CelType MapOf(CelType k, CelType v) {
-  return CelType::Map(std::move(k), std::move(v));
-}
-
-TEST(FunctionLibraryBuilder, PluginListOfListOfIntAccepted) {
+TEST(FunctionLibraryBuilder, HostListOfListOfIntAccepted) {
   // `list<list<int>>` — the simplest nested aggregate; pins that
   // ExtractType + Build() recurse cleanly without an arity gate.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin("flatten", CelType::Int(),
-                     {CelfnParam{false, ListOf(CelType::List(CelType::Int())),
-                                 "rows"}})
+          .AddHost("flatten", CelType::Int(),
+                   {CelfnParam{false, ListOf(CelType::List(CelType::Int())),
+                               "rows"}})
           .Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
 }
 
-TEST(FunctionLibraryBuilder, PluginListOfMapStringListOfIntAccepted) {
-  // `list<map<string, list<int>>>` — the user-requested shape.  Three
-  // layers deep, mixed aggregate kinds.  Pins that the Builder gates
-  // don't reject a legal nested decl, and that the legal map-key
-  // check (FirstIllegalMapKey, which also recurses) accepts a
+TEST(FunctionLibraryBuilder, HostListOfMapStringListOfIntAccepted) {
+  // `list<map<string, list<int>>>` — three layers deep, mixed
+  // aggregate kinds.  Pins that the Builder gates don't reject a
+  // legal nested decl, and that the legal map-key check
+  // (FirstIllegalMapKey, which also recurses) accepts a
   // nested-inside-list map.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin(
+          .AddHost(
               "merge",
               ListOf(MapOf(CelType::String(), CelType::List(CelType::Int()))),
               {CelfnParam{false,
@@ -393,67 +216,50 @@ TEST(FunctionLibraryBuilder, PluginListOfMapStringListOfIntAccepted) {
             CelType::Kind::kList);
 }
 
-TEST(FunctionLibraryBuilder, PluginNestedDeclWithIllegalMapKeyRejected) {
-  // `list<map<double, int>>` — the legal-map-key check (m24 §A.5)
-  // recurses through list_element; a buggy gate that only looked
-  // at top-level map shape would let this through.
+TEST(FunctionLibraryBuilder, HostListOfIntAccepted) {
+  // Sanity counterpart: aggregates pass cleanly.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin(
-              "f", CelType::Bool(),
-              {CelfnParam{false,
-                          ListOf(MapOf(CelType::Double(), CelType::Int())),
-                          "xs"}})
+          .AddHost("sum", CelType::Int(),
+                   {CelfnParam{false, CelType::List(CelType::Int()), "xs"}})
           .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
+  ASSERT_TRUE(lib_or.ok()) << lib_or.status();
 }
 
-TEST(FunctionLibraryBuilder, PluginNestedDeclWithOptionalDeepInsideRejected) {
-  // `list<map<string, list<optional<int>>>>` — optional buried at
-  // depth-4 still gets caught by MentionsOptional's recursion.
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin(
-              "f", CelType::Bool(),
-              {CelfnParam{
-                  false,
-                  ListOf(MapOf(CelType::String(),
-                               ListOf(CelType::Optional(CelType::Int())))),
-                  "groups"}})
-          .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("optional"));
+TEST(FunctionLibraryBuilder, HostNullParamIsAccepted) {
+  // CEL `null` (kNull) is a distinct kind and a legal declarable
+  // shape.
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddHost("accepts_null", CelType::Bool(),
+                             {CelfnParam{false, CelType::Null(), "n"}})
+                    .Build();
+  ASSERT_TRUE(lib_or.ok()) << lib_or.status();
 }
 
-TEST(FunctionLibraryBuilder, PluginListOfIntAccepted) {
-  // Sanity counterpart: non-optional aggregates pass cleanly.
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin("sum", CelType::Int(),
-                     {CelfnParam{false, CelType::List(CelType::Int()), "xs"}})
-          .Build();
+TEST(FunctionLibraryBuilder, HostNullReturnIsAccepted) {
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddHost("returns_null", CelType::Null(),
+                             {CelfnParam{false, CelType::Int(), "x"}})
+                    .Build();
   ASSERT_TRUE(lib_or.ok()) << lib_or.status();
 }
 
 // ─── langdef: map key kinds must be {bool,int,uint,string} ─────────
 //
 // Source-driven .celfn decls are already rejected at two earlier
-// layers — the grammar (Celfn.g4:108 restricts mapKeyType to the four
+// layers — the grammar (Celfn.g4 restricts mapKeyType to the four
 // legal tokens; anything else is a parse error) and the visitor
-// (ExtractType's mapType arm at function_library.cc:429 falls through
-// to InvalidArgument on any other key text).  The Build()-time check
-// covers the programmatic Builder path, where an embedder constructs
-// a CelType in C++ and bypasses the grammar.  Same shape as the
-// MentionsProto check that catches proto-on-foreign-decls bypassing
-// the grammar.
+// (ExtractType's mapType arm falls through to InvalidArgument on any
+// other key text).  The Build()-time check covers the programmatic
+// Builder path, where an embedder constructs a CelType in C++ and
+// bypasses the grammar.
 
-TEST(FunctionLibraryBuilder, RejectsPluginMapWithDoubleKeyParam) {
+TEST(FunctionLibraryBuilder, RejectsHostMapWithDoubleKeyParam) {
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin("f", CelType::Bool(),
-                     {CelfnParam{
-                         false, MapOf(CelType::Double(), CelType::Int()), "m"}})
+          .AddHost("f", CelType::Bool(),
+                   {CelfnParam{false, MapOf(CelType::Double(), CelType::Int()),
+                               "m"}})
           .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
@@ -462,12 +268,11 @@ TEST(FunctionLibraryBuilder, RejectsPluginMapWithDoubleKeyParam) {
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("m"));
 }
 
-TEST(FunctionLibraryBuilder, RejectsPluginMapWithBytesKeyReturn) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddPlugin("lookup", MapOf(CelType::Bytes(), CelType::Int()),
-                     {CelfnParam{false, CelType::String(), "q"}})
-          .Build();
+TEST(FunctionLibraryBuilder, RejectsHostMapWithBytesKeyReturn) {
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddHost("lookup", MapOf(CelType::Bytes(), CelType::Int()),
+                             {CelfnParam{false, CelType::String(), "q"}})
+                    .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("bytes"));
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("lookup"));
@@ -479,7 +284,7 @@ TEST(FunctionLibraryBuilder, RejectsMapWithDoubleKeyNestedInList) {
       CelType::List(MapOf(CelType::Double(), CelType::Int()));
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin("g", CelType::Bool(), {CelfnParam{false, nested, "xs"}})
+          .AddHost("g", CelType::Bool(), {CelfnParam{false, nested, "xs"}})
           .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
@@ -489,25 +294,10 @@ TEST(FunctionLibraryBuilder, RejectsMapWithDoubleKeyNestedAsMapValue) {
   // map<string, map<double, int>> — illegal key inside the value.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddPlugin(
-              "h", CelType::Bool(),
-              {CelfnParam{false,
-                          MapOf(CelType::String(),
-                                MapOf(CelType::Double(), CelType::Int())),
-                          "m"}})
-          .Build();
-  ASSERT_FALSE(lib_or.ok());
-  EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
-}
-
-TEST(FunctionLibraryBuilder, RejectsHostDeclWithDoubleMapKey) {
-  // Backend-independent.  kHost trampolines are equally bound by the
-  // langdef restriction; programmatic AddHost bypasses the grammar
-  // just like AddPlugin does.
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddHost("count", CelType::Int(),
-                   {CelfnParam{false, MapOf(CelType::Double(), CelType::Int()),
+          .AddHost("h", CelType::Bool(),
+                   {CelfnParam{false,
+                               MapOf(CelType::String(),
+                                     MapOf(CelType::Double(), CelType::Int())),
                                "m"}})
           .Build();
   ASSERT_FALSE(lib_or.ok());
@@ -520,75 +310,36 @@ TEST(FunctionLibraryBuilder, AcceptsLegalMapKeyKinds) {
        {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::String()}) {
     auto lib_or =
         FunctionLibrary::Builder()
-            .AddPlugin(
-                absl::StrCat("f_legal_key_", static_cast<int>(key.kind())),
-                CelType::Bool(),
-                {CelfnParam{false, MapOf(key, CelType::Int()), "m"}})
+            .AddHost(absl::StrCat("f_legal_key_", static_cast<int>(key.kind())),
+                     CelType::Bool(),
+                     {CelfnParam{false, MapOf(key, CelType::Int()), "m"}})
             .Build();
     EXPECT_TRUE(lib_or.ok()) << "key kind " << static_cast<int>(key.kind())
                              << ": " << lib_or.status();
   }
 }
 
-TEST(FunctionLibraryBuilder, PluginProtoAdmitted) {
-  // m24 §8: kPlugin admits proto(...) (crosses as bytes).
-  const CelType proto_user = CelType::Message("acme.User");
-  auto lib_or = FunctionLibrary::Builder()
-                    .AddPlugin("is_admin", CelType::Bool(),
-                               {CelfnParam{false, proto_user, "u"}})
-                    .Build();
-  ASSERT_TRUE(lib_or.ok()) << lib_or.status();
-}
-
 TEST(FunctionLibrary, AcceptsFullFileShape) {
-  // Mirrors the canonical example from §3.4 of the design doc.
   const std::string source = R"(
 Module foo;
-
-bool @native.is_number(this string s) = s.matches("^[0-9]+$");
-bool @native.is_adult(this proto(acme.User) u) = u.age >= 18;
 
 string @host.upper(this string s);
 bool @host.is_admin(proto(acme.User) user);
 proto(acme.User) @host.lookup_user(string user_id);
-
-bool @plugin.allow(this string user_id, string resource);
-bool @plugin.deny(this string user_id, string resource);
-int  @plugin.score(this string user_id);
 )";
   auto r = ParseCelfnSource(source);
   ASSERT_TRUE(r.ok()) << r.status();
   EXPECT_EQ(r->module_name(), "foo");
-  EXPECT_EQ(r->decls().size(), 8u);
-}
-
-// ── WIT name derivation ─────────────────────────────────────────────
-
-TEST(DeriveWitNames, PackageNameFromModule) {
-  EXPECT_EQ(DeriveWitPackageName("scorer"), "cel:scorer");
-}
-
-TEST(DeriveWitNames, PackageNameFallsBackToCustomfn) {
-  EXPECT_EQ(DeriveWitPackageName(""), "cel:customfn");
-}
-
-TEST(DeriveWitNames, InterfaceFromModule) {
-  EXPECT_EQ(DeriveWitInterface("scorer"), "cel:scorer/fns@0.1.0");
-}
-
-TEST(DeriveWitNames, InterfaceFallsBackToCustomfn) {
-  EXPECT_EQ(DeriveWitInterface(""), "cel:customfn/fns@0.1.0");
+  EXPECT_EQ(r->decls().size(), 3u);
 }
 
 // ── Backend spelling ────────────────────────────────────────────────
 
 TEST(BackendPrefixTest, EveryBackendSpelledWithAtAndTrailingDot) {
   // The closed backend set, spelled exactly as `.celfn` source writes
-  // it — the shared diagnostic vocabulary for Plugin::Load,
-  // `cel embed-decls`, and Engine::BindFunction messages.
+  // it — the shared diagnostic vocabulary for Engine::BindFunction
+  // messages.
   EXPECT_EQ(BackendPrefix(CelfnDecl::Backend::kHost), "@host.");
-  EXPECT_EQ(BackendPrefix(CelfnDecl::Backend::kCelDefined), "@native.");
-  EXPECT_EQ(BackendPrefix(CelfnDecl::Backend::kPlugin), "@plugin.");
 }
 
 }  // namespace

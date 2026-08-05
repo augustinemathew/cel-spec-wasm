@@ -277,11 +277,11 @@ TEST(BuildRequiredFunctionsTest, HostRowCarriesAllFields) {
   EXPECT_FALSE(rows[0].is_receiver());
 }
 
-TEST(BuildRequiredFunctionsTest, PluginRowWithProtoParamAndReceiver) {
+TEST(BuildRequiredFunctionsTest, HostRowWithProtoParamAndReceiver) {
   const CelType user = CelType::Message("acme.User");
   auto lib = *FunctionLibrary::Builder()
-                  .AddPlugin("is_adult", CelType::Bool(),
-                             {CelfnParam{/*is_receiver=*/true, user, "u"}})
+                  .AddHost("is_adult", CelType::Bool(),
+                           {CelfnParam{/*is_receiver=*/true, user, "u"}})
                   .Build();
   const std::vector<WasmModule::FunctionImportName> imports = {
       {"cel_fn", lib.decls()[0].overload_id}};
@@ -289,7 +289,7 @@ TEST(BuildRequiredFunctionsTest, PluginRowWithProtoParamAndReceiver) {
   const auto rows = BuildRequiredFunctions(imports, libs);
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows[0].fn_name(), "is_adult");
-  EXPECT_EQ(rows[0].backend(), celwasm::abi::RequiredFunction::PLUGIN);
+  EXPECT_EQ(rows[0].backend(), celwasm::abi::RequiredFunction::HOST);
   ASSERT_EQ(rows[0].param_types_size(), 1);
   EXPECT_EQ(rows[0].param_types(0).kind(), celwasm::abi::Type::KIND_PROTO);
   EXPECT_EQ(rows[0].param_types(0).proto_fqn(), "acme.User");
@@ -322,7 +322,7 @@ TEST(BuildRequiredFunctionsTest, NonCelFnImportsContributeNothing) {
       {"cel", "arena_reset"},
       {"cel", "cel_int_add_at_vv"},
       {"cel_host", "cel_get_field"},
-      {"scorer", "user_alias"},  // a kCelDefined per-module alias
+      {"scorer", "user_alias"},  // an unrelated per-module import
   };
   const std::vector<FunctionLibrary> libs = {HostDiscountLib()};
   EXPECT_TRUE(BuildRequiredFunctions(imports, libs).empty());

@@ -98,15 +98,14 @@ extend the corpus, the published numbers can only honestly say
 - **Not** a replacement for celwasm-vs-itself regression localisation.
   The kernel µbenches and pipeline shape probes that role needs live in
   the non-comparative tiers of this same tree: `benchmark/kernel/`,
-  `benchmark/compiler/`, `benchmark/plugin/`.
+  `benchmark/compiler/`.
 
   > Plan-vs-execution delta (2026-06-11): at design time those probes
   > lived in a separate top-level `bench/` tree.  `bench/` was
   > dissolved on 2026-06-11 — eval-shape benches became corpus cells
   > here, Compile/Plan benches moved to `benchmark/compiler/`, the
-  > kernel µbenches to `benchmark/kernel/`, the plugin-boundary
-  > bench to `benchmark/plugin/`.  Mentions of `bench/` elsewhere in
-  > this doc are historical.
+  > kernel µbenches to `benchmark/kernel/`.  Mentions of `bench/`
+  > elsewhere in this doc are historical.
 - **Not** a custom benchmarking framework.  **Google Benchmark**
   does iteration scaling, variance reporting, JSON output, and
   `tools/compare.py` for diffing runs.  We use it.  We do not
@@ -203,7 +202,7 @@ Plus one auxiliary binary (`parity_check`) that reads the same YAML
 and links both wrappers in a special test-mode build that tolerates
 the symbol clash (different linker config) — runs once before timing.
 
-### 5.2  Component layout
+### 5.2  Directory layout
 
 ```
 benchmark/

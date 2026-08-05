@@ -1,7 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="940" height="330" viewBox="0 0 940 330" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
-  <!-- Trust boundaries: host process vs wasmtime sandbox vs plugin sandbox.
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="330" viewBox="0 0 700 330" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <!-- Trust boundaries: host process vs wasmtime sandbox.
        Facts: design/00 §4, design/05, user-guide/security-model.
-       Per-call costs: benchmark/plugin/plugin_bench (2026-07-22).
        Hand-authored; keep in sync with the docs. -->
   <defs>
     <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -9,9 +8,6 @@
     </marker>
     <marker id="arrb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 1 L 9 5 L 0 9 z" fill="#1f6feb"/>
-    </marker>
-    <marker id="arrp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 1 L 9 5 L 0 9 z" fill="#8957e5"/>
     </marker>
   </defs>
 
@@ -49,33 +45,17 @@
   <text x="495" y="252" text-anchor="middle" font-size="11.5" fill="#3fb950">no syscalls &#183; no I/O &#183; bounded memory</text>
   <text x="495" y="270" text-anchor="middle" font-size="11.5" fill="#3fb950">nothing here can reach the host unmediated</text>
 
-  <!-- plugin sandbox -->
-  <rect x="688" y="32" width="240" height="256" rx="10" fill="#271052" fill-opacity="0.5" stroke="#8957e5" stroke-dasharray="6,4"/>
-  <text x="700" y="22" font-size="13" font-weight="600" fill="#d2a8ff">PLUGIN SANDBOX</text>
-
-  <g font-size="13">
-    <rect x="704" y="92" width="208" height="76" rx="6" fill="#0d1117" stroke="#8957e5"/>
-    <text x="808" y="116" text-anchor="middle" font-weight="600" fill="#d2a8ff">@plugin functions</text>
-    <text x="808" y="134" text-anchor="middle" font-size="11" fill="#8b949e">untrusted custom code</text>
-    <text x="808" y="150" text-anchor="middle" font-size="11" fill="#8b949e">~450 ns/call</text>
-  </g>
-  <text x="808" y="252" text-anchor="middle" font-size="11.5" fill="#d2a8ff">own linear memory &#183;</text>
-  <text x="808" y="270" text-anchor="middle" font-size="11.5" fill="#d2a8ff">no host access at all</text>
-
   <!-- arrows -->
   <g stroke-width="1.5" fill="none">
     <line x1="286" y1="156" x2="344" y2="156" stroke="#6e7681" marker-end="url(#arr)"/>
     <path d="M 346 100 C 320 130, 300 180, 288 216" stroke="#1f6feb" marker-end="url(#arrb)" marker-start="url(#arrb)"/>
-    <path d="M 644 100 C 672 108, 680 116, 702 124" stroke="#8957e5" marker-end="url(#arrp)" marker-start="url(#arrp)"/>
     <line x1="495" y1="118" x2="495" y2="150" stroke="#6e7681" marker-end="url(#arr)"/>
   </g>
   <text x="316" y="140" text-anchor="middle" font-size="11" fill="#8b949e">Plan / Eval</text>
   <text x="296" y="188" text-anchor="start" font-size="10.5" fill="#79c0ff">cel_host trampolines</text>
   <text x="296" y="202" text-anchor="start" font-size="10.5" fill="#79c0ff">(host-mediated)</text>
-  <text x="668" y="84" text-anchor="middle" font-size="10.5" fill="#d2a8ff">value marshal</text>
-  <text x="668" y="98" text-anchor="middle" font-size="10.5" fill="#d2a8ff">(host-mediated)</text>
   <text x="510" y="140" text-anchor="start" font-size="10.5" fill="#8b949e">cel.* calls</text>
 
   <!-- caption -->
-  <text x="470" y="316" text-anchor="middle" font-size="12" fill="#8b949e">trust decreases left to right &#8212; host functions run in your process; plugin functions never leave their own memory</text>
+  <text x="336" y="316" text-anchor="middle" font-size="12" fill="#8b949e">custom functions run in your process as host callbacks; expressions never leave the sandbox</text>
 </svg>

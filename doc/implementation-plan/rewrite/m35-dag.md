@@ -8,6 +8,11 @@ move) and the user-directed CelfnType→CelType unification
 (backlog #53), all gated in G.  Node definitions live in the plan doc §12 —
 this file adds only ordering, parallelism, and status.
 
+> **2026-08-04:** the component/plugin backend this record's milestone
+> built was removed from the tree (see `m39-component-removal.md`);
+> the work is preserved on branch `component-functions-archive`.
+> This file stays frozen as the as-executed record.
+
 Goal state: full e2e green (unit + e2e + manual-tagged + conformance
 monotonic), doc site rewritten (wasm-plugin guide included), branch
 pushed.

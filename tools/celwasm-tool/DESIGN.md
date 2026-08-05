@@ -5,6 +5,15 @@
 > organisational structure of the cel-spec-wasm project so that a
 > later workstream can build a navigation / project-management tool
 > on top of the model.
+>
+> **2026-08-04 delta:** the repo snapshot this model describes
+> predates the m39 component-model removal
+> (`doc/implementation-plan/rewrite/m39-component-removal.md`).  The
+> `@plugin.` backend, `@native.` stub, `cel_plugin`, `AddPlugin`,
+> `benchmark/plugin`, `e2e/plugin_*`, and the wasip2 toolchain named
+> below no longer exist; custom functions are host callbacks only.
+> Counts and inventories are point-in-time; re-derive from HEAD
+> before building the tool.
 
 ---
 
@@ -434,14 +443,14 @@ Mandated by CLAUDE.md:
 | `compiler/internal/` | private `compile.{h,cc}` pipeline facade | internal |
 | `eval/` | eval-time: `Program` + `Activation` → `Value` | yes: `engine.h`, `instance.h`, `activation.h`, `value.h`, `error.h`, `attribute.h` |
 | `eval/host/` | cel_log trampolines | internal |
-| `eval/internal/` | wasmtime glue, `abi_decode`, `cel_host`, `cel_plugin` | internal |
+| `eval/internal/` | wasmtime glue, `abi_decode`, `cel_host` | internal |
 | `shared/` | `CelType`, the type vocabulary | yes: `type.h` |
 | `abi/` | the `cel.abi` wire contract (emit + parse) + runtime catalogue | yes: per-target |
 | `runtime/` | `cel_runtime.c` → `cel_runtime.wasm` (language-agnostic kernel) — split into ~30 `.c` files by topic (cel_arena, cel_arith, cel_compare, cel_make, cel_log, cel_map, cel_list, cel_3vl, cel_matches, cel_math_ext, cel_string_*, cel_time, cel_optional, cel_net_ext, cel_base64_ext, cel_convert) | yes |
 | `tools/` | `cel` CLI (`tools/cel/`), `wat_runner` (`tools/wat_runner/`) | binaries |
 | `conformance/` | harness (runner + binding marshal) | binary |
-| `e2e/` | per-milestone e2e tests (m2_test … m18_test, plus host_fn_*, plugin_*, fuzz/, known_bugs_test) | tests |
-| `benchmark/` | eval corpus + compiler / kernel / plugin bench tiers | binaries |
+| `e2e/` | per-milestone e2e tests (m2_test … m18_test, plus host_fn_*, fuzz/, known_bugs_test) | tests |
+| `benchmark/` | eval corpus + compiler / kernel bench tiers | binaries |
 | `testdata/` | shared proto fixtures + `cel_cpp_oracle_test.cc` | data |
 | `spec/tests/` | upstream conformance corpus (textproto) | data |
 | `bindings/` | language bindings — currently `ts/` only (TypeScript shim, in-design) | future |
@@ -727,15 +736,14 @@ For each: **name** | **vocabulary site(s)** | **physical site(s)** |
   - Vocab: design.md and every milestone doc.
   - *"Show every delta callout; rank by recency."*
 
-#### A.19 Custom function backend (`@host` vs `@plugin`)
-  - The two custom-fn backends, with the `@native` (CEL-defined,
-    inline) variant as a third.
-  - Vocab: `modules-and-ffi.md`, m13, m22, m23, m24, m26.
+#### A.19 Custom function backend (`@host`)
+  - Host callbacks are the only custom-fn backend (the `@plugin` and
+    `@native` variants this section originally modeled were removed
+    2026-08-04, m39).
+  - Vocab: `05-custom-functions.md`, m13, m21.
   - Physical: `compiler/celfn/` + `eval/typed_function.{h,cc}` +
-    `eval/internal/cel_plugin.{h,cc}` + `eval/engine.cc`'s
-    `AddTypedFunction` / `AddPlugin` (Engine + Builder).
-  - *"Walk a `@plugin` fn from `.celfn` IDL to wasm-component
-    instance."*
+    `eval/engine.cc`'s `AddTypedFunction` / `BindFunction`.
+  - *"Walk a `@host` fn from `.celfn` IDL to bound C++ callback."*
 
 ### 5.B Organisational structure (physical units)
 
@@ -798,7 +806,7 @@ should make first-class.
   - **`eval/engine.cc`** — the two-phase Plan (linker setup,
     runtime instantiation, expr instantiation, ABI decode), plus
     every host-import binding site, plus `AddTypedFunction` /
-    `AddPlugin` (Engine + Builder).
+    `BindFunction` (Engine + Builder).
 
 #### B.3 Abstractions with no clean physical home
 *Live in nobody's head until something breaks.*

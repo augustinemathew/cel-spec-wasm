@@ -11,6 +11,11 @@ Every claim here is backed by a working probe under
 `probes/foreign_go/` (the `layered/` dir is the reference shape).
 The probe is throwaway; this doc is the durable artifact.
 
+> **2026-08-04:** the foreign-function backend this doc targets
+> (later realized as the component/plugin backend) was removed from
+> the tree (see `m39-component-removal.md`); the work is preserved on
+> branch `component-functions-archive`.
+
 ## 1. What this generates and why
 
 A foreign CEL function (`<alias>.<fn>` in `.celfn`, backend `kForeign`) is

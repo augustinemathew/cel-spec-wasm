@@ -265,46 +265,16 @@ changing how `$eval`'s prelude is built.
     `InstanceImpl`, wire to host imports).
   - [ ] Tests at emit + decode + consumer levels.
 
-### 2.7 New custom section on a plugin binary
+### 2.7 New top-level custom section (removed feature-type)
 
-The transpose of §2.6 for wasm-level metadata riding on a plugin's
-Component-Model binary (not a field inside `cel.abi`, which
-rides on the Program's core module).  First instance: the `cel.fns`
-declarations section (m35).  A component binary has a different
-preamble (`\0asm` + version/layer word `0x0001000d`) and nests core
-modules/components as sections — top-level walkers must not reuse
-the core-module reader (`eval/internal/abi_decode.cc` hard-rejects
-the component preamble, by design).
-
-  - [ ] **Name registry** — pick the section name here so it's
-    greppable: `cel.abi` (core module, Program) / `cel.fns`
-    (plugin, declarations).  One section, one owner doc.
-  - [ ] **Writer** — a build-time tool step (`cel` subcommand +
-    `//abi:wasm_binary` `AppendCustomSection`); NEVER a
-    compile-step `__attribute__((section))` (lands inside the
-    nested core module) and NEVER Binaryen (cannot edit CM
-    binaries).
-  - [ ] **Build wiring** — `bazel/cel_wasm_plugin.bzl` step that
-    invokes the writer; macro docstring's "Produces:" updated.
-  - [ ] **Reader** — via `//abi:wasm_binary` `FindCustomSection`
-    (top-level walk only, no recursion into nested
-    module/component sections), reachable from both compile- and
-    eval-side consumers.  `//abi:wasm_binary` is THE binary-format
-    layer (absl-only deps, below compiler AND eval): any new magic
-    constant, LEB codec, or section walker outside it is a review
-    finding — see m35 §4 for the consolidation inventory.
-  - [ ] **Consumer** — the API surface that parses the payload
-    (e.g. `Plugin::Load`), with its error contract written
-    before implementation.
-  - [ ] **Boundary tests** — missing section, empty payload,
-    duplicate name, truncated LEB framing, size-past-EOF,
-    non-UTF-8 payload (when text), core-module bytes rejected.
-  - [ ] **Integration pin** — an e2e test that the build macro's
-    real output carries the section and the consumer round-trips
-    it (`demo_plugin_e2e_test.cc` pattern).
-  - [ ] **Docs** — the owning milestone doc records the framing
-    bytes + the validation phase table; user guide updated if the
-    section is embedder-visible.
+(This section described metadata sections on plugin Component-Model
+binaries — the `cel.fns` pattern.  The plugin backend was removed
+2026-08-04, m39-component-removal.md.  The surviving rule of thumb:
+`//abi:wasm_binary` is THE binary-format layer — any new magic
+constant, LEB codec, or section walker outside it is a review
+finding; a new custom section on the Program's core module follows
+§2.6's emit/decode/consume/test shape with `AppendCustomSection` /
+`FindCustomSection`.)
 
 ---
 

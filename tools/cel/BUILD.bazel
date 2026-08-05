@@ -6,10 +6,10 @@ exports_files(["BUILD.bazel"])
 
 package(default_visibility = ["//visibility:public"])
 
-# `cel` command-line driver.  Subcommands: eval / check / compile.
-# Schema-aware (--proto / --descriptor_set) and value-aware (--var
-# name:Type=value) wrapper around the celwasm::Compile pipeline +
-# cel::Engine runtime.
+# `cel` command-line driver.  Subcommands: eval / check / compile /
+# run / inspect.  Schema-aware (--proto / --descriptor_set) and
+# value-aware (--var name:Type=value) wrapper around the
+# celwasm::Compile pipeline + cel::Engine runtime.
 
 cc_library(
     name = "var_parser",
@@ -83,22 +83,6 @@ cc_test(
 )
 
 cc_library(
-    name = "run_generate",
-    srcs = ["run_generate.cc"],
-    hdrs = ["run_generate.h"],
-    deps = [
-        "//compiler/celfn:function_library",
-        "//compiler/celfn/celfnc_emit:cpp_codec_emitter",
-        "//compiler/celfn/celfnc_emit:cpp_skeleton_emitter",
-        "//compiler/celfn/celfnc_emit:cpp_stub_emitter",
-        "//compiler/celfn/celfnc_emit:wit_emitter",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-    ],
-)
-
-cc_library(
     name = "program_report",
     srcs = ["program_report.cc"],
     hdrs = ["program_report.h"],
@@ -109,46 +93,12 @@ cc_library(
     ],
 )
 
-cc_library(
-    name = "run_embed_decls",
-    srcs = ["run_embed_decls.cc"],
-    hdrs = ["run_embed_decls.h"],
-    deps = [
-        "//abi:plugin_validate",
-        "//abi:wasm_binary",
-        "//compiler/celfn:function_library",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-    ],
-)
-
-cc_test(
-    name = "run_embed_decls_test",
-    size = "small",
-    srcs = ["run_embed_decls_test.cc"],
-    deps = [
-        ":run_embed_decls",
-        "//abi:plugin",
-        "//abi:wasm_binary",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
 cc_binary(
     name = "cel",
     srcs = ["cel.cc"],
     visibility = ["//visibility:public"],
     deps = [
         ":program_report",
-        ":run_embed_decls",
-        ":run_generate",
         ":value_format",
         ":var_parser",
         "//compiler/internal:compile",
@@ -180,7 +130,6 @@ sh_test(
     srcs = ["cel_smoke_test.sh"],
     data = [
         ":cel",
-        "//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin.wasm",
         # A real FileDescriptorSet for the --descriptor_set rows; the
         # proto_library emits it as a by-product.
         "//testdata:e2e_fixture_proto",

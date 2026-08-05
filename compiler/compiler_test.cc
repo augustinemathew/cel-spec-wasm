@@ -10,8 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "abi/plugin.h"
-#include "abi/wasm_binary.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
@@ -368,18 +366,15 @@ TEST(CompilerBuilderAddFunctionTest, CompileReceiverHostFnResolvesAndLowers) {
   EXPECT_EQ(bytes[3], 0x6d);
 }
 
-// kPlugin decls are dispatched via the host-callback path
-// (cel_fn) per m24 §2-§3 — a Component-Model-backed fn is invisible
-// to the compiler / checker / overload table at the call site (the
-// emitted wasm import is `(import "cel_fn" "<helper>" …)`, identical
-// to a kHost decl).  These tests pin that contract.
-TEST(CompilerBuilderDeclareFunctionsTest, PluginDeclRoutesViaCelFn) {
+// Global (non-receiver) host decls lower to the same
+// `(import "cel_fn" "<helper>" …)` shape as receiver-style decls.
+TEST(CompilerBuilderDeclareFunctionsTest, GlobalHostDeclRoutesViaCelFn) {
   const celwasm::CelType ret = celwasm::CelType::Bool();
   const celwasm::CelType arg = celwasm::CelType::String();
   auto lib_or =
       celwasm::FunctionLibrary::Builder()
-          .AddPlugin("allow", ret,
-                     {celwasm::CelfnParam{/*is_receiver=*/false, arg, "u"}})
+          .AddHost("allow", ret,
+                   {celwasm::CelfnParam{/*is_receiver=*/false, arg, "u"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
@@ -398,22 +393,20 @@ TEST(CompilerBuilderDeclareFunctionsTest, PluginDeclRoutesViaCelFn) {
   const std::string blob(reinterpret_cast<const char*>(bytes.data()),
                          bytes.size());
   EXPECT_NE(blob.find("cel_fn"), std::string::npos)
-      << "kPlugin decl did not produce a `cel_fn` import — "
-         "routing regressed";
+      << "host decl did not produce a `cel_fn` import — routing regressed";
   EXPECT_NE(blob.find("allow_string"), std::string::npos)
       << "helper name not present in emitted imports";
 }
 
 TEST(CompilerBuilderDeclareFunctionsTest,
-     PluginDeclAdmitsProtoAndRoutesViaCelFn) {
-  // m24 §8 admits proto(...) on kPlugin (cross as bytes).
+     HostDeclAdmitsProtoAndRoutesViaCelFn) {
   const celwasm::CelType ret = celwasm::CelType::Bool();
   const celwasm::CelType arg =
       celwasm::CelType::Message("celwasm.testdata.Customer");
   auto lib_or =
       celwasm::FunctionLibrary::Builder()
-          .AddPlugin("is_premium", ret,
-                     {celwasm::CelfnParam{/*is_receiver=*/false, arg, "c"}})
+          .AddHost("is_premium", ret,
+                   {celwasm::CelfnParam{/*is_receiver=*/false, arg, "c"}})
           .Build();
   ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
@@ -431,119 +424,33 @@ TEST(CompilerBuilderDeclareFunctionsTest,
             std::string::npos);
 }
 
-TEST(CompilerBuilderDeclareFunctionsTest,
-     PluginAndHostCoexistAndShareCelFnNamespace) {
-  // Two decls with distinct overload-ids, one kHost + one kPlugin,
-  // both routing via cel_fn — must coexist in one library.
-  const celwasm::CelType b_t = celwasm::CelType::Bool();
-  const celwasm::CelType s_t = celwasm::CelType::String();
-  auto lib_or =
-      celwasm::FunctionLibrary::Builder()
-          .AddHost("upper", s_t, {celwasm::CelfnParam{true, s_t, "s"}})
-          .AddPlugin("allow", b_t, {celwasm::CelfnParam{false, s_t, "u"}})
-          .Build();
-  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
-  ASSERT_EQ(lib_or->decls().size(), 2u);
-  EXPECT_EQ(lib_or->decls()[0].backend, celwasm::CelfnDecl::Backend::kHost);
-  EXPECT_EQ(lib_or->decls()[1].backend, celwasm::CelfnDecl::Backend::kPlugin);
-  // Both decls should claim module_name=="cel_fn" (the call-site
-  // import-module is the same for kHost and kPlugin).
-  EXPECT_EQ(lib_or->decls()[0].module_name, "cel_fn");
-  EXPECT_EQ(lib_or->decls()[1].module_name, "cel_fn");
-}
-
-TEST(CompilerBuilderDeclareFunctionsTest, PluginDuplicateOverloadIdRejected) {
-  // Same overload-id collision detection as @host — registering the
-  // same helper twice (one @host + one kPlugin) must fail.
-  const celwasm::CelType b_t = celwasm::CelType::Bool();
-  const celwasm::CelType s_t = celwasm::CelType::String();
-  auto lib_or =
-      celwasm::FunctionLibrary::Builder()
-          .AddHost("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
-          .AddPlugin("clash", b_t, {celwasm::CelfnParam{false, s_t, "x"}})
-          .Build();
-  EXPECT_THAT(lib_or, StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(std::string(lib_or.status().message()),
-              testing::HasSubstr("duplicate"));
-}
-
-// ─── m35 B2 — Compiler::Builder::Use(Plugin) ─────────────────────
-//
-// `Use(plugin)` is exactly `DeclareFunctions(plugin.library())` —
-// the compile side needs no wasm engine, so the fixtures below are
-// hand-framed plugin bytes (Component-Model preamble + a `cel.fns`
-// custom section built with the production framing writer), the
-// same shape abi/plugin_test.cc pins.
-
-// `\0asm` + version/layer word 0x0001000d — a minimal CM component.
-constexpr uint8_t kComponentPreamble[] = {0x00, 0x61, 0x73, 0x6d,
-                                          0x0d, 0x00, 0x01, 0x00};
-
-Plugin MakePlugin(absl::string_view celfn_text) {
-  std::vector<uint8_t> bytes(kComponentPreamble,
-                             kComponentPreamble + sizeof(kComponentPreamble));
-  const std::vector<uint8_t> section = BuildCustomSection(
-      "cel.fns",
-      {reinterpret_cast<const uint8_t*>(celfn_text.data()), celfn_text.size()});
-  bytes.insert(bytes.end(), section.begin(), section.end());
-  auto plugin_or = Plugin::Load(bytes);
-  EXPECT_THAT(plugin_or, IsOk()) << plugin_or.status();
-  return *std::move(plugin_or);
-}
-
-TEST(CompilerBuilderUseTest, UseRegistersDeclsAndCallSiteTypeChecks) {
-  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
-  auto b = Compiler::NewBuilder();
-  b.DeclareVariable("x", CelType::Int())
-      .DeclareVariable("y", CelType::Int())
-      .Use(plugin);
-  auto c = std::move(b).Build();
-  ASSERT_THAT(c, IsOk());
-  ASSERT_EQ(c->function_libraries().size(), 1u);
-  EXPECT_EQ(c->function_libraries()[0].decls()[0].overload_id, "add_int_int");
-  // The call site type-checks against the plugin's declaration and
-  // lowers to a `cel_fn.add_int_int` import.
-  auto prog_or = c->Compile("add(x, y)", LinkModeOpts());
-  ASSERT_THAT(prog_or, IsOk()) << prog_or.status();
-  const std::string blob(
-      reinterpret_cast<const char*>(prog_or->wasm_bytes().data()),
-      prog_or->wasm_bytes().size());
-  EXPECT_NE(blob.find("add_int_int"), std::string::npos);
-}
-
-TEST(CompilerBuilderUseTest, CallSiteTypeMismatchFailsAtCompile) {
+TEST(CompilerBuilderDeclareFunctionsTest, CallSiteTypeMismatchFailsAtCompile) {
   // The declared signature is enforced at the call site — the wrong
   // argument type fails Compile (checker InvalidArgument), which is
-  // the whole point of declarations flowing from the artifact.
-  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
+  // the whole point of declarations flowing from the library.
   auto b = Compiler::NewBuilder();
-  b.DeclareVariable("s", CelType::String()).Use(plugin);
+  b.DeclareVariable("s", CelType::String());
+  b.AddFunction("int @host.add(int a, int b);");
   auto c = std::move(b).Build();
   ASSERT_THAT(c, IsOk());
   EXPECT_THAT(c->Compile("add(s, s)", LinkModeOpts()),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
-TEST(CompilerBuilderUseTest, DuplicateOverloadIdAcrossTwoUsesFailsAtBuild) {
-  const Plugin p1 = MakePlugin("int @plugin.add(int a, int b);\n");
-  const Plugin p2 = MakePlugin("int @plugin.add(int a, int b);\n");
-  auto b = Compiler::NewBuilder();
-  b.Use(p1).Use(p2);
-  auto build_or = std::move(b).Build();
-  EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(std::string(build_or.status().message()),
-              testing::HasSubstr("add_int_int"));
-  EXPECT_THAT(std::string(build_or.status().message()),
-              testing::HasSubstr("more than one library"));
-}
-
-TEST(CompilerBuilderUseTest, DuplicateOverloadIdAcrossUseAndAddFunction) {
-  // A Use'd plugin decl and a text-path AddFunction decl that
+TEST(CompilerBuilderDeclareFunctionsTest,
+     DuplicateOverloadIdAcrossDeclareFunctionsAndAddFunction) {
+  // A DeclareFunctions decl and a text-path AddFunction decl that
   // synthesise the same overload-id collide at Build(), same as any
   // cross-library duplicate.
-  const Plugin plugin = MakePlugin("int @plugin.add(int a, int b);\n");
+  auto lib_or =
+      celwasm::FunctionLibrary::Builder()
+          .AddHost("add", celwasm::CelType::Int(),
+                   {celwasm::CelfnParam{false, celwasm::CelType::Int(), "a"},
+                    celwasm::CelfnParam{false, celwasm::CelType::Int(), "b"}})
+          .Build();
+  ASSERT_THAT(lib_or, IsOk()) << lib_or.status();
   auto b = Compiler::NewBuilder();
-  b.Use(plugin);
+  b.DeclareFunctions(*std::move(lib_or));
   b.AddFunction("int @host.add(int a, int b);");
   auto build_or = std::move(b).Build();
   EXPECT_THAT(build_or, StatusIs(absl::StatusCode::kInvalidArgument));

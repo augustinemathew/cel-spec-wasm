@@ -1,6 +1,6 @@
 # abi-shared — design notes (undefined)
 
-Scope: `abi/` (cel.abi wire contract, runtime-helper catalogue, WIT vocabulary)
+Scope: `abi/` (cel.abi wire contract, runtime-helper catalogue)
 and `shared/` (CelType), plus the paired decode side `eval/internal/abi_decode.*`
 and its consumers in `eval/engine.cc` / `eval/instance.cc`.
 
@@ -145,24 +145,19 @@ every host/env trampoline (results via out_slot in linear memory) and true only
 for runtime arena/iter/count helpers (`runtime_catalogue.proto:53-63`,
 enforced by `runtime_catalogue_test.cc:91-104`).
 
-### 1.6 `abi/wit/cel.wit` — Component-Model vocabulary
+### 1.6 `abi/wit/` — removed
 
-Parallel contract for the foreign-component custom-fn boundary. The complete
-CEL value model as a WIT `resource value` (WIT forbids recursive variants, so
-aggregates nest through handles; proto messages cross as
-`record message {type-name, wire: list<u8>}`) — `abi/wit/cel.wit:1-66`. Two
-worlds: `cel-runtime` (exports types, imports custom-fn) and `custom-provider`
-(the inverse) — `cel.wit:77-78`. Reserved for the dynamic/variadic path; the
-common concretely-typed path uses per-fn typed WIT and the canonical-ABI
-lift/lower bridge in `eval/internal/cel_component.h` (per-CEL-type WIT mapping
-table at `cel_component.h:12-34`).
+> **Removed 2026-08-04 (m39):** `abi/wit/` (the Component-Model WIT
+> vocabulary, `cel.wit` + README) was deleted with the plugin backend;
+> it is preserved on the `component-functions-archive` branch. No WIT
+> contract exists in the tree.
 
 ### 1.7 `shared/CelType` — the declaration-type vocabulary
 
 `shared/type.h` is a leaf, value-semantic type (no protobuf, no compiler dep;
 `shared/BUILD.bazel:3-15`, public visibility). Both `compiler/` and `eval/`
 consume it (verified: `compiler/compiler.h`, `eval/host_call_context.cc`,
-`eval/internal/cel_host.cc`, `eval/internal/cel_component.cc`, …) — it is the
+`eval/internal/cel_host.cc`, …) — it is the
 vocabulary the two halves share without depending on each other.
 
 - Kinds: `kUnknown=0, kBool=1 … kMessage=9, kDuration=11, kTimestamp=12,
@@ -231,10 +226,9 @@ vocabulary the two halves share without depending on each other.
    `runtime_catalogue.cc:109-120` filter them out of the same parse). The
    message-level comment "One runtime helper exported by cel_runtime.wasm"
    (`runtime_catalogue.proto:52`) is likewise too narrow.
-8. **P2 — `abi/wit/README.md:21-22`** says "No first-party
-   compiler/eval/runtime code consumes this yet — m24 is the milestone that
-   wires it in"; `eval/internal/cel_component.{h,cc}` now implements the
-   WIT mapping (`cel_component.h:12`) and m24 shipped.
+8. **Resolved-by-removal (m39):** the `abi/wit/README.md` staleness
+   finding is moot — `abi/wit/` was deleted with the plugin backend
+   (archived on `component-functions-archive`).
 9. **P2 — stale counts/structure in `abi-refactor.md`**: §2 "~146 entries"
    vs §4 "167 entries" for the `cel` set; §4 Slice C describes
    `wasm_exports.txt` as having `[codegen-helpers]` + `[host-only]`
@@ -311,8 +305,6 @@ vocabulary the two halves share without depending on each other.
   tested in eval-side suites, not here; the emit test file's claim that
   "decoder library tests land in a following commit"
   (`cel_abi_emit_test.cc:103-106`) did land (`abi_decode_test.cc`).
-- `cel.wit` has no first-party assembly/validation test target (`wit/README`
-  cites manual `wasm-tools component wit cel.wit`).
 - CelType: no test for `Type()` factory kind, `map_value()` death, or
   `CelTypeKindName` totality (test samples 5 of 13 kinds).
 
@@ -367,7 +359,3 @@ vocabulary the two halves share without depending on each other.
   intentionally NOT the wire `repr` numbering — three enums, three jobs
   (declaration vocabulary / IR-and-wire repr / runtime value kind); any new
   design doc must state all three and their alignment rules.
-- **WIT model nests via a resource handle**, because WIT forbids recursive
-  variants; proto messages cross as serialized bytes + type name
-  (`cel.wit:3-9`). The shared `value` resource is only for the
-  dynamic/variadic path; typed per-fn WIT is the common case.

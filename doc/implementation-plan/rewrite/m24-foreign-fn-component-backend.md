@@ -2,6 +2,10 @@
 
 Status: shipped 2026-06-04 (v1, native dispatch path).
 
+> **2026-08-04:** the component/plugin backend this doc describes was
+> removed from the tree (see `m39-component-removal.md`); the work is
+> preserved on branch `component-functions-archive`.
+
 What landed: the load-bearing slices A.1–A.5, B.1–B.7+B.9, C.1–C.4 plus
 an e2e dispatch proof. A `kForeignComponent` decl now routes through
 the shipped `kCelFn` import path (no new `ImportModule` variant),

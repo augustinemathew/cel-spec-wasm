@@ -106,7 +106,7 @@ absl::StatusOr<Value> DecodeArenaListAt(wasmtime_context_t* ctx,
                                         wasmtime_sharedmemory_t* mem,
                                         const celwasm::ExternrefTable& refs,
                                         uint32_t header_ptr) {
-  ArenaListHeader header;
+  ArenaListHeader header{};
   if (auto s = ReadMemBytes(ctx, mem, header_ptr, sizeof(header), &header);
       !s.ok()) {
     return s;
@@ -134,7 +134,7 @@ absl::StatusOr<Value> DecodeArenaMapAt(wasmtime_context_t* ctx,
                                        wasmtime_sharedmemory_t* mem,
                                        const celwasm::ExternrefTable& refs,
                                        uint32_t header_ptr) {
-  ArenaMapHeader header;
+  ArenaMapHeader header{};
   if (auto s = ReadMemBytes(ctx, mem, header_ptr, sizeof(header), &header);
       !s.ok()) {
     return s;
@@ -318,14 +318,10 @@ absl::StatusOr<Value> DecodeUnknownSetAt(wasmtime_context_t* ctx,
 // `celwasm::Value`.  Covers scalars, null, arena maps/lists, and
 // host-backed list / map arms (via the per-Instance ExternrefTable
 // threaded through `refs`).
-absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
-                                       wasmtime_sharedmemory_t* mem,
-                                       const celwasm::ExternrefTable& refs,
-                                       uint32_t offset) {
-  CelValue cv;
-  if (auto s = ReadMemBytes(ctx, mem, offset, sizeof(cv), &cv); !s.ok()) {
-    return s;
-  }
+// Decodes the CelValue kinds whose payload is carried inline in the
+// 16-byte slot — no linear-memory reads, no externref table.  Returns
+// nullopt for every kind that needs the memory-backed decoder below.
+std::optional<Value> DecodeImmediateCelValue(const CelValue& cv) {
   switch (cv.kind) {
     case CEL_NULL:
       return Value::Null();
@@ -337,6 +333,35 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       return Value::Uint(cv.payload.u);
     case CEL_DOUBLE:
       return Value::Double(cv.payload.d);
+    case CEL_DURATION:
+      // CelDurTs uses sign-correlated (seconds, nanos) — see
+      // `rewrite/m7b-duration-timestamp.md` §4.6.  absl::Seconds(s)
+      // + absl::Nanoseconds(ns) is the canonical reconstruction
+      // since absl::Duration shares the sign-correlated convention
+      // with proto Duration text format.
+      return Value::Duration(absl::Seconds(cv.payload.dur.seconds) +
+                             absl::Nanoseconds(cv.payload.dur.nanos));
+    case CEL_TIMESTAMP:
+      return Value::Timestamp(absl::UnixEpoch() +
+                              absl::Seconds(cv.payload.ts.seconds) +
+                              absl::Nanoseconds(cv.payload.ts.nanos));
+    default:
+      return std::nullopt;
+  }
+}
+
+absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
+                                       wasmtime_sharedmemory_t* mem,
+                                       const celwasm::ExternrefTable& refs,
+                                       uint32_t offset) {
+  CelValue cv;
+  if (auto s = ReadMemBytes(ctx, mem, offset, sizeof(cv), &cv); !s.ok()) {
+    return s;
+  }
+  if (auto immediate = DecodeImmediateCelValue(cv); immediate.has_value()) {
+    return *std::move(immediate);
+  }
+  switch (cv.kind) {
     case CEL_STRING: {
       auto bytes_or =
           ReadMemString(ctx, mem, cv.payload.s.ptr, cv.payload.s.len);
@@ -380,18 +405,6 @@ absl::StatusOr<Value> DecodeCelValueAt(wasmtime_context_t* ctx,
       if (!bytes_or.ok()) return bytes_or.status();
       return Value::Type(*std::move(bytes_or));
     }
-    case CEL_DURATION:
-      // CelDurTs uses sign-correlated (seconds, nanos) — see
-      // `rewrite/m7b-duration-timestamp.md` §4.6.  absl::Seconds(s)
-      // + absl::Nanoseconds(ns) is the canonical reconstruction
-      // since absl::Duration shares the sign-correlated convention
-      // with proto Duration text format.
-      return Value::Duration(absl::Seconds(cv.payload.dur.seconds) +
-                             absl::Nanoseconds(cv.payload.dur.nanos));
-    case CEL_TIMESTAMP:
-      return Value::Timestamp(absl::UnixEpoch() +
-                              absl::Seconds(cv.payload.ts.seconds) +
-                              absl::Nanoseconds(cv.payload.ts.nanos));
     default:
       return absl::InvalidArgumentError(absl::StrCat(
           "Eval returned a CelValue kind ", static_cast<int>(cv.kind),
@@ -933,8 +946,10 @@ struct EncoderContext {
 
 // Dispatch a declared Repr to the right per-kind encoder.  String
 // / bytes payload bytes land in the activation buffer (malloc'd
-// inside linear memory via wasm reentry).  Map / enum / unknown
-// activation marshalling not yet implemented.
+// inside linear memory via wasm reentry); message / list / map
+// bindings intern their backing into the per-Instance
+// ExternrefTable.  Non-bindable reprs (null / enum / unknown) are
+// rejected in the switch below.
 absl::Status EncodeBoundValue(const Value& v, celwasm::Repr repr,
                               absl::string_view name, CelValue* dst,
                               EncoderContext& ec) {

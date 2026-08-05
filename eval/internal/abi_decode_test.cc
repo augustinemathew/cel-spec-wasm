@@ -106,7 +106,7 @@ TEST(AbiDecodeTest, DecodesMultipleVariablesInOrder) {
 
 TEST(AbiDecodeTest, DecodesEveryScalarRepr) {
   struct Case {
-    absl::string_view name = "";
+    absl::string_view name;
     Repr repr = Repr::kUnknown;
   };
   const Case cases[] = {
@@ -146,17 +146,17 @@ TEST(AbiDecodeTest, DecodesRequiredFunctions) {
   host_fn->set_backend(celwasm::abi::RequiredFunction::HOST);
   host_fn->add_param_types()->set_kind(celwasm::abi::Type::KIND_STRING);
   host_fn->mutable_return_type()->set_kind(celwasm::abi::Type::KIND_INT);
-  auto* plugin_fn = abi.add_required_functions();
-  plugin_fn->set_overload_id("is_adult_message_acme_User");
-  plugin_fn->set_fn_name("is_adult");
-  plugin_fn->set_backend(celwasm::abi::RequiredFunction::PLUGIN);
-  auto* param = plugin_fn->add_param_types();
+  auto* receiver_fn = abi.add_required_functions();
+  receiver_fn->set_overload_id("is_adult_message_acme_User");
+  receiver_fn->set_fn_name("is_adult");
+  receiver_fn->set_backend(celwasm::abi::RequiredFunction::HOST);
+  auto* param = receiver_fn->add_param_types();
   param->set_kind(celwasm::abi::Type::KIND_LIST);
   auto* elem = param->add_params();
   elem->set_kind(celwasm::abi::Type::KIND_PROTO);
   elem->set_proto_fqn("acme.User");
-  plugin_fn->mutable_return_type()->set_kind(celwasm::abi::Type::KIND_BOOL);
-  plugin_fn->set_is_receiver(true);
+  receiver_fn->mutable_return_type()->set_kind(celwasm::abi::Type::KIND_BOOL);
+  receiver_fn->set_is_receiver(true);
 
   auto decoded = DecodeCelAbiFromWasm(
       MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi)));
@@ -172,7 +172,7 @@ TEST(AbiDecodeTest, DecodesRequiredFunctions) {
   EXPECT_FALSE(h.is_receiver());
   const auto& p = decoded->required_functions(1);
   EXPECT_EQ(p.overload_id(), "is_adult_message_acme_User");
-  EXPECT_EQ(p.backend(), celwasm::abi::RequiredFunction::PLUGIN);
+  EXPECT_EQ(p.backend(), celwasm::abi::RequiredFunction::HOST);
   ASSERT_EQ(p.param_types_size(), 1);
   ASSERT_EQ(p.param_types(0).params_size(), 1);
   EXPECT_EQ(p.param_types(0).params(0).proto_fqn(), "acme.User");
@@ -188,9 +188,15 @@ TEST(AbiDecodeTest, DecodesUnknownFnKindAndBackendWithoutRejection) {
   abi.set_version(1);
   auto* fn = abi.add_required_functions();
   fn->set_overload_id("future_fn");
-  fn->set_backend(static_cast<celwasm::abi::RequiredFunction::Backend>(7));
-  fn->mutable_return_type()->set_kind(
-      static_cast<celwasm::abi::Type::Kind>(99));
+  // Raw wire values via reflection — proto3 open enums preserve
+  // unknown values; a C++ enum cast is not part of that model.
+  celwasm::abi::RequiredFunction::GetReflection()->SetEnumValue(
+      fn,
+      celwasm::abi::RequiredFunction::descriptor()->FindFieldByName("backend"),
+      7);
+  auto* rt = fn->mutable_return_type();
+  celwasm::abi::Type::GetReflection()->SetEnumValue(
+      rt, celwasm::abi::Type::descriptor()->FindFieldByName("kind"), 99);
 
   auto decoded = DecodeCelAbiFromWasm(
       MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi)));
@@ -270,7 +276,7 @@ TEST(AbiDecodeTest, RoundTripsFieldRefsFromCompiler) {
 
 TEST(AbiDecodeTest, RoundTripsRequiredFunctionsFromCompiler) {
   // Emit → decode equality for the required-functions table: compile
-  // a program calling one of two declared plugin fns at O2 (the
+  // a program calling one of two declared host fns at O2 (the
   // unused import is dropped), decode the emitted bytes, and assert
   // the surviving row's full shape.
   const CelType bool_t = CelType::Bool();
@@ -280,10 +286,10 @@ TEST(AbiDecodeTest, RoundTripsRequiredFunctionsFromCompiler) {
   opts.check.variable_specs = {"u:string"};
   opts.function_libraries = {
       *FunctionLibrary::Builder()
-           .AddPlugin("allow", bool_t,
-                      {CelfnParam{/*is_receiver=*/false, string_t, "u"}})
-           .AddPlugin("deny", bool_t,
-                      {CelfnParam{/*is_receiver=*/false, string_t, "u"}})
+           .AddHost("allow", bool_t,
+                    {CelfnParam{/*is_receiver=*/false, string_t, "u"}})
+           .AddHost("deny", bool_t,
+                    {CelfnParam{/*is_receiver=*/false, string_t, "u"}})
            .Build()};
   opts.check.function_libraries = opts.function_libraries;
   auto artifact = Compile("allow(u)", opts);
@@ -294,7 +300,7 @@ TEST(AbiDecodeTest, RoundTripsRequiredFunctionsFromCompiler) {
   const auto& row = decoded->required_functions(0);
   EXPECT_EQ(row.overload_id(), "allow_string");
   EXPECT_EQ(row.fn_name(), "allow");
-  EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::PLUGIN);
+  EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::HOST);
   ASSERT_EQ(row.param_types_size(), 1);
   EXPECT_EQ(row.param_types(0).kind(), celwasm::abi::Type::KIND_STRING);
   EXPECT_EQ(row.return_type().kind(), celwasm::abi::Type::KIND_BOOL);

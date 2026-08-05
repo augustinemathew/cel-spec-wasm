@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <optional>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -21,10 +20,8 @@ constexpr uint8_t kWasmMagic[4] = {0x00, 0x61, 0x73, 0x6d};
 constexpr size_t kPreambleSize = 8;
 // Core-module version word.
 constexpr uint32_t kCoreVersionWord = 0x00000001;
-// Component-Model version/layer word (version 0x0d, layer 0x01).
-constexpr uint32_t kComponentVersionWord = 0x0001000d;
 
-// Custom sections have section id 0 at both layers.
+// Custom sections have section id 0.
 constexpr uint8_t kCustomSectionId = 0;
 
 // Upper bound on unsigned LEB128 for a u32 (5 x 7 bits).
@@ -33,8 +30,7 @@ constexpr size_t kMaxU32LebBytes = 5;
 // Reads the section-size / name-length LEB at `*pos`, mapping a
 // truncated or overlong encoding to InvalidArgument.
 absl::StatusOr<uint32_t> ReadFramingLeb(absl::Span<const uint8_t> bytes,
-                                        size_t* pos,
-                                        absl::string_view what) {
+                                        size_t* pos, absl::string_view what) {
   uint32_t value = 0;
   if (!ReadLeb128U32(bytes, pos, &value)) {
     return absl::InvalidArgumentError(
@@ -45,31 +41,17 @@ absl::StatusOr<uint32_t> ReadFramingLeb(absl::Span<const uint8_t> bytes,
 
 }  // namespace
 
-std::optional<WasmLayer> ClassifyWasmBinary(absl::Span<const uint8_t> bytes) {
-  if (bytes.size() < kPreambleSize) return std::nullopt;
+bool IsCoreModule(absl::Span<const uint8_t> bytes) {
+  if (bytes.size() < kPreambleSize) return false;
   if (std::memcmp(bytes.data(), kWasmMagic, sizeof(kWasmMagic)) != 0) {
-    return std::nullopt;
+    return false;
   }
   uint32_t word = 0;
   std::memcpy(&word, bytes.data() + sizeof(kWasmMagic), sizeof(word));
-  switch (word) {
-    case kCoreVersionWord:
-      return WasmLayer::kCoreModule;
-    case kComponentVersionWord:
-      return WasmLayer::kComponent;
-    default:
-      // Open set by design: unknown future version words are "not a
-      // binary we understand", not an invariant violation.
-      return std::nullopt;
-  }
-}
-
-bool IsCoreModule(absl::Span<const uint8_t> bytes) {
-  return ClassifyWasmBinary(bytes) == WasmLayer::kCoreModule;
-}
-
-bool IsComponentBinary(absl::Span<const uint8_t> bytes) {
-  return ClassifyWasmBinary(bytes) == WasmLayer::kComponent;
+  // Open set by design: any other version word — including a
+  // Component-Model component's 0x0001000d — is "not a core module",
+  // not an invariant violation.
+  return word == kCoreVersionWord;
 }
 
 bool ReadLeb128U32(absl::Span<const uint8_t> bytes, size_t* pos,
@@ -122,10 +104,10 @@ absl::StatusOr<absl::string_view> ReadSectionName(
 
 absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
     absl::Span<const uint8_t> wasm_bytes, absl::string_view name) {
-  if (!ClassifyWasmBinary(wasm_bytes).has_value()) {
+  if (!IsCoreModule(wasm_bytes)) {
     return absl::InvalidArgumentError(
-        "wasm_binary: bytes are neither a core wasm module nor a component "
-        "(bad or truncated preamble)");
+        "wasm_binary: bytes are not a core wasm module (bad or truncated "
+        "preamble)");
   }
   size_t pos = kPreambleSize;
   std::optional<absl::Span<const uint8_t>> found;
@@ -139,9 +121,8 @@ absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
           "wasm_binary: section size runs past end of binary");
     }
     const size_t section_end = pos + *size_or;
-    // Non-custom sections — including nested core-module / component
-    // sections at component level — are skipped opaquely, never
-    // recursed into: this walker is top-level only by contract.
+    // Non-custom sections are skipped opaquely, never recursed into:
+    // this walker is top-level only by contract.
     if (section_id == kCustomSectionId) {
       auto name_or = ReadSectionName(wasm_bytes, &pos, section_end);
       if (!name_or.ok()) return name_or.status();
@@ -156,8 +137,8 @@ absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
     pos = section_end;
   }
   if (found.has_value()) return *found;
-  return absl::NotFoundError(absl::StrCat(
-      "wasm_binary: custom section `", name, "` not found at top level"));
+  return absl::NotFoundError(absl::StrCat("wasm_binary: custom section `", name,
+                                          "` not found at top level"));
 }
 
 absl::StatusOr<std::vector<uint8_t>> AppendCustomSection(

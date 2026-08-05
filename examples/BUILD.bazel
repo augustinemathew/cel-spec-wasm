@@ -5,8 +5,7 @@
 #   bazel run //examples:01_hello_world
 #
 # Examples depend ONLY on the sanctioned public targets
-# (//compiler:{compiler,program}, //eval:*, //shared:type,
-# //abi:plugin) — they
+# (//compiler:{compiler,program}, //eval:*, //shared:type) — they
 # double as a compile-time check that the public surface is sufficient
 # for real embedders.  `:examples_smoke_test` runs every binary and
 # asserts on its output, so the examples (and the doc snippets built
@@ -15,7 +14,6 @@
 load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
-load("//bazel:cel_wasm_plugin.bzl", "cel_wasm_plugin")
 
 # The taxonomy drift guard (//e2e:taxonomy_validate_test) reads this
 # BUILD file to verify cli_workloads entries name real targets.
@@ -159,33 +157,6 @@ cc_binary(
     ],
 )
 
-# The sandboxed custom function for example 09: adder.idl +
-# adder_fns.cc → adder_plugin.wasm (a Component-Model component
-# with its own linear memory).
-cel_wasm_plugin(
-    name = "adder_plugin",
-    idl = "adder.idl",
-    user_fns = ["adder_fns.cc"],
-)
-
-cc_binary(
-    name = "09_plugin_functions",
-    srcs = ["09_plugin_functions.cc"],
-    data = [":adder_plugin"],
-    deps = [
-        "//abi:plugin",
-        "//compiler:compiler",
-        "//compiler:program",
-        "//eval:activation",
-        "//eval:engine",
-        "//eval:instance",
-        "//eval:value",
-        "//shared:type",
-        "@bazel_tools//tools/cpp/runfiles",
-        "@com_google_absl//absl/log:absl_check",
-    ],
-)
-
 # Runs every example and asserts on key output lines — the rot gate
 # for the examples and for every doc snippet derived from them.
 sh_test(
@@ -201,6 +172,5 @@ sh_test(
         ":06_proto_messages",
         ":07_error_handling",
         ":08_function_errors_and_unknowns",
-        ":09_plugin_functions",
     ],
 )

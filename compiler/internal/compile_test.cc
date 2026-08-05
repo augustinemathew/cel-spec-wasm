@@ -706,22 +706,19 @@ TEST(CompileProtoMapTest, ProtoMapEmittedModuleSerializesAndValidates) {
 // post-optimize surface, not the registered libraries: overload
 // imports are installed unconditionally for every declared custom
 // fn, Binaryen drops the unused ones at O1+, and wasmtime demands
-// every SURVIVING import at link time.  See
-// doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §5.2.
+// every SURVIVING import at link time.
 
 namespace {
 
-// Two plugin decls — the O2 pin calls only `allow`, so `deny_string`
+// Two host decls — the O2 pin calls only `allow`, so `deny_string`
 // must survive at O0 and vanish at O2.
-std::vector<FunctionLibrary> TwoPluginFnLibs() {
+std::vector<FunctionLibrary> TwoHostFnLibs() {
   auto lib =
       *FunctionLibrary::Builder()
-           .AddPlugin(
-               "allow", CelType::Bool(),
-               {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
-           .AddPlugin(
-               "deny", CelType::Bool(),
-               {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
+           .AddHost("allow", CelType::Bool(),
+                    {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
+           .AddHost("deny", CelType::Bool(),
+                    {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
            .Build();
   return {std::move(lib)};
 }
@@ -751,7 +748,7 @@ CompileOptions RequiredFnOpts(CompileOptions::LinkMode link_mode,
   opts.link_mode = link_mode;
   opts.optimize_level = optimize_level;
   opts.check.variable_specs = {"u:string"};
-  opts.function_libraries = TwoPluginFnLibs();
+  opts.function_libraries = TwoHostFnLibs();
   // Both hops need the decls: the checker resolves call sites from
   // `check.function_libraries`; codegen + the required-functions
   // emitter read `function_libraries`.
@@ -810,15 +807,15 @@ TEST(CompileRequiredFunctionsTest, OptTwoDropsUnusedImportFromTable) {
   }
 }
 
-TEST(CompileRequiredFunctionsTest, MixedBackendsCarryBackendPerRow) {
+TEST(CompileRequiredFunctionsTest, MultipleRowsCarryHostBackendPerRow) {
   CompileOptions opts;
   opts.check.variable_specs = {"u:string"};
   opts.function_libraries = {
       *FunctionLibrary::Builder()
            .AddHost("discount_pct", CelType::Int(),
                     {CelfnParam{false, CelType::String(), "s"}})
-           .AddPlugin("allow", CelType::Bool(),
-                      {CelfnParam{false, CelType::String(), "u"}})
+           .AddHost("allow", CelType::Bool(),
+                    {CelfnParam{false, CelType::String(), "u"}})
            .Build()};
   opts.check.function_libraries = opts.function_libraries;
   auto art_or = Compile("allow(u) && discount_pct(u) > 0", opts);
@@ -832,7 +829,7 @@ TEST(CompileRequiredFunctionsTest, MixedBackendsCarryBackendPerRow) {
       EXPECT_EQ(row.fn_name(), "discount_pct");
     } else {
       EXPECT_EQ(row.overload_id(), "allow_string");
-      EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::PLUGIN);
+      EXPECT_EQ(row.backend(), celwasm::abi::RequiredFunction::HOST);
       EXPECT_EQ(row.fn_name(), "allow");
     }
   }

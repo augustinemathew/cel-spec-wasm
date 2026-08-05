@@ -2,7 +2,7 @@
 // declares, and what it requires to run.
 //
 // Lives beside the other artifact-introspection libraries
-// (`abi/plugin.h`, `abi/wasm_binary.h`) rather than in a tool, because
+// (`abi/wasm_binary.h`) rather than in a tool, because
 // nothing about it is CLI-specific — any embedder, binding, or
 // build-time check that wants to know "what does this artifact need?"
 // asks here.  `tools/cel` keeps only the rendering of these facts to a
@@ -57,14 +57,14 @@ struct DeclaredVar {
   bool has_full_type = false;
 };
 
-// One custom function the program will demand at `Plan`.
+// One custom function the program will demand at `Plan` — a `@host.`
+// C++ callback in the embedder's process.  Backend verification
+// (including rejecting rows whose wire backend this build does not
+// recognise) happens at `Engine::Plan`, not here — see
+// `eval/internal/required_fn_check.cc`.
 struct RequiredFn {
   std::string name;       // source-level name
   std::string signature;  // `.celfn` spelling, via abi::RenderSignature
-  // `@host` functions are C++ in the embedder's process; the CLI
-  // cannot supply them.  Plugin functions are satisfiable with a
-  // wasm artifact.
-  bool is_host = false;
 };
 
 // What a program declares, and what it requires to run.

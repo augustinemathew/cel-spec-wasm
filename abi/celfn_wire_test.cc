@@ -5,10 +5,9 @@
 //   - TypeEquals: positive (reflexive over nested shapes, unknown
 //     kinds numerically equal) and negative along every signature-
 //     matrix axis expressible at the type level — kind, proto FQN,
-//     params count, nested generic element (see
-//     m35-plugin-ergonomics.md §12; arity / return / is_receiver
-//     axes live on RequiredFunction and are compared by the Plan
-//     check, not here).
+//     params count, nested generic element (arity / return /
+//     is_receiver axes live on RequiredFunction and are compared
+//     by the Plan check, not here).
 //   - RenderSignature: the frozen message spellings from the m35
 //     plan §2, receiver / zero-param / nested-generic forms, and
 //     open-set rendering of unknown kinds.
@@ -55,8 +54,12 @@ Type WireScalar(Type::Kind kind) {
 }
 
 Type WireUnknownKind(int value) {
+  // Out-of-range wire simulation: set the raw enum value through
+  // reflection, the way an unknown value arrives off the wire in
+  // proto3's open-enum model (no C++-level enum cast involved).
   Type t;
-  t.set_kind(static_cast<Type::Kind>(value));
+  Type::GetReflection()->SetEnumValue(
+      &t, Type::descriptor()->FindFieldByName("kind"), value);
   return t;
 }
 
@@ -328,14 +331,14 @@ CelfnDecl MakeDecl(CelfnDecl::Backend backend, std::string fn_name,
   return d;
 }
 
-TEST(RequiredFunctionFromDeclTest, PluginDeclMapsAllFields) {
-  const CelfnDecl decl = MakeDecl(CelfnDecl::Backend::kPlugin, "is_adult",
+TEST(RequiredFunctionFromDeclTest, HostDeclMapsAllFields) {
+  const CelfnDecl decl = MakeDecl(CelfnDecl::Backend::kHost, "is_adult",
                                   "is_adult_message_acme_User", CelType::Bool(),
                                   {CelfnParam{false, Proto("acme.User"), "u"}});
   const RequiredFunction row = RequiredFunctionFromDecl(decl);
   EXPECT_EQ(row.overload_id(), "is_adult_message_acme_User");
   EXPECT_EQ(row.fn_name(), "is_adult");
-  EXPECT_EQ(row.backend(), RequiredFunction::PLUGIN);
+  EXPECT_EQ(row.backend(), RequiredFunction::HOST);
   ASSERT_EQ(row.param_types_size(), 1);
   EXPECT_EQ(row.param_types(0).kind(), Type::KIND_PROTO);
   EXPECT_EQ(row.param_types(0).proto_fqn(), "acme.User");
@@ -352,13 +355,6 @@ TEST(RequiredFunctionFromDeclTest, HostReceiverDeclMapsBackendAndReceiver) {
   EXPECT_EQ(row.backend(), RequiredFunction::HOST);
   EXPECT_TRUE(row.is_receiver());
   EXPECT_EQ(RenderSignature(row), "string upper(this string)");
-}
-
-TEST(RequiredFunctionFromDeclDeathTest, CelDefinedDeclChecks) {
-  const CelfnDecl decl =
-      MakeDecl(CelfnDecl::Backend::kCelDefined, "twice", "twice_int",
-               CelType::Int(), {CelfnParam{false, CelType::Int(), "x"}});
-  EXPECT_DEATH(RequiredFunctionFromDecl(decl), "has no cel_fn wire backend");
 }
 
 }  // namespace

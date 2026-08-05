@@ -21,7 +21,14 @@ struck through or removed.
 
 ## Open
 
-- [ ] **#52** — m35 dedupe items deliberately deferred at the
+- [x] **#52** — RESOLVED-BY-REMOVAL 2026-08-04 (m39): both dedupe
+      targets lived in the plugin surface, which was deleted whole
+      (m39-component-removal.md) — (a) `IsValidUtf8` went with
+      `abi/plugin.cc`; (b) the `kComponentPreamble`/`kCorePreamble`
+      test constants went with the plugin/embed-decls tests; the one
+      surviving copy (`abi/wasm_binary_test.cc`) is no duplication.
+      Original entry follows.
+      m35 dedupe items deliberately deferred at the
       post-review cleanup: (a) **D6** — a third first-party UTF-8
       validator (`IsValidUtf8` in `abi/plugin.cc`) alongside
       `runtime/cel_string_ext_internal.h::Utf8Decode` (wasm-C-side;
@@ -98,7 +105,11 @@ struck through or removed.
       Why P1: every future declarable-type feature pays the
       three-vocabulary tax until this lands.
 
-- [ ] **#51** — pre-existing wasm32-wasip2 cross-compile break:
+- [x] **#51** — RESOLVED-BY-REMOVAL 2026-08-04 (m39): the wasip2
+      toolchain, the demo fixture, and the two hostage e2e pins were
+      all deleted with the plugin backend (m39-component-removal.md).
+      Original entry follows.
+      pre-existing wasm32-wasip2 cross-compile break:
       `//e2e/plugin_fixtures/cel_wasm_plugin_demo:demo_plugin_proto`
       (manual) fails to build — `@abseil-cpp` `synchronization/
       mutex.cc` doesn't compile for wasm32-wasip2 (`std::this_thread`
@@ -355,7 +366,13 @@ struck through or removed.
             rejection assertion back to a value check.  Localised to
             the operand-nesting in `compiler/codegen/expr_lower.cc`.
 
-- [ ] **#44** — unimplemented-but-declared surfaces swept in the
+- [x] **#44** — CLOSED 2026-08-04 (m39): every remaining open half
+      is gone.  The Activation half closed in m36 (`BindLazy`
+      implemented, `OverrideFunction` deleted); the `cel_component`
+      Lower type-of-types Unimplemented and the `AddForeignComponent`
+      admission were deleted with the plugin backend
+      (m39-component-removal.md).  Original entry follows.
+      unimplemented-but-declared surfaces swept in the
       2026-06-10 review.  **Partially cleared 2026-07-25 (m36):**
       `Activation::BindLazy` is implemented and
       `Activation::OverrideFunction` was removed from the public
@@ -395,7 +412,12 @@ struck through or removed.
       `BindLazy` / `OverrideFunction` API-honesty half and
       `cel_component` Lower's type-of-types Unimplemented.
 
-- [ ] **#43** — true-e2e coverage gap for `cel_component.cc`'s
+- [x] **#43** — RESOLVED-BY-REMOVAL 2026-08-04 (m39):
+      `eval/internal/cel_component.{h,cc}` (later `cel_plugin`) and
+      its tests were deleted with the plugin backend
+      (m39-component-removal.md); the coverage gap no longer has a
+      subject.  Original entry follows.
+      true-e2e coverage gap for `cel_component.cc`'s
       malformed-`wasmtime_component_val_t` NULL guards (closes
       out gap left when #37 shipped).  Today's coverage:
       `eval/internal/cel_component_test.cc` exercises
@@ -558,7 +580,19 @@ struck through or removed.
       bypass) by the trampoline code path.  No known production
       input produces the attack ptr today.
 
-- [ ] **#41** — `optional.ofNonZeroValue(message)` overload causes
+- [x] **#41** — CLOSED 2026-08-04 as a **stale duplicate of #10**
+      (which fixed it 2026-06-10 via the
+      `cel_host.cel_message_is_zero` trampoline).  The row this
+      entry cites has been PASS since then — the corpus is at 0
+      FAIL in both link modes and names this exact row as the last
+      FAIL fixed (`conformance/README.md:189-194`).  The m39 F1
+      node re-verified the feature end-to-end (oracle-confirmed,
+      all layers green) before closing no-change; see the F1
+      record in `rewrite/m39-component-removal.md`'s decisions
+      log.  Pin-hygiene lesson: this entry survived its own fix by
+      ~2 months because #10's closure didn't sweep for duplicates.
+      Original entry (stale) follows.
+      `optional.ofNonZeroValue(message)` overload causes
       a wasm trap.  Conformance row
       `optionals/optional_ofNonZeroValue_struct_optional_ofNonZeroValue_map_optindex_field`:
       `optional.ofNonZeroValue(TestAllTypes{?single_double_wrapper:
@@ -1803,7 +1837,17 @@ struck through or removed.
       Surfaced: 2026-06-09 production-readiness review.
       Severity: P1 — fix before promoting the repo.
 
-- [ ] **#32** — `Engine::AddComponent` (public API, eval/engine.h)
+- [x] **#32** — RESOLVED-BY-REMOVAL 2026-08-04 (m39):
+      `Engine::AddComponent` (later `AddPlugin`) was deleted with
+      the plugin backend (m39-component-removal.md); the surviving
+      decl-string surface is `Engine::BindFunction`.  Residual (not
+      this entry's subject): `Compiler::Builder::DeclareFunctions`
+      still takes `FunctionLibrary` (`//:internal`) on a public
+      builder — external embedders use the string-based
+      `Builder::AddFunction` / `Engine::BindFunction` pair; fold
+      into the m39 dead-API audit if it needs its own entry.
+      Original entry follows.
+      `Engine::AddComponent` (public API, eval/engine.h)
       takes `const FunctionLibrary&`, but
       `//compiler/celfn:function_library` is `//:internal` —
       a public method whose parameter type an external consumer
@@ -2113,3 +2157,15 @@ follow-up cleanup, not a current regression.
       Files: `runtime/cel_internal.h`, `runtime/cel_string_ops.c`,
       `runtime/cel_runtime.c`.
 
+
+- [ ] **#57 — lint harness: cel-cpp `compiler/compiler.h` include
+  collision** (2026-08-05, m39 gate). TUs including vendored cel-cpp's
+  `extensions/*.h` cannot be clang-tidied: the extension headers
+  `#include "compiler/compiler.h"` (cel-cpp's), but tidy runs
+  unsandboxed and `-iquote .` resolves to OUR header of the same name
+  (bazel builds are immune — sandboxing omits undeclared inputs from
+  the search space). `parse_and_check.cc` + `cel_cpp_oracle.cc` are
+  format-only in `scripts/lint.sh` until fixed. Candidate fixes: a
+  clang `-ivfsoverlay` hiding first-party headers when tidying those
+  TUs, or renaming our `compiler/compiler.h` (breaking-change-allowed
+  pre-1.0, but touches every consumer).

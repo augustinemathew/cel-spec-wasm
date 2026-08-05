@@ -43,7 +43,7 @@ def dependency_graph():
         c.node('frontend', 'frontend\nparse_and_check', fillcolor=VIOLET)
         c.node('ir', 'ir\ntyped_ast · annotations', fillcolor='#A855F7')
         c.node('codegen', 'codegen\nresolve · layout · lower', fillcolor=MAGENTA)
-        c.node('celfn', 'celfn\nFunctionLibrary · emitters', fillcolor='#DB2777')
+        c.node('celfn', 'celfn\nFunctionLibrary (.celfn IDL)', fillcolor='#DB2777')
     with g.subgraph(name='cluster_eval') as c:
         c.attr(label='eval/  (host-side evaluator)', style='rounded,filled',
                fillcolor='#ECFDF5', color=TEAL, fontcolor='#065F46', fontsize='12')
@@ -52,16 +52,16 @@ def dependency_graph():
         c.node('eval_int', 'eval/internal\ncel_host · abi_decode · wasmtime glue',
                fillcolor=EMERALD)
     g.node('shared', 'shared\nCelType', fillcolor=SKY)
-    g.node('abi', 'abi\ncel.abi emit · Plugin · wasm_binary\nruntime catalogue', fillcolor='#0284C7')
+    g.node('abi', 'abi\ncel.abi emit · celfn_wire · wasm_binary\nruntime catalogue', fillcolor='#0284C7')
     g.node('runtime', 'runtime\ncel_runtime.c → .wasm kernel', fillcolor=AMBER,
            fontcolor='#451A03')
     for a, b in [('compiler_pub', 'frontend'), ('compiler_pub', 'celfn'),
                  ('frontend', 'ir'), ('codegen', 'ir'), ('compiler_pub', 'codegen'),
                  ('frontend', 'shared'), ('compiler_pub', 'shared'),
                  ('codegen', 'abi'), ('codegen', 'runtime'),
-                 ('compiler_pub', 'abi'),   # Compiler::Builder::Use(const Plugin&)
-                 ('eval_pub', 'abi'),       # Engine::Use(const Plugin&)
-                 ('abi', 'celfn'),          # Plugin::Load → ParseCelfnSource
+                 ('compiler_pub', 'abi'),   # //abi:celfn_wire (decl signature mapping)
+                 ('eval_pub', 'abi'),       # cel.abi decode · //abi:wasm_binary framing
+                 ('abi', 'celfn'),          # celfn_wire ↔ FunctionLibrary vocabulary
                  ('eval_pub', 'compiler_pub'), ('eval_pub', 'celfn'),
                  ('eval_pub', 'eval_int'), ('eval_pub', 'runtime'),
                  ('eval_int', 'abi'), ('eval_int', 'ir'), ('eval_pub', 'shared')]:

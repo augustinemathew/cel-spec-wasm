@@ -619,11 +619,11 @@ gate exit non-zero without a first-party code defect:
     `--branch` gate unconditionally non-zero for any change touching
     the runtime.  `_aquery_to_compdb.py` now drops a wasm32 entry when
     a host entry exists for the same source (304 entries, down from
-    359).  RESIDUAL: three sources are compiled *only* for wasm32
-    (`e2e/plugin_fixtures/.../user_fns.cc` and two generated files).
-    Their entries are deliberately kept so they stay visible to
-    tooling, so linting one of those files directly still poisons the
-    PCH.  A per-target PCH is the remaining fix.
+    359).  RESIDUAL (historical): the three wasm32-only sources this
+    entry named (`e2e/plugin_fixtures/.../user_fns.cc` + two generated
+    files) were deleted with the plugin backend (m39); the caveat
+    stands for any future wasm32-only entry — linting one directly
+    still poisons the PCH.  A per-target PCH is the remaining fix.
   - **aquery-fallback compile DB lacks gmock include paths** for
     some test TUs (`gmock/gmock.h file not found` inside absl
     status_matchers) — analysis of those TUs is partial.

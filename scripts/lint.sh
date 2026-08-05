@@ -208,6 +208,24 @@ declare -a cpp_targets=()
 # discovery glob so a forced `--all` run still skips them.
 for f in "${targets[@]}"; do
   case "$f" in
+    # TUs including vendored cel-cpp's `extensions/*.h` are
+    # FORMAT-ONLY: those headers `#include "compiler/compiler.h"`
+    # meaning cel-cpp's own header, and clang-tidy runs unsandboxed,
+    # so `-iquote .` resolves the name to OUR compiler/compiler.h
+    # (different include guard → cel-cpp's never loads →
+    # `CompilerLibrary` undeclared → bogus clang-diagnostic-errors on
+    # a recovery AST).  The bazel compile is immune only because
+    # sandboxing omits our header from the action's declared inputs.
+    # No -iquote order fixes both sides — the repos genuinely share
+    # the relative path.  Tracked in cleanup-backlog (lint VFS
+    # overlay, or renaming our colliding header).  Keep in sync with
+    # `grep -rl '#include "extensions/'` over the first-party tree.
+    compiler/frontend/parse_and_check.cc) \
+      echo "lint.sh: NOTE — $f is format-only (cel-cpp header collision)."; \
+      continue ;;
+    testdata/cel_cpp_oracle.cc) \
+      echo "lint.sh: NOTE — $f is format-only (cel-cpp header collision)."; \
+      continue ;;
     runtime/cel_string_ext_internal.h) continue ;;
     runtime/cel_string_format_internal.h) continue ;;
     runtime/string_ext_test_helpers.h) continue ;;

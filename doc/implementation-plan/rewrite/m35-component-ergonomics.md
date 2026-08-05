@@ -7,6 +7,10 @@ the `cel.fns` section format decision, the swap semantics, and the
 lifetime/concurrency design.  Depends on m34 (C API) only for the C
 face; the C++ work is independent.
 
+> **2026-08-04:** the component/plugin backend this doc describes was
+> removed from the tree (see `m39-component-removal.md`); the work is
+> preserved on branch `component-functions-archive`.
+
 ## 1. Motivation — the declaration triplication
 
 Registering a component function today requires the same declaration

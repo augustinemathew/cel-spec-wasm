@@ -29,7 +29,6 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "compiler/compiler.h"
-#include "compiler/program.h"
 #include "e2e/link_mode_e2e_helpers.h"
 #include "eval/activation.h"
 #include "eval/engine.h"
@@ -1898,44 +1897,6 @@ issue: none
     EXPECT_TRUE(v->IsError())
         << source << " kind=" << static_cast<int>(v->kind());
   }
-}
-
-// ──────────────────────────────────────────────────────────────────
-// `list<bool>` as a plugin arg/return emits a codec header that does
-// not compile.  Found while adding element-suffix coverage for
-// `SuffixFor` (cpp_codec_emitter.cc): every other primitive works as a
-// list element; bool is the one C++ specialises.
-// ──────────────────────────────────────────────────────────────────
-TEST(KnownBugs, PluginListOfBoolDoesNotCompile) {
-  GTEST_SKIP() << R"CELBUG(CELBUG v1
-id: CELW-0021
-severity: P1
-kind: missing-feature
-summary: a `list<bool>` plugin decl generates a codec header that fails to compile — std::vector<bool> has no .data()
-repro: add `list<bool> @plugin.echo_bools(list<bool> xs);` to a .idl and build the cel_wasm_plugin target
-bindings: none
-actual: generated codec.h fails with "type 'bool *' cannot be narrowed to 'bool' in initializer list" and "no member named 'data' in 'std::vector<bool>'"
-expected: it compiles and round-trips, as list<int> / list<uint> / list<double> / list<string> all do
-layer: compiler/celfn/celfnc_emit/cpp_codec_emitter.cc (the kList template maps list<T> to std::vector<T>)
-found-by: adding element-suffix coverage for SuffixFor's bool arm, 2026-08-01
-fix-hint: `std::vector<bool>` is the bit-packed specialisation: no
-  `.data()`, and `operator[]` yields a proxy rather than `bool&`, so the
-  emitted lift/lower cannot take element pointers.  Options: emit
-  `std::vector<uint8_t>` as the author-side container for `list<bool>`
-  and convert at the boundary, or emit a `std::deque<bool>`, or
-  special-case the element loop to avoid `.data()`.  Whichever is
-  chosen, the fixture already has `map<uint, bool>` covering bool as a
-  map VALUE, which works — only the list element form is broken.
-blocked-by: none
-issue: none
-)CELBUG";
-  // Asserted by the build, not by this body: the failure is a compile
-  // error in generated code, so there is nothing to evaluate here.
-  // Un-skip by adding the decl back to
-  // e2e/plugin_fixtures/cel_wasm_plugin_demo/fns.idl and confirming
-  // `bazel build //e2e/plugin_fixtures/cel_wasm_plugin_demo:all` is
-  // green.
-  SUCCEED();
 }
 
 }  // namespace

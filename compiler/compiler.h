@@ -20,7 +20,6 @@
 #include <string>
 #include <vector>
 
-#include "abi/plugin.h"
 #include "absl/base/attributes.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -244,15 +243,6 @@ class Compiler::Builder {
   // is supported; decls accumulate across calls.  Collisions (same
   // overload-id declared twice) are caught at `Build()` time.
   Builder& DeclareFunctions(celwasm::FunctionLibrary library);
-
-  // Register a Plugin's declarations with the type-checker — the
-  // compile-side half of the one-noun flow.  Exactly
-  // `DeclareFunctions(plugin.library())`: every declaration
-  // becomes callable, and each one the emitted wasm imports is
-  // recorded in the Program's cel.abi required-functions table
-  // (m35-plugin-ergonomics.md §5) for Plan-time verification.
-  // Duplicate overload-ids across libraries fail at Build().
-  Builder& Use(const Plugin& plugin);
 
   // Register a single custom-fn declaration from a source string.
   // Convenience over `DeclareFunctions(ParseCelfnSource(s))`.

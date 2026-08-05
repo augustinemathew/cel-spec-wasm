@@ -2666,7 +2666,13 @@ aggregate returns work for user host fns.  No wire-format / runtime
         (`FunctionOriginUnknownSurvivesOperatorMerge`).  Error args
         propagate (error precedence over unknown).
 
-### Rewrite M24 — foreign custom functions via Component Model (shipped 2026-06-04)
+### Rewrite M24 — foreign custom functions via Component Model (shipped 2026-06-04; feature removed 2026-08-04, m39)
+
+> **Removed (m39):** the component/plugin backend this section covers
+> was deleted (m39-component-removal.md; archived on
+> `component-functions-archive`).  The rows below record coverage
+> that existed while the feature lived; the tests were deleted with
+> the feature.  Do not re-tick or resurrect.
 
 `m24-foreign-fn-component-backend.md` adds **Regime B** — a foreign
 custom-fn backend that dispatches a normal isolated WebAssembly
@@ -2849,6 +2855,7 @@ in `doc/implementation-plan/rewrite/reviews/2026-06-08-m28-prototype.md`.
         FailedPrecondition at Plan naming the kebab-case export,
         trapping component fn → clean Eval error); 7/7 in BOTH modes.
         `demo_component_e2e_test` likewise dual-mode.
+        *(removed (m39) — feature + tests deleted)*
   - [x] Hollow dual-mode targets fixed — `host_fn_test` plus 13 more
         e2e sources emitted `_dynamic`/`_static` pairs whose sources
         never selected the mode (both emissions silently ran the
@@ -3441,6 +3448,8 @@ See `rewrite/m36-cli-runtime-and-lazy-binding.md`.
   - [x] `run` on a precompiled program: a CEL error still exits 1.
   - [x] `--plugin` extraction stays scoped to `run`, so `embed-decls`
         keeps its own single-valued `--plugin` flag.
+        *(removed (m39) — the `--plugin` flag and `embed-decls`
+        subcommand were deleted with the plugin backend)*
 
 **`cel.abi.VariableEntry.type`** (`abi/program_facts_test.cc`)
 
@@ -3461,7 +3470,17 @@ See `rewrite/m36-cli-runtime-and-lazy-binding.md`.
         empty message renders the code alone; a distinct message is
         preserved.
 
-## Rewrite M35 — plugin ergonomics: self-describing artifacts, Use, Plan verification (shipped 2026-07-25)
+## Rewrite M35 — plugin ergonomics: self-describing artifacts, Use, Plan verification (shipped 2026-07-25; feature removed 2026-08-04, m39)
+
+> **Removed (m39):** the plugin surface these rows cover (`Plugin`,
+> `Engine::Use`, `Builder::Use(plugin)`, `cel embed-decls`, the
+> `cel.fns` section) was deleted (m39-component-removal.md; archived
+> on `component-functions-archive`).  Rows that outlived the removal
+> because their subject survives: `//abi/internal:sha256`,
+> `//abi:wasm_binary`, the `cel.abi` field-8 wire matrix, and the
+> host half of the Plan-time required-fn check.  The rest are
+> historical; their tests were deleted with the feature.  Do not
+> re-tick or resurrect.
 
 Coverage shipped by m35 (design: `rewrite/m35-plugin-ergonomics.md`; every
 row below has both positive and negative cases):
@@ -3498,9 +3517,10 @@ row below has both positive and negative cases):
       SelectiveInstantiation.*).
 - [x] One-noun e2e — Load → Use → Compile → Use → Plan → Eval, both link
       modes (`demo_plugin_e2e_test.cc` OneNounFlow*).
-- [ ] Proto-arg plugin e2e — `OneNounFlowProtoArg` + proto-FQN mismatch
+- Proto-arg plugin e2e — `OneNounFlowProtoArg` + proto-FQN mismatch
       e2e GTEST_SKIP'd on cleanup-backlog #51 (pre-existing
       `demo_plugin_proto` wasip2/absl-sync build break).
+      *(removed (m39) — never un-skipped; feature deleted)*
 
 ## C++ type-vocabulary unification — CelfnType folded into shared/CelType (cleanup-backlog #53, 2026-07-25)
 
@@ -3524,7 +3544,10 @@ References to `CelfnType` in earlier shipped-milestone sections above
       to the deleted `CelfnType::Argkind` (overload-id literal set
       across e2e/conformance/abi/celfn expectations greps identical
       before vs after); kType/kOptional slugs pinned
-      (`e2e/foreign_fn_type_matrix_test.cc` ArgkindForNewKinds).
+      (was `e2e/foreign_fn_type_matrix_test.cc` ArgkindForNewKinds —
+      deleted with the plugin backend (m39); the kType/kOptional slugs
+      stay pinned by `compiler/celfn/function_library_test.cc`
+      `ArgkindSlugTest.ArgkindForTypeAndOptionalKinds`).
 - [x] `Compiler::Builder::DeclareVariable` non-declarable gate —
       negative cases for `null` and `optional<T>` variable
       declarations naming the variable + kind; kUnknown case kept
@@ -3610,6 +3633,26 @@ element compares, which cel-cpp genuinely answers differently.
         `dyn(9007199254740992.0) in {9007199254740993: 'a'}` is `false`.
 
 Conformance held at 2035 PASS / 0 FAIL in both link modes.
+
+## Rewrite m39 — component-model removal (coverage deltas)
+
+The m39 removal (m39-component-removal.md) deleted features rather
+than adding them, so its checklist impact is annotations, not new
+rows:
+
+  - [x] `abi/wasm_binary` is core-module-only; the former two-layer
+        (core vs component) classification rows in
+        `abi/wasm_binary_test.cc` were rewritten as **negative pins**:
+        component bytes (version/layer word `0x0001000d`) are refused —
+        `IsCoreModuleTest.ComponentPreambleIsNotACoreModule`,
+        `FindCustomSectionTest.InvalidArgumentOnComponentPreamble`,
+        `AppendCustomSectionTest.RejectsComponentPreamble`.
+  - The `kUserModule` OverloadTable rows (round-trip + death tests)
+    were **deleted with the routing** — `ImportModuleSource` is
+    `kCel`/`kCelHost`/`kCelFn` only; not ticked-off, removed.
+  - Plugin/component/`@native` rows elsewhere in this file are marked
+    *(removed (m39))* in place; their sections carry removal banners
+    (Rewrite M24, M35) — history retained, boxes not counted.
 
 ## How to update
 

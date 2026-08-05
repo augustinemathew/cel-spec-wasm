@@ -31,20 +31,6 @@ bazel_dep(
     version = "0.15.1",
 )
 
-# SHA-256 for plugin content hashing (//abi/internal:sha256 wraps
-# it).  Native/host-side only — never on the wasm32 cross-compile
-# path.  Chosen over a first-party implementation by user call
-# (2026-07-25 m35 review): don't hand-roll crypto.
-#
-# 0.20251110.0 is the newest BCR version buildable under the pinned
-# Bazel 7.3.2: 0.20251124.0+ pass `conlyopts`/`cxxopts` to cc_library
-# (util/util.bzl), attributes Bazel only grew in 7.4.  Revisit when
-# the Bazel pin moves.
-bazel_dep(
-    name = "boringssl",
-    version = "0.20251110.0",
-)
-
 # Phase C probe E3 — required for the wasm32-wasi cc_toolchain
 # (//doc/implementation-plan/rewrite/phase-c-probes/E3) to reference
 # @platforms//cpu:wasm32 + @platforms//os:wasi as constraint values.
@@ -78,13 +64,6 @@ register_toolchains(
     "//third_party/wasi_sdk:wasm32_wasi_toolchain_darwin_x86_64",
     "//third_party/wasi_sdk:wasm32_wasi_toolchain_linux_arm64",
     "//third_party/wasi_sdk:wasm32_wasi_toolchain_linux_x86_64",
-    # The wasm32-wasip2 (non-threads) variant — used by the
-    # `cel_wasm_plugin` Starlark macro to produce CM-native
-    # components (m26 §6).
-    "//third_party/wasi_sdk:wasm32_wasi_toolchain_p2_darwin_arm64",
-    "//third_party/wasi_sdk:wasm32_wasi_toolchain_p2_darwin_x86_64",
-    "//third_party/wasi_sdk:wasm32_wasi_toolchain_p2_linux_arm64",
-    "//third_party/wasi_sdk:wasm32_wasi_toolchain_p2_linux_x86_64",
 )
 
 # Binaryen — vendored as a pinned GitHub release tarball and built via
@@ -179,93 +158,6 @@ http_archive(
     sha256 = "52640dde13599bf127a95499e61d6d640256119456d1af8897ab6725bcf3d89c",
     strip_prefix = "wasi-sdk-25.0-x86_64-linux",
     urls = ["https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-linux.tar.gz"],
-)
-
-# wit-bindgen — the wit-bindgen CLI used by the `cel_wasm_plugin`
-# Starlark macro (m26 §6) to emit C bindings from the per-module
-# `fns.wit` file.  One archive per build host
-# (darwin/linux × arm64/x86_64); `//third_party/wit_bindgen:wit-bindgen`
-# selects the matching one via `select()` on
-# `@platforms//{os,cpu}`.  Each archive is a single executable +
-# license files — small, fetched lazily, cached by bazel.
-http_archive(
-    name = "wit_bindgen_darwin_arm64",
-    build_file = "//third_party/wit_bindgen:BUILD.external.bazel",
-    sha256 = "41853d25bbbcea84ae2e7f374f8e691d4225c7ca8b0db7b8e94d95ce3259174e",
-    strip_prefix = "wit-bindgen-0.57.1-aarch64-macos",
-    urls = ["https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.57.1/wit-bindgen-0.57.1-aarch64-macos.tar.gz"],
-)
-http_archive(
-    name = "wit_bindgen_darwin_x86_64",
-    build_file = "//third_party/wit_bindgen:BUILD.external.bazel",
-    sha256 = "12522a63daf1067d481c41bd7e4c964e799db4ff17b264eed663e4e443b92b98",
-    strip_prefix = "wit-bindgen-0.57.1-x86_64-macos",
-    urls = ["https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.57.1/wit-bindgen-0.57.1-x86_64-macos.tar.gz"],
-)
-http_archive(
-    name = "wit_bindgen_linux_arm64",
-    build_file = "//third_party/wit_bindgen:BUILD.external.bazel",
-    sha256 = "832a48f8c17826c75977963732e66959e3cda2fffe59d03c32d7a943f1b694ff",
-    strip_prefix = "wit-bindgen-0.57.1-aarch64-linux",
-    urls = ["https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.57.1/wit-bindgen-0.57.1-aarch64-linux.tar.gz"],
-)
-http_archive(
-    name = "wit_bindgen_linux_x86_64",
-    build_file = "//third_party/wit_bindgen:BUILD.external.bazel",
-    sha256 = "ff95b2daf40fe4e83f30ebc7e12e919c9a96440f32bb87d4915e8ae5e98af2f3",
-    strip_prefix = "wit-bindgen-0.57.1-x86_64-linux",
-    urls = ["https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.57.1/wit-bindgen-0.57.1-x86_64-linux.tar.gz"],
-)
-
-# wasm-tools — the wasm-tools CLI used by `cel_wasm_plugin` to wrap
-# a wasm32-wasi core module into a Component-Model component
-# (`wasm-tools component new`).  Same per-host fetch pattern as
-# wit-bindgen.
-http_archive(
-    name = "wasm_tools_darwin_arm64",
-    build_file = "//third_party/wasm_tools:BUILD.external.bazel",
-    sha256 = "ed0fdbdaa80a5c7ef434ac583e1d8df0b8e45d718b08edf28ec27a74e4029897",
-    strip_prefix = "wasm-tools-1.251.0-aarch64-macos",
-    urls = ["https://github.com/bytecodealliance/wasm-tools/releases/download/v1.251.0/wasm-tools-1.251.0-aarch64-macos.tar.gz"],
-)
-http_archive(
-    name = "wasm_tools_darwin_x86_64",
-    build_file = "//third_party/wasm_tools:BUILD.external.bazel",
-    sha256 = "a0684bfeb104450bec824b9364bbc16aa8a5e6dfe7319024d0990b0d96bc8904",
-    strip_prefix = "wasm-tools-1.251.0-x86_64-macos",
-    urls = ["https://github.com/bytecodealliance/wasm-tools/releases/download/v1.251.0/wasm-tools-1.251.0-x86_64-macos.tar.gz"],
-)
-http_archive(
-    name = "wasm_tools_linux_arm64",
-    build_file = "//third_party/wasm_tools:BUILD.external.bazel",
-    sha256 = "9d5cbab8810ffa43b1ad4c57efdd0092c5be6e905d3bd330d7daba5ad7aaa31d",
-    strip_prefix = "wasm-tools-1.251.0-aarch64-linux",
-    urls = ["https://github.com/bytecodealliance/wasm-tools/releases/download/v1.251.0/wasm-tools-1.251.0-aarch64-linux.tar.gz"],
-)
-http_archive(
-    name = "wasm_tools_linux_x86_64",
-    build_file = "//third_party/wasm_tools:BUILD.external.bazel",
-    sha256 = "08d523676ec71d9afbae05aa4255041ce91bf2d325d87b7e722d190d558be689",
-    strip_prefix = "wasm-tools-1.251.0-x86_64-linux",
-    urls = ["https://github.com/bytecodealliance/wasm-tools/releases/download/v1.251.0/wasm-tools-1.251.0-x86_64-linux.tar.gz"],
-)
-
-# WASI preview1 → preview2 reactor adapter — required by
-# `wasm-tools component new` to wrap a wasm32-wasi core module (which
-# imports `wasi_snapshot_preview1::*` syscalls via the wasi-sdk libc)
-# into a Component-Model component (which speaks wasi-preview2 only).
-# Shipped as a single ~51 KiB `.wasm` per wasmtime release; one
-# adapter binary works across all build hosts.  Consumed by the
-# `cel_wasm_plugin` Starlark macro at //bazel:cel_wasm_plugin.bzl.
-http_file = use_repo_rule(
-    "@bazel_tools//tools/build_defs/repo:http.bzl",
-    "http_file",
-)
-http_file(
-    name = "wasi_preview1_adapter",
-    sha256 = "bd558cd2c428665a69ef0833d49ae98ee42fe6d51b5b091fc6f847e9a17cb228",
-    urls = ["https://github.com/bytecodealliance/wasmtime/releases/download/v43.0.1/wasi_snapshot_preview1.reactor.wasm"],
-    downloaded_file_path = "wasi_snapshot_preview1.reactor.wasm",
 )
 
 # C++ CEL compiler dependencies.

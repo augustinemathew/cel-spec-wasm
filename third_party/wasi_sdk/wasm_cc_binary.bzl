@@ -49,25 +49,6 @@ _wasm_transition = transition(
     outputs = ["//command_line_option:platforms"],
 )
 
-def _wasm_p2_transition_impl(_settings, _attr):
-    """Transitions to the wasm32-wasip2 (non-threads) platform.
-
-    Used by the `cel_wasm_component` Starlark macro (m26 §6) so the
-    Component-Model preview2 ABI's non-shared-memory requirement is
-    satisfied at the wasi-sdk cc_binary step.
-    """
-    return {
-        "//command_line_option:platforms": str(
-            Label("//third_party/wasi_sdk:wasm32_wasip2"),
-        ),
-    }
-
-_wasm_p2_transition = transition(
-    implementation = _wasm_p2_transition_impl,
-    inputs = [],
-    outputs = ["//command_line_option:platforms"],
-)
-
 def _wasm_cc_binary_impl(ctx):
     src_files = ctx.attr.binary[0][DefaultInfo].files.to_list()
     if len(src_files) != 1:
@@ -86,17 +67,6 @@ wasm_cc_binary = rule(
             cfg = _wasm_transition,
             mandatory = True,
             doc = "A `cc_binary` target; built under the wasm32-wasi-threads platform.",
-        ),
-    },
-)
-
-wasm_p2_cc_binary = rule(
-    implementation = _wasm_cc_binary_impl,
-    attrs = {
-        "binary": attr.label(
-            cfg = _wasm_p2_transition,
-            mandatory = True,
-            doc = "A `cc_binary` target; built under the wasm32-wasip2 (Component-Model native) platform.",
         ),
     },
 )

@@ -27,7 +27,9 @@ namespace {
 // `parser.file()` return a (potentially garbled) tree on errors,
 // which would mask grammar bugs.  We trap them here.
 class CollectingErrorListener : public antlr4::BaseErrorListener {
- public:
+ private:
+  // Matches the base class's private virtual declaration; callers
+  // dispatch through the antlr4 listener interface.
   void syntaxError(antlr4::Recognizer* /*recognizer*/,
                    antlr4::Token* /*offending_symbol*/, size_t line,
                    size_t column, const std::string& msg,
@@ -37,6 +39,7 @@ class CollectingErrorListener : public antlr4::BaseErrorListener {
     errors_.push_back(ss.str());
   }
 
+ public:
   const std::vector<std::string>& errors() const {
     return errors_;
   }
@@ -109,56 +112,23 @@ TEST(CelfnParserProbe, ParsesHostDecl) {
   EXPECT_EQ(host->Identifier()->getText(), "upper");
 }
 
-TEST(CelfnParserProbe, ParsesPluginDecl) {
-  auto r = ParseCelfn("bool @plugin.allow(this string user, string r);");
-  EXPECT_TRUE(r.errors.empty())
-      << "errors: " << (r.errors.empty() ? "" : r.errors[0]);
-  ASSERT_EQ(r.file->fileItem().size(), 1u);
-  auto* comp = r.file->fileItem(0)->pluginFnDecl();
-  ASSERT_NE(comp, nullptr);
-  // `bool @plugin.allow(this string user, string r);`
-  // Grammar shape: type '@' 'plugin' '.' Identifier '(' params ')' ';'
-  // One Identifier: "allow" (fn name).  No alias.
-  EXPECT_EQ(comp->Identifier()->getText(), "allow");
-}
-
-TEST(CelfnParserProbe, ParsesCelDefinedFn) {
-  auto r =
-      ParseCelfn("bool @native.is_number(this string s) = s.matches(\"a\");");
-  EXPECT_TRUE(r.errors.empty())
-      << "errors: " << (r.errors.empty() ? "" : r.errors[0]);
-  ASSERT_EQ(r.file->fileItem().size(), 1u);
-  auto* def = r.file->fileItem(0)->nativeFnDecl();
-  ASSERT_NE(def, nullptr);
-  EXPECT_EQ(def->Identifier()->getText(), "is_number");
-  ASSERT_NE(def->celExprBody(), nullptr);
-  // Body text matched as one token; trims to the raw expression.
-  EXPECT_THAT(def->celExprBody()->getText(), ::testing::HasSubstr("s.matches"));
-}
-
-TEST(CelfnParserProbe, ParsesAllThreeShapesInOneFile) {
+TEST(CelfnParserProbe, ParsesFullFileShape) {
   const std::string source = R"(
 // fns.celfn
 Module foo;
 
-// CEL-defined.
-bool @native.is_number(this string s) = s.matches("^[0-9]+$");
-
 // Host-backed.
 string @host.upper(this string s);
-
-// Plugin-backed.
-bool @plugin.allow(this string user, string r);
+bool @host.is_admin(proto(acme.User) user);
 )";
   auto r = ParseCelfn(source);
   EXPECT_TRUE(r.errors.empty())
       << "errors: " << (r.errors.empty() ? "" : r.errors[0]);
   ASSERT_NE(r.file->moduleDirective(), nullptr);
   EXPECT_EQ(r.file->moduleDirective()->Identifier()->getText(), "foo");
-  ASSERT_EQ(r.file->fileItem().size(), 3u);
-  EXPECT_NE(r.file->fileItem(0)->nativeFnDecl(), nullptr);
+  ASSERT_EQ(r.file->fileItem().size(), 2u);
+  EXPECT_NE(r.file->fileItem(0)->hostFnDecl(), nullptr);
   EXPECT_NE(r.file->fileItem(1)->hostFnDecl(), nullptr);
-  EXPECT_NE(r.file->fileItem(2)->pluginFnDecl(), nullptr);
 }
 
 TEST(CelfnParserProbe, ParsesProtoTypeArgument) {
@@ -186,19 +156,26 @@ TEST(CelfnParserProbe, ParsesAggregateTypes) {
 }
 
 TEST(CelfnParserProbe, RejectsBareDecl) {
-  // `bool plain_name(int x);` — no backend prefix: not `@host.`, not
-  // `@native.`, not `@plugin.`.  Every declaration must name its
-  // backend, so a bare `<type> <name>(...)` matches no production and
-  // fails to parse.
+  // `bool plain_name(int x);` — no `@host.` backend prefix.  Every
+  // declaration must name its backend, so a bare `<type> <name>(...)`
+  // matches no production and fails to parse.
   auto r = ParseCelfn("bool plain_name(int x);");
   EXPECT_FALSE(r.errors.empty()) << "bare-name decl should not parse";
 }
 
-TEST(CelfnParserProbe, RejectsNativeDeclWithoutBody) {
-  // `@native.` requires a `= <cel-expr>` body; the body-less form
-  // matches no production and fails to parse.
-  auto r = ParseCelfn("bool @native.plain_name(int x);");
-  EXPECT_FALSE(r.errors.empty()) << "@native without a body should not parse";
+TEST(CelfnParserProbe, RejectsRemovedPluginPrefix) {
+  // `@plugin.` was the removed sandboxed-wasm backend's spelling;
+  // the grammar no longer has a production for it.
+  auto r = ParseCelfn("bool @plugin.allow(this string user, string r);");
+  EXPECT_FALSE(r.errors.empty()) << "@plugin decl should not parse";
+}
+
+TEST(CelfnParserProbe, RejectsRemovedNativePrefix) {
+  // `@native.` (CEL-defined bodies) was removed with the plugin
+  // backend; the grammar no longer has a production for it.
+  auto r =
+      ParseCelfn("bool @native.is_number(this string s) = s.matches(\"a\");");
+  EXPECT_FALSE(r.errors.empty()) << "@native decl should not parse";
 }
 
 TEST(CelfnParserProbe, IgnoresLineAndBlockComments) {

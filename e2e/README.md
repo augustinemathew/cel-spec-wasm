@@ -9,8 +9,8 @@ mapping at the bottom.  `git log --follow` traverses the rename.)
 
 Most targets build twice via `link_mode_e2e_cc_test` —
 `<name>_dynamic` / `<name>_static` — covering both `LinkMode`s.
-Manual-tagged targets (`host_fn*`, `plugin_dispatch`,
-`foreign_fn_type_matrix`) do NOT run under a bare `bazel test`; see
+Manual-tagged targets (`host_fn*`) do NOT run under a bare
+`bazel test`; see
 `doc/implementation-plan/per-component-test-coverage.md`.
 
 ## Suite taxonomy
@@ -60,8 +60,6 @@ the two in sync with the BUILD file).
 | `proto2_extension_list_eq_test` | proto2 repeated-extension list equality |
 | `proto_arena_lazy_copy_test` | lazy proto field read / arena copy at the wire transition |
 | `host_fn_test`, `host_fn_type_matrix_test` | `@host` custom functions + exhaustive type matrix (manual) |
-| `foreign_fn_type_matrix_test` | wasm-component foreign functions (manual) |
-| `plugin_dispatch_test` | plugin dispatch / verification (manual) |
 | `known_bugs_test` | confirmed-defect registry: CELBUG pins + fixed-bug regressions |
 | `fuzz/` | PBT generator + cel-cpp differential oracle |
 

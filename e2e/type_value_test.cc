@@ -245,29 +245,18 @@ TEST_F(TypeOfPrimitiveE2ETest, TypeOfBoundHostListIsList) {
 
 TEST_F(TypeOfPrimitiveE2ETest, TypeOfBoundHostMapIsMap) {
   // Gap 1 sibling: CEL_MAP_HOST kind path.  Per langdef same as
-  // CEL_MAP_ARENA — bare `map`.
-  //
-  // Activation marshalling for `Repr::kMap` lands in a separate
-  // slice (see `instance.cc::EncodeBoundValue` — only kList ships
-  // today).  Until that slice lands, the binding fails before
-  // type(m) is ever called.  The kArena map path (literal) is
-  // covered indirectly through TypeOfPrimitiveE2ETest's
-  // ScalarBoundaries instantiation row "MapStringInt".
-  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
-reason: deferred-feature
-why-not-a-bug: when this row was written, Activation marshalling for
-  Repr::kMap did not exist (eval/instance.cc EncodeBoundValue shipped only the
-  kList arm), so the BINDING failed before type(m) was ever called - a
-  not-yet-implemented surface, not a defect in type(). The kArena map path
-  (map literal) is covered by the TypeOfPrimitiveE2ETest ScalarBoundaries row
-  "MapStringInt".
-  RE-CHECK BEFORE TRUSTING THIS SKIP: as of 2026-07-25 eval/instance.cc
-  EncodeBoundValue DOES have a `case Repr::kMap: return EncodeMap(...)` arm,
-  so the named blocker appears to have been cleared and this skip is probably
-  stale. Deleting it was out of scope for the pin-format migration that wrote
-  this block; delete the GTEST_SKIP, confirm green, and remove this note.
-citation: doc/implementation-plan/rewrite/m9-type-subsystem.md; eval/instance.cc EncodeBoundValue
-)CELSKIP";
+  // CEL_MAP_ARENA — bare `map`.  The bound map marshals through
+  // `instance.cc::EncodeMap` into a CEL_MAP_HOST CelValue; the
+  // kArena map path (literal) is covered by the ScalarBoundaries
+  // row "MapStringInt".
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("m", CelType::Map(CelType::String(), CelType::Int()));
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "type(m) == map");
+  Activation a;
+  a.Bind("m", Value::Map({{Value::String("a"), Value::Int(1)}}));
+  EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
 TEST_F(TypeOfPrimitiveE2ETest, TypeOfInsideComprehension) {

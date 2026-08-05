@@ -30,8 +30,6 @@
 //     `RequiredFunction` row.  Shared by the emitter's per-import
 //     row build and the eval side's registered-decl spelling (so
 //     both sides of a Plan-time compare are built by one function).
-//
-// See doc/implementation-plan/rewrite/m35-plugin-ergonomics.md §5.
 
 #include <string>
 
@@ -79,11 +77,8 @@ std::string RenderType(const celwasm::abi::Type& type);
 std::string RenderSignature(const celwasm::abi::RequiredFunction& fn);
 
 // Translate a whole `CelfnDecl` into its wire `RequiredFunction`
-// row: overload_id, fn_name, backend (kHost → HOST, kPlugin →
-// PLUGIN), per-param `Type`s (out_slot excluded), return type,
-// is_receiver.  A `kCelDefined` decl has no `cel_fn` wire backend
-// (its imports are per-module aliases) — passing one is a caller
-// invariant violation and CHECK-fails.
+// row: overload_id, fn_name, backend (kHost → HOST), per-param
+// `Type`s (out_slot excluded), return type, is_receiver.
 celwasm::abi::RequiredFunction RequiredFunctionFromDecl(const CelfnDecl& decl);
 
 }  // namespace celwasm

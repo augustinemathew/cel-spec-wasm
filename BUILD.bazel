@@ -5,10 +5,10 @@
 #   - PUBLIC API surface — //visibility:public on the curated targets:
 #     //compiler:{compiler,program}, //eval:{engine,instance,activation,value,
 #     error,attribute}, //shared:type, //abi:*, //runtime:*.  This is what
-#     bindings/ and any external consumer may depend on.
+#     an external consumer may depend on.
 #   - FIRST-PARTY INTERNAL — the package_group below.  Implementation targets
 #     (the compiler pipeline components, eval internals) are visible to any
-#     first-party package but NOT to a future //bindings/... or external
+#     first-party package but NOT to an external
 #     consumer.  This enforces "nobody can take a dependency on non-public
 #     things" without forbidding the real intra-project wiring (abi -> codegen,
 #     eval -> ir:annotations, etc.).

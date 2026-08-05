@@ -6,6 +6,12 @@ drafted here was replaced by the Component-Model backend: m23
 → m26 (`celfnc` + `cel_wasm_component` hermetic build).  Kept for the
 design rationale; do not implement from this doc.
 
+> **2026-08-04:** the Component-Model backend that superseded this
+> doc's design (m23/m24/m26) was itself removed from the tree (see
+> `m39-component-removal.md`); the work is preserved on branch
+> `component-functions-archive`.  The foreign-fn design rationale
+> here is history only.
+
 > **One-line scope.** A CEL expression calls a function whose body lives
 > in a *separate* wasm module the embedder compiled from **Go** or **Rust**
 > (`<alias>.fn(...)`).  Unlike `@host` (C++ callback) and `@native`

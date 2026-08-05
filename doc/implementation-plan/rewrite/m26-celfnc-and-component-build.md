@@ -11,6 +11,11 @@ retired), and the IDL simplification (kForeign + `@component.<fn>`
 syntax deleted; kForeignComponent-only).  Header updated in the
 2026-06-10 review sweep — the doc shipped without its closeout edit.
 
+> **2026-08-04:** the component/plugin backend this doc describes
+> (celfnc emitters, `cel_wasm_component`, the wasm32-wasip2 toolchain)
+> was removed from the tree (see `m39-component-removal.md`); the work
+> is preserved on branch `component-functions-archive`.
+
 ## 0. TL;DR
 
 The m24 author surface ([§5](m24-foreign-fn-component-backend.md)) is

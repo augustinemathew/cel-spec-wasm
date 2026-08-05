@@ -1,16 +1,10 @@
 #include "eval/internal/wasmtime_engine_state.h"
 
-#include "wasmtime/component.h"
-
 namespace celwasm {
 
 WasmtimeEngineState::~WasmtimeEngineState() {
-  // Destruction order: modules + plugins before engine (wasmtime owns
-  // them through their engine in the C API).
-  for (auto& c : plugin_registry) {
-    if (c.component != nullptr) wasmtime_component_delete(c.component);
-  }
-  plugin_registry.clear();
+  // Destruction order: modules before engine (wasmtime owns them
+  // through their engine in the C API).
   if (runtime_module != nullptr) {
     wasmtime_module_delete(runtime_module);
   }

@@ -295,7 +295,6 @@ TEST(ProgramFactsE2E, DescribeReportsRequiredHostFn) {
   ASSERT_TRUE(facts.ok()) << facts.status();
   ASSERT_EQ(facts->required_fns.size(), 1u);
   EXPECT_EQ(facts->required_fns[0].name, "tax_rate");
-  EXPECT_TRUE(facts->required_fns[0].is_host);
   EXPECT_FALSE(facts->required_fns[0].signature.empty());
 }
 
@@ -393,7 +392,6 @@ TEST(ProgramFactsE2E, DescribeRendersSignaturesAcrossTypeFamilies) {
     auto facts = abi::DescribeProgram(program->wasm_bytes());
     ASSERT_TRUE(facts.ok()) << facts.status();
     ASSERT_EQ(facts->required_fns.size(), 1u) << row.decl;
-    EXPECT_TRUE(facts->required_fns[0].is_host) << row.decl;
     EXPECT_EQ(facts->required_fns[0].signature, row.want_signature);
   }
 }

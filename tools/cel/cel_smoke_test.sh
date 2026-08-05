@@ -114,12 +114,10 @@ expect "inspect reports declared vars" \
   "vars:       a:int, b:int" \
   bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | head -1"
 
-# A plain expression requires no custom functions; both rows read
+# A plain expression requires no custom functions; the row reads
 # `none` and nothing warns about runnability.
-expect "inspect reports no required fns" "plugin fns: none" \
-  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | sed -n 2p"
 expect "inspect reports no host fns" "host fns:   none" \
-  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | sed -n 3p"
+  bash -c "\"${CEL}\" inspect \"${rt_wasm}\" | sed -n 2p"
 
 expect "run evaluates a precompiled program" "43" \
   "${CEL}" run "${rt_wasm}" --var "a=6" --var "b=7"
@@ -199,51 +197,11 @@ expect_exit "spec: empty name"              2 \
 expect_exit "spec: missing colon"           2 \
   "${CEL}" check "1" --var "xint"
 
-# `--plugin` is repeatable on `run` but a single absl flag on
-# `embed-decls`.  Peeling it out of argv for every subcommand would
-# consume embed-decls' value before absl saw it — this pins that the
-# extraction stays scoped to `run`.
-embed_out="$("${CEL}" embed-decls --plugin "${rt_wasm}" \
-  --idl /nonexistent.idl --out /tmp/ignored.wasm 2>&1 || true)"
-case "${embed_out}" in
-  *"--plugin is required"*)
-    echo "FAIL: embed-decls lost its --plugin value to run's extractor"
-    fail=1
-    ;;
-esac
-
 # A CEL error from a precompiled program follows the same contract as
 # `eval`: stderr, exit 1.
 dz_wasm="${TEST_TMPDIR:-/tmp}/divzero.wasm"
 "${CEL}" compile "1 / 0" --output "${dz_wasm}" >/dev/null 2>&1
 expect_exit "run: CEL error exits 1"       1 "${CEL}" run "${dz_wasm}"
-
-# --- Plugin flow ------------------------------------------------------------
-# A plugin is needed at BOTH compile (its decls resolve the call site)
-# and run (its artifact satisfies the import).  Skipped when the demo
-# fixture is not in the runfiles — the smoke test must stay runnable
-# without building the plugin toolchain.
-demo_plugin="${TEST_SRCDIR}/_main/e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin.wasm"
-if [[ -f "${demo_plugin}" ]]; then
-  expect "eval calls a plugin function" "5" \
-    "${CEL}" eval "add(2, 3)" --plugin "${demo_plugin}"
-
-  pl_wasm="${TEST_TMPDIR:-/tmp}/plugin_prog.wasm"
-  "${CEL}" compile "add(a, b)" --plugin "${demo_plugin}" \
-      --var "a:int" --var "b:int" --output "${pl_wasm}" >/dev/null 2>&1
-  expect "run a plugin-backed program" "42" \
-    "${CEL}" run "${pl_wasm}" --plugin "${demo_plugin}" \
-      --var "a=20" --var "b=22"
-
-  # Omitting --plugin is a usage error that names what is missing,
-  # not a wasm link failure.
-  expect_exit "run without --plugin" 2 \
-    "${CEL}" run "${pl_wasm}" --var "a=1" --var "b=2"
-else
-  # Loud, not silent: a runfiles change that drops the fixture would
-  # otherwise remove this coverage without anyone noticing.
-  echo "WARN: demo plugin fixture absent — plugin flow NOT covered" >&2
-fi
 
 # --- Exit-code contract -----------------------------------------------------
 # Pins the three codes declared by the kExit* constants in cel.cc and

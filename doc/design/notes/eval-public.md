@@ -1,5 +1,11 @@
 # eval-public — design notes (undefined)
 
+> **2026-08-04:** the plugin registration surface (`Engine::Use` /
+> `AddPlugin` / `AddModule`) described below was removed with the
+> wasm-component plugin backend (m39-component-removal.md). The
+> surviving registration family is `AddFunction` / `AddTypedFunction` /
+> `BindFunction`. Historical record — do not cite as current.
+
 Scope: the evaluator's public surface — `eval/{engine,instance,activation,
 value,error,attribute,host_call_context,host_callback,typed_function}.{h,cc}`.
 Verified against code + tests on branch `m28-configurable-linking`, 2026-06-10.

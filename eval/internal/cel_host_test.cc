@@ -2030,8 +2030,8 @@ TEST(AnyOfWktTimeTest, DurationUnwrapsToDuration) {
 // type-checked CEL expression cannot reach these — `Foo{i32: 'x'}`
 // fails in the checker — so they are only observable by driving the
 // trampoline directly with a mismatched CelValue, which is what a
-// plugin returning a value inconsistent with its declared return type
-// would produce.
+// host callback returning a value inconsistent with its declared
+// return type would produce.
 
 namespace {
 

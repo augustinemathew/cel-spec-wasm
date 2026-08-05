@@ -91,13 +91,12 @@ Source of truth: trampoline registrations in
 - **Message:** `cel_make_message`, `cel_message_eq`.
 - **Time:** `cel_time_parse`, `cel_timestamp_tz_accessor`,
   `cel_wkt_unwrap_time`, `cel_wkt_unwrap_wrapper`.
-- **Custom/foreign fns:** `HostCall` + `BindTyped*` (m21 host-call
+- **Custom fns:** `HostCall` + `BindTyped*` (m21 host-call
   adapter); `@host` documented in `compiler.h` / `engine.h`.
-  `@plugin` / `AddPlugin` (m24 foreign-fn via Component Model,
-  renamed from `@component` / `AddComponent` by the m35 R sweep) are
-  on HEAD — `eval/engine.h::AddPlugin`, plus the m35 one-noun
-  surface: `Plugin::Load` (`abi/plugin.h`), `Engine::Use`
-  (`eval/engine.h`), `Compiler::Builder::Use` (`compiler/compiler.h`).
+  (The `@plugin` / Component-Model surface this row once listed —
+  `AddPlugin`, `Plugin::Load`, `Engine::Use`, `Builder::Use` — was
+  removed 2026-08-04, m39-component-removal.md; host callbacks are
+  the only custom-fn mechanism.)
 
 ## 6. Compile-time options
 
@@ -122,8 +121,11 @@ Source of truth: trampoline registrations in
    from the public header, and `Find` became `Resolve` so a failing
    binder has a status channel. See
    `m36-cli-runtime-and-lazy-binding.md` §4.
-3. **m22-foreign-fn** status line says *"not yet started"* but
+3. ~~**m22-foreign-fn** status line says *"not yet started"* but
    foreign-fn / Component-Model work shipped on a sibling branch —
-   the ledger must record the true cross-branch state.
+   the ledger must record the true cross-branch state.~~ **Overtaken
+   2026-08-04:** the entire foreign-fn/plugin backend was removed
+   (m39-component-removal.md; archived on
+   `component-functions-archive`).
 4. **Encoders ext (m17)** — no dedicated kernel file; confirm base64
    surface is real and where it lives.

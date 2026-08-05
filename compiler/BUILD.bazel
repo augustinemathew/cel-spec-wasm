@@ -61,7 +61,6 @@ cc_library(
     deps = [
         ":program",
         "//abi:celfn_wire",
-        "//abi:plugin",
         "//shared:type",
         "//compiler/internal:compile",
         "//compiler/celfn:function_library",
@@ -85,8 +84,6 @@ link_mode_cc_test(
     deps = [
         ":compiler",
         ":program",
-        "//abi:plugin",
-        "//abi:wasm_binary",
         "//bazel:link_mode_test_helpers",
         "//shared:type",
         "//testdata:e2e_fixture_cc_proto",

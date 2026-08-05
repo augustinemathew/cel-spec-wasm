@@ -438,28 +438,19 @@ TEST_F(ListBindingE2ETest, BoundBoolListIndexed) {
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
 
-// String / bytes binding hits the same host-arena gap that
-// IdentE2ETest::String SKIPs — span payloads need persistent
-// host-side memory across arena_reset.  The element-type encoder
-// itself doesn't fire for kHost lists (the list backing carries
-// the payloads), but the element ENCODER on read-back through
-// EncodeFieldResult does need the arena.  Lock the gap here.
-TEST_F(ListBindingE2ETest, BoundStringListUnimplemented) {
-  GTEST_SKIP() << R"CELSKIP(CELSKIP v1
-reason: deferred-feature
-why-not-a-bug: a bound list<string> inherits the host-arena gap that
-  IdentE2ETest::String also skips on - span payloads need persistent host-side
-  memory that survives arena_reset. The element-type ENCODER does not fire for
-  kHost lists (the list backing carries the payloads), but the element encoder
-  on read-back through EncodeFieldResult does need that arena, so the whole
-  shape waits on the host-arena milestone. Not a miscompile: the binding is
-  refused, and the equivalent list<int> / list<bool> bindings above prove the
-  kHost list path itself.
-  Related: the host-origin aggregate family (operations that must reach INSIDE
-  an activation-bound aggregate) touches the same surface - re-check this row
-  when that work lands, since it may become a defect rather than a deferral.
-citation: doc/implementation-plan/rewrite/m4-list-literals.md; e2e/list_test.cc IdentE2ETest::String (the sibling skip naming the same gap)
-)CELSKIP";
+// String elements of a bound list carry span payloads: the read-back
+// through EncodeFieldResult routes them via the host string arena
+// (same path IdentE2ETest::String exercises for a scalar binding).
+TEST_F(ListBindingE2ETest, BoundStringListIndexed) {
+  auto compiler = BuildCompiler([](Compiler::Builder& b) {
+    b.DeclareVariable("xs", CelType::List(CelType::String()));
+  });
+  ASSERT_THAT(compiler, IsOk());
+  auto instance = CompilePlan(*compiler, "xs[1]");
+  Activation a;
+  a.Bind("xs", Value::List({Value::String("alpha"), Value::String("beta"),
+                            Value::String("gamma")}));
+  EXPECT_EQ(*EvalOk(instance, a).AsString(), "beta");
 }
 
 TEST_F(ListBindingE2ETest, OutOfBoundsOnBoundListFails) {

@@ -58,23 +58,14 @@ struct CelfnParam {
 
 struct CelfnDecl {
   enum class Backend : uint8_t {
-    kHost,        // `@host.` prefix
-    kCelDefined,  // `@native.` prefix, has body
-    kPlugin,      // `@plugin.` prefix — m24 §3 plugin-backed fn —
-                  // dispatched as a host callback (module_name =
-                  // "cel_fn"), but marshaled through a per-fn typed
-                  // WIT export of the Component-Model plugin
-                  // registered via `Engine::AddPlugin(bytes, lib)`.
-                  // Admits protos (as serialized bytes, m24 §8);
-                  // admits `type` and `optional<T>` per m24 §6.
+    kHost,  // `@host.` prefix — a C++ callback the embedder binds
+            // at Plan time.  The only backend.
   };
 
   Backend backend = Backend::kHost;
   // Plain function name as written ("allow" / "is_number" / …).
   std::string fn_name;
-  // Wasm import-module name.
-  //   kHost / kPlugin: always "cel_fn"
-  //   kCelDefined:               the file's `Module foo;` directive name
+  // Wasm import-module name.  Always "cel_fn".
   std::string module_name;
   // Synthesised: `<fn_name>_<argkind>_<argkind>…`.
   std::string overload_id;
@@ -83,14 +74,12 @@ struct CelfnDecl {
   bool is_receiver = false;
   std::vector<CelfnParam> params;
   CelType return_type;
-  // For kCelDefined only: the raw CEL expression source.
-  std::string body;
 };
 
-// The `@<backend>.` source spelling of a decl's backend (`@host.`,
-// `@native.`, `@plugin.`), for diagnostics.  THE spelling helper for
-// every surface that names a decl's backend in an error message —
-// do not re-spell it per call site.
+// The `@<backend>.` source spelling of a decl's backend (`@host.`),
+// for diagnostics.  THE spelling helper for every surface that names
+// a decl's backend in an error message — do not re-spell it per call
+// site.
 absl::string_view BackendPrefix(CelfnDecl::Backend backend);
 
 // Embedder-facing collection of custom CEL function declarations.
@@ -110,65 +99,24 @@ class FunctionLibrary {
   const std::vector<CelfnDecl>& decls() const {
     return decls_;
   }
-  // Optional WIT interface name (e.g. `cel:customfn/fns@0.1.0`).
-  // When non-empty, `Engine::AddPlugin` looks up each decl's
-  // export inside this interface instance rather than at the
-  // plugin's top level.  Pure-WAT plugins from
-  // `plugin_dispatch_test` leave it empty and the engine
-  // does the top-level lookup (m24 §3.5 v1 path).
-  const std::string& wit_interface() const {
-    return wit_interface_;
-  }
 
   class Builder {
    public:
-    // Wasm module name for CEL-defined functions in this library.
-    // Required iff AddCelDefined() is called at least once.  When
-    // unset and no CEL-defined decls are added, the resulting
-    // library has no Module directive.
+    // Optional library module name (the file's `Module foo;`
+    // directive).  Purely descriptive today — host-backed decls
+    // always dispatch through the "cel_fn" wasm import module.
     Builder& SetModuleName(absl::string_view module_name);
-
-    // WIT interface name the kPlugin decls live under in
-    // the embedded plugin.  Format: `<pkg-ns>:<pkg-name>/<iface>
-    // @<version>` (the `cel_wasm_plugin` macro produces plugins
-    // exporting `cel:<module>/fns@0.1.0` by default; the embedder
-    // calls this with the matching string).  When empty, the engine
-    // does a top-level export lookup (v1 inline-WAT path).
-    Builder& SetWitInterface(absl::string_view wit_interface);
 
     // Add a host-backed declaration.  Embedder C++ provides the impl
     // at Plan time via RuntimeBindings::AddFunction(overload_id, …).
     Builder& AddHost(absl::string_view fn_name, CelType return_type,
                      std::vector<CelfnParam> params);
 
-    // Add a plugin-backed declaration (a sandboxed Component-Model
-    // wasm export).  Dispatch is via
-    // the `cel_fn` host-callback path (same as kHost — see m24 §2);
-    // marshaling is per-fn typed WIT + a generated codec (m24 §4–§7).
-    // The embedder supplies the plugin bytes at Plan time via
-    // `Engine::AddPlugin(plugin_bytes, lib)`.
-    //
-    // Admits `proto(...)` arguments and returns — they cross as
-    // serialized bytes (m24 §8).  Admits `type` and `optional<T>` per
-    // m24 §6.
-    Builder& AddPlugin(absl::string_view fn_name, CelType return_type,
-                       std::vector<CelfnParam> params);
-
-    // Add a CEL-defined function (body is a CEL expression).
-    // celwasmc compiles the body into the wasm module named by
-    // SetModuleName().  The body string is taken verbatim — no
-    // surrounding whitespace stripping; cel-cpp's parser handles it.
-    Builder& AddCelDefined(absl::string_view fn_name, CelType return_type,
-                           std::vector<CelfnParam> params,
-                           absl::string_view body);
-
     // Validate + finalise.  Validations applied:
     //
-    //   - `Module` set iff any kCelDefined decl present.
     //   - No two decls share an overload-id.
     //   - `this` modifier only on the first param.
-    //   - kPlugin decls reject `optional<T>` / `type`
-    //     return + parameter shapes (m24 §6).
+    //   - langdef map-key restriction on every return / param type.
     //
     // Returns InvalidArgument on validation failure with the
     // offending decl identified in the message.
@@ -176,13 +124,11 @@ class FunctionLibrary {
 
    private:
     std::string module_name_;
-    std::string wit_interface_;
     std::vector<CelfnDecl> decls_;
   };
 
  private:
   std::string module_name_;
-  std::string wit_interface_;
   std::vector<CelfnDecl> decls_;
 };
 
@@ -195,28 +141,6 @@ class FunctionLibrary {
 // Returns InvalidArgument with line + column on any grammar or
 // semantic-validation failure.
 absl::StatusOr<FunctionLibrary> ParseCelfnSource(absl::string_view source);
-
-// ── WIT name derivation ─────────────────────────────────────────────
-//
-// The WIT package/interface a macro-built plugin exports its
-// functions under is ALWAYS derivable from the `.celfn` declaration
-// text — never configured (m35-plugin-ergonomics.md §4).  These
-// helpers are the single source of truth for that derivation, shared
-// by the generator (`cel generate` → wit_emitter) and by
-// `Plugin::Load`; do not re-derive the strings anywhere else.
-
-// The WIT package version the generator stamps.
-inline constexpr absl::string_view kWitPackageVersion = "0.1.0";
-
-// WIT package name for a library's `Module` directive:
-// `cel:<module>`, falling back to `cel:customfn` when the library
-// has no module name.
-std::string DeriveWitPackageName(absl::string_view module_name);
-
-// The full WIT interface name a macro-built plugin exports:
-// `cel:<module>/fns@0.1.0` (fallback module `customfn`), e.g.
-// `Module scorer;` → "cel:scorer/fns@0.1.0".
-std::string DeriveWitInterface(absl::string_view module_name);
 
 }  // namespace celwasm
 

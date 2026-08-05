@@ -95,7 +95,6 @@ nav:
       - FAQ: user-guide/faq.md
       - Security model: user-guide/security-model.md
       - Writing host functions: user-guide/writing-host-functions.md
-      - Writing plugins: user-guide/writing-plugins.md
   - Architecture:
       - Overview: design/00-architecture.md
       - Compiler: design/01-compiler.md

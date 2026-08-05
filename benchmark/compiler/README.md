@@ -115,7 +115,7 @@ When that comparison opens, the corpus should cover:
 | **map / list literal size** | 1 / 10 / 100 / 1000 entries | rodata layout cost scales |
 | **proto type complexity** | flat / nested / recursive | descriptor walk cost |
 | **macro density** | 0 / 1 / 5 / 10 nested comprehensions | expansion cost |
-| **`@host` / `@plugin` fn count** | 0 / 1 / 10 / 100 | overload table population |
+| **`@host` fn count** | 0 / 1 / 10 / 100 | overload table population |
 
 Per cell: time taken by `Compiler::Compile(source)` from a
 pre-`Build()`-ed Compiler.

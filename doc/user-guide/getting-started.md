@@ -50,7 +50,6 @@ bazel-bin/tools/cel/cel compile 'a * b + 1' \
 
 bazel-bin/tools/cel/cel inspect /tmp/expr.wasm
 # vars:       a:int, b:int
-# plugin fns: none
 # host fns:   none
 # link:       static (cel.abi v1, runtime abi v4)
 
@@ -165,37 +164,28 @@ opts.optimize_level = 2;
 auto program = compiler.Compile("a * b + 1", opts).value();
 ```
 
-## 7. Extending CEL — two kinds of custom function
+## 7. Extending CEL — custom functions
 
 CEL expressions call only what you hand them. To add your own
-functions, pick a trust model:
+functions, declare a `@host` function once, then bind a C++ lambda
+with the same declaration string:
 
-- **`@host` — trusted C++** in your process. Declare once, bind a
-  lambda with the same declaration string:
+```cpp
+builder.AddFunction("int @host.length(string s);");
+engine.BindFunction("int @host.length(string s);",
+    [](absl::string_view s) -> absl::StatusOr<int64_t> {
+      return static_cast<int64_t>(s.size());
+    });
+```
 
-  ```cpp
-  builder.AddFunction("int @host.length(string s);");
-  engine.BindFunction("int @host.length(string s);",
-      [](absl::string_view s) -> absl::StatusOr<int64_t> {
-        return static_cast<int64_t>(s.size());
-      });
-  ```
+`Engine::Plan` then verifies every function the program calls is
+registered with an exactly matching signature before anything runs.
 
-- **`@plugin` — sandboxed wasm** for code you didn't write. A plugin
-  built with the `cel_wasm_plugin` Bazel macro is a *self-describing*
-  artifact — its declarations travel inside the `.wasm` — so one
-  object serves both sides:
-
-  ```cpp
-  auto plugin = celwasm::Plugin::Load(plugin_bytes).value();
-  builder.Use(plugin);          // compile side: call sites type-check
-  CHECK_OK(engine.Use(plugin)); // eval side: sandboxed dispatch
-  ```
-
-  `Engine::Plan` then verifies every function the program calls exists
-  with an exactly matching signature before anything runs.
-
-Chooser and details: [Custom functions](custom-functions.md).
+Custom functions are native C++ callbacks in your process — the wasm
+sandbox covers the expression, not the functions you register, and
+sandboxed wasm plugins are not offered
+([security model](security-model.md)). Declarations, libraries, and
+the full typed API: [Custom functions](custom-functions.md).
 
 ## 8. Where to go next
 
@@ -203,8 +193,7 @@ Chooser and details: [Custom functions](custom-functions.md).
 | --- | --- |
 | See every core feature as a ~60-line runnable program | [`examples/`](https://github.com/augustinemathew/cel-wasm/tree/master/examples) |
 | Ship the compiled `.wasm` and evaluate it elsewhere | [`examples/03_compile_once_run_anywhere.cc`](https://github.com/augustinemathew/cel-wasm/blob/master/examples/03_compile_once_run_anywhere.cc) |
-| Add your own functions to CEL (trusted C++) | [Writing host functions](writing-host-functions.md) |
-| Add **sandboxed** functions (untrusted plugins) | [Writing plugins](writing-plugins.md) |
+| Add your own functions to CEL (C++ callbacks) | [Writing host functions](writing-host-functions.md) |
 | Understand the whole embedder API | [User guide](index.md) |
 | Quick answers (dyn? thread-safety? sizes? speed?) | [FAQ](faq.md) |
 | The security story, precisely stated | [Security model](security-model.md) |

@@ -19,10 +19,3 @@ bazel run //examples:01_hello_world
 | 06 | [`06_proto_messages.cc`](06_proto_messages.cc) | Protobuf messages as CEL variables — field reads, zero copies. |
 | 07 | [`07_error_handling.cc`](07_error_handling.cc) | The three failure layers: compile-time `Status`, CEL error *values*, accessor mismatches. |
 | 08 | [`08_function_errors_and_unknowns.cc`](08_function_errors_and_unknowns.cc) | A host function returning a CEL error value, a CEL unknown (absorbed by three-valued logic), or an infrastructure failure — and how each surfaces. |
-| 09 | [`09_plugin_functions.cc`](09_plugin_functions.cc) | A **sandboxed** custom function: [`adder.idl`](adder.idl) + [`adder_fns.cc`](adder_fns.cc) → a self-describing WebAssembly plugin (the macro embeds the declarations in the artifact's `cel.fns` section), loaded with `Plugin::Load` and registered on both Compiler and Engine with one `Use` call each — no hand-written declaration mirror. |
-
-The plugin path in 09 is deliberately scalar-only — string-returning
-plugin functions currently trap (a known, pinned bug; see the skip in
-[`demo_plugin_e2e_test.cc`](../e2e/plugin_fixtures/cel_wasm_plugin_demo/demo_plugin_e2e_test.cc)).
-The deeper guide is
-[writing plugins](../doc/user-guide/writing-plugins.md).
