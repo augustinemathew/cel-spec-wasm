@@ -71,9 +71,9 @@ graph TD
 | Wave | Node | Owner | Status |
 |---|---|---|---|
 | 0 | P0 plan + DAG docs | orchestrator | done (this commit) |
-| 1 | S1 stale-feature inventory | agent | pending |
-| 1 | D1 e2e/examples/benches | agent | pending |
-| 1 | D2 CLI | agent | pending |
+| 1 | S1 stale-feature inventory | agent | running (launched 2026-08-04) |
+| 1 | D1 e2e/examples/benches | agent | running (launched 2026-08-04) |
+| 1 | D2 CLI | agent | running (launched 2026-08-04) |
 | 2 | D3 eval layer | agent | pending |
 | 2 | DOC1 milestone annotations | agent | pending |
 | 3 | D4 compiler + abi | agent | pending |
