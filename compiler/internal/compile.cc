@@ -553,7 +553,6 @@ absl::StatusOr<OverloadTable> BuildOverloadTable(
           /*overload_id=*/std::string(decl.overload_id),
           /*wasm_import_function_name=*/std::string(decl.overload_id),
           /*wasm_import_module_type=*/ImportModuleSource::kCelFn,
-          /*wasm_import_module_name=*/std::string(),
           /*num_args=*/decl.num_args});
     }
   }

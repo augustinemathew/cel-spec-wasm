@@ -56,8 +56,8 @@ TEST(OverloadTableTest, LookupUnknownReturnsNull) {
 
 TEST(OverloadTableTest, CustomsAppendAfterBuiltinsInOrder) {
   const std::vector<OverloadDef> customs = {
-      {"my_log_int", "my_log_int", ImportModuleSource::kCelFn, "", 2},
-      {"my_log_double", "my_log_double", ImportModuleSource::kCelFn, "", 2},
+      {"my_log_int", "my_log_int", ImportModuleSource::kCelFn, 2},
+      {"my_log_double", "my_log_double", ImportModuleSource::kCelFn, 2},
   };
   auto table = OverloadTable::Build(customs);
   ASSERT_THAT(table, IsOk());
@@ -79,7 +79,7 @@ TEST(OverloadTableTest, CustomsAppendAfterBuiltinsInOrder) {
 TEST(OverloadTableTest, CustomShadowingBuiltinIsAlreadyExists) {
   // CEL forbids overriding a standard overload.
   const std::vector<OverloadDef> customs = {
-      {"add_int64", "my_add_override", ImportModuleSource::kCelFn, "", 2}};
+      {"add_int64", "my_add_override", ImportModuleSource::kCelFn, 2}};
   EXPECT_THAT(OverloadTable::Build(customs),
               StatusIs(absl::StatusCode::kAlreadyExists,
                        testing::HasSubstr("add_int64")));
@@ -87,54 +87,16 @@ TEST(OverloadTableTest, CustomShadowingBuiltinIsAlreadyExists) {
 
 TEST(OverloadTableTest, DuplicateCustomIsAlreadyExists) {
   const std::vector<OverloadDef> customs = {
-      {"my_upper_string", "my_upper_v1", ImportModuleSource::kCelFn, "", 2},
-      {"my_upper_string", "my_upper_v2", ImportModuleSource::kCelFn, "", 2}};
+      {"my_upper_string", "my_upper_v1", ImportModuleSource::kCelFn, 2},
+      {"my_upper_string", "my_upper_v2", ImportModuleSource::kCelFn, 2}};
   EXPECT_THAT(OverloadTable::Build(customs),
               StatusIs(absl::StatusCode::kAlreadyExists,
                        testing::HasSubstr("my_upper_string")));
 }
 
-TEST(OverloadTableTest, ForeignModuleCustomCarriesItsAlias) {
-  // A kUser-source custom imports under a per-overload module alias
-  // rather than the host-callback "cel_fn".
-  const std::vector<OverloadDef> customs = {
-      {"allow_string_string", "allow_string_string", ImportModuleSource::kUser,
-       "rules", 3}};
-  auto table = OverloadTable::Build(customs);
-  ASSERT_THAT(table, IsOk());
-  const OverloadDef* impl = table->Lookup("allow_string_string");
-  ASSERT_NE(impl, nullptr);
-  EXPECT_EQ(impl->wasm_import_module_type, ImportModuleSource::kUser);
-  EXPECT_EQ(ImportModuleName(*impl), "rules");
-  EXPECT_EQ(impl->wasm_import_function_name, "allow_string_string");
-  EXPECT_EQ(impl->num_args, 3);
-}
-
-TEST(OverloadTableTest, TwoForeignAliasesSameHelperBothLand) {
-  // Distinct overload ids, same helper name, different alias — both
-  // legal, both distinct wasm imports.  Collision is keyed on the
-  // overload id, not on (module, helper).
-  const std::vector<OverloadDef> customs = {
-      {"allow_string_string", "allow_string_string", ImportModuleSource::kUser,
-       "rules", 3},
-      {"allow_string_string_v2", "allow_string_string",
-       ImportModuleSource::kUser, "policy", 3}};
-  auto table = OverloadTable::Build(customs);
-  ASSERT_THAT(table, IsOk());
-  const OverloadDef* rules = table->Lookup("allow_string_string");
-  const OverloadDef* policy = table->Lookup("allow_string_string_v2");
-  ASSERT_NE(rules, nullptr);
-  ASSERT_NE(policy, nullptr);
-  EXPECT_EQ(ImportModuleName(*rules), "rules");
-  EXPECT_EQ(ImportModuleName(*policy), "policy");
-  EXPECT_EQ(rules->wasm_import_function_name,
-            policy->wasm_import_function_name);  // same wasm export
-}
-
 TEST(OverloadTableTest, LookupSurvivesTableMove) {
   const std::vector<OverloadDef> customs = {
-      {"my_upper_string", "my_upper_string", ImportModuleSource::kCelFn, "",
-       2}};
+      {"my_upper_string", "my_upper_string", ImportModuleSource::kCelFn, 2}};
   auto built = OverloadTable::Build(customs);
   ASSERT_THAT(built, IsOk());
   OverloadTable a = *std::move(built);
@@ -150,7 +112,7 @@ TEST(OverloadTableTest, CustomInputsNeedNotOutliveBuild) {
   auto table = [] {
     std::string id = "my_upper_string";
     std::vector<OverloadDef> customs = {
-        {id, id, ImportModuleSource::kCelFn, "", 2}};
+        {id, id, ImportModuleSource::kCelFn, 2}};
     return OverloadTable::Build(customs);
   }();
   ASSERT_THAT(table, IsOk());

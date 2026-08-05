@@ -24,14 +24,12 @@
 
 namespace celwasm {
 
-// Which wasm import module an overload's function lives under.  The first
-// three resolve to fixed module strings; `kUser` uses the per-overload
-// alias in `OverloadDef::wasm_import_module_name`.
+// Which wasm import module an overload's function lives under.  Each
+// resolves to a fixed module string.
 enum class ImportModuleSource : uint8_t {
   kCel = 0,      // "cel"      — cel_runtime.wasm exports (built-in seeds)
   kCelHost = 1,  // "cel_host" — host trampolines
   kCelFn = 2,    // "cel_fn"   — host-backed custom functions
-  kUser = 3,     // uses OverloadDef::wasm_import_module_name
 };
 
 // One overload: a CEL overload id paired with the wasm import that
@@ -43,16 +41,14 @@ enum class ImportModuleSource : uint8_t {
 //      fills the function name + num_args from the runtime catalogue.
 //        overload_id               = "add_int64"   (the CEL spec id)
 //        wasm_import_function_name = "cel_int_add_at_vv"
-//        wasm_import_module_type   = kCel
-//        wasm_import_module_name   = ""             (module name → "cel")
+//        wasm_import_module_type   = kCel           (module name → "cel")
 //        num_args                  = 3              (out_slot + 2 args)
 //
 //   2) @host custom — a trusted C++ lambda the embedder binds at Plan
 //      time, e.g. `myorg.up(s)`.
 //        overload_id               = "up_str"
 //        wasm_import_function_name = "up_str"
-//        wasm_import_module_type   = kCelFn
-//        wasm_import_module_name   = ""             (module name → "cel_fn")
+//        wasm_import_module_type   = kCelFn         (module name → "cel_fn")
 //        num_args                  = 2              (out_slot + 1 arg)
 struct OverloadDef {
   // The table's lookup key, and a CEL spec concept rather than a local
@@ -64,14 +60,10 @@ struct OverloadDef {
   std::string overload_id;
   std::string wasm_import_function_name;  // the imported wasm function
   ImportModuleSource wasm_import_module_type = ImportModuleSource::kCel;
-  // The wasm import module string when `wasm_import_module_type == kUser`;
-  // empty otherwise (the name is then derived from the type).
-  std::string wasm_import_module_name;
   uint8_t num_args = 0;  // i32 param count (out_slot + args); always >= 1
 };
 
-// The wasm import-module string for `def`: the fixed name for
-// kCel/kCelHost/kCelFn, or `def.wasm_import_module_name` for kUser.
+// The wasm import-module string for `def`'s module type.
 absl::string_view ImportModuleName(const OverloadDef& def);
 
 class OverloadTable {
@@ -85,9 +77,8 @@ class OverloadTable {
   // from the runtime catalogue) plus `customs`, in that order.  Returns
   // `AlreadyExists` if a custom's `overload_id` collides with a built-in
   // (CEL forbids shadowing) or an earlier custom.  CHECK-fails if a
-  // seed's helper is missing from the catalogue, a custom has
-  // `num_args == 0` or `wasm_import_module_type == kCel`, or a custom's
-  // `wasm_import_module_name` is set inconsistently with the kUser type.
+  // seed's helper is missing from the catalogue, or a custom has
+  // `num_args == 0` or `wasm_import_module_type == kCel`.
   static absl::StatusOr<OverloadTable> Build(
       absl::Span<const OverloadDef> customs = {});
 

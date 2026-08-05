@@ -568,12 +568,6 @@ absl::string_view ImportModuleName(const OverloadDef& def) {
       return "cel_host";
     case ImportModuleSource::kCelFn:
       return "cel_fn";
-    case ImportModuleSource::kUser:
-      ABSL_CHECK(!def.wasm_import_module_name.empty())
-          << "OverloadDef wasm_import_module_type==kUser but "
-             "wasm_import_module_name is empty (function="
-          << def.wasm_import_function_name << ")";
-      return def.wasm_import_module_name;
   }
   ABSL_CHECK(false) << "unknown ImportModuleSource="
                     << static_cast<int>(def.wasm_import_module_type);
@@ -600,7 +594,6 @@ void SeedBuiltins(std::vector<OverloadDef>& impls,
     impls.push_back(OverloadDef{std::string(s.overload_id),
                                 std::string(s.helper_name),
                                 ImportModuleSource::kCel,
-                                /*wasm_import_module_name=*/{},
                                 static_cast<uint8_t>(helper->num_args())});
     const bool inserted = index.emplace(std::string(s.overload_id), idx).second;
     ABSL_CHECK(inserted) << "kBuiltinSeeds duplicate: " << s.overload_id;
@@ -622,10 +615,6 @@ absl::Status AppendCustoms(absl::Span<const OverloadDef> customs,
     ABSL_CHECK_GE(c.num_args, 1u)
         << "OverloadTable: custom `" << c.overload_id
         << "` num_args must be >= 1 (out_slot is always present)";
-    ABSL_CHECK_EQ(c.wasm_import_module_type == ImportModuleSource::kUser,
-                  !c.wasm_import_module_name.empty())
-        << "OverloadTable: custom `" << c.overload_id
-        << "` wasm_import_module_name must be set iff module type == kUser";
     if (auto it = index.find(c.overload_id); it != index.end()) {
       const bool shadows_builtin = it->second < builtin_count;
       return absl::AlreadyExistsError(absl::StrCat(
