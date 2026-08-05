@@ -273,5 +273,89 @@ TEST_F(ComprehensionMapIndexEvalTest, TransformMapSmallLookupHit) {
   EXPECT_EQ(*EvalOk(instance, a).AsInt(), 103);  // 102 + 1.
 }
 
+// ── Indexed path: key-hash token spaces beyond non-negative ints ─────
+//
+// The canonicalizing key hash (runtime/cel_map_hash.h) routes keys into
+// three disjoint token spaces: non-negative ints [0, INT64_MAX],
+// NEGATIVE ints (magnitude tagged into its own code space), and the
+// uint tail (INT64_MAX, UINT64_MAX].  The suites above only exercise
+// the first; these pin the other two through a built index (>= 8
+// entries), both insert-side (literal keys) and lookup-side.
+
+// `{-1: 100, -2: 101, …, -n: 100+n-1}` — all-negative int keys.
+std::string NegIntKeyMapLiteral(int n) {
+  std::string s = "{-1: 100";
+  for (int i = 2; i <= n; ++i) {
+    absl::StrAppend(&s, ", -", i, ": ", 100 + i - 1);
+  }
+  absl::StrAppend(&s, "}");
+  return s;
+}
+
+TEST_F(IndexedMapEvalTest, NegativeIntKeyLargeMapLookupHit) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, absl::StrCat(NegIntKeyMapLiteral(9), "[-5]"));
+  Activation a;
+  EXPECT_EQ(*EvalOk(instance, a).AsInt(), 104);
+}
+
+TEST_F(IndexedMapEvalTest, NegativeIntKeyLargeMapMissingKeyIsError) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto instance =
+      CompilePlan(*compiler, absl::StrCat(NegIntKeyMapLiteral(9), "[-99]"));
+  Activation a;
+  auto v_or = instance.Eval(a);
+  ASSERT_TRUE(v_or.ok()) << v_or.status();
+  EXPECT_TRUE(v_or->IsError());
+}
+
+TEST_F(IndexedMapEvalTest, NegativeIntKeyLargeMapInPresentAndAbsent) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto present =
+      CompilePlan(*compiler, absl::StrCat("-3 in ", NegIntKeyMapLiteral(9)));
+  auto absent =
+      CompilePlan(*compiler, absl::StrCat("-42 in ", NegIntKeyMapLiteral(9)));
+  Activation a;
+  EXPECT_EQ(*EvalOk(present, a).AsBool(), true);
+  EXPECT_EQ(*EvalOk(absent, a).AsBool(), false);
+}
+
+// Uint keys straddling the int64 boundary: keys <= INT64_MAX take the
+// shared int token; keys above it take the uint-high token.  Both
+// spaces coexist in one index.
+constexpr absl::string_view kUintHighKeyMap =
+    "{1u: 101, 2u: 102, 3u: 103, 4u: 104, 5u: 105, 6u: 106, "
+    "9223372036854775807u: 107, "   // INT64_MAX — int-token space
+    "9223372036854775808u: 108, "   // INT64_MAX+1 — uint-high space
+    "18446744073709551615u: 109}";  // UINT64_MAX
+
+TEST_F(IndexedMapEvalTest, UintHighKeyLargeMapLookupHit) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto boundary = CompilePlan(
+      *compiler, absl::StrCat(kUintHighKeyMap, "[9223372036854775808u]"));
+  auto max = CompilePlan(
+      *compiler, absl::StrCat(kUintHighKeyMap, "[18446744073709551615u]"));
+  Activation a;
+  EXPECT_EQ(*EvalOk(boundary, a).AsInt(), 108);
+  EXPECT_EQ(*EvalOk(max, a).AsInt(), 109);
+}
+
+TEST_F(IndexedMapEvalTest, UintHighKeyLargeMapInPresentAndAbsent) {
+  auto compiler = CompilerEmpty();
+  ASSERT_THAT(compiler, IsOk());
+  auto present = CompilePlan(
+      *compiler, absl::StrCat("18446744073709551615u in ", kUintHighKeyMap));
+  auto absent = CompilePlan(
+      *compiler, absl::StrCat("9223372036854775809u in ", kUintHighKeyMap));
+  Activation a;
+  EXPECT_EQ(*EvalOk(present, a).AsBool(), true);
+  EXPECT_EQ(*EvalOk(absent, a).AsBool(), false);
+}
+
 }  // namespace
 }  // namespace celwasm

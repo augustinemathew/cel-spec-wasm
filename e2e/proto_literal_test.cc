@@ -1,6 +1,6 @@
 // M7 e2e test suite — the spec of "done" for proto message
 // literal construction (`Foo{a: 1, b: "x"}`).  Mirrors the
-// m4_test / m5_test shape: every test asserts a capability
+// list_test / operators_test shape: every test asserts a capability
 // `m7-proto-literals.md` says M7 must light up; running this
 // binary today (with `kStructExpr` still `Unimplemented` in
 // `expr_lower.cc:871`) should fail every case below.  Greening
@@ -33,7 +33,7 @@
 //                                          nested case (M8 territory
 //                                          for auto-wrap-from-scalar
 //                                          only — that lives in
-//                                          m8_test.cc).
+//                                          wrapper_test.cc).
 //   - ProtoLiteralDefaultsE2ETest   §6.3 — proto2 `[default = X]`
 //                                          and proto3 zero-default
 //                                          read regression on
@@ -67,19 +67,19 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
+#include "common/type.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"  // HostListBacking definition
-#include "compiler/program.h"
-#include "common/type.h"
 #include "eval/value.h"
+#include "google/protobuf/message.h"
+#include "gtest/gtest.h"
 #include "testdata/e2e_fixture.pb.h"
 #include "testdata/host_fixture_proto2.pb.h"
 #include "testdata/host_fixture_proto3.pb.h"
-#include "google/protobuf/message.h"
-#include "gtest/gtest.h"
 
 namespace celwasm::api {
 namespace {
@@ -206,10 +206,9 @@ TEST_F(ProtoLiteralEmptyE2ETest,
   // default-instance.)
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  "celwasm.testdata.HostMsg3{}.inner == "
-                  "celwasm.testdata.HostMsg3{}");
+  auto instance = CompilePlan(*compiler,
+                              "celwasm.testdata.HostMsg3{}.inner == "
+                              "celwasm.testdata.HostMsg3{}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }
@@ -867,14 +866,13 @@ TEST_F(ProtoLiteralDefaultsE2ETest, Proto3UnsetMessageReadsAsDefaultInstance) {
   // accessing an unset proto3 singular MESSAGE field returns the
   // default-instance message of the field's type, NOT null.  Was
   // asserting `== null` pre-2026-06-05 (the buggy behavior, see
-  // m7_test::EmptyProto3MessageReadsDefaultInstanceForUnsetSubmessage
+  // proto_literal_test::EmptyProto3MessageReadsDefaultInstanceForUnsetSubmessage
   // for the longer rationale).
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance =
-      CompilePlan(*compiler,
-                  "celwasm.testdata.HostMsg3{}.inner == "
-                  "celwasm.testdata.HostMsg3{}");
+  auto instance = CompilePlan(*compiler,
+                              "celwasm.testdata.HostMsg3{}.inner == "
+                              "celwasm.testdata.HostMsg3{}");
   Activation a;
   EXPECT_EQ(*EvalOk(instance, a).AsBool(), true);
 }

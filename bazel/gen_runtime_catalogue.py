@@ -10,8 +10,8 @@ declaration with a `// cel:codegen-export` comment, e.g.
 
 The marker carries the one fact that is NOT recoverable from the signature
 alone — membership in the codegen-helper set (`cel_int_add_at_vv` is
-codegen-imported; its sibling `cel_int_eq_at_vv`, reached only by tail-call
-from the polymorphic dispatcher, is not).  The signature carries the rest:
+codegen-imported; its sibling `cel_string_eq_at_vv`, reached only from
+`equality_kernel`'s same-kind dispatch, is not).  The signature carries the rest:
 arity is the parameter count, and the return shape is the return type
 (`void` writes through an out-slot, `uint32_t` returns an i32).  clang
 lowers these one-to-one to the wasm function types, so reading the C source

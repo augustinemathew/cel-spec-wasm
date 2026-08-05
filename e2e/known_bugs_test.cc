@@ -97,7 +97,7 @@ absl::StatusOr<Value> TryEval(absl::string_view source) {
 // `runtime/cel_compare_test.cc` (`MapKeyEqTest`).
 //
 // `dyn(...)` is required only to clear the static-subset checker for a
-// cross-type `in` (cf. m5_test.cc); the defect was in the runtime
+// cross-type `in` (cf. operators_test.cc); the defect was in the runtime
 // kernel.
 // ──────────────────────────────────────────────────────────────────
 TEST(KnownBugs, MapKeyLossyDoubleEquality) {
@@ -1854,6 +1854,88 @@ TEST(KnownBugs, PbtStringFormatHostAggregatePoisons) {
                           << static_cast<int>(v->kind()) << ")";
     EXPECT_EQ(*got, want) << source;
   }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// `%f` / `%e` coerce an int or uint operand to double and render it;
+// cel-cpp's formatter requires an actual double and errors otherwise.
+// Found by adding the format-verb operand-kind matrix to the oracle
+// (cel_cpp_oracle_test) while closing conformance-only coverage: the
+// differential failed on all four (verb x int/uint) combinations.
+// Over-permissive rather than wrong-valued -- we accept a program
+// cel-cpp rejects -- so P1 by the severity rule.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, FixedAndScientificVerbsCoerceIntegers) {
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0019
+severity: P1
+kind: over-permissive
+summary: "%f" / "%e" accept an int or uint operand by coercing it to double; cel-cpp requires a double and errors
+repro: "%f".format([2u])
+bindings: none
+actual: the string "2.000000"
+expected: an evaluation error ("expected a double but got a uint")
+layer: runtime/cel_string_format_render.cc (CoerceToDouble's CEL_INT / CEL_UINT arms, reached from RenderFixed and RenderScientific)
+blocked-by: none
+found-by: cel_cpp_oracle_test FormatVerbOperandKindsAgree, 2026-07-29; all four of {%f,%e} x {int,uint} diverge
+fix-hint: CoerceToDouble admits CEL_INT and CEL_UINT and widens them, so
+  RenderFixed / RenderScientific happily format an integer.  cel-cpp's
+  extensions/strings.cc formatter checks the operand is a double and
+  returns "expected a double but got a <kind>" otherwise -- it does NOT
+  coerce.  Drop the two integer arms from CoerceToDouble (or gate them to
+  the verbs that legitimately take integers) and poison with
+  CEL_ERR_INVALID_ARGUMENT instead.  Note %d legitimately DOES accept a
+  double (it renders 1.7 as "1.700000", which the oracle confirms cel-cpp
+  also does), so the fix is specific to the fixed/scientific verbs, not to
+  CoerceToDouble's every caller.
+issue: none
+)CELBUG";
+  for (const absl::string_view source :
+       {R"("%f".format([2u]))", R"("%f".format([2]))", R"("%e".format([2u]))",
+        R"("%e".format([2]))"}) {
+    auto v = TryEval(source);
+    ASSERT_TRUE(v.ok()) << source << ": " << v.status();
+    EXPECT_TRUE(v->IsError())
+        << source << " kind=" << static_cast<int>(v->kind());
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// `list<bool>` as a plugin arg/return emits a codec header that does
+// not compile.  Found while adding element-suffix coverage for
+// `SuffixFor` (cpp_codec_emitter.cc): every other primitive works as a
+// list element; bool is the one C++ specialises.
+// ──────────────────────────────────────────────────────────────────
+TEST(KnownBugs, PluginListOfBoolDoesNotCompile) {
+  GTEST_SKIP() << R"CELBUG(CELBUG v1
+id: CELW-0021
+severity: P1
+kind: missing-feature
+summary: a `list<bool>` plugin decl generates a codec header that fails to compile — std::vector<bool> has no .data()
+repro: add `list<bool> @plugin.echo_bools(list<bool> xs);` to a .idl and build the cel_wasm_plugin target
+bindings: none
+actual: generated codec.h fails with "type 'bool *' cannot be narrowed to 'bool' in initializer list" and "no member named 'data' in 'std::vector<bool>'"
+expected: it compiles and round-trips, as list<int> / list<uint> / list<double> / list<string> all do
+layer: compiler/celfn/celfnc_emit/cpp_codec_emitter.cc (the kList template maps list<T> to std::vector<T>)
+found-by: adding element-suffix coverage for SuffixFor's bool arm, 2026-08-01
+fix-hint: `std::vector<bool>` is the bit-packed specialisation: no
+  `.data()`, and `operator[]` yields a proxy rather than `bool&`, so the
+  emitted lift/lower cannot take element pointers.  Options: emit
+  `std::vector<uint8_t>` as the author-side container for `list<bool>`
+  and convert at the boundary, or emit a `std::deque<bool>`, or
+  special-case the element loop to avoid `.data()`.  Whichever is
+  chosen, the fixture already has `map<uint, bool>` covering bool as a
+  map VALUE, which works — only the list element form is broken.
+blocked-by: none
+issue: none
+)CELBUG";
+  // Asserted by the build, not by this body: the failure is a compile
+  // error in generated code, so there is nothing to evaluate here.
+  // Un-skip by adding the decl back to
+  // e2e/plugin_fixtures/cel_wasm_plugin_demo/fns.idl and confirming
+  // `bazel build //e2e/plugin_fixtures/cel_wasm_plugin_demo:all` is
+  // green.
+  SUCCEED();
 }
 
 }  // namespace

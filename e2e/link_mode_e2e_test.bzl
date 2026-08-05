@@ -11,8 +11,8 @@ Usage in `e2e/BUILD.bazel`:
     load(":link_mode_e2e_test.bzl", "link_mode_e2e_cc_test")
 
     link_mode_e2e_cc_test(
-        name = "m5_test",
-        srcs = ["m5_test.cc"],
+        name = "operators_test",
+        srcs = ["operators_test.cc"],
         deps = [...],
     )
 

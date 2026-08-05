@@ -195,6 +195,23 @@ class StringBindBoundary : public ::testing::Test {
   }
 };
 
+// The activation buffer is malloc'd inside linear memory and grown per
+// Eval.  A single string too large for dlmalloc to carve out fails that
+// growth, surfacing as a non-OK Status from `instance.cc`'s
+// `Activation[<var>]: malloc returned NULL (needed <n> bytes)` arm —
+// not a crash, hang or abort.  Same graceful-ceiling contract the
+// list-element case pins at ElementOverLinearMemoryGraceful; this is
+// the scalar-binding twin and the only route to that arm.
+//
+// NOT the sibling arm just above it, which reports a wasmtime error
+// from the malloc CALL rather than a NULL return: that one needs a
+// trap, not an allocation failure, and stays uncovered.
+TEST_F(StringBindBoundary, OverLinearMemoryGraceful) {
+  ExpectGracefulCell(
+      "size(s)", Decl(),
+      {{"s", Value::String(AsciiPayload(size_t{64} * 1024 * 1024))}});
+}
+
 TEST_F(StringBindBoundary, Empty) {
   ExpectSize(0);
 }

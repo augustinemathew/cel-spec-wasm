@@ -1,5 +1,5 @@
 // M7-A e2e test suite — the spec of "done" for `google.protobuf.Any`
-// pack / unpack / equality.  Mirrors m7_test.cc's shape: every test
+// pack / unpack / equality.  Mirrors proto_literal_test.cc's shape: every test
 // asserts a capability `m7a-any.md` says M7-A must light up; running
 // this binary today (with `CelSetFieldImpl`'s Any-shaped descriptor
 // mismatch returning `UnimplementedError`) should SKIP everything
@@ -60,21 +60,21 @@
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "eval/activation.h"
 #include "compiler/compiler.h"
+#include "compiler/program.h"
+#include "e2e/link_mode_e2e_helpers.h"
+#include "eval/activation.h"
 #include "eval/engine.h"
 #include "eval/error.h"
 #include "eval/instance.h"
 #include "eval/internal/cel_host.h"
-#include "compiler/program.h"
-#include "shared/type.h"
 #include "eval/value.h"
-#include "testdata/host_fixture_proto2.pb.h"
-#include "testdata/host_fixture_proto3.pb.h"
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/message.h"
-#include "e2e/link_mode_e2e_helpers.h"
 #include "gtest/gtest.h"
+#include "shared/type.h"
+#include "testdata/host_fixture_proto2.pb.h"
+#include "testdata/host_fixture_proto3.pb.h"
 
 namespace celwasm {
 namespace {
@@ -533,10 +533,10 @@ Value EvalReject(absl::string_view literal_any_inline) {
 TEST_F(AnyRejectE2ETest, ReadAnyWithExplicitlySetEmptyTypeUrlIsError) {
   auto compiler = CompilerEmpty();
   ASSERT_THAT(compiler, IsOk());
-  auto instance = CompilePlan(
-      *compiler,
-      "celwasm.testdata.HostMsg3{single_any: "
-      "google.protobuf.Any{type_url: '', value: b''}}.single_any");
+  auto instance =
+      CompilePlan(*compiler,
+                  "celwasm.testdata.HostMsg3{single_any: "
+                  "google.protobuf.Any{type_url: '', value: b''}}.single_any");
   Value v = EvalOk(instance, Activation{});
   EXPECT_TRUE(v.IsError())
       << "Explicitly-assigned Any{type_url: ''} should read as error, kind="

@@ -17,6 +17,10 @@ load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("//bazel:cel_wasm_plugin.bzl", "cel_wasm_plugin")
 
+# The taxonomy drift guard (//e2e:taxonomy_validate_test) reads this
+# BUILD file to verify cli_workloads entries name real targets.
+exports_files(["BUILD.bazel"])
+
 package(default_visibility = ["//visibility:private"])
 
 cc_binary(

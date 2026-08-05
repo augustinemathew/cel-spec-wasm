@@ -8,7 +8,7 @@
 // `doc/implementation-plan/rewrite/m31-static-aggregates.md` §10) the
 // matching pair here moves with it in the same commit.
 //
-// Two distinct limits, reached by two distinct expression *shapes*:
+// The pinned limits, each reached by a distinct expression *shape*:
 //
 //   • Rodata window  — BREADTH.  Every scalar literal is a 24-byte
 //     CelValue frame in the window `[16, --global-base=262144)`;
@@ -21,6 +21,15 @@
 //     than `kMaxExpressionNestingDepth` (2048) is rejected at parse,
 //     independent of rodata.  Reached only when operands cost no rodata
 //     (variables); a literal chain hits the 10909-frame wall first.
+//
+//   • Source size — LENGTH.  The parser refuses input longer than
+//     100,000 codepoints (cel-cpp `ParserOptions::
+//     expression_size_codepoint_limit`, `parser/internal/options.h:22`;
+//     rejection at `parser/parser.cc:1648`).  Exactly 100,000 parses;
+//     100,001 is InvalidArgument before the grammar ever runs.
+//
+//   • Codegen key-staging arena — a const-map materialization budget
+//     with a graceful FALLBACK (not a rejection); see its section.
 
 #include <cstdint>
 #include <string>
@@ -211,6 +220,35 @@ TEST_F(LimitsTest, ParseNesting_2049DeepExceedsMax) {
   auto program = CompileWithVarA(VarAddChain(2049));
   EXPECT_THAT(program, StatusIs(absl::StatusCode::kResourceExhausted));
   EXPECT_THAT(program.status().message(), HasSubstr("nesting depth"));
+}
+
+// ── Source size: exact boundary at 100,000 codepoints ────────────────
+//
+// cel-cpp's parser rejects input past
+// `ParserOptions::expression_size_codepoint_limit` (default 100,000 —
+// `parser/internal/options.h:22`) with InvalidArgument BEFORE running
+// the grammar (`parser/parser.cc:1648`: `input.size() > limit`).  The
+// boundary expression is `size("<payload>")` — 8 codepoints of syntax
+// plus an ASCII payload, whose ~100 KB string literal stays well
+// inside the 256 KiB rodata window so length is the only constraint.
+
+// `size("aaa…")` with exactly `total` codepoints of source.
+std::string SizeOfStringSource(int total) {
+  const int payload = total - 8;  // size(" ... ") syntax overhead
+  std::string s = "size(\"";
+  s.append(static_cast<size_t>(payload), 'a');
+  absl::StrAppend(&s, "\")");
+  return s;
+}
+
+TEST_F(LimitsTest, SourceSize_100kCodepointsCompilesAndEvaluates) {
+  EXPECT_THAT(EvalInt(SizeOfStringSource(100'000)), IsOkAndHolds(99'992));
+}
+
+TEST_F(LimitsTest, SourceSize_100kPlusOneCodepointsRejectedAtParse) {
+  auto program = Compile(SizeOfStringSource(100'001));
+  EXPECT_THAT(program, StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(program.status().message(), HasSubstr("codepoint limit"));
 }
 
 }  // namespace
