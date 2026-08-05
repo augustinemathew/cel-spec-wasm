@@ -54,8 +54,12 @@ Type WireScalar(Type::Kind kind) {
 }
 
 Type WireUnknownKind(int value) {
+  // Out-of-range wire simulation: set the raw enum value through
+  // reflection, the way an unknown value arrives off the wire in
+  // proto3's open-enum model (no C++-level enum cast involved).
   Type t;
-  t.set_kind(static_cast<Type::Kind>(value));
+  t.GetReflection()->SetEnumValue(
+      &t, Type::descriptor()->FindFieldByName("kind"), value);
   return t;
 }
 

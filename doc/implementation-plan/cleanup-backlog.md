@@ -2157,3 +2157,15 @@ follow-up cleanup, not a current regression.
       Files: `runtime/cel_internal.h`, `runtime/cel_string_ops.c`,
       `runtime/cel_runtime.c`.
 
+
+- [ ] **#57 — lint harness: cel-cpp `compiler/compiler.h` include
+  collision** (2026-08-05, m39 gate). TUs including vendored cel-cpp's
+  `extensions/*.h` cannot be clang-tidied: the extension headers
+  `#include "compiler/compiler.h"` (cel-cpp's), but tidy runs
+  unsandboxed and `-iquote .` resolves to OUR header of the same name
+  (bazel builds are immune — sandboxing omits undeclared inputs from
+  the search space). `parse_and_check.cc` + `cel_cpp_oracle.cc` are
+  format-only in `scripts/lint.sh` until fixed. Candidate fixes: a
+  clang `-ivfsoverlay` hiding first-party headers when tidying those
+  TUs, or renaming our `compiler/compiler.h` (breaking-change-allowed
+  pre-1.0, but touches every consumer).

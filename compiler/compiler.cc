@@ -135,19 +135,23 @@ const CelType* absl_nullable FindUnmappableType(const CelType& t) {
 // the decl + type here turns it into a clean InvalidArgument at
 // Build().
 absl::Status ValidateDeclTypesMappable(const CelfnDecl& d) {
-  if (const auto* bad = FindUnmappableType(d.return_type)) {
+  const CelType* bad_ret = FindUnmappableType(d.return_type);
+  if (bad_ret != nullptr) {
+    const CelType& bad = *bad_ret;
     return absl::InvalidArgumentError(absl::StrCat(
         "Compiler::Builder::Build: declaration `", d.fn_name,
         "` (overload-id `", d.overload_id, "`) return type uses `",
-        RenderDeclTypeForDiagnostic(*bad),
+        RenderDeclTypeForDiagnostic(bad),
         "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
   }
   for (const auto& p : d.params) {
-    if (const auto* bad = FindUnmappableType(p.type)) {
+    const CelType* bad_param = FindUnmappableType(p.type);
+    if (bad_param != nullptr) {
+      const CelType& bad = *bad_param;
       return absl::InvalidArgumentError(absl::StrCat(
           "Compiler::Builder::Build: declaration `", d.fn_name,
           "` (overload-id `", d.overload_id, "`) parameter `", p.name,
-          "` uses `", RenderDeclTypeForDiagnostic(*bad),
+          "` uses `", RenderDeclTypeForDiagnostic(bad),
           "`, which has no CEL type-checker mapping (cleanup-backlog #44)"));
     }
   }

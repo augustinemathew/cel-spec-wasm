@@ -269,11 +269,10 @@ TEST(FunctionLibraryBuilder, RejectsHostMapWithDoubleKeyParam) {
 }
 
 TEST(FunctionLibraryBuilder, RejectsHostMapWithBytesKeyReturn) {
-  auto lib_or =
-      FunctionLibrary::Builder()
-          .AddHost("lookup", MapOf(CelType::Bytes(), CelType::Int()),
-                   {CelfnParam{false, CelType::String(), "q"}})
-          .Build();
+  auto lib_or = FunctionLibrary::Builder()
+                    .AddHost("lookup", MapOf(CelType::Bytes(), CelType::Int()),
+                             {CelfnParam{false, CelType::String(), "q"}})
+                    .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("bytes"));
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("lookup"));
@@ -295,12 +294,11 @@ TEST(FunctionLibraryBuilder, RejectsMapWithDoubleKeyNestedAsMapValue) {
   // map<string, map<double, int>> — illegal key inside the value.
   auto lib_or =
       FunctionLibrary::Builder()
-          .AddHost(
-              "h", CelType::Bool(),
-              {CelfnParam{false,
-                          MapOf(CelType::String(),
-                                MapOf(CelType::Double(), CelType::Int())),
-                          "m"}})
+          .AddHost("h", CelType::Bool(),
+                   {CelfnParam{false,
+                               MapOf(CelType::String(),
+                                     MapOf(CelType::Double(), CelType::Int())),
+                               "m"}})
           .Build();
   ASSERT_FALSE(lib_or.ok());
   EXPECT_THAT(std::string(lib_or.status().message()), HasSubstr("double"));
@@ -312,10 +310,9 @@ TEST(FunctionLibraryBuilder, AcceptsLegalMapKeyKinds) {
        {CelType::Bool(), CelType::Int(), CelType::Uint(), CelType::String()}) {
     auto lib_or =
         FunctionLibrary::Builder()
-            .AddHost(
-                absl::StrCat("f_legal_key_", static_cast<int>(key.kind())),
-                CelType::Bool(),
-                {CelfnParam{false, MapOf(key, CelType::Int()), "m"}})
+            .AddHost(absl::StrCat("f_legal_key_", static_cast<int>(key.kind())),
+                     CelType::Bool(),
+                     {CelfnParam{false, MapOf(key, CelType::Int()), "m"}})
             .Build();
     EXPECT_TRUE(lib_or.ok()) << "key kind " << static_cast<int>(key.kind())
                              << ": " << lib_or.status();

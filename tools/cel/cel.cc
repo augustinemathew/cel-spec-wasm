@@ -598,6 +598,7 @@ absl::Status BindDeclaredVars(const ProgramFacts& facts,
 // text.
 absl::Status RejectIfFunctionsRequired(const ProgramFacts& facts) {
   std::vector<std::string> required;
+  required.reserve(facts.required_fns.size());
   for (const RequiredFn& fn : facts.required_fns) {
     required.push_back(fn.signature);
   }

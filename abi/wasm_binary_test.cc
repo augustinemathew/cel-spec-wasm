@@ -25,13 +25,19 @@ using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
 
 // `\0asm` + version 0x00000001 — a minimal (empty) core module.
-const std::vector<uint8_t> kCorePreamble = {0x00, 0x61, 0x73, 0x6d,
-                                            0x01, 0x00, 0x00, 0x00};
+const std::vector<uint8_t>& CorePreamble() {
+  static const auto* bytes = new std::vector<uint8_t>{0x00, 0x61, 0x73, 0x6d,
+                                                      0x01, 0x00, 0x00, 0x00};
+  return *bytes;
+}
 // `\0asm` + version/layer word 0x0001000d — a Component-Model
 // component preamble.  Kept as a negative case: components are not
 // core modules, and every entry point here rejects them.
-const std::vector<uint8_t> kComponentPreamble = {0x00, 0x61, 0x73, 0x6d,
-                                                 0x0d, 0x00, 0x01, 0x00};
+const std::vector<uint8_t>& ComponentPreamble() {
+  static const auto* bytes = new std::vector<uint8_t>{
+      0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00};
+  return *bytes;
+}
 
 std::vector<uint8_t> Concat(std::vector<uint8_t> a,
                             absl::Span<const uint8_t> b) {
@@ -42,11 +48,11 @@ std::vector<uint8_t> Concat(std::vector<uint8_t> a,
 // --- IsCoreModule -------------------------------------------------
 
 TEST(IsCoreModuleTest, CoreModulePreamble) {
-  EXPECT_TRUE(IsCoreModule(kCorePreamble));
+  EXPECT_TRUE(IsCoreModule(CorePreamble()));
 }
 
 TEST(IsCoreModuleTest, ComponentPreambleIsNotACoreModule) {
-  EXPECT_FALSE(IsCoreModule(kComponentPreamble));
+  EXPECT_FALSE(IsCoreModule(ComponentPreamble()));
 }
 
 TEST(IsCoreModuleTest, EmptyBytes) {
@@ -59,8 +65,7 @@ TEST(IsCoreModuleTest, TruncatedPreamble) {
 }
 
 TEST(IsCoreModuleTest, SevenBytePreambleIsTruncated) {
-  const std::vector<uint8_t> bytes = {0x00, 0x61, 0x73, 0x6d,
-                                      0x01, 0x00, 0x00};
+  const std::vector<uint8_t> bytes = {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00};
   EXPECT_FALSE(IsCoreModule(bytes));
 }
 
@@ -144,8 +149,8 @@ TEST(Leb128Test, AppendEncodesKnownBytes) {
 }
 
 TEST(Leb128Test, AppendReadRoundTrip) {
-  for (const uint32_t value : {0u, 1u, 127u, 128u, 16384u, 624485u,
-                               0x0fffffffu, 0xffffffffu}) {
+  for (const uint32_t value :
+       {0u, 1u, 127u, 128u, 16384u, 624485u, 0x0fffffffu, 0xffffffffu}) {
     std::vector<uint8_t> bytes;
     AppendLeb128U32(bytes, value);
     size_t pos = 0;
@@ -185,7 +190,7 @@ std::vector<uint8_t> WithSection(absl::Span<const uint8_t> preamble,
 
 TEST(FindCustomSectionTest, FindsOnCoreModule) {
   const std::vector<uint8_t> payload = {1, 2, 3};
-  const auto wasm = WithSection(kCorePreamble, "cel.abi", payload);
+  const auto wasm = WithSection(CorePreamble(), "cel.abi", payload);
   auto found = FindCustomSection(wasm, "cel.abi");
   ASSERT_THAT(found, IsOk());
   EXPECT_EQ(std::vector<uint8_t>(found->begin(), found->end()), payload);
@@ -197,13 +202,13 @@ TEST(FindCustomSectionTest, FindsOnCoreModule) {
 TEST(FindCustomSectionTest, InvalidArgumentOnComponentPreamble) {
   // Components are not core modules; the walker refuses them up
   // front rather than walking a layer it no longer supports.
-  const auto wasm = WithSection(kComponentPreamble, "cel.fns", {9, 8});
+  const auto wasm = WithSection(ComponentPreamble(), "cel.fns", {9, 8});
   EXPECT_THAT(FindCustomSection(wasm, "cel.fns"),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(FindCustomSectionTest, FindsZeroLengthPayload) {
-  const auto wasm = WithSection(kCorePreamble, "empty", {});
+  const auto wasm = WithSection(CorePreamble(), "empty", {});
   auto found = FindCustomSection(wasm, "empty");
   ASSERT_THAT(found, IsOk());
   EXPECT_TRUE(found->empty());
@@ -214,7 +219,7 @@ TEST(FindCustomSectionTest, FindsMultiByteUtf8Name) {
   // code points.
   const absl::string_view name = "c\xc3\xa9lfn";
   const std::vector<uint8_t> payload = {0x01};
-  const auto wasm = WithSection(kCorePreamble, name, payload);
+  const auto wasm = WithSection(CorePreamble(), name, payload);
   auto found = FindCustomSection(wasm, name);
   ASSERT_THAT(found, IsOk());
   EXPECT_EQ(std::vector<uint8_t>(found->begin(), found->end()), payload);
@@ -223,7 +228,7 @@ TEST(FindCustomSectionTest, FindsMultiByteUtf8Name) {
 TEST(FindCustomSectionTest, SkipsNonCustomAndOtherNamedSections) {
   // Preamble, a non-custom section (id 5, 3-byte opaque payload), a
   // differently-named custom section, then the target.
-  std::vector<uint8_t> wasm = kCorePreamble;
+  std::vector<uint8_t> wasm = CorePreamble();
   wasm.push_back(0x05);
   wasm.push_back(0x03);
   wasm.insert(wasm.end(), {0xde, 0xad, 0xbe});
@@ -236,12 +241,12 @@ TEST(FindCustomSectionTest, SkipsNonCustomAndOtherNamedSections) {
 }
 
 TEST(FindCustomSectionTest, NotFoundOnBarePreamble) {
-  EXPECT_THAT(FindCustomSection(kCorePreamble, "cel.abi"),
+  EXPECT_THAT(FindCustomSection(CorePreamble(), "cel.abi"),
               StatusIs(absl::StatusCode::kNotFound));
 }
 
 TEST(FindCustomSectionTest, NotFoundWhenOnlyOtherNamesPresent) {
-  const auto wasm = WithSection(kCorePreamble, "name", {0x01});
+  const auto wasm = WithSection(CorePreamble(), "name", {0x01});
   EXPECT_THAT(FindCustomSection(wasm, "cel.abi"),
               StatusIs(absl::StatusCode::kNotFound));
 }
@@ -266,7 +271,7 @@ TEST(FindCustomSectionTest, InvalidArgumentOnWrongMagic) {
 
 TEST(FindCustomSectionTest, InvalidArgumentOnTruncatedSectionSizeLeb) {
   // Section id then a LEB with its continuation bit set at EOF.
-  auto wasm = kCorePreamble;
+  auto wasm = CorePreamble();
   wasm.push_back(0x00);
   wasm.push_back(0x80);
   EXPECT_THAT(FindCustomSection(wasm, "cel.abi"),
@@ -274,7 +279,7 @@ TEST(FindCustomSectionTest, InvalidArgumentOnTruncatedSectionSizeLeb) {
 }
 
 TEST(FindCustomSectionTest, InvalidArgumentOnOverlongSectionSizeLeb) {
-  auto wasm = kCorePreamble;
+  auto wasm = CorePreamble();
   wasm.push_back(0x00);
   wasm.insert(wasm.end(), {0x80, 0x80, 0x80, 0x80, 0x80, 0x00});
   EXPECT_THAT(FindCustomSection(wasm, "cel.abi"),
@@ -282,7 +287,7 @@ TEST(FindCustomSectionTest, InvalidArgumentOnOverlongSectionSizeLeb) {
 }
 
 TEST(FindCustomSectionTest, InvalidArgumentOnSectionSizePastEof) {
-  auto wasm = kCorePreamble;
+  auto wasm = CorePreamble();
   wasm.push_back(0x00);
   wasm.push_back(0x64);  // claims 100 bytes follow
   wasm.insert(wasm.end(), {0x00, 0x00, 0x00, 0x00, 0x00});
@@ -292,7 +297,7 @@ TEST(FindCustomSectionTest, InvalidArgumentOnSectionSizePastEof) {
 
 TEST(FindCustomSectionTest, InvalidArgumentOnNameLengthPastSectionEnd) {
   // Custom section of size 2 whose name-length byte claims 100.
-  auto wasm = kCorePreamble;
+  auto wasm = CorePreamble();
   wasm.push_back(0x00);
   wasm.push_back(0x02);
   wasm.push_back(0x64);  // name length 100 > 1 remaining byte
@@ -302,7 +307,7 @@ TEST(FindCustomSectionTest, InvalidArgumentOnNameLengthPastSectionEnd) {
 }
 
 TEST(FindCustomSectionTest, InvalidArgumentOnDuplicateName) {
-  auto wasm = WithSection(kCorePreamble, "cel.abi", {0x01});
+  auto wasm = WithSection(CorePreamble(), "cel.abi", {0x01});
   wasm = Concat(std::move(wasm), BuildCustomSection("cel.abi", {0x02}));
   EXPECT_THAT(FindCustomSection(wasm, "cel.abi"),
               StatusIs(absl::StatusCode::kInvalidArgument));
@@ -312,8 +317,8 @@ TEST(FindCustomSectionTest, DoesNotRecurseIntoSectionPayloads) {
   // A core module whose opaque id-5 section payload is itself a
   // complete core module carrying a "cel.fns" custom section.  The
   // top-level walker must NOT find the nested section.
-  const auto nested = WithSection(kCorePreamble, "cel.fns", {0x01});
-  std::vector<uint8_t> outer = kCorePreamble;
+  const auto nested = WithSection(CorePreamble(), "cel.fns", {0x01});
+  std::vector<uint8_t> outer = CorePreamble();
   outer.push_back(0x05);  // an opaque non-custom section
   AppendLeb128U32(outer, static_cast<uint32_t>(nested.size()));
   outer = Concat(std::move(outer), nested);
@@ -334,7 +339,7 @@ TEST(FindCustomSectionTest, DoesNotRecurseIntoSectionPayloads) {
 
 TEST(AppendCustomSectionTest, RoundTripsOnCoreModule) {
   const std::vector<uint8_t> payload = {0x01, 0x02, 0x03};
-  auto appended = AppendCustomSection(kCorePreamble, "cel.abi", payload);
+  auto appended = AppendCustomSection(CorePreamble(), "cel.abi", payload);
   ASSERT_THAT(appended, IsOk());
   auto found = FindCustomSection(*appended, "cel.abi");
   ASSERT_THAT(found, IsOk());
@@ -342,12 +347,12 @@ TEST(AppendCustomSectionTest, RoundTripsOnCoreModule) {
 }
 
 TEST(AppendCustomSectionTest, RejectsComponentPreamble) {
-  EXPECT_THAT(AppendCustomSection(kComponentPreamble, "cel.fns", {0x07}),
+  EXPECT_THAT(AppendCustomSection(ComponentPreamble(), "cel.fns", {0x07}),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST(AppendCustomSectionTest, AppendsAfterExistingSections) {
-  const auto base = WithSection(kCorePreamble, "other", {0x01});
+  const auto base = WithSection(CorePreamble(), "other", {0x01});
   auto appended = AppendCustomSection(base, "cel.abi", {0x02});
   ASSERT_THAT(appended, IsOk());
   EXPECT_THAT(FindCustomSection(*appended, "other"), IsOk());
@@ -364,7 +369,7 @@ TEST(AppendCustomSectionTest, RejectsBadPreamble) {
 }
 
 TEST(AppendCustomSectionTest, RejectsExistingName) {
-  const auto base = WithSection(kCorePreamble, "cel.fns", {0x01});
+  const auto base = WithSection(CorePreamble(), "cel.fns", {0x01});
   EXPECT_THAT(AppendCustomSection(base, "cel.fns", {0x02}),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
@@ -372,7 +377,7 @@ TEST(AppendCustomSectionTest, RejectsExistingName) {
 TEST(AppendCustomSectionTest, RejectsBrokenFraming) {
   // Preamble plus a truncated section: Append must not blindly
   // append to a binary whose framing it can't walk.
-  auto wasm = kCorePreamble;
+  auto wasm = CorePreamble();
   wasm.push_back(0x00);
   wasm.push_back(0x64);  // claims 100 bytes; EOF
   EXPECT_THAT(AppendCustomSection(wasm, "cel.abi", {}),

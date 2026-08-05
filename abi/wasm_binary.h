@@ -34,8 +34,7 @@ bool IsCoreModule(absl::Span<const uint8_t> bytes);
 // ReadLeb128U32 decodes at `*pos`, advancing it past the encoding.
 // Returns false on truncated input or an encoding longer than five
 // bytes; `*pos` is unspecified (mid-encoding) on failure.
-bool ReadLeb128U32(absl::Span<const uint8_t> bytes, size_t* pos,
-                   uint32_t* out);
+bool ReadLeb128U32(absl::Span<const uint8_t> bytes, size_t* pos, uint32_t* out);
 void AppendLeb128U32(std::vector<uint8_t>& out, uint32_t value);
 
 // Finds the top-level custom section named `name` in a core module.
@@ -48,15 +47,13 @@ void AppendLeb128U32(std::vector<uint8_t>& out, uint32_t value);
 //     LEB / section size or name length past EOF), or more than one
 //     top-level custom section named `name`.
 ABSL_MUST_USE_RESULT absl::StatusOr<absl::Span<const uint8_t>>
-FindCustomSection(absl::Span<const uint8_t> wasm_bytes,
-                  absl::string_view name);
+FindCustomSection(absl::Span<const uint8_t> wasm_bytes, absl::string_view name);
 
 // Returns a copy of `wasm_bytes` with a custom section appended at
 // top level.  InvalidArgument on bad preamble or existing `name`.
-ABSL_MUST_USE_RESULT absl::StatusOr<std::vector<uint8_t>>
-AppendCustomSection(absl::Span<const uint8_t> wasm_bytes,
-                    absl::string_view name,
-                    absl::Span<const uint8_t> payload);
+ABSL_MUST_USE_RESULT absl::StatusOr<std::vector<uint8_t>> AppendCustomSection(
+    absl::Span<const uint8_t> wasm_bytes, absl::string_view name,
+    absl::Span<const uint8_t> payload);
 
 // Test/build helper: frame {name, payload} as custom-section bytes
 // (id 0x00, LEB128 section size, LEB128 name length, name, payload).

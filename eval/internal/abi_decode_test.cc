@@ -106,7 +106,7 @@ TEST(AbiDecodeTest, DecodesMultipleVariablesInOrder) {
 
 TEST(AbiDecodeTest, DecodesEveryScalarRepr) {
   struct Case {
-    absl::string_view name = "";
+    absl::string_view name;
     Repr repr = Repr::kUnknown;
   };
   const Case cases[] = {
@@ -188,9 +188,15 @@ TEST(AbiDecodeTest, DecodesUnknownFnKindAndBackendWithoutRejection) {
   abi.set_version(1);
   auto* fn = abi.add_required_functions();
   fn->set_overload_id("future_fn");
-  fn->set_backend(static_cast<celwasm::abi::RequiredFunction::Backend>(7));
-  fn->mutable_return_type()->set_kind(
-      static_cast<celwasm::abi::Type::Kind>(99));
+  // Raw wire values via reflection — proto3 open enums preserve
+  // unknown values; a C++ enum cast is not part of that model.
+  fn->GetReflection()->SetEnumValue(
+      fn, celwasm::abi::RequiredFunction::descriptor()->FindFieldByName(
+              "backend"),
+      7);
+  auto* rt = fn->mutable_return_type();
+  rt->GetReflection()->SetEnumValue(
+      rt, celwasm::abi::Type::descriptor()->FindFieldByName("kind"), 99);
 
   auto decoded = DecodeCelAbiFromWasm(
       MakeWasmWithCustomSection("cel.abi", SerializeAbi(abi)));

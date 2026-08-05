@@ -98,6 +98,16 @@ RegisteredHostCallback TypedHostCb(const RequiredFunction& decl_signature) {
 
 // ── No-op / open-set arms ──────────────────────────────────────────
 
+// Produces a Backend carrying a raw wire value (e.g. the retired
+// PLUGIN slot 2, or an unknown future value) through reflection —
+// proto3's open-enum model — rather than a C++ enum cast.
+RequiredFunction::Backend WireBackend(int value) {
+  RequiredFunction f;
+  f.GetReflection()->SetEnumValue(
+      &f, RequiredFunction::descriptor()->FindFieldByName("backend"), value);
+  return f.backend();
+}
+
 TEST(RequiredFnCheckTest, EmptyRequiredListNoOpsEntirely) {
   // Pre-field-8 Programs (and programs with no custom-fn call
   // sites) carry an empty list: the check must pass even against a
@@ -113,7 +123,7 @@ TEST(RequiredFnCheckTest, UnknownBackendRowsAreSkipped) {
   auto abi = AbiWith(
       {Row("mystery_int", "mystery", RequiredFunction::BACKEND_UNSPECIFIED,
            {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT)),
-       Row("future_int", "future", static_cast<RequiredFunction::Backend>(99),
+       Row("future_int", "future", WireBackend(99),
            {Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
   EXPECT_THAT(CheckRequiredFunctions(abi, HostMap()), IsOk());
 }
@@ -129,7 +139,7 @@ TEST(RequiredFnCheckTest, RetiredPluginBackendRowRejectedLoudly) {
   // of the generated PLUGIN enum member (proto3 open-enum decode
   // preserves the value on stale Programs).
   auto abi = AbiWith({Row("is_adult_message_acme_User", "is_adult",
-                          static_cast<RequiredFunction::Backend>(2),
+                          WireBackend(2),
                           {WireProto("acme.User")}, Wire(Type::KIND_BOOL))});
   auto s = CheckRequiredFunctions(abi, HostMap());
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
@@ -147,10 +157,9 @@ TEST(RequiredFnCheckTest, RetiredPluginBackendRejectsEvenWithMatchingHostCb) {
   // compiled for a backend that no longer exists.
   HostMap hosts;
   hosts.emplace("mul_int_int", HostCb(3));
-  auto abi = AbiWith({Row("mul_int_int", "mul",
-                          static_cast<RequiredFunction::Backend>(2),
-                          {Wire(Type::KIND_INT), Wire(Type::KIND_INT)},
-                          Wire(Type::KIND_INT))});
+  auto abi = AbiWith({Row(
+      "mul_int_int", "mul", WireBackend(2),
+      {Wire(Type::KIND_INT), Wire(Type::KIND_INT)}, Wire(Type::KIND_INT))});
   auto s = CheckRequiredFunctions(abi, hosts);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -240,14 +249,14 @@ TEST(RequiredFnCheckTest, TypedProtoFqnMismatchFails) {
   // registration was rebuilt against a renamed proto out from under
   // the compiled program.
   HostMap hosts;
-  hosts.emplace("is_adult_message_acme_Person",
-                TypedHostCb(Row("is_adult_message_acme_Person", "is_adult",
-                                RequiredFunction::HOST,
-                                {WireProto("acme.Person")},
-                                Wire(Type::KIND_BOOL))));
-  auto abi = AbiWith({Row("is_adult_message_acme_Person", "is_adult",
-                          RequiredFunction::HOST, {WireProto("acme.User")},
-                          Wire(Type::KIND_BOOL))});
+  hosts.emplace(
+      "is_adult_message_acme_Person",
+      TypedHostCb(Row("is_adult_message_acme_Person", "is_adult",
+                      RequiredFunction::HOST, {WireProto("acme.Person")},
+                      Wire(Type::KIND_BOOL))));
+  auto abi = AbiWith(
+      {Row("is_adult_message_acme_Person", "is_adult", RequiredFunction::HOST,
+           {WireProto("acme.User")}, Wire(Type::KIND_BOOL))});
   auto s = CheckRequiredFunctions(abi, hosts);
   EXPECT_EQ(s.code(), absl::StatusCode::kFailedPrecondition) << s;
   EXPECT_THAT(std::string(s.message()),
@@ -261,10 +270,10 @@ TEST(RequiredFnCheckTest, TypedNestedGenericMismatchFails) {
   // list<int> vs list<string> differ only inside the generic — the
   // recursive TypeEquals arm must catch it.
   HostMap hosts;
-  hosts.emplace("sum_list_int",
-                TypedHostCb(Row("sum_list_int", "sum", RequiredFunction::HOST,
-                                {WireList(Wire(Type::KIND_INT))},
-                                Wire(Type::KIND_INT))));
+  hosts.emplace(
+      "sum_list_int",
+      TypedHostCb(Row("sum_list_int", "sum", RequiredFunction::HOST,
+                      {WireList(Wire(Type::KIND_INT))}, Wire(Type::KIND_INT))));
   auto abi =
       AbiWith({Row("sum_list_int", "sum", RequiredFunction::HOST,
                    {WireList(Wire(Type::KIND_STRING))}, Wire(Type::KIND_INT))});
@@ -299,11 +308,11 @@ TEST(RequiredFnCheckTest, TypedIsReceiverMismatchFails) {
   // ReceiverDeclSynthesisesSameIdAsPlainParam), so is_receiver drift
   // is exactly the case the dedicated flag compare exists for.
   HostMap hosts;
-  hosts.emplace("upper_string",
-                TypedHostCb(Row("upper_string", "upper", RequiredFunction::HOST,
-                                {Wire(Type::KIND_STRING)},
-                                Wire(Type::KIND_STRING),
-                                /*is_receiver=*/true)));
+  hosts.emplace(
+      "upper_string",
+      TypedHostCb(Row("upper_string", "upper", RequiredFunction::HOST,
+                      {Wire(Type::KIND_STRING)}, Wire(Type::KIND_STRING),
+                      /*is_receiver=*/true)));
   auto abi = AbiWith({Row("upper_string", "upper", RequiredFunction::HOST,
                           {Wire(Type::KIND_STRING)}, Wire(Type::KIND_STRING),
                           /*is_receiver=*/false)});

@@ -715,12 +715,10 @@ namespace {
 std::vector<FunctionLibrary> TwoHostFnLibs() {
   auto lib =
       *FunctionLibrary::Builder()
-           .AddHost(
-               "allow", CelType::Bool(),
-               {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
-           .AddHost(
-               "deny", CelType::Bool(),
-               {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
+           .AddHost("allow", CelType::Bool(),
+                    {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
+           .AddHost("deny", CelType::Bool(),
+                    {CelfnParam{/*is_receiver=*/false, CelType::String(), "u"}})
            .Build();
   return {std::move(lib)};
 }

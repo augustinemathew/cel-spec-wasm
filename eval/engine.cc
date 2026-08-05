@@ -943,8 +943,8 @@ absl::StatusOr<Instance> Engine::Plan(const Program& program) const {
   // m35-plugin-ergonomics.md §5.3 diagnostics instead of an
   // opaque link error or a call-time trap.  Reads only
   // registration-frozen state; Plan stays concurrent-safe.
-  if (auto s = celwasm::CheckRequiredFunctions(impl->abi,
-                                               wasmtime_->host_callbacks);
+  if (auto s =
+          celwasm::CheckRequiredFunctions(impl->abi, wasmtime_->host_callbacks);
       !s.ok()) {
     return s;
   }

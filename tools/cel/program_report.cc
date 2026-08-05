@@ -22,6 +22,7 @@ std::string FormatProgramFacts(const ::celwasm::abi::ProgramFacts& facts) {
   // process, so a program that needs one runs only through the C++
   // API.
   std::vector<std::string> host_fns;
+  host_fns.reserve(facts.required_fns.size());
   for (const ::celwasm::abi::RequiredFn& fn : facts.required_fns) {
     host_fns.push_back(fn.signature);
   }

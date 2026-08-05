@@ -30,8 +30,7 @@ constexpr size_t kMaxU32LebBytes = 5;
 // Reads the section-size / name-length LEB at `*pos`, mapping a
 // truncated or overlong encoding to InvalidArgument.
 absl::StatusOr<uint32_t> ReadFramingLeb(absl::Span<const uint8_t> bytes,
-                                        size_t* pos,
-                                        absl::string_view what) {
+                                        size_t* pos, absl::string_view what) {
   uint32_t value = 0;
   if (!ReadLeb128U32(bytes, pos, &value)) {
     return absl::InvalidArgumentError(
@@ -138,8 +137,8 @@ absl::StatusOr<absl::Span<const uint8_t>> FindCustomSection(
     pos = section_end;
   }
   if (found.has_value()) return *found;
-  return absl::NotFoundError(absl::StrCat(
-      "wasm_binary: custom section `", name, "` not found at top level"));
+  return absl::NotFoundError(absl::StrCat("wasm_binary: custom section `", name,
+                                          "` not found at top level"));
 }
 
 absl::StatusOr<std::vector<uint8_t>> AppendCustomSection(

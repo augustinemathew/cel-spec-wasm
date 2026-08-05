@@ -591,10 +591,9 @@ void SeedBuiltins(std::vector<OverloadDef>& impls,
            "declaration in `runtime/cel_*.{h,c}` with `// cel:codegen-export`, "
            "or drop the seed if the helper is gone.";
     const size_t idx = impls.size();
-    impls.push_back(OverloadDef{std::string(s.overload_id),
-                                std::string(s.helper_name),
-                                ImportModuleSource::kCel,
-                                static_cast<uint8_t>(helper->num_args())});
+    impls.push_back(OverloadDef{
+        std::string(s.overload_id), std::string(s.helper_name),
+        ImportModuleSource::kCel, static_cast<uint8_t>(helper->num_args())});
     const bool inserted = index.emplace(std::string(s.overload_id), idx).second;
     ABSL_CHECK(inserted) << "kBuiltinSeeds duplicate: " << s.overload_id;
   }

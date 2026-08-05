@@ -27,7 +27,9 @@ namespace {
 // `parser.file()` return a (potentially garbled) tree on errors,
 // which would mask grammar bugs.  We trap them here.
 class CollectingErrorListener : public antlr4::BaseErrorListener {
- public:
+ private:
+  // Matches the base class's private virtual declaration; callers
+  // dispatch through the antlr4 listener interface.
   void syntaxError(antlr4::Recognizer* /*recognizer*/,
                    antlr4::Token* /*offending_symbol*/, size_t line,
                    size_t column, const std::string& msg,
@@ -37,6 +39,7 @@ class CollectingErrorListener : public antlr4::BaseErrorListener {
     errors_.push_back(ss.str());
   }
 
+ public:
   const std::vector<std::string>& errors() const {
     return errors_;
   }
@@ -170,8 +173,8 @@ TEST(CelfnParserProbe, RejectsRemovedPluginPrefix) {
 TEST(CelfnParserProbe, RejectsRemovedNativePrefix) {
   // `@native.` (CEL-defined bodies) was removed with the plugin
   // backend; the grammar no longer has a production for it.
-  auto r = ParseCelfn(
-      "bool @native.is_number(this string s) = s.matches(\"a\");");
+  auto r =
+      ParseCelfn("bool @native.is_number(this string s) = s.matches(\"a\");");
   EXPECT_FALSE(r.errors.empty()) << "@native decl should not parse";
 }
 

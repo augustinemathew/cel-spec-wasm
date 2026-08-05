@@ -211,7 +211,9 @@ absl::StatusOr<FunctionLibrary> FunctionLibrary::Builder::Build() {
 namespace {
 
 class CollectingErrorListener : public antlr4::BaseErrorListener {
- public:
+ private:
+  // Matches the base class's private virtual declaration; callers
+  // dispatch through the antlr4 listener interface.
   void syntaxError(antlr4::Recognizer* /*recognizer*/,
                    antlr4::Token* /*offending_symbol*/, size_t line,
                    size_t column, const std::string& msg,
@@ -219,6 +221,7 @@ class CollectingErrorListener : public antlr4::BaseErrorListener {
     errors_.push_back(absl::StrCat("line ", line, ":", column, " ", msg));
   }
 
+ public:
   const std::vector<std::string>& errors() const {
     return errors_;
   }
