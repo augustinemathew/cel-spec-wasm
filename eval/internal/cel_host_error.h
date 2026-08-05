@@ -27,7 +27,7 @@
 
 #include "absl/strings/string_view.h"
 #include "eval/error.h"
-#include "eval/internal/cel_host.h"
+#include "eval/internal/cel_host_memory.h"
 #include "eval/value.h"
 #include "runtime/cel_data.h"
 

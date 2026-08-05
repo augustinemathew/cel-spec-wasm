@@ -198,7 +198,7 @@ namespace {
 // from inside a host trampoline — wasmtime supports this.  A trap
 // from arena_alloc (OOM, ill-formed state) surfaces as `nullptr` from
 // Alloc; Layer 2 turns that into ResourceExhausted.  The contract
-// matches `EncodeSpan` in cel_host.cc: zero-byte alloc returns a
+// matches `EncodeSpan` in cel_host_common.cc: zero-byte alloc returns a
 // valid (possibly null-derefable on offset==0) pointer with a
 // stamped `out_offset`; the caller must skip the memcpy when len==0.
 //

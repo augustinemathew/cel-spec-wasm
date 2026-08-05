@@ -291,26 +291,16 @@ cc_test(
     ],
 )
 
-# Headers-only target carrying MemoryView / ExternrefTable /
-# ArenaAllocator, the backing-type abstract interfaces, and the
-# CelHostBindings struct.
+# MemoryView + ArenaAllocator — the runtime-facing memory
+# abstractions.  Leaf of the cel_host stack so cel_host_error can
+# name MemoryView without pulling in the backings or trampolines.
 cc_library(
-    name = "cel_host_hdrs",
-    hdrs = ["internal/cel_host.h"],
+    name = "cel_host_memory",
+    hdrs = ["internal/cel_host_memory.h"],
     deps = [
-        ":attribute",
-        ":error",
-        ":value",
-        "//shared:type",
         "//runtime:cel_runtime",
-        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:nullability",
-        "@com_google_absl//absl/functional:function_ref",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-        "@com_google_protobuf//:protobuf",
     ],
 )
 
@@ -321,7 +311,7 @@ cc_library(
     srcs = ["internal/cel_host_error.cc"],
     hdrs = ["internal/cel_host_error.h"],
     deps = [
-        ":cel_host_hdrs",
+        ":cel_host_memory",
         ":error",
         ":value",
         "//runtime:cel_runtime",  # CEL_ERR_* wire codes
@@ -334,8 +324,8 @@ cc_test(
     size = "small",
     srcs = ["internal/cel_host_error_test.cc"],
     deps = [
+        ":cel_host",
         ":cel_host_error",
-        ":cel_host_hdrs",
         ":cel_host_test_fakes",
         ":error",
         ":value",
@@ -346,20 +336,18 @@ cc_test(
     ],
 )
 
-# Internal — Layer 1 of the cel_host stack.  Pure CEL semantics:
-# HostMessageBacking interface + ProtoBacking built-in.
+# cel_host Layer 1 — HostMessageBacking / HostMapBacking /
+# HostListBacking plug-in points, their proto/vector concretes, and
+# the shared proto-read helpers (WKT peel chain, field resolution).
 cc_library(
-    name = "cel_host",
-    srcs = ["internal/cel_host.cc"],
-    hdrs = ["internal/cel_host.h"],
+    name = "cel_host_backing",
+    srcs = ["internal/cel_host_backing.cc"],
+    hdrs = ["internal/cel_host_backing.h"],
     deps = [
-        ":attribute",
         ":cel_host_error",
-        ":cel_host_hdrs",
         ":error",
         ":value",
         "//shared:type",
-        "//runtime:cel_runtime",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/functional:function_ref",
@@ -367,8 +355,159 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
+        "@com_google_absl//absl/time",
         "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# cel_host Layer-2 shared vocabulary — ExternrefTable, the
+# CelHostBindings / TrampolineContext structs, and the shared
+# CelValue encode helpers every trampoline marshals through.
+cc_library(
+    name = "cel_host_common",
+    srcs = ["internal/cel_host_common.cc"],
+    hdrs = ["internal/cel_host_common.h"],
+    deps = [
+        ":attribute",
+        ":cel_host_backing",
+        ":cel_host_error",
+        ":cel_host_memory",
+        ":error",
+        ":value",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+# Origin-agnostic deep value equality over wire CelValues —
+# WireValueEq plus the list/map walks and the proto message-equality
+# core it recurses into.  Shared by the list/map/message trampolines.
+cc_library(
+    name = "cel_host_eq",
+    srcs = ["internal/cel_host_eq.cc"],
+    hdrs = ["internal/cel_host_eq.h"],
+    deps = [
+        ":cel_host_backing",
+        ":cel_host_common",
+        ":cel_host_memory",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Layer-2 trampolines for the kHost arms of the list dispatchers.
+cc_library(
+    name = "cel_host_list",
+    srcs = ["internal/cel_host_list.cc"],
+    hdrs = ["internal/cel_host_list.h"],
+    deps = [
+        ":cel_host_common",
+        ":cel_host_eq",
+        ":cel_host_error",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# Layer-2 trampolines for the kHost arms of the map dispatchers.
+cc_library(
+    name = "cel_host_map",
+    srcs = ["internal/cel_host_map.cc"],
+    hdrs = ["internal/cel_host_map.h"],
+    deps = [
+        ":cel_host_common",
+        ":cel_host_eq",
+        ":cel_host_error",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# Layer-2 trampolines for the message family: field get/has, message
+# eq / zero-value probe, proto-literal construction (make_message +
+# set_field, the latter its own TU), type-name resolution, and the
+# WKT literal-unwrap bridges.
+cc_library(
+    name = "cel_host_message",
+    srcs = [
+        "internal/cel_host_message.cc",
+        "internal/cel_host_set_field.cc",
+    ],
+    hdrs = ["internal/cel_host_message.h"],
+    deps = [
+        ":attribute",
+        ":cel_host_backing",
+        ":cel_host_common",
+        ":cel_host_eq",
+        ":cel_host_error",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Layer-2 trampoline for the with-TZ timestamp accessor dispatch.
+cc_library(
+    name = "cel_host_time",
+    srcs = ["internal/cel_host_time.cc"],
+    hdrs = ["internal/cel_host_time.h"],
+    deps = [
+        ":cel_host_common",
+        ":cel_host_error",
+        "//runtime:cel_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+# Aggregator — the single target/include existing consumers keep.
+# The monolithic cel_host.cc was split into the per-family libraries
+# above; cel_host.h re-exports their headers.
+cc_library(
+    name = "cel_host",
+    hdrs = ["internal/cel_host.h"],
+    deps = [
+        ":cel_host_backing",
+        ":cel_host_common",
+        ":cel_host_eq",
+        ":cel_host_error",
+        ":cel_host_list",
+        ":cel_host_map",
+        ":cel_host_memory",
+        ":cel_host_message",
+        ":cel_host_time",
     ],
 )
 
@@ -451,13 +590,36 @@ cc_test(
     ],
 )
 
-cc_test(
-    name = "cel_host_test",
-    size = "small",
-    srcs = ["internal/cel_host_test.cc"],
+# Shared Layer-1/Layer-2 test harness (JsonLikeBacking,
+# Layer2Fixture) for the per-family cel_host test TUs below.
+cc_library(
+    name = "cel_host_test_harness",
+    testonly = True,
+    hdrs = ["internal/cel_host_test_harness.h"],
     deps = [
         ":cel_host",
         ":cel_host_test_fakes",
+        ":error",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+# Layer 1 — ProtoBacking field reads, Value::Message convenience,
+# JsonLikeBacking, and the Any / WKT / JSON read-side peel chains.
+cc_test(
+    name = "cel_host_backing_test",
+    size = "small",
+    srcs = ["internal/cel_host_backing_test.cc"],
+    deps = [
+        ":cel_host_backing",
+        ":cel_host_test_harness",
         ":error",
         ":value",
         "//shared:type",
@@ -467,10 +629,78 @@ cc_test(
         # proto2 extension fixture for the
         # `ProtoBackingExtensionTest` regression cases.
         "@com_google_cel_spec//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Message-family Layer 2 — CelGetFieldImpl / CelHasFieldImpl
+# dispatch, CelMessageIsZeroImpl, and the WKT unwrap bridges.
+cc_test(
+    name = "cel_host_message_test",
+    size = "small",
+    srcs = ["internal/cel_host_message_test.cc"],
+    deps = [
+        ":cel_host_backing",
+        ":cel_host_message",
+        ":cel_host_test_harness",
+        ":error",
+        ":value",
+        "//runtime:cel_runtime",
+        "//shared:type",
+        "//testdata:e2e_fixture_cc_proto",
+        "//testdata:host_fixture_proto2_cc_proto",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "@com_google_cel_spec//proto/cel/expr/conformance/proto2:test_all_types_cc_proto",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# cel_set_field — pack arms, kind-mismatch guards, wrapper writes,
+# range-overflow poison contract, message-source guards.
+cc_test(
+    name = "cel_host_set_field_test",
+    size = "small",
+    srcs = ["internal/cel_host_set_field_test.cc"],
+    deps = [
+        ":cel_host_message",
+        ":cel_host_test_harness",
+        ":value",
+        "//runtime:cel_runtime",
+        "//testdata:e2e_fixture_cc_proto",
+        "//testdata:host_fixture_proto2_cc_proto",
+        "//testdata:host_fixture_proto3_cc_proto",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+# Map-family Layer-2 guard arms of cel_map_size / cel_map_in.
+cc_test(
+    name = "cel_host_map_test",
+    size = "small",
+    srcs = ["internal/cel_host_map_test.cc"],
+    deps = [
+        ":cel_host_map",
+        ":cel_host_test_harness",
+        ":error",
+        ":value",
+        "//runtime:cel_runtime",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
-        "@com_google_protobuf//:protobuf",
     ],
 )
 

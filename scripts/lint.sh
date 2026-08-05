@@ -233,6 +233,11 @@ for f in "${targets[@]}"; do
     # DB interpolation picks a TU without the wasmtime include path).
     # Transitively covered by memory_grow_stability_test.cc.
     eval/internal/instance_test_peer.h) continue ;;
+    # Same orphan-header pattern: shared gtest fixture for the
+    # cel_host family tests; interpolation picks a non-test TU with
+    # no gmock include path.  Transitively covered by the four
+    # cel_host_*_test.cc TUs that include it.
+    eval/internal/cel_host_test_harness.h) continue ;;
     # The only first-party TU that includes cel-cpp's
     # `compiler/compiler_factory.h`, which does not parse under the
     # lint clang — `CompilerBuilder` is undeclared at its own
