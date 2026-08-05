@@ -57,15 +57,14 @@ struct DeclaredVar {
   bool has_full_type = false;
 };
 
-// One custom function the program will demand at `Plan`.
+// One custom function the program will demand at `Plan` — a `@host.`
+// C++ callback in the embedder's process.  Backend verification
+// (including rejecting rows whose wire backend this build does not
+// recognise) happens at `Engine::Plan`, not here — see
+// `eval/internal/required_fn_check.cc`.
 struct RequiredFn {
   std::string name;       // source-level name
   std::string signature;  // `.celfn` spelling, via abi::RenderSignature
-  // True for `@host.` rows — C++ callbacks in the embedder's
-  // process, which the CLI cannot supply.  False only for rows
-  // whose wire backend this build does not recognise (e.g. a
-  // program emitted by a different compiler version).
-  bool is_host = false;
 };
 
 // What a program declares, and what it requires to run.

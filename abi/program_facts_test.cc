@@ -224,7 +224,6 @@ TEST(DescribeProgramTest, ReportsRequiredHostFunction) {
   ASSERT_THAT(facts, IsOk());
   ASSERT_EQ(facts->required_fns.size(), 1u);
   EXPECT_EQ(facts->required_fns[0].name, "upper");
-  EXPECT_TRUE(facts->required_fns[0].is_host);
   EXPECT_FALSE(facts->required_fns[0].signature.empty());
 
   const std::string out = ::celwasm::tools::cel::FormatProgramFacts(*facts);

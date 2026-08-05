@@ -127,8 +127,7 @@ absl::StatusOr<ProgramFacts> DescribeProgram(
   facts.required_fns.reserve(abi->required_functions_size());
   for (const RequiredFunction& fn : abi->required_functions()) {
     facts.required_fns.push_back(
-        RequiredFn{fn.fn_name(), ::celwasm::RenderSignature(fn),
-                   fn.backend() == RequiredFunction::HOST});
+        RequiredFn{fn.fn_name(), ::celwasm::RenderSignature(fn)});
   }
   return facts;
 }
