@@ -5,6 +5,8 @@ in `m39-component-removal.md` (§3 inventory, §4 commit plan, §5 docs,
 §6 dead-API audit, §7 stale-feature inventory) — this file adds only
 ordering, parallelism, and status.
 
+Reconciled with master 2026-08-05 (rebase onto 9a85cd8 after #38/#39 merged; clean by construction — merge commits, ancestor base).
+
 Goal state: zero component/plugin code or docs outside the archive
 branch and history annotations; host-callback custom functions fully
 intact; stale-feature inventory delivered; full gates green
@@ -76,9 +78,9 @@ graph TD
 | 1 | D2 CLI | agent | done (fda6124; its staged deletions were swept into 478c3ec by an orchestrator commit — content correct, wrong message; orchestrator now commits with pathspecs while agents share the tree) |
 | 2 | D3 eval layer | agent | done (1335bbc, +204/−3835; found @native eval consumer NativeBackendRejected → D4; fixed D1 dangling manual-tagged data dep) |
 | 2 | DOC1 milestone annotations | agent | done (b37df50; 13/13 annotated, history untouched) |
-| 3 | D4 compiler + abi | agent | running |
-| 4 | D5 toolchain | agent | pending |
-| 4 | DOC2 design docs + user guide | agent | pending |
+| 3 | D4 compiler + abi | agent | done (541ffea → 5f2a9fb post-rebase, +242/−5589; census: wasm_binary KEEP, sha256 DELETE; @native parse error probed+pinned; new A1 candidate: ImportModuleSource::kUser zero producers) |
+| 4 | D5 toolchain | agent | running |
+| 4 | DOC2 design docs + user guide | agent | running |
 | 5 | F1 ofNonZeroValue(message) full-depth delete | agent | pending |
 | 5 | F2 stale-skip un-skips | agent | pending |
 | 5 | A1 dead-API audit | agent | pending |
