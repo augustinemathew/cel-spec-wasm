@@ -81,10 +81,10 @@ _ARCHIVE_ACTIONS = [
     "c++-link-static-library",
 ]
 
+_TARGET_TRIPLE = "wasm32-wasi-threads"
+
 def _impl(ctx):
     sysroot_path = ctx.attr.sysroot_path
-    target_triple = ctx.attr.target_triple
-    threads = ctx.attr.threads
 
     # The wasi-sdk libc++ headers live under
     # `<sysroot>/include/wasm32-wasi-threads/c++/v1/`, NOT
@@ -100,9 +100,7 @@ def _impl(ctx):
     ]
 
     # Compile flags applied to every C / C++ compile action.
-    compile_target_flags = ["--target=" + target_triple]
-    if threads:
-        compile_target_flags.append("-pthread")
+    compile_target_flags = ["--target=" + _TARGET_TRIPLE, "-pthread"]
     default_compile_flags = feature(
         name = "default_compile_flags",
         enabled = True,
@@ -148,10 +146,12 @@ def _impl(ctx):
         ],
     )
 
-    link_target_flags = ["--target=" + target_triple]
-    if threads:
-        link_target_flags += ["-pthread", "-Wl,--shared-memory",
-                              "-Wl,--max-memory=67108864"]
+    link_target_flags = [
+        "--target=" + _TARGET_TRIPLE,
+        "-pthread",
+        "-Wl,--shared-memory",
+        "-Wl,--max-memory=67108864",
+    ]
     default_link_flags = feature(
         name = "default_link_flags",
         enabled = True,
@@ -297,9 +297,9 @@ def _impl(ctx):
         features = features,
         action_configs = [],
         cxx_builtin_include_directories = ctx.attr.builtin_include_directories,
-        toolchain_identifier = ctx.attr.toolchain_identifier,
+        toolchain_identifier = "wasm32_wasi_threads_toolchain",
         host_system_name = "local",
-        target_system_name = target_triple,
+        target_system_name = _TARGET_TRIPLE,
         target_cpu = "wasm32",
         target_libc = "wasi",
         compiler = "clang",
@@ -317,14 +317,6 @@ cc_toolchain_config = rule(
         "nm_path": attr.string(mandatory = True),
         "sysroot_path": attr.string(mandatory = True),
         "builtin_include_directories": attr.string_list(default = []),
-        # New: parameterize the wasi target triple + threading flavor.
-        # Defaults preserve the pre-existing wasm32-wasi-threads stack
-        # for backward compatibility (cel_runtime, every existing
-        # wasm_cc_binary callsite).
-        "target_triple": attr.string(default = "wasm32-wasi-threads"),
-        "threads": attr.bool(default = True),
-        "toolchain_identifier": attr.string(
-            default = "wasm32_wasi_threads_toolchain"),
     },
     provides = [CcToolchainConfigInfo],
 )

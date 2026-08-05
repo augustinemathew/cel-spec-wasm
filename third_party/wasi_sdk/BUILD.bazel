@@ -81,13 +81,6 @@ constraint_value(
 # the resolved host's archive is fetched, so the select arm that fires
 # names a repo that exists.
 
-_HOST_REPO = select({
-    ":host_darwin_arm64": "@wasi_sdk_darwin_arm64",
-    ":host_darwin_x86_64": "@wasi_sdk_darwin_x86_64",
-    ":host_linux_arm64": "@wasi_sdk_linux_arm64",
-    ":host_linux_x86_64": "@wasi_sdk_linux_x86_64",
-})
-
 [
     alias(
         name = tool,
