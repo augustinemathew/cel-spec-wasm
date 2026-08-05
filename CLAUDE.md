@@ -1112,6 +1112,81 @@ the Results section of `benchmark/README.md` via
 `benchmark/eval/report.py`.  Never hand-edit published numbers — re-run
 the harness.
 
+## CI (`.github/workflows/`)
+
+Three workflows: `ci` (push to master + every PR), `fuzz` (nightly
+07:00 UTC), `pages` (docs).
+
+**CI is split by LINK MODE, not by package.**  That is the whole
+design, and it follows from where the time actually goes — measured on
+the Linux leg:
+
+    29 e2e suites, static     36.3 min
+    the same 29, dynamic       5.3 min
+    97 other targets          10.0 min
+    build (cel-cpp from source)  13-15 min, paid by EVERY lane
+
+Static mode re-verifies LINKING, not semantics: the same assertions run
+with the runtime compiled in rather than imported.  Those breaks come
+from BUILD / toolchain changes, not from editing a kernel, so they do
+not need to gate every review round-trip.
+
+    pull_request   fast + conformance-dynamic
+    push (master)  the above PLUS static + conformance-static
+
+All lanes run in PARALLEL, so wall-clock is the slowest lane, not the
+sum: ~44 min on a PR (measured), ~45-50 min on master, against ~116 min
+serial — which used to exceed the 120-minute timeout outright.
+
+Nothing is skipped on master, so a link-mode regression still cannot
+reach a release; it just stops blocking the feedback a PR author is
+waiting on.
+
+**Lanes select targets by NAME and pass EXPLICIT labels:**
+
+    static:  bazel query 'filter("_static$", tests(//...))'
+    fast:    bazel query 'tests(//...) except filter("_static$", tests(//...))'
+
+The explicit labels are load-bearing.  `bazel test //...` silently skips
+`manual`-tagged targets; passing labels runs them.  That is what folds
+the old `run_full_suite.sh` manual pass into the lanes instead of
+appending it.  If you change the lane queries, re-check the partition —
+it must be exact, and no `manual` target may fall outside both lanes.
+
+`scripts/check_conformance_monotonic.sh` takes `--mode dynamic|static`
+(default `both`, so the pre-push hook and local runs are unchanged).
+
+**Disk.**  A cold build needs ~16 GB and a runner starts with ~21 GB.
+`scripts/ci_free_disk.sh` reclaims ~20 GB of preinstalled SDKs.  Bazel
+7.3.2 has NO disk-cache GC, so `--disk_cache` grows without bound and
+`restore-keys` ratchets it forward run over run —
+`scripts/ci_prune_disk_cache.py` caps it before the save.  Skipping
+either is how CI ends up failing with `write (No space left on device)`
+during an unrelated-looking dependency fetch.
+
+**Warm image (`docker/Dockerfile.ci`, `.github/workflows/ci-image.yml`)
+— built, not yet adopted by the lanes.**  It bakes a populated
+`--disk_cache` so lanes skip the 13-15 min cel-cpp compile they
+currently each pay.  The premise was verified before it was written: a
+cache populated at one workspace path replayed at a DIFFERENT path with
+1135/1135 hits, 146.0s -> 15.9s, because bazel's disk cache is
+content-addressed.
+
+When a pinned input moves (`third_party/cel-cpp.sha`, `MODULE.bazel`,
+`.bazelversion`, `docker/Dockerfile`) the baked entries stop matching.
+Nothing becomes WRONG — content addressing means bazel rebuilds rather
+than serving a stale artifact — but CI silently returns to cold-build
+speed.  `scripts/ci_check_image_stamp.sh` turns that silence into a
+hard failure; the image is tagged with `scripts/ci_image_stamp.sh`, so
+a moved pin asks for a tag that does not exist yet.
+
+**Do not chain `lint` and a coverage sweep in one command.**  They build
+in different configurations (`--collect_code_coverage`,
+`--//runtime:instrument_wasm`), and bazel keys its output tree by
+configuration, so alternating between them recompiles cel-cpp each way
+(~10 min).  Order a batch as: edit -> test -> sweep -> lint -> commit,
+entering each configuration once.
+
 ## Dev-loop performance (read before you wonder why it's slow)
 
 Full analysis + numbers: `doc/implementation-plan/dev-loop-performance.md`.
