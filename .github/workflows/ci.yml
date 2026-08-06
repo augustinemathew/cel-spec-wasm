@@ -87,7 +87,7 @@ jobs:
         run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld libclang-rt-dev tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
@@ -137,7 +137,7 @@ jobs:
         run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld libclang-rt-dev tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
@@ -187,7 +187,7 @@ jobs:
         run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld libclang-rt-dev tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
@@ -237,7 +237,7 @@ jobs:
         run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld libclang-rt-dev tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh

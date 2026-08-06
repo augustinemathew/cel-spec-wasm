@@ -95,6 +95,12 @@ build:sanitizer --strip=never
 # 60s/300s/900s test timeouts start tripping on the e2e targets.
 test:sanitizer --test_timeout=180,900,2700,5400
 
+# absl's leak_check.cc includes <sanitizer/lsan_interface.h> — a
+# toolchain header no module exports, so layering_check rejects the
+# instrumented build.  The check is a header-hygiene gate, not a
+# correctness gate; sanitizer runs don't need it.
+build:sanitizer --features=-layering_check
+
 build:asan --config=sanitizer
 build:asan --copt=-fsanitize=address
 build:asan --linkopt=-fsanitize=address
