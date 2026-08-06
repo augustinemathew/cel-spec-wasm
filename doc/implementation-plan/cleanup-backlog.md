@@ -2169,3 +2169,15 @@ follow-up cleanup, not a current regression.
   clang `-ivfsoverlay` hiding first-party headers when tidying those
   TUs, or renaming our `compiler/compiler.h` (breaking-change-allowed
   pre-1.0, but touches every consumer).
+
+- [ ] **#58 — conformance runner OOMs in static mode on ≤8 GB hosts**
+  (2026-08-05, found by the local Docker CI run). Static-mode
+  `run_conformance` retains ~2.7 MB per row (≈ one kStatic module),
+  ramping to 7.86 GB over 2,566 rows — OOM-killed in the 7.65 GB
+  Docker VM; GitHub's 7 GB runners will hit the same wall, so the
+  `conformance-static` CI lane has never actually survived a hosted
+  run. Dynamic mode is flat (814 MB peak). Ruled out: bazel-server
+  crowding, cgroup limits, the InstanceImpl dtor (deletes
+  expr_module correctly). Repro: docker run on the celwasm-ci-*
+  volumes with the cgroup sampler (see conf_probe4 recipe in the
+  session log). P1 — blocks the CI lane on real runners.
