@@ -208,6 +208,14 @@ absl::Status InitLinker(celwasm::WasmtimeEngineState* state,
 // Shared by the handle-caching half (`CacheRuntimeMemory`, both link
 // modes) and the linker-population half (`DefineCelLinkerBindings`,
 // dynamic mode only).
+//
+// OWNERSHIP: on success `*out` is an OWNED extern — per
+// wasmtime/extern.h, externs RETURNED by the API must be released
+// with `wasmtime_extern_delete`, and the sharedmemory variant holds
+// a refcount on the memory's whole mapping.  Callers must delete
+// `*out` once done with it; skipping that pins every committed page
+// of the shared linear memory past store deletion (the per-Plan leak
+// that OOM'd the static conformance run — cleanup-backlog #58).
 absl::Status GetRuntimeMemoryExport(wasmtime_context_t* ctx,
                                     celwasm::InstanceImpl* impl,
                                     wasmtime_extern_t* out) {
@@ -221,6 +229,7 @@ absl::Status GetRuntimeMemoryExport(wasmtime_context_t* ctx,
   // matching shared shape (codegen sets `shared=true` on the import,
   // see `WasmModule::AddMemoryImport`).
   if (out->kind != WASMTIME_EXTERN_SHAREDMEMORY) {
+    wasmtime_extern_delete(out);
     return absl::FailedPreconditionError(
         absl::StrCat("`memory` is not a shared memory (kind=", out->kind, ")"));
   }
@@ -235,10 +244,13 @@ absl::Status CacheRuntimeMemory(wasmtime_context_t* ctx,
                                 celwasm::InstanceImpl* impl) {
   wasmtime_extern_t mem_ext;
   if (auto s = GetRuntimeMemoryExport(ctx, impl, &mem_ext); !s.ok()) return s;
-  // The handle pulled out of `wasmtime_instance_export_get` is a
-  // shared-memory pointer owned by the store; we clone it so this
-  // InstanceImpl owns its own refcounted handle (deleted in the dtor).
+  // The extern OWNS a sharedmemory refcount (see the ownership note
+  // on `GetRuntimeMemoryExport`).  Clone a handle for this
+  // InstanceImpl (deleted in the dtor), then release the extern's
+  // own reference — leaking it keeps the memory's committed pages
+  // alive forever (cleanup-backlog #58).
   impl->memory = wasmtime_sharedmemory_clone(mem_ext.of.sharedmemory);
+  wasmtime_extern_delete(&mem_ext);
 
   return absl::OkStatus();
 }
@@ -311,6 +323,10 @@ absl::Status DefineCelLinkerBindings(celwasm::InstanceImpl* impl,
   if (auto s = GetRuntimeMemoryExport(ctx, impl, &mem_ext); !s.ok()) return s;
   wasmtime_error_t* err = wasmtime_linker_define(impl->linker, ctx, "cel", 3,
                                                  "memory", 6, &mem_ext);
+  // `wasmtime_linker_define` does not take ownership of the extern;
+  // release its sharedmemory reference here (ownership note on
+  // `GetRuntimeMemoryExport`).
+  wasmtime_extern_delete(&mem_ext);
   if (err != nullptr) {
     return WasmtimeErrorToStatus("linker.define(cel.memory)", err);
   }
