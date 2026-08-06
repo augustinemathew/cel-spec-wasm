@@ -100,6 +100,12 @@ test:sanitizer --test_timeout=180,900,2700,5400
 # instrumented build.  The check is a header-hygiene gate, not a
 # correctness gate; sanitizer runs don't need it.
 build:sanitizer --features=-layering_check
+# Instrumented tests carry ASan shadow + wasmtime mappings; at full
+# parallelism they OOM small hosts (measured: 10 concurrent tests
+# killed the 7.65 GB docker VM's processes silently mid-run; the same
+# set passes at 2 jobs).  Scale test concurrency to a fraction of
+# cores rather than a fixed number so big machines keep speed.
+build:sanitizer --local_test_jobs=HOST_CPUS*.25
 
 build:asan --config=sanitizer
 build:asan --copt=-fsanitize=address
