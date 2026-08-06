@@ -2169,3 +2169,26 @@ follow-up cleanup, not a current regression.
   clang `-ivfsoverlay` hiding first-party headers when tidying those
   TUs, or renaming our `compiler/compiler.h` (breaking-change-allowed
   pre-1.0, but touches every consumer).
+
+- [x] **#58 — conformance runner OOMs in static mode on ≤8 GB hosts**
+  (2026-08-05, found by the local Docker CI run). Static-mode
+  `run_conformance` retains ~2.7 MB per row (≈ one kStatic module),
+  ramping to 7.86 GB over 2,566 rows — OOM-killed in the 7.65 GB
+  Docker VM; GitHub's 7 GB runners will hit the same wall, so the
+  `conformance-static` CI lane has never actually survived a hosted
+  run. Dynamic mode is flat (814 MB peak). Ruled out: bazel-server
+  crowding, cgroup limits, the InstanceImpl dtor (deletes
+  expr_module correctly). Repro: docker run on the celwasm-ci-*
+  volumes with the cgroup sampler (see conf_probe4 recipe in the
+  session log). P1 — blocks the CI lane on real runners.
+  **Fixed 2026-08-05:** per-Plan leak of the OWNED
+  `wasmtime_extern_t` returned by `wasmtime_instance_export_get`
+  for the runtime's shared-memory export — the sharedmemory extern
+  holds a refcount that pins the memory's entire committed mapping
+  past store deletion, and neither `CacheRuntimeMemory` nor
+  `DefineCelLinkerBindings` (eval/engine.cc) ever
+  `wasmtime_extern_delete`'d it (same bug in wat_runner's
+  `AdoptRuntimeMemory`). Both link modes leaked; static just
+  commits ~2.7 MB/row vs dynamic's ~0.3 MB/row. Post-fix: static
+  full run flat, completes in the 7 GB Docker VM; 2085/2085 PASS
+  both modes.

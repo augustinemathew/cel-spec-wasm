@@ -840,12 +840,17 @@ absl::Status AdoptRuntimeMemory(RunState& s, wasmtime_context_t* ctx) {
     return absl::FailedPreconditionError(
         "runtime `memory` export is not a shared memory");
   }
-  // Clone so this RunState owns a refcounted handle (deleted in dtor);
-  // the export's handle is owned by the store.
+  // Clone so this RunState owns a refcounted handle (deleted in
+  // dtor).  The extern returned by `wasmtime_instance_export_get` is
+  // OWNED (per wasmtime/extern.h) and holds its own sharedmemory
+  // refcount; `wasmtime_linker_define` does not take ownership, so
+  // release the extern after the define — a leaked reference pins
+  // the memory's committed pages past store deletion.
   s.memory = wasmtime_sharedmemory_clone(mem_ext.of.sharedmemory);
-  if (wasmtime_error_t* err = wasmtime_linker_define(s.linker, ctx, "cel", 3,
-                                                     "memory", 6, &mem_ext);
-      err != nullptr) {
+  wasmtime_error_t* err =
+      wasmtime_linker_define(s.linker, ctx, "cel", 3, "memory", 6, &mem_ext);
+  wasmtime_extern_delete(&mem_ext);
+  if (err != nullptr) {
     return WasmtimeErrorToStatus("linker.define(cel.memory)", err);
   }
   return absl::OkStatus();
