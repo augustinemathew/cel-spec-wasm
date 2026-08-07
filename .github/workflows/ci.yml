@@ -288,7 +288,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sanitizer: [asan, tsan]
+        # ASan(+LSan) only: it catches the bug classes this codebase
+        # has actually produced (extern leak, use-after-scope) at a
+        # known cost.  TSan stays available as a local config
+        # (`bazel test --config=tsan //eval/...`) for the Engine::Plan
+        # concurrency surface -- run it by hand when touching that;
+        # per-PR TSan over a mostly single-threaded tree with an
+        # uninstrumented prebuilt wasmtime is poor signal per minute.
+        sanitizer: [asan]
     env:
       CC: clang
       CXX: clang++
