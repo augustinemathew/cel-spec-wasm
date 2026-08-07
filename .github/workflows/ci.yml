@@ -32,6 +32,11 @@
 # it independently — that tax is what docker/Dockerfile.ci exists to
 # remove.
 #
+# Sanitizer legs: ubuntu-24.04, matrixed over ASan and TSan
+# (`--config=asan` / `--config=tsan`, defined in .bazelrc).  They run
+# the same target set as the primary leg minus the conformance gate —
+# see the job comment for why.
+#
 # macOS (Apple Silicon) leg: workflow_dispatch only.  The project is
 # developed and pre-push-gated on Apple Silicon locally, so a per-push
 # macOS job is redundant coverage at 10x the runner cost.
@@ -82,7 +87,7 @@ jobs:
         run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld libclang-rt-dev tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
@@ -132,7 +137,7 @@ jobs:
         run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld libclang-rt-dev tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
@@ -182,7 +187,7 @@ jobs:
         run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld libclang-rt-dev tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
@@ -232,7 +237,7 @@ jobs:
         run: scripts/ci_check_image_stamp.sh
 
       - name: Install host deps (mirrors docker/Dockerfile)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld tzdata tzdata-legacy
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld libclang-rt-dev tzdata tzdata-legacy
 
       - name: Fetch vendored cel-cpp (pinned SHA)
         run: third_party/fetch_cel_cpp.sh
@@ -261,6 +266,115 @@ jobs:
       - name: Prune bazel disk cache
         if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
         run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
+
+  # Sanitizer legs — ASan and TSan, one job each.  `fail-fast: false`
+  # so an ASan finding doesn't cancel the TSan run: they surface
+  # different bug classes and we want both reports from one push.
+  #
+  # Each sanitizer is its own bazel build tree (a `--copt` change
+  # re-keys every action), so each gets its own disk cache; sharing one
+  # key would make every run evict the other's objects and stay cold.
+  #
+  # Scope is `//...` plus the manual-tagged targets, NOT the
+  # conformance gate: the corpus runner is by far the longest job in
+  # the suite and instrumentation multiplies that, while the code paths
+  # it exercises are the same compile→eval paths the e2e manual targets
+  # already drive under the sanitizer.  Run it by hand when a
+  # sanitizer-relevant change lands in the runtime:
+  #     scripts/run_full_suite.sh --config=asan
+  test-sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        # ASan(+LSan) only: it catches the bug classes this codebase
+        # has actually produced (extern leak, use-after-scope) at a
+        # known cost.  TSan stays available as a local config
+        # (`bazel test --config=tsan //eval/...`) for the Engine::Plan
+        # concurrency surface -- run it by hand when touching that;
+        # per-PR TSan over a mostly single-threaded tree with an
+        # uninstrumented prebuilt wasmtime is poor signal per minute.
+        sanitizer: [asan]
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mandatory here, not optional: an instrumented tree is LARGER
+      # than the plain one that was already exhausting the runner, so
+      # this lane cannot fit without reclaiming the preinstalled SDKs.
+      - name: Free disk space
+        run: scripts/ci_free_disk.sh
+
+      # No-op unless the job runs in the warm CI image; fails loudly if
+      # that image was built for different pins (docker/Dockerfile.ci).
+      - name: Verify CI image freshness
+        run: scripts/ci_check_image_stamp.sh
+
+      # `llvm` on top of the other lanes' deps: it supplies
+      # llvm-symbolizer, without which a sanitizer report is a list of
+      # raw addresses.
+      - name: Install host deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld llvm tzdata tzdata-legacy
+
+      - name: Fetch vendored cel-cpp (pinned SHA)
+        run: third_party/fetch_cel_cpp.sh
+
+      - name: Restore bazel disk cache
+        id: bazel-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: bazel-disk-${{ runner.os }}-${{ matrix.sanitizer }}-${{ hashFiles('MODULE.bazel', 'third_party/cel-cpp.sha') }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-${{ matrix.sanitizer }}-
+
+      - name: Point bazel at the disk cache and the symbolizer
+        # .bazelrc try-imports user.bazelrc; `test` inherits `build` flags.
+        # The symbolizer lives at an unversioned path on some images and
+        # only under /usr/lib/llvm-N on others — resolve it here rather
+        # than hardcoding a path in the committed .bazelrc, which also
+        # has to work on macOS.
+        run: |
+          echo "build --disk_cache=$HOME/bazel-disk-cache" > user.bazelrc
+          sym="$(command -v llvm-symbolizer || true)"
+          if [[ -z "$sym" ]]; then
+            sym="$(ls -1 /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | tail -n1 || true)"
+          fi
+          if [[ -n "$sym" ]]; then
+            echo "using symbolizer: $sym"
+            echo "test --test_env=ASAN_SYMBOLIZER_PATH=$sym" >> user.bazelrc
+            echo "test --test_env=TSAN_OPTIONS=external_symbolizer_path=$sym" >> user.bazelrc
+          else
+            echo "::warning::llvm-symbolizer not found; sanitizer reports will be unsymbolized"
+          fi
+
+      # One `bazel test` rather than build-then-test: `test` already
+      # builds, and the duplicate pass was dropped from the other lanes
+      # for the same reason.  Scope is `//...` plus the manual-tagged
+      # targets; conformance is deliberately excluded (see the job
+      # comment above).
+      - name: Test (unit + manual-tagged)
+        run: scripts/run_full_suite.sh --quick --config=${{ matrix.sanitizer }}
+
+      - name: Disk usage report
+        if: always()
+        run: |
+          df -h /
+          du -sh ~/bazel-disk-cache ~/.cache/bazel 2>/dev/null || true
+
+      - name: Prune bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prune_disk_cache.py "$HOME/bazel-disk-cache" 4
+
+      - name: Save bazel disk cache
+        if: always() && steps.bazel-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/bazel-disk-cache
+          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
 
   test-macos:
     if: github.event_name == 'workflow_dispatch' && inputs.macos

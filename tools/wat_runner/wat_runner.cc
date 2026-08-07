@@ -24,6 +24,25 @@ namespace celwasm {
 
 namespace {
 
+// Scope guard for a `wasmtime_extern_t` from `wasmtime_caller_export_get`
+// or `wasmtime_instance_export_get`, both of which *return ownership* of
+// the extern they fill in (wasmtime/instance.h: "does return ownership of
+// the #wasmtime_extern_t").  The host-callback stubs look up the caller's
+// memory export on every call, so without this each host call leaked a
+// handle plus the store internals behind it — LeakSanitizer flagged
+// exactly that in wat_runner_test.
+//
+// The extern is a caller-provided value, so the guard owns the RESOURCE
+// while the storage stays on the stack: the deleter releases, it does not
+// `delete`.  Constructed only after a successful lookup — releasing an
+// unfilled extern is undefined.  Mirrors `ExternGuard` in eval/engine.cc.
+struct ExternReleaser {
+  void operator()(wasmtime_extern_t* ext) const {
+    wasmtime_extern_delete(ext);
+  }
+};
+using ExternGuard = std::unique_ptr<wasmtime_extern_t, ExternReleaser>;
+
 // Names of every helper exported by `cel_runtime.wasm` that the
 // harness's expr modules may import.  Bound onto the linker by
 // `InstantiateRuntime` after instantiation — mirrors the
@@ -229,6 +248,7 @@ wasm_trap_t* StubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
+  ExternGuard ext_guard(&ext);
   uint8_t* data = wasmtime_sharedmemory_data(ext.of.sharedmemory);
   const size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
 
@@ -369,6 +389,7 @@ wasm_trap_t* ThreeArgStubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
+  ExternGuard ext_guard(&ext);
   uint8_t* base = wasmtime_sharedmemory_data(ext.of.sharedmemory);
   size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
 
@@ -429,6 +450,7 @@ wasm_trap_t* TwoArgStubTrampoline(void* env, wasmtime_caller_t* caller,
     wasm_byte_vec_delete(&msg);
     return t;
   }
+  ExternGuard ext_guard(&ext);
   uint8_t* base = wasmtime_sharedmemory_data(ext.of.sharedmemory);
   size_t size = wasmtime_sharedmemory_data_size(ext.of.sharedmemory);
 
@@ -816,6 +838,7 @@ absl::Status BindExport(wasmtime_linker_t* linker, wasmtime_context_t* ctx,
     return absl::FailedPreconditionError(
         absl::StrCat("runtime has no export `", name, "`"));
   }
+  ExternGuard ext_guard(&ext);
   wasmtime_error_t* err = wasmtime_linker_define(
       linker, ctx, "cel", 3, name.data(), name.size(), &ext);
   if (err != nullptr) {
@@ -836,6 +859,7 @@ absl::Status AdoptRuntimeMemory(RunState& s, wasmtime_context_t* ctx) {
                                     &mem_ext)) {
     return absl::FailedPreconditionError("runtime has no `memory` export");
   }
+  ExternGuard mem_guard(&mem_ext);
   if (mem_ext.kind != WASMTIME_EXTERN_SHAREDMEMORY) {
     return absl::FailedPreconditionError(
         "runtime `memory` export is not a shared memory");
@@ -843,13 +867,13 @@ absl::Status AdoptRuntimeMemory(RunState& s, wasmtime_context_t* ctx) {
   // Clone so this RunState owns a refcounted handle (deleted in
   // dtor).  The extern returned by `wasmtime_instance_export_get` is
   // OWNED (per wasmtime/extern.h) and holds its own sharedmemory
-  // refcount; `wasmtime_linker_define` does not take ownership, so
-  // release the extern after the define — a leaked reference pins
-  // the memory's committed pages past store deletion.
+  // refcount; `wasmtime_linker_define` does not take ownership.
+  // `mem_guard` above releases the extern on every exit path — a
+  // leaked reference pins the memory's committed pages past store
+  // deletion.
   s.memory = wasmtime_sharedmemory_clone(mem_ext.of.sharedmemory);
   wasmtime_error_t* err =
       wasmtime_linker_define(s.linker, ctx, "cel", 3, "memory", 6, &mem_ext);
-  wasmtime_extern_delete(&mem_ext);
   if (err != nullptr) {
     return WasmtimeErrorToStatus("linker.define(cel.memory)", err);
   }
@@ -862,9 +886,12 @@ absl::Status AdoptRuntimeMemory(RunState& s, wasmtime_context_t* ctx) {
 // cursor but no longer set up the arena base/size themselves.
 absl::Status SeedArena(RunState& s, wasmtime_context_t* ctx) {
   wasmtime_extern_t init_ext;
-  if (!wasmtime_instance_export_get(ctx, &s.runtime_instance, "arena_init", 10,
-                                    &init_ext) ||
-      init_ext.kind != WASMTIME_EXTERN_FUNC) {
+  ExternGuard init_guard;
+  if (wasmtime_instance_export_get(ctx, &s.runtime_instance, "arena_init", 10,
+                                   &init_ext)) {
+    init_guard.reset(&init_ext);
+  }
+  if (init_guard == nullptr || init_ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError("runtime has no `arena_init` func");
   }
   wasmtime_val_t cap;
@@ -918,6 +945,7 @@ absl::Status InstantiateExpr(RunState& s) {
   if (!wasmtime_instance_export_get(ctx, &s.expr_instance, "eval", 4, &ext)) {
     return absl::FailedPreconditionError("expr module does not export `eval`");
   }
+  ExternGuard eval_guard(&ext);
   if (ext.kind != WASMTIME_EXTERN_FUNC) {
     return absl::FailedPreconditionError("`eval` export is not a function");
   }

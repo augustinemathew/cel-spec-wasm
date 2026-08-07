@@ -104,8 +104,17 @@ run_conformance() {
   # the slower fastbuild eval is the right trade.  `-c opt` is reserved
   # for benchmarks (//bench) and CI.  See
   # doc/implementation-plan/dev-loop-performance.md.
+  #
+  # `CELWASM_BAZEL_CONFIG=asan` (or `tsan`) runs the corpus under the
+  # matching .bazelrc sanitizer config instead — what CI's sanitizer
+  # leg uses.  Unset means the fastbuild default described above.
   local link_mode="$1"
-  bazel run //conformance:run_conformance -- --link_mode="$link_mode" 2>&1 \
+  local config_flag=""
+  if [[ -n "${CELWASM_BAZEL_CONFIG:-}" ]]; then
+    config_flag="--config=${CELWASM_BAZEL_CONFIG}"
+  fi
+  # shellcheck disable=SC2086
+  bazel run $config_flag //conformance:run_conformance -- --link_mode="$link_mode" 2>&1 \
     | tee "$(log_path_for_mode "$link_mode")" \
     | grep -aE '^summary:' \
     | head -n1
