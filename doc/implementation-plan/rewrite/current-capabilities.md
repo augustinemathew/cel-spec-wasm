@@ -89,8 +89,9 @@ Source of truth: trampoline registrations in
 - **List ops:** `cel_list_at/concat/eq/in/iter_open/size`.
 - **Map ops:** `cel_map_lookup/eq/in/iter_open/size`.
 - **Message:** `cel_make_message`, `cel_message_eq`.
-- **Time:** `cel_time_parse`, `cel_timestamp_tz_accessor`,
-  `cel_wkt_unwrap_time`, `cel_wkt_unwrap_wrapper`.
+- **Time:** `cel_time_parse`, `cel_timestamp_tz_accessor`
+  (IANA names only — "UTC"/"Z"/fixed offsets resolve inside
+  cel_runtime.wasm), `cel_wkt_unwrap_time`, `cel_wkt_unwrap_wrapper`.
 - **Custom fns:** `HostCall` + `BindTyped*` (m21 host-call
   adapter); `@host` documented in `compiler.h` / `engine.h`.
   (The `@plugin` / Component-Model surface this row once listed —

@@ -250,6 +250,10 @@ for f in "${targets[@]}"; do
   esac
   case "$f" in
     *.c)                          c_targets+=("$f") ;;
+    # C++-only runtime header (namespaced, absl-using, with a matching
+    # `.cc` basename in the compile DB) — analyze as C++.  The
+    # `runtime/*.h → C` default below is for the extern-C ABI headers.
+    runtime/cel_time_canonical.h) cpp_targets+=("$f") ;;
     runtime/*.h)                  c_targets+=("$f") ;;
     *)                            cpp_targets+=("$f") ;;
   esac

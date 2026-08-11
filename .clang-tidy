@@ -102,7 +102,7 @@ CheckOptions:
   # screaming-snake identifiers — the standard C ABI convention.
   # Renaming to `kCelNull` would churn every caller for no runtime win.
   - key: readability-identifier-naming.EnumConstantIgnoredRegexp
-    value: '^CEL_[A-Z_]+$'
+    value: '^CEL_[A-Z0-9_]+$'
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: _
   - key: readability-identifier-naming.ProtectedMemberSuffix

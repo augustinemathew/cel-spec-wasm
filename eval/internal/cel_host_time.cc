@@ -1,6 +1,5 @@
 #include "eval/internal/cel_host_time.h"
 
-#include <cctype>
 #include <cstdint>
 #include <string>
 
@@ -17,7 +16,7 @@ namespace celwasm {
 // ══════════════════════════════════════════════════════════════════
 //
 // Single host import absorbs all 10 with-TZ accessor surfaces; the
-// per-accessor shims in cel_time.c supply the `accessor_kind`
+// per-accessor shims in cel_time.cc supply the `accessor_kind`
 // constant.  Wire enum lives in cel_time.h (`CelTzAccessorKind`)
 // and is mirrored here — keep them in lockstep.  Rationale ("1
 // dispatch trampoline vs 10 named trampolines": ABI surface count
@@ -79,38 +78,17 @@ int64_t ProjectCivilField(const absl::CivilSecond& cs, absl::Weekday weekday,
 
 namespace {
 
-// Resolve a TZ string to an `absl::TimeZone`.  Three shapes:
-//   - "UTC" / "Z" → UTC.
-//   - "+HH:MM" / "-HH:MM" → fixed offset; absl::LoadTimeZone doesn't
-//     parse these inline so we do it ourselves (plan §4.3).
-//   - IANA name → absl::LoadTimeZone walks the host tzdata.
-// Returns false on parse failure or unknown IANA name.
+// Resolve a TZ string to an `absl::TimeZone` — IANA names ONLY,
+// via the host tzdata.  The no-tzdata shapes ("UTC" / "Z" and the
+// "+HH:MM" / "-HH:MM" / unsigned "HH:MM" fixed offsets) are
+// resolved inside cel_runtime.wasm (`runtime/cel_time.cc`,
+// `ResolveLocalTimeZone`) and never reach this trampoline.  One
+// arriving anyway means an expr/runtime module predating that
+// split; `LoadTimeZone` fails on every such shape except the bare
+// "UTC" (which tzdata itself carries), so a stale module degrades
+// to a loud invalid-argument eval error rather than a silently
+// different civil projection.
 bool ResolveTimeZone(absl::string_view name, absl::TimeZone* out) {
-  if (name == "UTC" || name == "Z") {
-    *out = absl::UTCTimeZone();
-    return true;
-  }
-  // Fixed offset: `+HH:MM` / `-HH:MM` / `HH:MM` (no sign = +).
-  // cel-cpp admits the unsigned form per
-  // `runtime/standard/time_functions.cc`.  Trim the sign prefix
-  // if present, then validate HH:MM digit layout.
-  int sign = 1;
-  absl::string_view rest = name;
-  if (!rest.empty() && (rest[0] == '+' || rest[0] == '-')) {
-    sign = rest[0] == '+' ? 1 : -1;
-    rest.remove_prefix(1);
-  }
-  if (rest.size() == 5 && rest[2] == ':' &&
-      std::isdigit(static_cast<unsigned char>(rest[0])) &&
-      std::isdigit(static_cast<unsigned char>(rest[1])) &&
-      std::isdigit(static_cast<unsigned char>(rest[3])) &&
-      std::isdigit(static_cast<unsigned char>(rest[4]))) {
-    const int hours = ((rest[0] - '0') * 10) + (rest[1] - '0');
-    const int minutes = ((rest[3] - '0') * 10) + (rest[4] - '0');
-    if (hours > 23 || minutes > 59) return false;
-    *out = absl::FixedTimeZone(sign * ((hours * 3600) + (minutes * 60)));
-    return true;
-  }
   return absl::LoadTimeZone(std::string(name), out);
 }
 

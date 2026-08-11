@@ -443,6 +443,13 @@ has a test row in §6.
         `absl::TimeZone::Load`.  Requires `tzdata` on the host;
         spec-pin failure mode is `CEL_ERROR (kInvalidArgument)`
         when the name doesn't resolve.
+    > Plan-vs-execution delta (2026-08 time consolidation): the
+    > no-tzdata shapes — `"UTC"` / `"Z"` and the fixed offsets —
+    > now resolve inside cel_runtime.wasm
+    > (`runtime/cel_time.cc::ResolveLocalTimeZone`, backed by
+    > `absl::FixedTimeZone`); only plausible IANA names cross the
+    > `cel_host.cel_timestamp_tz_accessor` import, whose host impl
+    > is `absl::LoadTimeZone`-only.
   - **Per-accessor semantics**:
       - `getYear` / `getFullYear` — Gregorian year, e.g. `2009`.
         Negative for BCE (but the timestamp range forbids BCE in
