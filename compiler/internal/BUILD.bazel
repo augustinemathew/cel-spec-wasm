@@ -24,7 +24,7 @@ cc_library(
         "//compiler/frontend:parse_and_check",
         "//compiler/ir:typed_ast",
         "//runtime:cel_runtime",
-        "//runtime:cel_runtime_stripped_wasm_bytes",
+        "//runtime:cel_runtime_wasm_bytes",
         "@binaryen//:binaryen",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_set",

@@ -163,7 +163,6 @@ def _impl(ctx):
                         flags = link_target_flags + [
                             "-nostartfiles",
                             "-Wl,--no-entry",
-                            "-Wl,--allow-undefined",
                             "-lwasi-emulated-signal",
                             "-lwasi-emulated-process-clocks",
                             "-lwasi-emulated-mman",

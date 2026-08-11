@@ -26,7 +26,7 @@
 #include "compiler/ir/typed_ast.h"
 #include "compiler/memory_layout.h"
 #include "runtime/cel_layout.h"
-#include "runtime/cel_runtime_stripped_wasm_bytes.h"
+#include "runtime/cel_runtime_wasm_bytes.h"
 
 namespace celwasm {
 
@@ -568,9 +568,9 @@ absl::StatusOr<WasmModule> AdoptStrippedRuntime() {
   // in-place rewriting).
   auto* raw_bytes = reinterpret_cast<char*>(
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-      const_cast<unsigned char*>(kCelRuntimeStrippedWasmBytes));
+      const_cast<unsigned char*>(kCelRuntimeWasmBytes));
   BinaryenModuleRef adopted =
-      BinaryenModuleRead(raw_bytes, kCelRuntimeStrippedWasmBytesSize);
+      BinaryenModuleRead(raw_bytes, kCelRuntimeWasmBytesSize);
   if (adopted == nullptr) {
     return absl::InternalError(
         "CompileStatic: BinaryenModuleRead failed on embedded "
