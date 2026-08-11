@@ -2198,7 +2198,10 @@ Four levers landed in three commits (e0826ed / 99fd27c / 754bcaf
         trampoline + 10 pure-wasm shim helpers.  IANA names via
         `absl::LoadTimeZone`; fixed offsets via inline parse
         (`ResolveTimeZone` helper); weekday convention reordered
-        from absl's monday=0 to cel-cpp's sunday=0.
+        from absl's monday=0 to cel-cpp's sunday=0.  (Since the
+        2026-08 time consolidation the fixed-offset / "UTC" / "Z"
+        shapes resolve inside cel_runtime.wasm and the host
+        trampoline is IANA-only — see that section below.)
   - [x] **Wire ABI** — `CEL_ERR_INVALID_ARGUMENT = 18` added
         (parse failures); `CelDurTs` payload arm reused for both
         kinds; 28 OverloadTable seeds added (kBuiltinSeeds:
@@ -3653,6 +3656,47 @@ rows:
   - Plugin/component/`@native` rows elsewhere in this file are marked
     *(removed (m39))* in place; their sections carry removal banners
     (Rewrite M24, M35) — history retained, boxes not counted.
+
+## Time consolidation — one time kernel TU, one canonical form, runtime-side fixed-offset zones (2026-08-11)
+
+Three-part refactor on branch `time-consolidation` (stacked on
+`runtime-build-slim`); no ABI change — every wasm import/export
+keeps its name and signature.
+
+  - [x] **cel_time.c → cel_time.cc port pins** — the hand-rolled
+        Hinnant civil kernel was retired for absl civil time; the
+        port's edge-behavior spec is `runtime/cel_time_test.cc`,
+        extended with conversion/boundary pins observed passing
+        against the C implementation BEFORE the swap:
+        `IntToTs{AdmitsLangdefBounds,PoisonsJustPastEitherBound}`,
+        `IntToDur{AdmitsProtoDurationBounds,PoisonsJustPastEitherBound}`,
+        `TsToInt*`, `DurToInt*`, `TsDurAddAdmitsFullSecondOnUpperBound`,
+        `TsDurAddPoisonsPastUpperBound`,
+        `TsDurSubPoisonsNegativeNanosOnLowerBound`,
+        `TsTsSub{PoisonsPastInt64NanosRepresentability,AdmitsInt64NanosBoundary}`,
+        `TimestampGetMillisecondsFloorShiftsNegativeNanos`,
+        `DurationGetMillisecondsPreservesSign`.
+  - [x] **Canonical-form unification** — `string(<ts|dur>)` and the
+        `%s` renderers share `runtime/cel_time_canonical.{h,cc}`;
+        `cel_time_canonical_test.cc` pins the byte-exact grids
+        (minimal-digit fraction `.5Z`, unpadded year
+        `1-01-01T00:00:00Z`, 3/6/9-digit duration fractions,
+        sign-correlated negatives).
+  - [x] **Runtime-side fixed-offset zones** — "UTC"/"Z"/"±HH:MM"/
+        unsigned "HH:MM" resolve in `cel_time.cc` via
+        `absl::FixedTimeZone`; only IANA names reach the (now
+        IANA-only) `cel_host.cel_timestamp_tz_accessor` import.
+        Fixed-offset accessor coverage RELOCATED from the
+        host-served path to runtime unit tests
+        (`cel_time_test.cc` `WithTz*` family: offsets, unsigned
+        form, minute-granular, date-flip, milliseconds
+        floor-shift, empty/out-of-range/malformed rejects, the
+        ts-UNKNOWN-outranks-tz-ERROR absorption-order pin, and the
+        IANA-forwards-to-import pin); the IANA host path stays
+        e2e-covered by `TzAccessorE2ETest` in both link modes.
+
+Conformance held at baseline in both link modes (verified via
+`scripts/check_conformance_monotonic.sh --mode dynamic|static`).
 
 ## How to update
 

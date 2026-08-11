@@ -16,6 +16,8 @@
 
 #include <cstdint>
 
+#include "absl/log/absl_check.h"
+#include "absl/strings/string_view.h"
 #include "absl/time/civil_time.h"
 #include "absl/time/time.h"
 #include "runtime/cel_arena.h"
@@ -507,14 +509,17 @@ extern "C" void cel_int_to_dur_at_v(uint32_t out_slot, uint32_t int_slot) {
   out->payload.dur = CelDurTs{.seconds = a->payload.i, .nanos = 0, ._pad = 0};
 }
 
-// ─── With-TZ accessor shims ───────────────────────────────────────────
+// ─── With-TZ accessors ────────────────────────────────────────────────
 //
-// Each shim is a thin wrapper over the host trampoline.  The
-// `cel_host.cel_timestamp_tz_accessor` import is declared with
-// `import_module/import_name` on wasm32 and resolved at instantiate
-// time; on the host build (unit tests that link cel_runtime as a
-// cc_library), a weak no-op stub poisons out_slot so the build
-// links cleanly.  Identical pattern to
+// Zones that need no IANA tzdata — "UTC" / "Z" and fixed offsets
+// ("+HH:MM" / "-HH:MM" / unsigned "HH:MM") — resolve here via
+// absl::FixedTimeZone; only a plausible IANA name crosses the ABI
+// to the `cel_host.cel_timestamp_tz_accessor` dispatch trampoline
+// (which is IANA-only — see eval/internal/cel_host_time.cc).  The
+// import is declared with `import_module/import_name` on wasm32 and
+// resolved at instantiate time; on the host build (unit tests that
+// link cel_runtime as a cc_library), a weak no-op stub poisons
+// out_slot so the build links cleanly.  Identical pattern to
 // `cel_host_resolve_message_type_name` in cel_type.c.
 
 #ifdef __wasm__
@@ -535,10 +540,164 @@ extern "C" __attribute__((weak)) void cel_host_cel_timestamp_tz_accessor(
 }
 #endif
 
-#define DEFINE_TZ_ACCESSOR_SHIM(name, kind)                                 \
-  extern "C" void name(uint32_t out_slot, uint32_t ts_slot,                 \
-                       uint32_t tz_slot) {                                  \
-    cel_host_cel_timestamp_tz_accessor(out_slot, ts_slot, tz_slot, (kind)); \
+namespace {
+
+// Result of classifying a TZ-name string against the shapes that
+// need no tzdata.
+enum class LocalTzResolution : uint8_t {
+  kResolved,        // *offset_seconds filled in (UTC/"Z" → 0)
+  kInvalid,         // shape can never name a zone → invalid-argument
+  kNeedsHostTzdata  // plausibly an IANA name → host trampoline
+};
+
+// Parse "HH:MM" (exactly 5 chars, two digits, colon, two digits)
+// into offset seconds.  Returns false on any shape or range miss.
+bool ParseHhMmOffset(absl::string_view s, int* out_seconds) {
+  const auto is_digit = [](char c) {
+    return c >= '0' && c <= '9';
+  };
+  if (s.size() != 5 || s[2] != ':') return false;
+  if (!is_digit(s[0]) || !is_digit(s[1]) || !is_digit(s[3]) ||
+      !is_digit(s[4])) {
+    return false;
+  }
+  const int hours = ((s[0] - '0') * 10) + (s[1] - '0');
+  const int minutes = ((s[3] - '0') * 10) + (s[4] - '0');
+  if (hours > 23 || minutes > 59) return false;
+  *out_seconds = (hours * 3600) + (minutes * 60);
+  return true;
+}
+
+// Resolve the TZ shapes cel-cpp admits without tzdata
+// (`runtime/standard/time_functions.cc`): "UTC" / "Z" → offset 0;
+// "+HH:MM" / "-HH:MM" / unsigned "HH:MM" → the signed offset.  The
+// empty string and malformed signed forms can never resolve
+// anywhere (IANA names are non-empty and never start with
+// '+'/'-'), so they reject locally rather than paying a host call
+// that cannot succeed.  Everything else may be an IANA name and
+// needs the host's tzdata.
+//
+// The result is a bare offset, NOT an absl::TimeZone:
+// `absl::FixedTimeZone` routes through cctz's `load_time_zone`,
+// whose (never-taken, for fixed zones) tzfile branch would drag
+// file-IO wasi imports (`path_open`, `fd_fdstat_set_flags`) into
+// cel_runtime.wasm — an import-set change.  A fixed zone is just a
+// UTC shift, so the caller projects `t + offset` in UTC instead.
+LocalTzResolution ResolveLocalTimeZone(absl::string_view name,
+                                       int* offset_seconds) {
+  if (name == "UTC" || name == "Z") {
+    *offset_seconds = 0;
+    return LocalTzResolution::kResolved;
+  }
+  if (name.empty()) return LocalTzResolution::kInvalid;
+  int sign = 1;
+  absl::string_view rest = name;
+  if (rest[0] == '+' || rest[0] == '-') {
+    sign = rest[0] == '+' ? 1 : -1;
+    rest.remove_prefix(1);
+  }
+  int magnitude = 0;
+  if (ParseHhMmOffset(rest, &magnitude)) {
+    *offset_seconds = sign * magnitude;
+    return LocalTzResolution::kResolved;
+  }
+  if (name[0] == '+' || name[0] == '-') return LocalTzResolution::kInvalid;
+  return LocalTzResolution::kNeedsHostTzdata;
+}
+
+// Project the requested civil field of the instant
+// `epoch + ts.seconds + ts.nanos` in the fixed zone
+// UTC+offset_seconds.  A fixed zone's civil time is the UTC civil
+// time of the offset-shifted instant (exactly cctz's fixed-zone
+// BreakTime), so this projects `t + offset` against the UTC zone —
+// see `ResolveLocalTimeZone` for why no absl::TimeZone is built.
+// Field shapes and the milliseconds floor-shift mirror the host
+// trampoline (`CelTimestampTzAccessorImpl`) exactly — the two must
+// agree, since which side serves a call depends only on the zone's
+// spelling.
+int64_t ProjectCivilField(int offset_seconds, const CelDurTs& ts,
+                          CelTzAccessorKind kind) {
+  const absl::Time t = absl::UnixEpoch() + absl::Seconds(ts.seconds) +
+                       absl::Seconds(offset_seconds) +
+                       absl::Nanoseconds(ts.nanos);
+  const absl::TimeZone::CivilInfo info = absl::UTCTimeZone().At(t);
+  const absl::CivilDay day(info.cs);
+  switch (kind) {
+    case CEL_TZ_ACC_YEAR:
+      return info.cs.year();
+    case CEL_TZ_ACC_MONTH:
+      return info.cs.month() - 1;  // cel-cpp 0-based
+    case CEL_TZ_ACC_DAY_OF_MONTH_1:
+      return info.cs.day();  // 1-based
+    case CEL_TZ_ACC_DAY_OF_MONTH:
+      return info.cs.day() - 1;  // 0-based
+    case CEL_TZ_ACC_DAY_OF_YEAR:
+      return absl::GetYearDay(day) - 1;  // absl 1-based → cel-cpp 0-based
+    case CEL_TZ_ACC_DAY_OF_WEEK:
+      // absl::Weekday: monday=0..sunday=6.  cel-cpp: sunday=0.
+      return (static_cast<int64_t>(absl::GetWeekday(day)) + 1) % 7;
+    case CEL_TZ_ACC_HOURS:
+      return info.cs.hour();
+    case CEL_TZ_ACC_MINUTES:
+      return info.cs.minute();
+    case CEL_TZ_ACC_SECONDS:
+      return info.cs.second();
+    case CEL_TZ_ACC_MILLISECONDS: {
+      // Sub-second within the civil second.  Sign-correlated nanos
+      // get unix-floor-shifted to match cel-cpp's
+      // `ToInt64Milliseconds(t - FloorToSecond(t))`.
+      int64_t n = ts.nanos;
+      if (n < 0) n += kNanosPerSec;
+      return n / 1000000;
+    }
+  }
+  // The only callers are the shims below, each passing one closed
+  // enum constant.
+  ABSL_CHECK(false) << "unknown CelTzAccessorKind " << kind;
+  return 0;
+}
+
+// Shared with-TZ kernel body.  Guard order mirrors the host
+// trampoline's `TzAccessorPrelude` — the timestamp operand absorbs
+// FIRST (its UNKNOWN outranks a tz-operand ERROR, unlike
+// absorb_3vl_binary's ERROR-dominates rule), then kinds, then the
+// zone resolves locally or forwards to the host import.
+void TsWithTzAccessor(uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot,
+                      CelTzAccessorKind kind) {
+  CelValue* out = cel_value_at(out_slot);
+  const CelValue* ts = cel_value_at(ts_slot);
+  const CelValue* tz_name = cel_value_at(tz_slot);
+  if (absorb_3vl_unary(out, ts)) return;
+  if (absorb_3vl_unary(out, tz_name)) return;
+  if (ts->kind != CEL_TIMESTAMP || tz_name->kind != CEL_STRING) {
+    poison(out, CEL_ERR_TYPE_MISMATCH);
+    return;
+  }
+  const absl::string_view name(
+      reinterpret_cast<const char*>(cel_memory_base_()) +
+          tz_name->payload.s.ptr,
+      tz_name->payload.s.len);
+  int offset_seconds = 0;
+  switch (ResolveLocalTimeZone(name, &offset_seconds)) {
+    case LocalTzResolution::kInvalid:
+      poison(out, CEL_ERR_INVALID_ARGUMENT);
+      return;
+    case LocalTzResolution::kNeedsHostTzdata:
+      cel_host_cel_timestamp_tz_accessor(out_slot, ts_slot, tz_slot,
+                                         static_cast<uint32_t>(kind));
+      return;
+    case LocalTzResolution::kResolved:
+      break;
+  }
+  write_int(out, ProjectCivilField(offset_seconds, ts->payload.ts, kind));
+}
+
+}  // namespace
+
+#define DEFINE_TZ_ACCESSOR_SHIM(name, kind)                 \
+  extern "C" void name(uint32_t out_slot, uint32_t ts_slot, \
+                       uint32_t tz_slot) {                  \
+    TsWithTzAccessor(out_slot, ts_slot, tz_slot, (kind));   \
   }
 
 DEFINE_TZ_ACCESSOR_SHIM(cel_ts_year_with_tz_at_vv, CEL_TZ_ACC_YEAR)

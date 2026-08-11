@@ -1350,9 +1350,11 @@ Invariants the shape locks:
     the identical wire shape.
   - `accessor_kind` constant differs per overload; codegen reads it
     from the OverloadTable, not from operand-level runtime data.
-  - "+02:00" form goes through `absl::TimeZone::Load` but bypasses
-    the tzdata lookup — Layer-2 should not branch on tz format,
-    absl handles both.
+  - "+02:00" is a no-tzdata shape: since the time consolidation the
+    runtime shim resolves it via `absl::FixedTimeZone` without
+    calling the import at all — this WAT drives the trampoline
+    directly, locking the wire shape either way; Layer-2 itself is
+    IANA-only (`absl::LoadTimeZone`).
 
 Codegen call-site: same as §54 (`expr_lower.cc::EmitGeneralCall`);
 this WAT just locks the second tz-string shape so the trampoline

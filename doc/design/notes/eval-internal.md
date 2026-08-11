@@ -219,10 +219,11 @@ UnimplementedError (deliberate trap, cel_host.cc:3608-3617).
   CelSpan (cel_host.cc:3649-3701).  Non-proto backing →
   HOST_ADAPTER_ERROR.
 - `CelTimestampTzAccessorImpl`: one 4-arg import absorbs all 10
-  with-TZ accessor overloads; `ResolveTimeZone` accepts
-  "UTC"/"Z", signed/unsigned fixed `HH:MM` offsets, IANA names via
-  `absl::LoadTimeZone`; bad TZ → CEL_ERR_INVALID_ARGUMENT
-  (cel_host.cc:3775-3869).  cel-cpp index conventions pinned:
+  with-TZ accessor overloads; `ResolveTimeZone` is IANA-only
+  (`absl::LoadTimeZone`) — "UTC"/"Z" and signed/unsigned fixed
+  `HH:MM` offsets resolve inside cel_runtime.wasm
+  (`runtime/cel_time.cc`) and never reach the import; bad TZ →
+  CEL_ERR_INVALID_ARGUMENT.  cel-cpp index conventions pinned:
   month/dayOfMonth/dayOfYear 0-based, dayOfWeek sunday=0
   (cel_host.cc:3738-3771).
 - `CelWktUnwrapTimeImpl` / `CelWktUnwrapWrapperImpl`: struct-literal

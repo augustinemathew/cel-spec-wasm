@@ -18,14 +18,16 @@ namespace celwasm {
 // `string_to_timestamp` etc. to `cel_runtime.cel_*_at_v` directly.
 // See `doc/implementation-plan/rewrite/phase-c-plan.md` §4.
 
-// Single dispatch trampoline for the 10 with-TZ accessor overloads.
-// Reads the timestamp + TZ-name string operands; loads the IANA /
-// fixed-offset zone via `absl::TimeZone::Load`; projects the
-// requested civil-time field per `accessor_kind` (matches
-// `CelTzAccessorKind` enum in cel_time.h).  Invalid TZ name →
-// CEL_ERROR(kInvalidArgument).  Bad accessor_kind →
-// CEL_ERROR(kTypeMismatch) (defence in depth; codegen wouldn't
-// emit an unknown kind).
+// Single dispatch trampoline for the 10 with-TZ accessor overloads
+// — IANA zone names only.  Reads the timestamp + TZ-name string
+// operands; loads the zone from the host tzdata via
+// `absl::LoadTimeZone`; projects the requested civil-time field per
+// `accessor_kind` (matches `CelTzAccessorKind` enum in cel_time.h).
+// The no-tzdata shapes ("UTC" / "Z" / fixed offsets) are resolved
+// inside cel_runtime.wasm and never reach this import.  Invalid /
+// non-IANA TZ name → CEL_ERROR(kInvalidArgument).  Bad
+// accessor_kind → CEL_ERROR(kTypeMismatch) (defence in depth;
+// codegen wouldn't emit an unknown kind).
 ABSL_MUST_USE_RESULT absl::Status CelTimestampTzAccessorImpl(
     uint32_t out_slot, uint32_t ts_slot, uint32_t tz_slot,
     uint32_t accessor_kind, const TrampolineContext& ctx);
