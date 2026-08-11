@@ -35,6 +35,7 @@
 #include "runtime/cel_map.h"
 #include "runtime/cel_memory.h"
 #include "runtime/cel_string_format_internal.h"
+#include "runtime/cel_time_canonical.h"
 
 namespace celwasm::string_format_internal {
 
@@ -63,52 +64,17 @@ void AppendDoubleCanonical(std::string& buf, double v) {
   absl::StrAppend(&buf, v);
 }
 
-// Duration `%s` canonical form — cel-cpp's `FormatDuration`.  Negative
-// duration gets a leading `-`; absolute seconds + nanos.  Trailing
-// zero triples are NOT stripped (cel-cpp uses 3/6/9-digit fields
-// depending on which place is the lowest non-zero digit; matches
-// `proto.duration` JSON form).
+// Duration / timestamp `%s` canonical forms — the shared
+// `cel_time_canonical` helpers, the same implementation the
+// `string(<timestamp|duration>)` conversion kernels in
+// `cel_time_parse.cc` use.  Conformance scores these byte-exactly,
+// so `%s` and `string()` must never drift.
 void AppendDurationCanonical(std::string& buf, int64_t secs, int32_t nanos) {
-  if (secs == 0 && nanos == 0) {
-    buf.append("0s");
-    return;
-  }
-  const bool negative = secs < 0 || nanos < 0;
-  if (negative) {
-    buf.push_back('-');
-    if (secs < 0) secs = -secs;
-    if (nanos < 0) nanos = -nanos;
-  }
-  absl::StrAppend(&buf, secs);
-  if (nanos != 0) {
-    buf.push_back('.');
-    static constexpr int32_t kNanosPerMs = 1000000;
-    static constexpr int32_t kNanosPerUs = 1000;
-    if (nanos % kNanosPerMs == 0) {
-      absl::StrAppend(&buf, absl::StrFormat("%03d", nanos / kNanosPerMs));
-    } else if (nanos % kNanosPerUs == 0) {
-      absl::StrAppend(&buf, absl::StrFormat("%06d", nanos / kNanosPerUs));
-    } else {
-      absl::StrAppend(&buf, absl::StrFormat("%09d", nanos));
-    }
-  }
-  buf.push_back('s');
+  buf.append(FormatProtoDuration(secs, nanos));
 }
 
-// Timestamp `%s` canonical form — RFC3339 with trailing `Z` (UTC).
-// Mirrors `cel_timestamp_format_at_v` in `cel_time_parse.cc`.
 void AppendTimestampCanonical(std::string& buf, int64_t secs, int32_t nanos) {
-  const absl::Time t =
-      absl::UnixEpoch() + absl::Seconds(secs) + absl::Nanoseconds(nanos);
-  std::string s = absl::FormatTime(absl::RFC3339_full, t, absl::UTCTimeZone());
-  constexpr absl::string_view kUtcOffset = "+00:00";
-  if (s.size() > kUtcOffset.size() &&
-      s.compare(s.size() - kUtcOffset.size(), kUtcOffset.size(), kUtcOffset) ==
-          0) {
-    s.resize(s.size() - kUtcOffset.size());
-    s.push_back('Z');
-  }
-  buf.append(s);
+  buf.append(FormatTimestampRfc3339(secs, nanos));
 }
 
 // Linear-memory offset of a CelValue a caller handed us.  Every

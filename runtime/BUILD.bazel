@@ -487,8 +487,33 @@ cc_library(
     ],
     deps = [
         ":cel_runtime",
+        ":cel_time_canonical",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
+    ],
+)
+
+# The canonical timestamp / duration string forms, shared by the
+# `string(<timestamp|duration>)` conversion kernels (`:cel_time_parse`)
+# and the `%s` renderers (`:cel_string_format`).  Conformance scores
+# these byte-exactly — one implementation, two call sites, zero drift.
+cc_library(
+    name = "cel_time_canonical",
+    srcs = ["cel_time_canonical.cc"],
+    hdrs = ["cel_time_canonical.h"],
+    deps = [
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
+    name = "cel_time_canonical_test",
+    size = "small",
+    srcs = ["cel_time_canonical_test.cc"],
+    deps = [
+        ":cel_time_canonical",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -583,12 +608,12 @@ cc_library(
     hdrs = ["cel_string_format.h"],
     deps = [
         ":cel_runtime",
+        ":cel_time_canonical",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/time",
     ],
 )
 

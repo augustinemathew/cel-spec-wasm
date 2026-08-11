@@ -1,17 +1,15 @@
 #include "runtime/cel_time_parse.h"
 
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <string>
 
-#include "absl/strings/match.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_memory.h"
+#include "runtime/cel_time_canonical.h"
 
 namespace {
 
@@ -45,8 +43,7 @@ inline bool Absorb3vl(CelValue* out, const CelValue* in) {
 // native build.  Treating the offset directly as a pointer only works
 // on wasm and silently segfaults on host tests.
 inline absl::string_view BorrowSpan(const CelSpan& s) {
-  return absl::string_view(
-      reinterpret_cast<const char*>(cel_mem_base()) + s.ptr, s.len);
+  return {reinterpret_cast<const char*>(cel_mem_base()) + s.ptr, s.len};
 }
 
 // Decompose an absl::Duration into the proto-style (seconds, nanos)
@@ -112,33 +109,6 @@ uint32_t ArenaCopyString(absl::string_view s, uint32_t* out_len) {
     std::memcpy(cel_mem_base() + off, s.data(), s.size());
   }
   return off;
-}
-
-// proto Duration JSON encoding: `[-]<seconds>[.<frac>]s` where the
-// fractional part is 3, 6 or 9 digits (multiple of 3, trailing zero
-// triples trimmed).  Mirrors `FormatProtoDuration` in cel_host.cc.
-std::string FormatProtoDuration(int64_t seconds, int32_t nanos) {
-  std::string out;
-  const bool negative = seconds < 0 || nanos < 0;
-  if (negative) out.push_back('-');
-  const uint64_t abs_s = seconds < 0 ? static_cast<uint64_t>(-(seconds + 1)) + 1
-                                     : static_cast<uint64_t>(seconds);
-  const uint32_t abs_n =
-      nanos < 0 ? static_cast<uint32_t>(-nanos) : static_cast<uint32_t>(nanos);
-  absl::StrAppend(&out, abs_s);
-  if (abs_n != 0) {
-    out.push_back('.');
-    char buf[10];
-    std::snprintf(buf, sizeof(buf), "%09u", abs_n);
-    size_t frac_len = 9;
-    while (frac_len > 3 && buf[frac_len - 1] == '0' &&
-           buf[frac_len - 2] == '0' && buf[frac_len - 3] == '0') {
-      frac_len -= 3;
-    }
-    out.append(buf, frac_len);
-  }
-  out.push_back('s');
-  return out;
 }
 
 // Write a CEL_STRING that points at the just-allocated arena bytes.
@@ -220,16 +190,8 @@ extern "C" void cel_timestamp_format_at_v(uint32_t out_slot, uint32_t in_slot) {
     Poison(out, CEL_ERR_INVALID_ARGUMENT);
     return;
   }
-  const absl::Time t = absl::UnixEpoch() +
-                       absl::Seconds(in->payload.ts.seconds) +
-                       absl::Nanoseconds(in->payload.ts.nanos);
-  std::string s = absl::FormatTime(absl::RFC3339_full, t, absl::UTCTimeZone());
-  // absl emits `+00:00`; cel-cpp / proto Timestamp want trailing `Z`.
-  constexpr absl::string_view kUtcOffset = "+00:00";
-  if (s.size() > kUtcOffset.size() && absl::EndsWith(s, kUtcOffset)) {
-    s.resize(s.size() - kUtcOffset.size());
-    s.push_back('Z');
-  }
+  const std::string s = celwasm::FormatTimestampRfc3339(in->payload.ts.seconds,
+                                                        in->payload.ts.nanos);
   uint32_t len = 0;
   const uint32_t off = ArenaCopyString(s, &len);
   if (off == 0 && !s.empty()) {
@@ -247,8 +209,8 @@ extern "C" void cel_duration_format_at_v(uint32_t out_slot, uint32_t in_slot) {
     Poison(out, CEL_ERR_INVALID_ARGUMENT);
     return;
   }
-  const std::string s =
-      FormatProtoDuration(in->payload.dur.seconds, in->payload.dur.nanos);
+  const std::string s = celwasm::FormatProtoDuration(in->payload.dur.seconds,
+                                                     in->payload.dur.nanos);
   uint32_t len = 0;
   const uint32_t off = ArenaCopyString(s, &len);
   if (off == 0 && !s.empty()) {
