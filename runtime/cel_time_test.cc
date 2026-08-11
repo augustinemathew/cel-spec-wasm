@@ -8,11 +8,11 @@
 
 #include <cstdint>
 
+#include "gtest/gtest.h"
 #include "runtime/cel_arena.h"
 #include "runtime/cel_data.h"
 #include "runtime/cel_layout.h"
 #include "runtime/cel_memory.h"
-#include "gtest/gtest.h"
 
 namespace celwasm {
 namespace {
@@ -43,6 +43,13 @@ class TimeTest : public ::testing::Test {
   uint32_t MakeKind(uint32_t kind) {
     const uint32_t slot = MakeSlot();
     cel_value_at(slot)->kind = kind;
+    return slot;
+  }
+  uint32_t MakeInt(int64_t v) {
+    const uint32_t slot = MakeSlot();
+    CelValue* val = cel_value_at(slot);
+    val->kind = CEL_INT;
+    val->payload.i = v;
     return slot;
   }
   const CelValue* At(uint32_t slot) {
@@ -309,7 +316,7 @@ INSTANTIATE_TEST_SUITE_P(
 // algorithm's generality (the M7B.B arithmetic gate prevents this
 // timestamp from being produced in practice, but the accessor
 // kernel itself is range-agnostic).
-TEST_F(TimeTest, CivilFromSeconds_Y0001ProducesLangdefLower) {
+TEST_F(TimeTest, CivilFromSecondsY0001ProducesLangdefLower) {
   const uint32_t ts = MakeTs(-62135596800LL, 0);
   const uint32_t y = MakeSlot();
   cel_ts_year_utc_at_v(y, ts);
@@ -351,6 +358,154 @@ TEST_F(TimeTest, TimestampGetMillisecondsReturnsSubSecond) {
   const uint32_t out = MakeSlot();
   cel_ts_milliseconds_utc_at_v(out, MakeTs(1'234'567'890LL, 500'000'000));
   EXPECT_EQ(At(out)->payload.i, 500);
+}
+
+TEST_F(TimeTest, TimestampGetMillisecondsFloorShiftsNegativeNanos) {
+  // Pre-epoch timestamps store sign-correlated (negative) nanos;
+  // getMilliseconds converts to the unix-floor form first, matching
+  // cel-cpp's `ToInt64Milliseconds(t - FloorToSecond(t))`.
+  // (0s, -500ms) is the instant 1969-12-31T23:59:59.5Z → 500.
+  const uint32_t out = MakeSlot();
+  cel_ts_milliseconds_utc_at_v(out, MakeTs(0, -500'000'000));
+  EXPECT_EQ(At(out)->payload.i, 500);
+}
+
+TEST_F(TimeTest, DurationGetMillisecondsPreservesSign) {
+  // Duration getMilliseconds is the sub-second COMPONENT in
+  // [-999, 999]; unlike the timestamp accessor there is no floor
+  // shift — sign is preserved.
+  const uint32_t out = MakeSlot();
+  cel_dur_milliseconds_at_v(out, MakeDur(0, -500'000'000));
+  EXPECT_EQ(At(out)->payload.i, -500);
+}
+
+// ── Conversion kernels (int <-> ts/dur) ─────────────────────────
+
+TEST_F(TimeTest, TsToIntReturnsSecondsFieldTruncatingNanos) {
+  const uint32_t out = MakeSlot();
+  cel_ts_to_int_at_v(out, MakeTs(1'234'567'890LL, 999'999'999));
+  EXPECT_EQ(At(out)->kind, CEL_INT);
+  EXPECT_EQ(At(out)->payload.i, 1'234'567'890LL);
+}
+
+TEST_F(TimeTest, TsToIntRejectsDurationOperand) {
+  const uint32_t out = MakeSlot();
+  cel_ts_to_int_at_v(out, MakeDur(1, 0));
+  EXPECT_EQ(At(out)->kind, CEL_ERROR);
+  EXPECT_EQ(At(out)->payload.err, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(TimeTest, DurToIntReturnsWholeSeconds) {
+  const uint32_t out = MakeSlot();
+  cel_dur_to_int_at_v(out, MakeDur(-42, -999'999'999));
+  EXPECT_EQ(At(out)->kind, CEL_INT);
+  EXPECT_EQ(At(out)->payload.i, -42);
+}
+
+TEST_F(TimeTest, IntToTsAdmitsLangdefBounds) {
+  // langdef range [0001-01-01T00:00:00Z, 9999-12-31T23:59:59Z]:
+  // both endpoints convert.
+  const uint32_t lo = MakeSlot();
+  const uint32_t hi = MakeSlot();
+  cel_int_to_ts_at_v(lo, MakeInt(-62'135'596'800LL));
+  cel_int_to_ts_at_v(hi, MakeInt(253'402'300'799LL));
+  ASSERT_EQ(At(lo)->kind, CEL_TIMESTAMP);
+  EXPECT_EQ(At(lo)->payload.ts.seconds, -62'135'596'800LL);
+  ASSERT_EQ(At(hi)->kind, CEL_TIMESTAMP);
+  EXPECT_EQ(At(hi)->payload.ts.seconds, 253'402'300'799LL);
+}
+
+TEST_F(TimeTest, IntToTsPoisonsJustPastEitherBound) {
+  const uint32_t lo = MakeSlot();
+  const uint32_t hi = MakeSlot();
+  cel_int_to_ts_at_v(lo, MakeInt(-62'135'596'801LL));
+  cel_int_to_ts_at_v(hi, MakeInt(253'402'300'800LL));
+  EXPECT_EQ(At(lo)->kind, CEL_ERROR);
+  EXPECT_EQ(At(lo)->payload.err, CEL_ERR_OVERFLOW);
+  EXPECT_EQ(At(hi)->kind, CEL_ERROR);
+  EXPECT_EQ(At(hi)->payload.err, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(TimeTest, IntToTsRejectsNonIntOperand) {
+  const uint32_t out = MakeSlot();
+  cel_int_to_ts_at_v(out, MakeDur(1, 0));
+  EXPECT_EQ(At(out)->kind, CEL_ERROR);
+  EXPECT_EQ(At(out)->payload.err, CEL_ERR_TYPE_MISMATCH);
+}
+
+TEST_F(TimeTest, IntToDurAdmitsProtoDurationBounds) {
+  // proto Duration envelope: ±315,576,000,000 s (10,000 years).
+  const uint32_t lo = MakeSlot();
+  const uint32_t hi = MakeSlot();
+  cel_int_to_dur_at_v(lo, MakeInt(-315'576'000'000LL));
+  cel_int_to_dur_at_v(hi, MakeInt(315'576'000'000LL));
+  ASSERT_EQ(At(lo)->kind, CEL_DURATION);
+  EXPECT_EQ(At(lo)->payload.dur.seconds, -315'576'000'000LL);
+  ASSERT_EQ(At(hi)->kind, CEL_DURATION);
+  EXPECT_EQ(At(hi)->payload.dur.seconds, 315'576'000'000LL);
+}
+
+TEST_F(TimeTest, IntToDurPoisonsJustPastEitherBound) {
+  const uint32_t lo = MakeSlot();
+  const uint32_t hi = MakeSlot();
+  cel_int_to_dur_at_v(lo, MakeInt(-315'576'000'001LL));
+  cel_int_to_dur_at_v(hi, MakeInt(315'576'000'001LL));
+  EXPECT_EQ(At(lo)->kind, CEL_ERROR);
+  EXPECT_EQ(At(lo)->payload.err, CEL_ERR_OVERFLOW);
+  EXPECT_EQ(At(hi)->kind, CEL_ERROR);
+  EXPECT_EQ(At(hi)->payload.err, CEL_ERR_OVERFLOW);
+}
+
+// ── Arithmetic result-range gates (timestamp + ±292y duration) ──
+
+TEST_F(TimeTest, TsDurAddAdmitsFullSecondOnUpperBound) {
+  // The langdef upper bound is inclusive of its full second of
+  // sub-second precision: (MAX_SECONDS, 999'999'999) is IN range.
+  // Pinned by conformance row
+  // `timestamps/conversions/toString_timestamp_nanos`.
+  const uint32_t out = MakeSlot();
+  cel_ts_dur_add_at_vv(out, MakeTs(253'402'300'798LL, 0),
+                       MakeDur(1, 999'999'999));
+  ASSERT_EQ(At(out)->kind, CEL_TIMESTAMP);
+  EXPECT_EQ(At(out)->payload.ts.seconds, 253'402'300'799LL);
+  EXPECT_EQ(At(out)->payload.ts.nanos, 999'999'999);
+}
+
+TEST_F(TimeTest, TsDurAddPoisonsPastUpperBound) {
+  const uint32_t out = MakeSlot();
+  cel_ts_dur_add_at_vv(out, MakeTs(253'402'300'799LL, 0), MakeDur(1, 0));
+  EXPECT_EQ(At(out)->kind, CEL_ERROR);
+  EXPECT_EQ(At(out)->payload.err, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(TimeTest, TsDurSubPoisonsNegativeNanosOnLowerBound) {
+  // At MIN_SECONDS a same-sign negative nanos pushes past the
+  // langdef lower bound.
+  const uint32_t out = MakeSlot();
+  cel_ts_dur_sub_at_vv(out, MakeTs(-62'135'596'800LL, 0), MakeDur(0, 1));
+  EXPECT_EQ(At(out)->kind, CEL_ERROR);
+  EXPECT_EQ(At(out)->payload.err, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(TimeTest, TsTsSubPoisonsPastInt64NanosRepresentability) {
+  // cel-cpp's CheckedSub(Time, Time) represents the result in int64
+  // NANOSECONDS, so the bound is ±292 years — much tighter than the
+  // proto-Duration parse bound.  ts(9999..) - ts(0001..) overflows.
+  const uint32_t out = MakeSlot();
+  cel_ts_ts_sub_at_vv(out, MakeTs(253'402'300'799LL, 0),
+                      MakeTs(-62'135'596'800LL, 0));
+  EXPECT_EQ(At(out)->kind, CEL_ERROR);
+  EXPECT_EQ(At(out)->payload.err, CEL_ERR_OVERFLOW);
+}
+
+TEST_F(TimeTest, TsTsSubAdmitsInt64NanosBoundary) {
+  // INT64_MAX ns = 9'223'372'036 s + 854'775'807 ns — exactly
+  // representable, so exactly at the bound passes.
+  const uint32_t out = MakeSlot();
+  cel_ts_ts_sub_at_vv(out, MakeTs(9'223'372'036LL, 854'775'807), MakeTs(0, 0));
+  ASSERT_EQ(At(out)->kind, CEL_DURATION);
+  EXPECT_EQ(At(out)->payload.dur.seconds, 9'223'372'036LL);
+  EXPECT_EQ(At(out)->payload.dur.nanos, 854'775'807);
 }
 
 TEST_F(TimeTest, TimestampAccessorRejectsDurationOperand) {

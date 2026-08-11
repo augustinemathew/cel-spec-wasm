@@ -140,7 +140,6 @@ cc_library(
         "cel_optional.c",
         "cel_runtime.c",
         "cel_string_ops.c",
-        "cel_time.c",
         "cel_type.c",
     ],
     hdrs = [
@@ -416,7 +415,25 @@ cc_test(
     srcs = ["cel_time_test.cc"],
     deps = [
         ":cel_runtime",
+        ":cel_time",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Timestamp / duration arithmetic, ordering, accessor, and conversion
+# kernels.  C++ TU (absl civil time backs the calendar projections);
+# the extern-C ABI surface lives in cel_time.h, which stays a hdr of
+# `:cel_runtime` so the runtime catalogue filegroup keeps scanning
+# its `// cel:codegen-export` markers.
+cc_library(
+    name = "cel_time",
+    srcs = ["cel_time.cc"],
+    copts = [
+        "-Wno-unused-parameter",
+    ],
+    deps = [
+        ":cel_runtime",
+        "@com_google_absl//absl/time",
     ],
 )
 
@@ -715,8 +732,6 @@ cc_binary(
         "cel_runtime.h",
         "cel_string_ops.c",
         "cel_string_ops.h",
-        "cel_time.c",
-        "cel_time.h",
         "cel_type.c",
         "cel_type.h",
     ],
@@ -785,6 +800,7 @@ cc_binary(
         ":cel_matches",
         ":cel_string_ext",
         ":cel_string_format",
+        ":cel_time",
         ":cel_time_parse",
     ],
 )

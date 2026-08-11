@@ -155,7 +155,7 @@ void cel_dur_milliseconds_at_v(uint32_t out_slot, uint32_t d_slot);
 //   timestamp_to_int64 : seconds field, ignoring nanos
 //   duration_to_int64  : seconds field, truncating nanos toward zero
 //   int64_to_timestamp : (seconds, 0) with langdef-range check
-//   int64_to_duration  : (seconds, 0); no range check (any int64 fits)
+//   int64_to_duration  : (seconds, 0) with proto-Duration range check
 
 // cel:codegen-export
 void cel_ts_to_int_at_v(uint32_t out_slot, uint32_t ts_slot);
@@ -205,7 +205,7 @@ void cel_ts_milliseconds_with_tz_at_vv(uint32_t out_slot, uint32_t ts_slot,
                                        uint32_t tz_slot);
 
 // `accessor_kind` enum — wire contract for the single dispatch
-// trampoline.  Closed, append-only.  Used by both the cel_time.c
+// trampoline.  Closed, append-only.  Used by both the cel_time.cc
 // shims AND the Layer-2 `CelTimestampTzAccessorImpl` switch; keep
 // these in lockstep.
 typedef enum {
